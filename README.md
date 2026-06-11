@@ -14,6 +14,7 @@ This repository bundles Princess-Pi's custom extensions and tools into a single,
 | **`merge.ts`** | `/merge` | Safety-centric git branch merger for multi-worktree repositories. Enforces strict compliance with Step 5 "Code and Spec Approved" commit guidelines before merging to `main`. |
 | **`github-issue-autocomplete.ts`** | (Automatic) | Enhances the terminal TUI by autocompleting GitHub issue numbers (starting with `#`) dynamically as you type. |
 | **`system-clock.ts`** | (System Service) | Emits centralized 1s, 4s, and 60s tick events across the `pi` event bus to drive polling widgets smoothly. |
+| **`learning_pi_extension_api`** | (Skill) | Memory bank documenting Pi's extension API, lifecycle events, and CWD caching rules. Found in `skills/learning-pi/SKILL.md`. |
 
 ---
 
