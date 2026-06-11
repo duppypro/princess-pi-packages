@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pi Extensions: DuckDuckGo Search</title>
+</head>
+<body>
+    <h2>DuckDuckGo Search (<code>ddg-search.ts</code>)</h2>
+    <p><strong>Domain:</strong> External Knowledge & Tool Registration</p>
+
+    <h3>Overview</h3>
+    <p>The DuckDuckGo Search extension registers a custom tool, <code>search_web</code>, which enables the agent to search DuckDuckGo directly from the command line using the <code>ddgr</code> utility. This allows the AI to fetch up-to-date documentation, API references, and modern framework guidelines.</p>
+
+    <h3>Tool Registration</h3>
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <p><strong>Command Execution:</strong></p>
+        <p>The extension executes <code>ddgr --json --noprompt --num 5 "&lt;query&gt;"</code> natively using Pi's execution API, bypassing the need for an external API key or web scraping service.</p>
+        
+        <p><strong>Future Direction:</strong></p>
+        <p>As per the architectural roadmap, this extension is slated for conversion into a pure Skill or Standalone Tool format rather than remaining a conventional session-hooked Extension.</p>
+    </div>
+</body>
+</html>

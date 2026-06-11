@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
+    <meta charset="UTF-8">
+    <title>Pi Extensions: Session Migrator (mv-session) Spec</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --box-bg: #2d2d2d;
+            --accent-blue: #569cd6;
+            --accent-green: #6a9955;
+            --accent-orange: #ce9178;
+            --accent-yellow: #dcdcaa;
+            --anchor-red: #e74c3c;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6; 
+            max-width: 1000px; 
+            margin: 0 auto; 
+            padding: 2rem; 
+        }
+        h1, h2, h3 { color: var(--accent-blue); }
+        h1 { border-bottom: 2px solid var(--accent-blue); padding-bottom: 10px; }
+        h2 { margin-top: 2rem; }
+        a { color: var(--accent-blue); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        
+        .diagram { 
+            background: var(--box-bg); 
+            border: 1px solid #404040; 
+            border-radius: 8px; 
+            padding: 20px; 
+            margin: 20px 0; 
+        }
+    </style>
+</head>
+<body>
+    <h2>Session Migrator (<code>mv-session</code>)</h2>
+    <p><strong>Domain:</strong> Session Workspace & Directory Orchestration</p>
+
+    <h3>Overview</h3>
+    <p>The Session Migrator command (<code>/mv-session</code>) provides a robust utility to permanently relocate an active Pi session's history and configuration to a new project directory mid-session. It moves the session's physical <code>.jsonl</code> file into the correct target project's session storage folder, re-writes the session's header block to update the metadata binding, and shifts the session manager and active process working directory to the target workspace.</p>
+
+    <h3>Command & Tool Reference</h3>
+    
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <h4 style="color: var(--accent-yellow); margin-top: 0; margin-bottom: 5px;">👤 For Human (TUI Slash Command)</h4>
+        <p><strong><code>/mv-session</code></strong> <code>&lt;path&gt;</code></p>
+        <p>Permanently moves the active session and CWD to the target directory. Path can be absolute, relative, or start with <code>~</code>.</p>
+    </div>
+
+    <h3>Behavioral Logic (Option A: Fail Fast)</h3>
+    <p>The `/mv-session` command adheres to a strict Fail Fast policy to prevent file corruption or data loss:</p>
+    <ol>
+        <li><strong>Path Resolution:</strong> Resolves the target directory path. Handles relative, absolute, and <code>~</code> paths.</li>
+        <li><strong>Target Directory Validation:</strong>
+            <ul>
+                <li>The resolved target path is checked for existence.</li>
+                <li>The resolved target path is verified to be a directory (not a file).</li>
+                <li>If the path does not exist or is not a directory, <strong>it fails immediately</strong> with an error notification. No file is moved.</li>
+            </ul>
+        </li>
+        <li><strong>Active Session Verification:</strong>
+            <ul>
+                <li>Queries `ctx.sessionManager.getSessionFile()`.</li>
+                <li>If the session is ephemeral (not persisted on disk, e.g., started with `--no-session`), it simply shifts the workspace CWD (equivalent to <code>/cd</code>) and notifies the user that no file was moved.</li>
+            </ul>
+        </li>
+        <li><strong>Destination Computation:</strong>
+            <ul>
+                <li>Generates the standard project-specific session directory for the target path:
+                    <br><code>~/.pi/agent/sessions/--home-user-path-to-target--/</code>
+                </li>
+                <li>Creates this target directory on disk if it does not exist yet.</li>
+            </ul>
+        </li>
+        <li><strong>File Relocation:</strong>
+            <ul>
+                <li>Locates the active `.jsonl` file.</li>
+                <li>Reads the first line, parses the JSON session header, and rewrites the `cwd` field inside the header to match the target absolute path.</li>
+                <li>Moves the updated file to the new destination folder using standard Node.js file operations.</li>
+            </ul>
+        </li>
+        <li><strong>Runtime Re-Binding:</strong>
+            <ul>
+                <li>Calls <code>ctx.sessionManager.setSessionFile(newFilePath)</code> to re-bind the active session to the new file path on disk.</li>
+                <li>Updates <code>ctx.sessionManager.cwd = resolvedTargetPath</code> to synchronize internal states.</li>
+                <li>Executes <code>process.chdir(resolvedTargetPath)</code> to shift the process directory.</li>
+            </ul>
+        </li>
+        <li><strong>Success Notification:</strong> Displays a friendly confirmation showing the relocated path and updated CWD:
+            <br><code>📁 Session permanently moved and workspace changed to: &lt;path&gt;</code>
+        </li>
+    </ol>
+</body>
+</html>

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
+    <meta charset="UTF-8">
+    <title>Pi Extensions: Dynamic Directory Switcher (CD) Spec</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --box-bg: #2d2d2d;
+            --accent-blue: #569cd6;
+            --accent-green: #6a9955;
+            --accent-orange: #ce9178;
+            --accent-yellow: #dcdcaa;
+            --anchor-red: #e74c3c;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6; 
+            max-width: 1000px; 
+            margin: 0 auto; 
+            padding: 2rem; 
+        }
+        h1, h2, h3 { color: var(--accent-blue); }
+        h1 { border-bottom: 2px solid var(--accent-blue); padding-bottom: 10px; }
+        h2 { margin-top: 2rem; }
+        a { color: var(--accent-blue); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        
+        .diagram { 
+            background: var(--box-bg); 
+            border: 1px solid #404040; 
+            border-radius: 8px; 
+            padding: 20px; 
+            margin: 20px 0; 
+        }
+    </style>
+</head>
+<body>
+    <h2>Dynamic Directory Switcher (<code>cd-command.ts</code>)</h2>
+    <p><strong>Domain:</strong> Session Workspace & Directory Orchestration</p>
+
+    <h3>Overview</h3>
+    <p>The Dynamic Directory Switcher provides dual-channel capabilities to change the active workspace directory of a running Pi session mid-stream without terminating the process or invalidating the model's prompt cache. It synchronizes both the human user and the AI agent inside the same workspace context by shifting the physical Node.js process working directory (<code>process.cwd()</code>), which in turn forces the TUI status bar to update in real-time.</p>
+
+    <h3>Command & Tool Reference</h3>
+    
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <h4 style="color: var(--accent-yellow); margin-top: 0; margin-bottom: 5px;">👤 For Human (TUI Slash Command)</h4>
+        <p><strong><code>/cd</code></strong> <code>&lt;path&gt;</code></p>
+        <p>Changes the user's current working directory dynamically. Path can be absolute, relative, or start with <code>~</code>.</p>
+    </div>
+
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <h4 style="color: var(--accent-yellow); margin-top: 0; margin-bottom: 5px;">🤖 For Agent (AI custom tool)</h4>
+        <p><strong><code>change_working_directory</code></strong></p>
+        <p>Instructs Pi to change its active execution directory. The LLM invokes this tool when instructed to switch focus to a different subdirectory/project.</p>
+        <p><em>Parameters Schema:</em></p>
+        <pre style="color: var(--accent-orange); font-family: monospace;">{
+  path: Type.String({ description: "The target directory path (supports ~, relative, or absolute)" })
+}</pre>
+    </div>
+
+    <h3>Behavioral Logic (Option A: Fail Fast)</h3>
+    <p>Both interfaces share the same execution and safety engine under the hood, adhering to a strict Fail Fast policy:</p>
+    <ol>
+        <li><strong>Path Resolution:</strong> The input path is parsed. If it starts with <code>~</code>, it is resolved against the user's home directory (<code>os.homedir()</code>). If it is relative, it is resolved against the current <code>process.cwd()</code>.</li>
+        <li><strong>Directory Validation:</strong>
+            <ul>
+                <li>The resolved path is checked for existence.</li>
+                <li>The resolved path is verified to be a directory (not a file).</li>
+                <li>If the path does not exist or is not a directory, <strong>it fails immediately</strong>. It alerts the human or AI with an error notification and does <strong>not</strong> change the directory.</li>
+            </ul>
+        </li>
+        <li><strong>Directory Switch:</strong> Upon successful validation, the extension executes <code>process.chdir(resolvedPath)</code>.</li>
+        <li><strong>Notification:</strong> Displays a success notification via the TUI UI showing the absolute target directory now active: <code>📁 Workspace changed to: &lt;path&gt;</code>.</li>
+    </ol>
+
+    <h3>Synchronization Safeguards</h3>
+    <p>To avoid context drift where the agent works in one directory but the physical process is in another, the global <code>AGENTS.md</code> mandates that:</p>
+    <ul>
+        <li>The AI agent must never manually prefix paths with a different directory if instructed to switch focus. It must always call <code>change_working_directory</code> first.</li>
+        <li>This guarantees the physical CWD and the status bar are always 100% aligned with the active working context.</li>
+    </ul>
+</body>
+</html>

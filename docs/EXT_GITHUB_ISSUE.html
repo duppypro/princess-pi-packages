@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pi Extensions: GitHub Issue Autocomplete</title>
+</head>
+<body>
+    <h2>GitHub Issue Autocomplete (<code>github-issue-autocomplete.ts</code>)</h2>
+    <p><strong>Domain:</strong> Code Intelligence & External Integrations</p>
+
+    <h3>Overview</h3>
+    <p>The GitHub Issue Autocomplete extension hooks into the active Pi session to provide instant, fuzzy-searchable autocompletion for GitHub issues whenever the user types <code>#</code> in the prompt. It dynamically parses the remote origin of the active Git worktree to determine the target repository.</p>
+
+    <h3>Core Architecture</h3>
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <p><strong>1. Lifecycle Hooking:</strong></p>
+        <p>Instead of fetching issues on every keystroke, the extension hooks into the <code>session_start</code> event. It eagerly fetches up to 100 open issues in the background.</p>
+        
+        <p><strong>2. Dependency Validation (gh CLI):</strong></p>
+        <p>The extension executes <code>gh issue list --repo &lt;repo&gt; --json number,title,state</code>. If the CLI is missing or unauthenticated, it presents a helpful error notification with installation instructions.</p>
+
+        <p><strong>3. TUI Provider Layer:</strong></p>
+        <p>Registers a custom <code>AutocompleteProvider</code> with <code>ctx.ui.addAutocompleteProvider</code> that matches tokens prefixed with <code>#</code> and fuzzy-filters the cached issue list in real-time.</p>
+    </div>
+
+    <h3>Directory Sync Notes</h3>
+    <p>Because the issue cache is primed on <code>session_start</code> using the active directory's remote repository, executing a <code>/cd</code> or <code>/mv-session</code> command mid-session to shift into a repository with a <em>different</em> remote origin will <strong>not</strong> automatically bust the issue cache. The user must issue a <code>/reload</code> command to trigger a new <code>session_start</code> event and re-hydrate the autocomplete list with the new repository's issues.</p>
+</body>
+</html>
