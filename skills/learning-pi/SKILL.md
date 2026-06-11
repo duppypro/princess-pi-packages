@@ -28,3 +28,10 @@ This skill serves as a memory bank of architectural lessons learned while develo
 ## 5. Background Execution & Cleanup
 **The Lesson:** Extensions that spawn child processes (like `/serve`) can easily create zombie processes or connection leaks if not managed during the Pi lifecycle.
 - **Duppy's Standard:** Always hook into the `session_shutdown` event to warn the user about lingering background servers, and manage event-listener teardown (e.g., `pi.events.on("clock:tick")`) to prevent memory leaks across `/reload` invocations.
+
+## 6. GitHub Authentication: PAT vs. `gh auth login`
+**The Lesson:** While `gh auth login` (OAuth) is the most convenient choice for day-to-day interactive development on a VPS, there are specific scenarios where using a Fine-Grained Personal Access Token (PAT) is the smarter, more secure choice.
+- **Principle of Least Privilege:** `gh` OAuth requests broad permissions across all your repos. A PAT allows strictly limiting access (e.g., only read/write issues in a single repository). Use a PAT for isolated scripts or extensions to minimize the blast radius if the token leaks.
+- **Headless Automation:** `gh` OAuth requires interactive browser approval. A PAT can be passed silently as an environment variable (`GITHUB_TOKEN`), making it required for cron jobs, CI/CD, and background automation.
+- **Direct API Usage:** `gh` OAuth forces you to shell out to `gh api ...`, adding overhead. A PAT allows direct, fast HTTP requests (e.g., using `fetch` or `axios`) via an `Authorization: Bearer <TOKEN>` header.
+- **Duppy's Standard:** If a Human (or an interactive Agent) is driving, use `gh auth login`. If a Machine is driving (Cron, Scripts, CI/CD) OR you need strict security boundaries, generate a Fine-Grained PAT.
