@@ -51,7 +51,8 @@ const MIME_TYPES = {
 	".gif": "image/gif",
 	".svg": "image/svg+xml",
 	".ico": "image/x-icon",
-	".txt": "text/plain"
+	".txt": "text/plain",
+	".md": "text/plain; charset=utf-8"
 };
 
 // SSE Client Response Connections
