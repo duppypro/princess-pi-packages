@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
+    <meta charset="UTF-8">
+    <title>Pi Extensions: Rule Smusher (/smush) Spec</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --box-bg: #2d2d2d;
+            --accent-blue: #569cd6;
+            --accent-green: #6a9955;
+            --accent-orange: #ce9178;
+            --accent-yellow: #dcdcaa;
+            --anchor-red: #e74c3c;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6; 
+            max-width: 1000px; 
+            margin: 0 auto; 
+            padding: 2rem; 
+        }
+        h1, h2, h3 { color: var(--accent-blue); }
+        h1 { border-bottom: 2px solid var(--accent-blue); padding-bottom: 10px; }
+        h2 { margin-top: 2rem; }
+        code { background-color: var(--box-bg); padding: 2px 5px; border-radius: 4px; font-family: Consolas, monospace; color: var(--accent-orange); }
+        pre { background-color: var(--box-bg); padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #404040; }
+        pre code { background-color: transparent; color: var(--text-color); padding: 0; }
+        .tui-mock { font-family: Consolas, monospace; background: #000; color: #fff; padding: 20px; border-radius: 8px; border: 1px solid #333; margin: 20px 0; white-space: pre-wrap; }
+        .highlight { color: var(--accent-yellow); }
+        .green { color: var(--accent-green); }
+        .blue { color: var(--accent-blue); }
+        .dim { color: #888; }
+    </style>
+</head>
+<body>
+
+    <h1>EXT_SMUSH: The Interactive Rule Assimilator</h1>
+    <p>A native TUI Extension for Pi Coding Agent. Resolves repo-specific instruction sets against user-global settings.</p>
+
+    <h2>1. The Problem</h2>
+    <p>When entering a third-party open source repository, developers are often confronted with a pre-existing <code>CLAUDE.md</code> or <code>CONTRIBUTING.md</code>. Automatically inheriting these files clutters the System Prompt with conflicting rules (like formatting styles or AI behavior). However, manually transcribing the good rules into a unified <code>$CWD/AGENTS.md</code> is tedious.</p>
+
+    <h2>2. The /smush Solution</h2>
+    <p>The <code>/smush</code> extension intercepts the user's workflow to offer an interactive "smushing" process. It reads local contextual files, parses them into discrete rules, and presents them via a TUI SettingsList. The user can interactively toggle which rules they wish to assimilate into their local <code>$CWD/AGENTS.md</code>.</p>
+
+    <h2>3. Execution Flow</h2>
+    <ol>
+        <li>User types <code>/smush</code> in the Pi input box.</li>
+        <li>The extension searches the <code>$CWD</code> for <code>CLAUDE.md</code>, <code>CONTRIBUTING.md</code>, and <code>AGENTS.md</code>.</li>
+        <li>It reads the files and uses a heuristic parser (extracting Markdown lists, headings, and bolded keywords) to separate the documents into actionable rules.</li>
+        <li>The extension mounts a <code>SettingsList</code> TUI component replacing the editor.</li>
+        <li>The user checks/unchecks the rules.</li>
+        <li>Upon pressing Enter, the extension generates a clean <code>$CWD/AGENTS.md</code> containing only the selected rules.</li>
+        <li>The extension prompts to optionally backup/delete the original <code>CLAUDE.md</code> to prevent Pi from double-loading it.</li>
+    </ol>
+
+    <h2>4. TUI Mockup</h2>
+    <div class="tui-mock">
+<span class="blue">┌────────────────────────────────────────────────────────────┐</span>
+<span class="blue">│</span> <span class="highlight">Select Rules to Smush into AGENTS.md</span>                       <span class="blue">│</span>
+<span class="blue">│</span>                                                            <span class="blue">│</span>
+<span class="blue">│</span>  <span class="green">[ON]</span>  Use 2 spaces for indentation.                       <span class="blue">│</span>
+<span class="blue">│</span>  <span class="green">[ON]</span>  Use Vite and Vitest for all build operations.       <span class="blue">│</span>
+<span class="blue">│</span>  <span class="dim">[OFF] Never ask clarifying questions (Conflicts!)</span>         <span class="blue">│</span>
+<span class="blue">│</span>  <span class="green">[ON]</span>  Export components as default in src/lib.            <span class="blue">│</span>
+<span class="blue">│</span>  <span class="dim">[OFF] Use Python 2.7 syntax.</span>                              <span class="blue">│</span>
+<span class="blue">│</span>                                                            <span class="blue">│</span>
+<span class="blue">│</span>  <span class="dim">↑↓ navigate • space toggle • enter save • esc cancel</span>      <span class="blue">│</span>
+<span class="blue">└────────────────────────────────────────────────────────────┘</span>
+    </div>
+
+    <h2>5. Heuristic Parsing</h2>
+    <p>Because native Pi extensions run synchronously without guaranteed LLM-generate API access for simple scripts, <code>/smush</code> will employ a text-parsing heuristic:</p>
+    <ul>
+        <li>Split file contents by <code>\n</code>.</li>
+        <li>Look for bullet points: lines starting with <code>- </code> or <code>* </code>.</li>
+        <li>If a bullet point is long enough (&gt; 10 chars), consider it an actionable rule.</li>
+    </ul>
+
+    <h2>6. The Save Mechanism</h2>
+    <p>When the user hits Enter:</p>
+    <pre><code>// Generated $CWD/AGENTS.md
+# Project Instructions (Repo-Specific)
+
+These instructions override or append to the global standards for this specific repository.
+
+## Assimilated Rules
+- Use 2 spaces for indentation.
+- Use Vite and Vitest for all build operations.
+- Export components as default in src/lib.
+</code></pre>
+</body>
+</html>
