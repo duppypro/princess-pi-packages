@@ -20,36 +20,27 @@ This repository bundles Princess-Pi's custom extensions and tools into a single,
 
 ## 🚀 Installation & Setup
 
-### Method 1: Global File Copying (Recommended)
-This installs the files directly to your global `~/.pi/agent/extensions/` directory. This is the cleanest setup because it supports auto-discovery and **instant hot-reloading with `/reload`**.
+This repository is designed to be installed natively through Pi's built-in package manager. Do not manually copy the files into your local extensions folder.
 
-Run the installer script:
+To install or update the package globally, simply run:
+
 ```bash
-./install.sh
+pi install https://github.com/dproctor/princess-pi-packages
 ```
 
----
+Once installed, Pi will automatically load the extensions and skills found in this package into every session.
 
-### Method 2: Native Pi Package Link (Developer Mode)
-If you are modifying these extensions locally and want your edits to reflect instantly, link this directory as a local Pi Package.
+### Managing Extensions
 
-Run this native command from your terminal:
+You can toggle specific extensions and skills on or off at any time using the built-in Pi Configuration interface:
+
 ```bash
-pi install /home/princess-pi/git-projects/princess-pi-packages
+pi config
 ```
 
----
-
-## 🔄 Syncing Changes
-
-If you make live edits to your extensions directly inside the `~/.pi/agent/extensions/` folder and want to back them up to this repository, or if you pull changes from GitHub and want to apply them globally, you can use the included `sync.sh` script:
-
+To uninstall the package entirely:
 ```bash
-# Pull changes from ~/.pi/agent/extensions/ INTO this repository
-./sync.sh --pull
-
-# Push changes from this repository INTO ~/.pi/agent/extensions/
-./sync.sh --push
+pi remove git:github.com/dproctor/princess-pi-packages
 ```
 
 ---
@@ -63,3 +54,8 @@ If you make live edits to your extensions directly inside the `~/.pi/agent/exten
    /wtft
    ```
 4. Enjoy your globally supercharged Princess-Pi terminal!
+
+
+## 🤖 Agent Instructions (CLAUDE.md)
+We standardize on `CLAUDE.md` for all AI coding agent instructions. Even when using Pi Coding Agent or other harnesses, we adopt this naming convention to ensure cross-ecosystem compatibility (e.g., with Claude Code) without duplicating rules or managing symlinks.
+
