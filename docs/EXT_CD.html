@@ -40,18 +40,22 @@
     </style>
 </head>
 <body>
-    <h2>Dynamic Directory Switcher (<code>cd-command.ts</code>)</h2>
+    <h2>Dynamic Directory Switcher & Navigation Stack (<code>cd-command.ts</code>)</h2>
     <p><strong>Domain:</strong> Session Workspace & Directory Orchestration</p>
 
     <h3>Overview</h3>
-    <p>The Dynamic Directory Switcher provides dual-channel capabilities to change the active workspace directory of a running Pi session mid-stream without terminating the process or invalidating the model's prompt cache. It synchronizes both the human user and the AI agent inside the same workspace context by shifting the physical Node.js process working directory (<code>process.cwd()</code>), which in turn forces the TUI status bar to update in real-time.</p>
+    <p>The Dynamic Directory Switcher provides dual-channel capabilities to change the active workspace directory of a running Pi session mid-stream without terminating the process or invalidating the model's prompt cache. It synchronizes both the human user and the AI agent inside the same workspace context by shifting the physical Node.js process working directory (<code>process.cwd()</code>). Additionally, it maintains a history stack of visited directories, providing <code>/popd</code> and <code>/treed</code> commands for rapid navigation across multiple workspaces.</p>
 
     <h3>Command & Tool Reference</h3>
     
     <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <h4 style="color: var(--accent-yellow); margin-top: 0; margin-bottom: 5px;">👤 For Human (TUI Slash Command)</h4>
+        <h4 style="color: var(--accent-yellow); margin-top: 0; margin-bottom: 5px;">👤 For Human (TUI Slash Commands)</h4>
         <p><strong><code>/cd</code></strong> <code>&lt;path&gt;</code></p>
         <p>Changes the user's current working directory dynamically. Path can be absolute, relative, or start with <code>~</code>.</p>
+        <p><strong><code>/popd</code></strong></p>
+        <p>Navigates back to the previously visited directory in the history stack.</p>
+        <p><strong><code>/treed</code></strong></p>
+        <p>Opens a TUI selector showing the history stack of all previously visited directories. Selecting one switches the active directory to it.</p>
     </div>
 
     <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
@@ -64,8 +68,8 @@
 }</pre>
     </div>
 
-    <h3>Behavioral Logic (Option A: Fail Fast)</h3>
-    <p>Both interfaces share the same execution and safety engine under the hood, adhering to a strict Fail Fast policy:</p>
+    <h3>Behavioral Logic (Option A: Fail Fast & History Stack)</h3>
+    <p>Both interfaces share the same execution and safety engine under the hood, adhering to a strict Fail Fast policy while tracking history:</p>
     <ol>
         <li><strong>Path Resolution:</strong> The input path is parsed. If it starts with <code>~</code>, it is resolved against the user's home directory (<code>os.homedir()</code>). If it is relative, it is resolved against the current <code>process.cwd()</code>.</li>
         <li><strong>Directory Validation:</strong>
@@ -75,9 +79,20 @@
                 <li>If the path does not exist or is not a directory, <strong>it fails immediately</strong>. It alerts the human or AI with an error notification and does <strong>not</strong> change the directory.</li>
             </ul>
         </li>
-        <li><strong>Directory Switch:</strong> Upon successful validation, the extension executes <code>process.chdir(resolvedPath)</code>.</li>
+        <li><strong>Directory Switch & Stack Push:</strong> Upon successful validation:
+            <ul>
+                <li>The current <code>process.cwd()</code> is pushed onto the global directory history stack.</li>
+                <li>The extension executes <code>process.chdir(resolvedPath)</code>.</li>
+            </ul>
+        </li>
         <li><strong>Notification:</strong> Displays a success notification via the TUI UI showing the absolute target directory now active: <code>📁 Workspace changed to: &lt;path&gt;</code>.</li>
     </ol>
+
+    <h3>Stack Navigation Logic</h3>
+    <ul>
+        <li><strong><code>/popd</code></strong>: Pops the most recent directory off the top of the stack. If the stack is empty, it warns the user. Otherwise, it executes <code>process.chdir()</code> to that directory (without pushing the current one back on, avoiding infinite loops).</li>
+        <li><strong><code>/treed</code></strong>: Mounts a Pi TUI <code>SelectList</code> component displaying the stack of previously visited directories (most recent first). When the user selects an item, the extension switches to that directory, popping history up to that point or simply appending it as a new movement (to be decided by implementation details, typically treating it as a standard <code>cd</code> jump).</li>
+    </ul>
 
     <h3>Synchronization Safeguards</h3>
     <p>To avoid context drift where the agent works in one directory but the physical process is in another, the global <code>AGENTS.md</code> mandates that:</p>
