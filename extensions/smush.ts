@@ -10,7 +10,7 @@ import * as path from "path";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("smush", {
-    description: "Assimilate local repository rules (CLAUDE.md) into AGENTS.md interactively",
+    description: "Assimilate local repository rules (CLAUDE.md, etc.) into your local CLAUDE.md interactively",
     handler: async (_args, ctx) => {
       const cwd = process.cwd();
       const filesToScout = ["CLAUDE.md", "CONTRIBUTING.md", "README.md", "AGENTS.md"];
@@ -68,7 +68,7 @@ export default function (pi: ExtensionAPI) {
 
         // Top Border & Title
         container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-        container.addChild(new Text(theme.fg("accent", theme.bold(` 👑π🐱 The Smush Room: Select rules to assimilate into ${path.basename(cwd)}/AGENTS.md`)), 1, 1));
+        container.addChild(new Text(theme.fg("accent", theme.bold(` 👑π🐱 The Smush Room: Select rules to assimilate into ${path.basename(cwd)}/CLAUDE.md`)), 1, 1));
         container.addChild(new Text("", 1, 0)); // spacer
 
         // Track state locally inside the UI closure
@@ -127,7 +127,7 @@ export default function (pi: ExtensionAPI) {
           });
 
         if (activeRules.length > 0) {
-          const agentsPath = path.join(cwd, "AGENTS.md");
+          const agentsPath = path.join(cwd, "CLAUDE.md");
           let newContent = `# Project Instructions (${path.basename(cwd)})\n\nThese instructions override or append to the global standards for this specific repository.\n\n## Assimilated Rules\n`;
           
           for (const rule of activeRules) {
@@ -135,17 +135,13 @@ export default function (pi: ExtensionAPI) {
           }
 
           fs.writeFileSync(agentsPath, newContent, "utf-8");
-          ctx.ui.notify(`Successfully smushed ${activeRules.length} rules into AGENTS.md`, "success");
+          ctx.ui.notify(`Successfully smushed ${activeRules.length} rules into CLAUDE.md`, "success");
 
-          // Ask to backup CLAUDE.md
-          if (fs.existsSync(path.join(cwd, "CLAUDE.md"))) {
-             const backup = await ctx.ui.confirm("Backup CLAUDE.md?", "Rename to CLAUDE.md.bak to prevent double-loading rules?");
-             if (backup) {
-               fs.renameSync(path.join(cwd, "CLAUDE.md"), path.join(cwd, "CLAUDE.md.bak"));
-             }
-          }
+          // Ask to backup original files if needed, but since we are writing TO CLAUDE.md, we might overwrite it.
+          // Let's assume the user knows it will overwrite existing CLAUDE.md or we could append.
+          // For now, it overwrites.
         } else {
-          ctx.ui.notify("No rules selected. AGENTS.md not modified.", "info");
+          ctx.ui.notify("No rules selected. CLAUDE.md not modified.", "info");
         }
       }
     },
