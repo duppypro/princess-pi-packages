@@ -1,8 +1,15 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
+import { Container, type SelectItem, SelectList, Text, DynamicBorder } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+
+// ---
+// STATE
+// ---
+const directoryStack: string[] = [];
 
 // ---
 // HELPERS
@@ -41,7 +48,7 @@ function validateDirectory(resolvedPath: string): { ok: true } | { ok: false; er
 /**
  * Performs the actual process-level working directory shift and triggers UI updates.
  */
-function changeCwd(targetPath: string, ctx: any): boolean {
+function changeCwd(targetPath: string, ctx: any, isPop: boolean = false): boolean {
 	const resolved = resolvePath(targetPath);
 	const validation = validateDirectory(resolved);
 
@@ -53,6 +60,11 @@ function changeCwd(targetPath: string, ctx: any): boolean {
 	}
 
 	try {
+		// Only push to stack if we aren't actively popping from it
+		if (!isPop) {
+			directoryStack.push(process.cwd());
+		}
+
 		process.chdir(resolved);
 		
 		// Dynamic TUI Sync: Update the session manager's internal CWD state
@@ -169,6 +181,11 @@ function moveSessionAndCwd(targetPath: string, ctx: any): boolean {
 // ---
 
 export default function cdCommandExtension(pi: ExtensionAPI) {
+	// 0. Push initial directory on load if stack is empty
+	if (directoryStack.length === 0) {
+		directoryStack.push(process.cwd());
+	}
+
 	// 1. Register TUI slash command for Human (Dynamic Pivot)
 	pi.registerCommand("cd", {
 		description: "Change the current working directory of the Pi session dynamically (Option A: Fail Fast)",
@@ -184,7 +201,89 @@ export default function cdCommandExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// 2. Register TUI slash command for Human (Permanent Session Relocation)
+	// 2. Register TUI slash command for Pop Directory
+	pi.registerCommand("popd", {
+		description: "Navigate back to the previously visited directory in the history stack",
+		handler: async (_args, ctx) => {
+			if (directoryStack.length <= 1) { // 1 because the current dir is usually at the top
+				if (ctx?.ui) {
+					ctx.ui.notify("ℹ️ Directory stack is empty.", "info");
+				}
+				return;
+			}
+			
+			// Pop the current directory
+			directoryStack.pop();
+			
+			// The new current directory is now at the top of the stack
+			const previousDir = directoryStack[directoryStack.length - 1];
+			
+			// Execute change but tell it we are popping so it doesn't push again
+			changeCwd(previousDir, ctx, true);
+		}
+	});
+
+	// 3. Register TUI slash command for Tree Directory (History Picker)
+	pi.registerCommand("treed", {
+		description: "Open a TUI picker showing the directory history stack",
+		handler: async (_args, ctx) => {
+			if (directoryStack.length === 0) {
+				if (ctx?.ui) ctx.ui.notify("ℹ️ Directory stack is empty.", "info");
+				return;
+			}
+
+			// Build items for SelectList (reverse chronological order)
+			// Deduplicate for cleaner UI
+			const uniqueDirs = [...new Set([...directoryStack].reverse())];
+			
+			const items: SelectItem[] = uniqueDirs.map((dir, idx) => ({
+				value: dir,
+				label: dir,
+				description: dir === process.cwd() ? "(Current)" : undefined
+			}));
+
+			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+				const container = new Container();
+
+				// Top Border
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				container.addChild(new Text(theme.fg("accent", theme.bold(" Directory History Stack ")), 1, 1));
+				container.addChild(new Text("", 1, 0)); // Spacer
+
+				// SelectList
+				const selectList = new SelectList(items, Math.min(items.length, 10), {
+					selectedPrefix: (t) => theme.fg("accent", t),
+					selectedText: (t) => theme.fg("accent", t),
+					description: (t) => theme.fg("muted", t),
+					scrollInfo: (t) => theme.fg("dim", t),
+					noMatch: (t) => theme.fg("warning", t),
+				});
+				selectList.onSelect = (item) => done(item.value);
+				selectList.onCancel = () => done(null);
+				container.addChild(selectList);
+
+				// Footer
+				container.addChild(new Text("", 1, 0)); // Spacer
+				container.addChild(new Text(theme.fg("dim", "  ↑↓ navigate • enter select • esc cancel"), 1, 0));
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+				return {
+					render: (w) => container.render(w),
+					invalidate: () => container.invalidate(),
+					handleInput: (data) => {
+						selectList.handleInput(data);
+						tui.requestRender();
+					},
+				};
+			});
+
+			if (result && result !== process.cwd()) {
+				changeCwd(result, ctx);
+			}
+		}
+	});
+
+	// 4. Register TUI slash command for Human (Permanent Session Relocation)
 	pi.registerCommand("mv-session", {
 		description: "Permanently move the active session and CWD to a new target directory (Option A: Fail Fast)",
 		handler: async (args, ctx) => {
@@ -199,7 +298,7 @@ export default function cdCommandExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// 3. Register Custom Tool for Agent
+	// 5. Register Custom Tool for Agent
 	pi.registerTool({
 		name: "change_working_directory",
 		label: "Change Working Directory",
