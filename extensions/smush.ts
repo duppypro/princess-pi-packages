@@ -18,6 +18,16 @@ export default function (pi: ExtensionAPI) {
       let foundFiles = 0;
 
       // 1. Read files and heuristically parse rules
+      const checkLegacyCleanup = async () => {
+        if (fs.existsSync(path.join(cwd, "AGENTS.md"))) {
+          const cleanup = await ctx.ui.confirm("Legacy AGENTS.md detected", "Delete AGENTS.md to prevent double-loading rules?");
+          if (cleanup) {
+            fs.unlinkSync(path.join(cwd, "AGENTS.md"));
+            ctx.ui.notify("Deleted legacy AGENTS.md", "success");
+          }
+        }
+      };
+
       for (const file of filesToScout) {
         const filePath = path.join(cwd, file);
         if (fs.existsSync(filePath)) {
@@ -50,6 +60,7 @@ export default function (pi: ExtensionAPI) {
         } else {
           ctx.ui.notify("Found files, but couldn't parse any bullet-point rules.", "warning");
         }
+        await checkLegacyCleanup();
         return;
       }
 
@@ -143,6 +154,8 @@ export default function (pi: ExtensionAPI) {
         } else {
           ctx.ui.notify("No rules selected. CLAUDE.md not modified.", "info");
         }
+        
+        await checkLegacyCleanup();
       }
     },
   });
