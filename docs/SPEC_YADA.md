@@ -1,6 +1,6 @@
-# Spec: `uniqs` (Uniq Stream) — Dynamic Streaming Log Deduplicator
+# Spec: `yada` — Dynamic Streaming Log Deduplicator
 
-This specification defines the behavior, architecture, and testing of `uniqs` (previously referred to as `dedupwcount`), a modern CLI utility designed to compress duplicate lines dynamically on standard output from real-time streaming inputs (e.g., `tail -f`).
+This specification defines the behavior, architecture, and testing of `yada` (previously referred to as `dedupwcount`), a modern CLI utility designed to compress duplicate lines dynamically on standard output from real-time streaming inputs (e.g., `tail -f`) or static redirections (e.g., `cat`).
 
 ---
 
@@ -12,7 +12,7 @@ This specification defines the behavior, architecture, and testing of `uniqs` (p
 | **`uniq -c`** | ❌ No | ❌ No | ❌ No | ❌ No | ⚠️ Delayed (only flushes after value changes) |
 | **Chrome DevTools Console** |  Yes (Badge) | ❌ No | ❌ No | ❌ No |  Yes (Browser-bound only) |
 | **`pino-pretty` / `bunyan`** | ❌ No | ❌ No | ❌ No | ❌ No |  Yes |
-| **`uniqs` (Proposed)** |  **Yes** |  **Yes** |  **Yes** |  **Yes** |  **Yes** |
+| **`yada` (Proposed)** |  **Yes** |  **Yes** |  **Yes** |  **Yes** |  **Yes** |
 
 ### Conclusion: **Make**
 No existing command-line utility provides real-time, in-place collapsing of identical/near-identical log lines with range-tracking and periodicity analysis. Building a lightweight, fast Node.js/TypeScript-based CLI tool offers maximum value and fits perfectly into the Princess-Pi tooling environment.
@@ -20,17 +20,16 @@ No existing command-line utility provides real-time, in-place collapsing of iden
 ---
 
 ## 2. Name Proposal
-We propose **`uniqs`** (Uniq Stream) or **`squish`** as better names for the tool:
-*   **`uniqs`**: Direct reference to Unix `uniq` but with an `s` denoting "stream/streaming". Extremely intuitive for command-line users.
-*   **`squish`**: Playful, aligning with Pi's `/smush` extension, suggesting compaction of repetitive logs.
-*   *Legacy reference*: We will alias `dedupwcount` to `uniqs` for backwards compatibility.
+We chose **`yada`** as the name for the tool:
+*   **`yada`**: A reference to the Seinfeld phrase "yada yada yada"—used to compress repetitive, predictable details (e.g., *"I got hit by 16,000 spam requests, and yada yada yada, my server crashed"*). Extremely memorable and short.
+*   *Legacy reference*: We will alias `dedupwcount` to `yada` for backwards compatibility.
 
 ---
 
 ## 3. Features & User Experience (UX)
 
 ### Feature A: Live In-place Deduplication
-When consecutive identical lines are received via standard input, `uniqs` prints the original line once, and then prints a dynamic, live-updating badge on a sub-line below it, rewriting it in-place using carriage returns (`\r`) and ANSI escape sequences.
+When consecutive identical lines are received via standard input, `yada` prints the original line once, and then prints a dynamic, live-updating badge on a sub-line below it, rewriting it in-place using carriage returns (`\r`) and ANSI escape sequences.
 
 **Example Input Stream:**
 ```text
@@ -67,7 +66,7 @@ When consecutive identical lines are received via standard input, `uniqs` prints
 ### Feature B: Fuzzy/Near-Duplicate Matching with Variable Extraction
 Logs often differ only by a single variable (e.g., port number, thread ID, timestamp, process ID). If two consecutive lines match in structure but differ only by numbers or specific words, they are treated as "near-duplicates".
 
-`uniqs` decomposes consecutive lines into static templates and variable placeholder slots.
+`yada` decomposes consecutive lines into static templates and variable placeholder slots.
 
 **Example Input Stream:**
 ```text
@@ -93,7 +92,7 @@ Connection failed on port 3003
 ---
 
 ### Feature C: Smart Range & Sequence Accumulation
-For matching variable slots, `uniqs` collects and analyzes the sequence of values. It formats them based on mathematical properties:
+For matching variable slots, `yada` collects and analyzes the sequence of values. It formats them based on mathematical properties:
 *   **Continuous Monotonic Ranges**: `[3-45]` (smooth increase or decrease)
 *   **Gapped Ranges**: `[3-16, 19-45]` (smooth ranges separated by gaps)
 *   **Discrete Values**: `[1, 3, 5, 8]`
@@ -102,7 +101,7 @@ For matching variable slots, `uniqs` collects and analyzes the sequence of value
 ---
 
 ### Feature D: Periodicity Detection & Autocorrelation (FFT-like)
-To help developers understand the frequency of repetitive logs, `uniqs` tracks the millisecond arrival interval between consecutive duplicate/near-duplicate events.
+To help developers understand the frequency of repetitive logs, `yada` tracks the millisecond arrival interval between consecutive duplicate/near-duplicate events.
 *   **Simple Periodicity**: If events arrive at a constant interval, it displays `(every 5s)`.
 *   **Complex/Multiple Periodicities**: For complex logs, an autocorrelation or discrete Fourier transform (DFT) is executed on the arrival times to detect dominant frequencies, displaying messages like `(every ~12s and ~70s)`.
 
@@ -122,7 +121,7 @@ To help developers understand the frequency of repetitive logs, `uniqs` tracks t
 ## 4. CLI Configuration & Options
 
 ```text
-Usage: uniqs [options]
+Usage: yada [options]
 
 Options:
   -v, --version          output the version number
@@ -198,7 +197,7 @@ Given a sequence of numeric slot values (e.g., `[3, 4, 5, 10, 11, 12, 13, 20]`):
 
 ## 6. Verification & Test Plan
 
-We will test `uniqs` using automated test suites running mock log streams.
+We will test `yada` using automated test suites running mock log streams.
 
 ### Test Case 1: Perfect Duplicates
 *   **Input**:

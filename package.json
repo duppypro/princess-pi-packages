@@ -5,8 +5,8 @@
   "keywords": ["pi-package"],
   "type": "module",
   "bin": {
-    "uniqs": "./bin/uniqs.ts",
-    "dedupwcount": "./bin/uniqs.ts"
+    "yada": "./bin/yada.ts",
+    "dedupwcount": "./bin/yada.ts"
   },
   "pi": {
     "extensions": ["./extensions"]

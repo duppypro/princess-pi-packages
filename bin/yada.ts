@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 /**
  * @package princess-pi-packages
- * @command uniqs
+ * @command yada
  * @description Dynamic streaming log deduplicator with fuzzy matching and periodicity detection.
  */
 
@@ -28,7 +28,7 @@ const options: CLIOptions = {
 
 function printHelp() {
   console.log(`
-Usage: uniqs [options]
+Usage: yada [options]
 
 Options:
   -s, --similarity <num>  Similarity threshold between 0.0 and 1.0 (default: 0.85)
