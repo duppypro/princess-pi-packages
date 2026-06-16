@@ -60,7 +60,7 @@ try {
     "2026-06-16T12:00:15.000Z Request handled"
   ].join("\n") + "\n";
   const output = runUniqs(input);
-  const expected = "2026-06-16T12:00:00.000Z Request handled ☝️ +3 (every ~5s)\n";
+  const expected = "2026-06-16T12:00:00.000Z - 2026-06-16T12:00:15.000Z Request handled ☝️ +3 (every ~5s)\n";
   assert.strictEqual(output, expected);
   console.log("  ✅ Passed [Test 3]");
 } catch (err) {
@@ -77,7 +77,7 @@ try {
     "[10/Oct/2000:13:55:56 -0700] GET /index.html"
   ].join("\n") + "\n";
   const output = runUniqs(input);
-  const expected = "[10/Oct/2000:13:55:36 -0700] GET /index.html ☝️ +2 (every ~10s)\n";
+  const expected = "[10/Oct/2000:13:55:36 -0700 - 10/Oct/2000:13:55:56 -0700] GET /index.html ☝️ +2 (every ~10s)\n";
   assert.strictEqual(output, expected);
   console.log("  ✅ Passed [Test 4]");
 } catch (err) {
@@ -111,7 +111,7 @@ try {
     "2026-06-16T12:00:35.000Z Tick"  // delta = 5s
   ].join("\n") + "\n";
   const output = runUniqs(input);
-  const expected = "2026-06-16T12:00:00.000Z Tick ☝️ +5 (every ~5s and ~10s)\n";
+  const expected = "2026-06-16T12:00:00.000Z - 2026-06-16T12:00:35.000Z Tick ☝️ +5 (every ~5s and ~10s)\n";
   assert.strictEqual(output, expected);
   console.log("  ✅ Passed [Test 6]");
 } catch (err) {

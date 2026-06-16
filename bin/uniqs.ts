@@ -14,6 +14,7 @@ interface CLIOptions {
   wordMatch: boolean;
   periodicity: boolean;
   noCollapse: boolean;
+  maxGap: number;
 }
 
 const options: CLIOptions = {
@@ -22,6 +23,7 @@ const options: CLIOptions = {
   wordMatch: true,
   periodicity: true,
   noCollapse: false,
+  maxGap: 10000, // 10 seconds default
 };
 
 function printHelp() {
@@ -33,6 +35,7 @@ Options:
   -f, --format <string>   Custom collapse badge format (default: "☝️ +{count}")
   -w, --word-match <bool> Match general word changes, not just numbers (default: true)
   -p, --no-periodicity    Disable advanced periodicity detection
+  -g, --max-gap <num>     Max time gap in seconds to keep collapsing consecutive duplicates (default: 10)
   --no-collapse           Disable in-place terminal rewriting (behaves like streaming uniq -c)
   -h, --help              Display this help menu
 `);
@@ -56,6 +59,11 @@ for (let i = 2; i < process.argv.length; i++) {
     options.wordMatch = val !== "false";
   } else if (arg === "-p" || arg === "--no-periodicity") {
     options.periodicity = false;
+  } else if (arg === "-g" || arg === "--max-gap") {
+    const val = parseFloat(process.argv[++i]);
+    if (!isNaN(val)) {
+      options.maxGap = val * 1000;
+    }
   } else if (arg === "--no-collapse") {
     options.noCollapse = true;
   }
@@ -64,66 +72,70 @@ for (let i = 2; i < process.argv.length; i++) {
 // --- Log Timestamp Parser ---
 interface ParsedLog {
   timestamp: number | null;
-  timestampPrefix: string;
+  timestampStr: string;
   payload: string;
 }
 
 function parseLogTimestamp(line: string): ParsedLog {
-  // ISO 8601 / RFC 3339
-  const isoRegex = /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b\s*)/;
+  // ISO 8601 / RFC 3339 anywhere in the line
+  const isoRegex = /\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\b/;
   let match = line.match(isoRegex);
   if (match) {
-    const rawTime = match[1].trim();
+    const rawTime = match[1];
     const t = Date.parse(rawTime.replace(',', '.'));
     if (!isNaN(t)) {
-      return { timestamp: t, timestampPrefix: match[1], payload: line.slice(match[1].length) };
+      return { timestamp: t, timestampStr: rawTime, payload: line.replace(rawTime, "{timestamp}") };
     }
   }
 
-  // Apache/Common log format (e.g. [10/Oct/2000:13:55:36 -0700])
-  const apacheRegex = /^(\[(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\]\s*)/;
+  // Apache/Common log format anywhere in the line (e.g. [10/Oct/2000:13:55:36 -0700])
+  const apacheRegex = /(\[(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\])/;
   match = line.match(apacheRegex);
   if (match) {
+    const matchedStr = match[1];
     const rawTime = match[2];
     const parts = rawTime.split(':');
     const datePart = parts[0].replace(/\//g, ' '); // "10 Oct 2000"
     const timePart = parts.slice(1).join(':'); // "13:55:36 -0700"
     const t = Date.parse(`${datePart} ${timePart}`);
     if (!isNaN(t)) {
-      return { timestamp: t, timestampPrefix: match[1], payload: line.slice(match[1].length) };
+      return { timestamp: t, timestampStr: matchedStr, payload: line.replace(matchedStr, "{timestamp}") };
     }
   }
 
-  // Epoch ms (13 digits) at start of line
-  const epochMsRegex = /^(\[(\d{13})\]\s*|^\b(\d{13})\b\s*)/;
+  // Epoch ms (13 digits) anywhere in the line
+  const epochMsRegex = /(\[(\d{13})\]|\b(\d{13})\b)/;
   match = line.match(epochMsRegex);
   if (match) {
+    const matchedStr = match[1];
     const val = match[2] || match[3];
     const t = parseInt(val, 10);
-    return { timestamp: t, timestampPrefix: match[1], payload: line.slice(match[1].length) };
+    return { timestamp: t, timestampStr: matchedStr, payload: line.replace(matchedStr, "{timestamp}") };
   }
 
-  // Epoch seconds (10 digits) at start of line
-  const epochSecRegex = /^(\[(\d{10})\]\s*|^\b(\d{10})\b\s*)/;
+  // Epoch seconds (10 digits) anywhere in the line
+  const epochSecRegex = /(\[(\d{10})\]|\b(\d{10})\b)/;
   match = line.match(epochSecRegex);
   if (match) {
+    const matchedStr = match[1];
     const val = match[2] || match[3];
     const t = parseInt(val, 10) * 1000;
-    return { timestamp: t, timestampPrefix: match[1], payload: line.slice(match[1].length) };
+    return { timestamp: t, timestampStr: matchedStr, payload: line.replace(matchedStr, "{timestamp}") };
   }
 
-  // Time-only at start of line (e.g. 12:00:01)
-  const timeOnlyRegex = /^(\d{2}:\d{2}:\d{2}(?:\.\d+)?\s*)/;
+  // Time-only (e.g. 12:00:01) anywhere in the line
+  const timeOnlyRegex = /(\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b)/;
   match = line.match(timeOnlyRegex);
   if (match) {
+    const rawTime = match[1];
     const todayStr = new Date().toISOString().split('T')[0];
-    const t = Date.parse(`${todayStr}T${match[1].trim()}Z`);
+    const t = Date.parse(`${todayStr}T${rawTime}Z`);
     if (!isNaN(t)) {
-      return { timestamp: t, timestampPrefix: match[1], payload: line.slice(match[1].length) };
+      return { timestamp: t, timestampStr: rawTime, payload: line.replace(rawTime, "{timestamp}") };
     }
   }
 
-  return { timestamp: null, timestampPrefix: "", payload: line };
+  return { timestamp: null, timestampStr: "", payload: line };
 }
 
 // --- Structural Template Matcher ---
@@ -305,11 +317,12 @@ function analyzePeriodicity(times: number[]): string | null {
 interface BlockState {
   rawFirstLine: string;
   rawFirstPayload: string;
-  timestampPrefix: string;
-  template: string;
+  timestampStrTemplate: string;
   count: number;
   slots: { [key: number]: string[] };
   timestamps: number[];
+  timestampStrs: string[];
+  template: string;
 }
 
 let activeBlock: BlockState | null = null;
@@ -332,9 +345,27 @@ function renderBlock(state: BlockState, finalizing = false) {
     formattedPayload = formattedPayload.replace(`{slot_${i}}`, displayVal);
   }
 
-  const reconstructedLine = state.timestampPrefix + formattedPayload;
+  // Reconstruct the timestamp
+  let displayTimestamp = state.timestampStrTemplate;
+  if (state.timestampStrs.length > 1) {
+    const uniqueStrs = Array.from(new Set(state.timestampStrs));
+    if (uniqueStrs.length > 1) {
+      const first = uniqueStrs[0];
+      const last = uniqueStrs[uniqueStrs.length - 1];
+      if (first.startsWith("[") && first.endsWith("]") && last.startsWith("[") && last.endsWith("]")) {
+        displayTimestamp = `[${first.slice(1, -1)} - ${last.slice(1, -1)}]`;
+      } else {
+        displayTimestamp = `${first} - ${last}`;
+      }
+    }
+  }
 
-  if (isTTY) {
+  const reconstructedLine = formattedPayload.replace("{timestamp}", displayTimestamp);
+
+  // Dynamic TTY determination with rate limiter (batch vs stream mode)
+  const isTTYEnabled = isTTY && !isFastMode;
+
+  if (isTTYEnabled) {
     if (state.count === 0) {
       // First line in interactive mode: just print it
       process.stdout.write(reconstructedLine + "\n");
@@ -360,7 +391,8 @@ function renderBlock(state: BlockState, finalizing = false) {
 
 function finalizeActiveBlock() {
   if (activeBlock) {
-    if (!isTTY) {
+    const isTTYEnabled = isTTY && !isFastMode;
+    if (!isTTYEnabled) {
       renderBlock(activeBlock, true);
     }
     activeBlock = null;
@@ -374,32 +406,61 @@ const rl = readline.createInterface({
   terminal: false,
 });
 
+let lastLineTime = 0;
+let fastLineCount = 0;
+let isFastMode = false;
+
 rl.on("line", (line) => {
+  // Rate detection to auto-switch between batch (cat) and stream (tail -f) modes
+  const now = Date.now();
+  const arrivalDelta = now - lastLineTime;
+  lastLineTime = now;
+
+  if (arrivalDelta < 5) {
+    fastLineCount++;
+    if (fastLineCount > 10) {
+      isFastMode = true;
+    }
+  } else {
+    fastLineCount = 0;
+    isFastMode = false;
+  }
+
   const parsed = parseLogTimestamp(line);
-  const currentTime = parsed.timestamp ?? Date.now();
 
   if (!activeBlock) {
     // Start first block
     activeBlock = {
       rawFirstLine: line,
       rawFirstPayload: parsed.payload,
-      timestampPrefix: parsed.timestampPrefix,
-      template: parsed.payload,
+      timestampStrTemplate: parsed.timestampStr,
       count: 0,
       slots: {},
-      timestamps: [currentTime],
+      timestamps: parsed.timestamp ? [parsed.timestamp] : [],
+      timestampStrs: parsed.timestampStr ? [parsed.timestampStr] : [],
+      template: parsed.payload,
     };
     renderBlock(activeBlock);
     return;
   }
 
+  // Check for max gap limit if both have parsed timestamps
+  let gapExceeded = false;
+  if (parsed.timestamp && activeBlock.timestamps.length > 0) {
+    const lastTimestamp = activeBlock.timestamps[activeBlock.timestamps.length - 1];
+    if (Math.abs(parsed.timestamp - lastTimestamp) > options.maxGap) {
+      gapExceeded = true;
+    }
+  }
+
   // Attempt to match with the block's first line payload
   const match = getTemplateMatch(activeBlock.rawFirstPayload, parsed.payload, options.similarity, options.wordMatch);
 
-  if (match.isMatch) {
+  if (match.isMatch && !gapExceeded) {
     // Update active block
     activeBlock.count++;
-    activeBlock.timestamps.push(currentTime);
+    if (parsed.timestamp) activeBlock.timestamps.push(parsed.timestamp);
+    if (parsed.timestampStr) activeBlock.timestampStrs.push(parsed.timestampStr);
 
     // If template has slots, initialize/update slot values
     if (match.slots.length > 0) {
@@ -428,11 +489,12 @@ rl.on("line", (line) => {
     activeBlock = {
       rawFirstLine: line,
       rawFirstPayload: parsed.payload,
-      timestampPrefix: parsed.timestampPrefix,
-      template: parsed.payload,
+      timestampStrTemplate: parsed.timestampStr,
       count: 0,
       slots: {},
-      timestamps: [currentTime],
+      timestamps: parsed.timestamp ? [parsed.timestamp] : [],
+      timestampStrs: parsed.timestampStr ? [parsed.timestampStr] : [],
+      template: parsed.payload,
     };
     renderBlock(activeBlock);
   }
