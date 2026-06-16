@@ -35,3 +35,4 @@ This skill serves as a memory bank of architectural lessons learned while develo
 - **Headless Automation:** `gh` OAuth requires interactive browser approval. A PAT can be passed silently as an environment variable (`GITHUB_TOKEN`), making it required for cron jobs, CI/CD, and background automation.
 - **Direct API Usage:** `gh` OAuth forces you to shell out to `gh api ...`, adding overhead. A PAT allows direct, fast HTTP requests (e.g., using `fetch` or `axios`) via an `Authorization: Bearer <TOKEN>` header.
 - **Duppy's Standard:** If a Human (or an interactive Agent) is driving, use `gh auth login`. If a Machine is driving (Cron, Scripts, CI/CD) OR you need strict security boundaries, generate a Fine-Grained PAT.
+- **Current Mode:** Currently I am using pi mostly in my VPS in interactive mode so I use the `gh auth login` method.
