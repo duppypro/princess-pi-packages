@@ -128,7 +128,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			// -- HELP OPTION --
 			if (trimmedArgs === "--help" || trimmedArgs === "-h") {
 				try {
-					const manifestPath = path.join(process.cwd(), "docs", "extensions", "manifests", "serve-cmd.json");
+					const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
 					const manifestStr = fs.readFileSync(manifestPath, "utf8");
 					const manifest = JSON.parse(manifestStr);
 					
