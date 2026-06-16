@@ -245,12 +245,37 @@ We will test `uniqs` using automated test suites running mock log streams.
 ### Test Case 4: Periodicity Detection
 *   **Input**: (Events arriving at exactly 2000ms intervals)
     ```text
-    [t=0s] Heartbeat ok
-    [t=2s] Heartbeat ok
-    [t=4s] Heartbeat ok
+    2026-06-16T12:00:00.000Z Heartbeat ok
+    2026-06-16T12:00:02.000Z Heartbeat ok
+    2026-06-16T12:00:04.000Z Heartbeat ok
     ```
 *   **Expected Output Log**:
     ```text
-    Heartbeat ok
-    ☝️ +2 (every ~2s)
+    2026-06-16T12:00:00.000Z Heartbeat ok ☝️ +2 (every ~2s)
+    ```
+
+### Test Case 5: Custom Badge Format
+*   **Input**: (Using `-f "[collapsed: {count}]" -p`)
+    ```text
+    Hello
+    Hello
+    ```
+*   **Expected Output Log**:
+    ```text
+    Hello [collapsed: 1]
+    ```
+
+### Test Case 6: Multi-Frequency Periodicity
+*   **Input**: (Alternating 5-second and 10-second intervals)
+    ```text
+    2026-06-16T12:00:00.000Z Tick
+    2026-06-16T12:00:05.000Z Tick
+    2026-06-16T12:00:15.000Z Tick
+    2026-06-16T12:00:20.000Z Tick
+    2026-06-16T12:00:30.000Z Tick
+    2026-06-16T12:00:35.000Z Tick
+    ```
+*   **Expected Output Log**:
+    ```text
+    2026-06-16T12:00:00.000Z Tick ☝️ +5 (every ~5s and ~10s)
     ```
