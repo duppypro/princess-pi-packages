@@ -27,8 +27,8 @@ export default function newSessionExtension(pi: ExtensionAPI) {
               name = name.slice(1, -1);
             }
 
-            // Set the session name
-            pi.setSessionName(name);
+            // Set the session name using the new session's manager to avoid stale context crash
+            newCtx.sessionManager.appendSessionInfo(name);
             newCtx.ui.notify(`Started new session: "${name}"`, "success");
           } else {
             newCtx.ui.notify("Started new unnamed session", "info");

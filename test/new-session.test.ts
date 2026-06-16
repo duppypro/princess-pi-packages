@@ -19,9 +19,6 @@ const mockPi: any = {
     registeredCommand = name;
     registeredHandler = options.handler;
   },
-  setSessionName: (name: string) => {
-    sessionNameSet = name;
-  },
 };
 
 // Initialize extension
@@ -38,6 +35,11 @@ const mockCtx: any = {
       ui: {
         notify: (msg: string, type: string) => {
           notifications.push(`${type}: ${msg}`);
+        },
+      },
+      sessionManager: {
+        appendSessionInfo: (name: string) => {
+          sessionNameSet = name;
         },
       },
     };
