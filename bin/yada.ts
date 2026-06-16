@@ -473,7 +473,9 @@ function processLine(line: string) {
     // Update template to the new match's template
     activeBlock.template = match.template;
 
-    renderBlock(activeBlock);
+    if (isTTY && !isFastMode) {
+      renderBlock(activeBlock);
+    }
   } else {
     // Finalize previous block and start a new one
     finalizeActiveBlock();
