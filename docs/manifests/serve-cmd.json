@@ -1,7 +1,7 @@
 {
   "name": "/serve",
   "tagline": "Secure HTTPS Server Utility for Pi",
-  "description": "Serves local directories securely using SSL/HTTPS certificates in a lightweight background process.",
+  "description": "Serves local directories securely using SSL/HTTPS certificates in a lightweight background process. Logs HTTP access automatically to ~/.pi-certs/logs/.",
   "usage": [
     { "flags": "[dirs...]", "desc": "Serve specified directories (default: public, docs) on HTTPS ports." },
     { "flags": "-s, --static", "desc": "Disable live reloading and serve pure static files without code injection or file watching." },

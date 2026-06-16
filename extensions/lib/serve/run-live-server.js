@@ -311,6 +311,38 @@ function generateDirectoryIndex(dirPath, requestPath) {
 }
 
 // --- Server Lifecycle Setup ---
+
+// Ensure log directory exists
+const logDir = path.join(path.dirname(certPath), "logs");
+if (!fs.existsSync(logDir)) {
+	try {
+		fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+	} catch (_) {}
+}
+const accessLogPath = path.join(logDir, `port-${port}-access.log`);
+
+/**
+ * Writes an access log entry in Apache Common Log format.
+ */
+function logAccess(req, res, timestamp) {
+	try {
+		const ip = req.socket.remoteAddress || "-";
+		const method = req.method || "GET";
+		const url = req.url || "/";
+		const httpVersion = `HTTP/${req.httpVersion}`;
+		const status = res.statusCode || 200;
+		
+		const d = new Date(timestamp);
+		const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+		const pad = (n) => String(n).padStart(2, "0");
+		const dateStr = `${pad(d.getDate())}/${months[d.getMonth()]}/${d.getFullYear()}:${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} +0000`; // Assuming UTC for standardized logging
+		
+		const logLine = `${ip} - - [${dateStr}] "${method} ${url} ${httpVersion}" ${status} -\n`;
+		
+		fs.appendFile(accessLogPath, logLine, () => {});
+	} catch (_) {}
+}
+
 scanDirectoryForDependencies(targetDir);
 
 const credentials = {
@@ -319,6 +351,16 @@ const credentials = {
 };
 
 const server = https.createServer(credentials, (req, res) => {
+	const requestStartTime = Date.now();
+	
+	// Intercept res.end to ensure we log after status code is definitively set
+	const originalEnd = res.end;
+	res.end = function(chunk, encoding, callback) {
+		res.end = originalEnd;
+		const result = res.end(chunk, encoding, callback);
+		logAccess(req, res, requestStartTime);
+		return result;
+	};
 	const reqUrl = req.url || "/";
 
 	// SSE Endpoint
@@ -395,7 +437,9 @@ const server = https.createServer(credentials, (req, res) => {
 		});
 	} else {
 		res.writeHead(200, { "Content-Type": contentType });
-		fs.createReadStream(filePath).pipe(res);
+		const stream = fs.createReadStream(filePath);
+		stream.on('end', () => logAccess(req, res, requestStartTime));
+		stream.pipe(res);
 	}
 });
 

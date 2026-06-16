@@ -73,7 +73,8 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 		if (thisRepo.length > 0) {
 			for (const server of thisRepo) {
 				const typeLabel = server.isLive ? "\x1b[32m(Live)\x1b[0m" : "\x1b[33m(Static)\x1b[0m";
-				widgetLines.push(`• \x1b[36m${shortenPath(server.dir, cwd)}\x1b[0m ${typeLabel} served at \x1b[4m\x1b[34m${server.url}\x1b[0m`);
+				const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+				widgetLines.push(`• \x1b[36m${shortenPath(server.dir, cwd)}\x1b[0m ${typeLabel} @ \x1b[4m\x1b[34m${server.url}\x1b[0m \x1b[90m(Logs: ${logPath})\x1b[0m`);
 			}
 		} else {
 			widgetLines.push(`  \x1b[2m(none)\x1b[0m`);
@@ -85,7 +86,8 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 		if (otherRepo.length > 0) {
 			for (const server of otherRepo) {
 				const typeLabel = server.isLive ? "\x1b[32m(Live)\x1b[0m" : "\x1b[33m(Static)\x1b[0m";
-				widgetLines.push(`• \x1b[36m${shortenPath(server.dir, cwd)}\x1b[0m ${typeLabel} served at \x1b[4m\x1b[34m${server.url}\x1b[0m`);
+				const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+				widgetLines.push(`• \x1b[36m${shortenPath(server.dir, cwd)}\x1b[0m ${typeLabel} @ \x1b[4m\x1b[34m${server.url}\x1b[0m \x1b[90m(Logs: ${logPath})\x1b[0m`);
 			}
 		} else {
 			widgetLines.push(`  \x1b[2m(none)\x1b[0m`);
@@ -125,6 +127,8 @@ export function buildDiscoveredSummary(servers: ServerInstance[], cwd: string = 
 	for (const server of servers) {
 		const titlePadded = padVisual(server.title, 48);
 		const urlPadded = padVisual(server.url, 50);
+		const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+		const logPadded = padVisual(logPath, 49);
 
 		const isSsl = server.url.startsWith("https");
 		const protocolLabelPlain = isSsl ? "Secure HTTPS" : "Plain HTTP";
@@ -138,6 +142,7 @@ export function buildDiscoveredSummary(servers: ServerInstance[], cwd: string = 
 		summaryParts.push(
 			`${borderStyle}┌─ [${labelStr}] ${headerDashes}┐\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mURL:\x1b[0m \x1b[34m${urlPadded}\x1b[0m ${borderStyle}│\x1b[0m\n` +
+			`${borderStyle}│\x1b[0m  \x1b[1mLogs:\x1b[0m \x1b[36m${logPadded}\x1b[0m ${borderStyle}│\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mTitle:\x1b[0m ${titlePadded} ${borderStyle}│\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mStatus:\x1b[0m ${coloredStatus} ${borderStyle}│\x1b[0m\n` +
 			`${borderStyle}└` + "─".repeat(58) + `┘\x1b[0m`

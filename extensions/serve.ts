@@ -94,14 +94,15 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const repoServers = allServers.filter(s => isInsideRepo(s.dir, process.cwd()));
 		if (repoServers.length > 0) {
 			const serverLinks = repoServers
-				.map(s => `  • \x1b[36m${shortenPath(s.dir, process.cwd())}\x1b[0m served at \x1b[4m\x1b[34m${s.url}\x1b[0m`)
+				.map(s => `  • \x1b[36m${shortenPath(s.dir, process.cwd())}\x1b[0m @ \x1b[4m\x1b[34m${s.url}\x1b[0m`)
 				.join("\n");
 			
 			console.log(
 				`\n\x1b[1m\x1b[33m⚠️  REMINDER: You have active background servers running in this repository:\x1b[0m\n` +
 				serverLinks + `\n\n` +
 				`\x1b[33mThese servers will remain active during your "pause". To stop them, resume this session and run:\x1b[0m\n` +
-				`  \x1b[1m/serve --kill\x1b[0m\n`
+				`  \x1b[1m/serve --kill\x1b[0m\n\n` +
+				`\x1b[1m\x1b[36m🔒 VPS Security Note:\x1b[0m If deploying on a remote VPS (like Hostinger), remember to configure your firewall (UFW or Hostinger Control Panel) to block unauthorized access to these development ports.\n`
 			);
 		}
 	});
@@ -119,7 +120,10 @@ export default function serveExtension(pi: ExtensionAPI) {
 				if (repoServers.length === 0) {
 					ctx.ui.notify("No servers are currently running in this repository.", "info");
 				} else {
-					const lines = repoServers.map(s => `• \x1b[36m${shortenPath(s.dir, process.cwd())}\x1b[0m served at \x1b[4m\x1b[34m${s.url}\x1b[0m`);
+					const lines = repoServers.map(s => {
+						const logPath = `~/.pi-certs/logs/port-${s.port}-access.log`;
+						return `• \x1b[36m${shortenPath(s.dir, process.cwd())}\x1b[0m @ \x1b[4m\x1b[34m${s.url}\x1b[0m \x1b[90m(Logs: ${logPath})\x1b[0m`;
+					});
 					ctx.ui.notify(`🚀 Servers active in this repository:\n\n${lines.join("\n")}`, "info");
 				}
 				return;
@@ -363,6 +367,13 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const fullSummary = buildDiscoveredSummary(allActiveServers, process.cwd());
 			ctx.ui.notify(fullSummary, "info");
+
+			// Print one-time Hostinger/VPS firewall warning per session
+			const hasShownWarning = ctx.sessionManager.getEntries().some(e => e.type === "custom" && e.customType === "serve-firewall-warning");
+			if (!hasShownWarning) {
+				ctx.ui.notify(`\x1b[1m\x1b[36m🔒 VPS Security Note:\x1b[0m Since you are running this on a live network, remember to configure your host firewall (like UFW or your Hostinger VPS Control Panel) to block unauthorized inbound traffic to these dev ports.\n`, "warning");
+				pi.appendEntry("serve-firewall-warning", { shown: true });
+			}
 		}
 	});
 }
