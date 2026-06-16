@@ -3,6 +3,12 @@
   "version": "1.0.0",
   "description": "Custom global extensions for Pi Coding Agent, including DuckDuckGo search, serve with HTTPS, WTFT token auditor, and git merging.",
   "keywords": ["pi-package"],
+  "bin": {
+    "dedupwcount": "./extensions/lib/serve/dedupwcount-cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test extensions/lib/serve/dedupwcount.test.mjs"
+  },
   "pi": {
     "extensions": ["./extensions"]
   },

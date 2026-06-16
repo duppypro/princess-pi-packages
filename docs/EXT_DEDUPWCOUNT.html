@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pi Extensions: dedupwcount Spec</title>
+</head>
+<body>
+    <h2>dedupwcount Shell Command Spec</h2>
+    <p><strong>Goal:</strong> Compress noisy line logs for streams like <code>tail -f ~/.pi-certs/logs/port-8080-access.log | dedupwcount</code>.</p>
+
+    <h3>Step 0: Make vs Buy</h3>
+    <ul>
+        <li><strong>Buy candidates:</strong> <code>uniq</code>, <code>awk</code>, <code>sed</code>, and DevTools console grouping.</li>
+        <li><strong>Gap:</strong> existing CLI tools do not provide live in-place <code>+N</code> duplicate updates plus numeric/letter monotonic range summaries.</li>
+        <li><strong>Decision:</strong> make a focused local command that preserves shell pipe ergonomics.</li>
+    </ul>
+
+    <h3>Step 1: Better Name Ideas</h3>
+    <ul>
+        <li><code>logfold</code></li>
+        <li><code>linepulse</code></li>
+        <li><code>dupline</code></li>
+        <li><code>streamcompress</code></li>
+        <li><code>dedupwcount</code> (kept as default for backward compatibility with issue request)</li>
+    </ul>
+
+    <h3>Step 2: Feature Spec (implemented subset)</h3>
+    <ul>
+        <li>Reads stdin line-by-line and emits compressed updates.</li>
+        <li>If consecutive lines match exactly, emits <code>☝️ +N</code> updates.</li>
+        <li>If only numeric or single-letter tokens differ, treats them as collapsible and reports:
+            <ul>
+                <li>Range blocks (<code>[3-16, 19-45]</code> style)</li>
+                <li>Trend (<code>up</code>, <code>down</code>, <code>mixed</code>, <code>flat</code>)</li>
+                <li>Smoothness (<code>smooth</code> for step-1, otherwise <code>gappy</code>)</li>
+            </ul>
+        </li>
+        <li>TTY mode rewrites the update line in place; non-TTY prints one update per line.</li>
+    </ul>
+
+    <h3>Step 3: Test Spec (implemented)</h3>
+    <ul>
+        <li>Exact duplicate collapse increments <code>+1</code>, <code>+2</code>, etc.</li>
+        <li>Numeric monotonic stream tracks ranges and gap behavior.</li>
+        <li>Single-letter monotonic stream tracks alphabetical ranges.</li>
+        <li>Pattern changes reset compression groups.</li>
+    </ul>
+</body>
+</html>

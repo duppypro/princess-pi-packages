@@ -11,6 +11,7 @@ This repository bundles Princess-Pi's custom extensions and tools into a single,
 | **`wtft.ts`** | `/wtft` | **Where The F\*\*\*ing Tokens?!** - A cost-auditing widget that hooks into turn-completion events to display running session costs in the TUI without wasting tokens. |
 | **`ddg-search.ts`** | `search_web` (Tool) | High-speed, schema-validated web search tool using DuckDuckGo. Perfect for searching Svelte 5 runes and modern framework docs. |
 | **`serve.ts`** | `/serve` | Spawns secure HTTPS/SSL local servers, auto-provisions certificates in `~/.pi-certs/`, and manages active connections via a live TUI widget. |
+| **`dedupwcount`** | `dedupwcount` (shell command) | Stream log compressor for `tail -f` style workflows. Collapses duplicate lines into live `☝️ +N` updates with numeric/letter range summaries. |
 | **`merge.ts`** | `/merge` | Safety-centric git branch merger for multi-worktree repositories. Enforces strict compliance with Step 5 "Code and Spec Approved" commit guidelines before merging to `main`. |
 | **`github-issue-autocomplete.ts`** | (Automatic) | Enhances the terminal TUI by autocompleting GitHub issue numbers (starting with `#`) dynamically as you type. |
 | **`system-clock.ts`** | (System Service) | Emits centralized 1s, 4s, and 60s tick events across the `pi` event bus to drive polling widgets smoothly. |
@@ -58,4 +59,3 @@ pi remove git:github.com/dproctor/princess-pi-packages
 
 ## 🤖 Agent Instructions (CLAUDE.md)
 We standardize on `CLAUDE.md` for all AI coding agent instructions. Even when using Pi Coding Agent or other harnesses, we adopt this naming convention to ensure cross-ecosystem compatibility (e.g., with Claude Code) without duplicating rules or managing symlinks.
-
