@@ -176,8 +176,15 @@ function getTemplateMatch(prev: string, curr: string, threshold: number, allowWo
   const totalWords = tokensPrev.filter(t => t.trim().length > 0 && !regex.test(t)).length;
   const score = totalWords > 0 ? matchingCount / totalWords : 0;
 
-  // Match if there is 1 or fewer differences, or if the score meets the similarity threshold
-  const isMatch = slots.length <= 1 || score >= threshold;
+  // Check if all slots represent numeric changes
+  const allSlotsNumeric = slots.length > 0 && slots.every(s => 
+    /^\d+(\.\d+)?$/.test(s.value) && /^\d+(\.\d+)?$/.test(s.prevValue)
+  );
+
+  // Match if:
+  // 1. All differing slots are numeric (e.g., port or thread ID differences in short lines)
+  // 2. Or the similarity score meets the threshold (for non-numeric word changes)
+  const isMatch = (slots.length > 0 && allSlotsNumeric) || score >= threshold;
 
   if (isMatch) {
     return {
