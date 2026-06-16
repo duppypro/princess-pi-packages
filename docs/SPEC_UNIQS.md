@@ -129,7 +129,8 @@ Options:
   -f, --format <string>  custom collapse badge format (default: "☝️ +{count}")
   -s, --similarity <num> similarity threshold between 0.0 and 1.0 (default: 0.85)
   -w, --word-match       use word-based template extraction instead of character-based diffing
-  -p, --periodicity      enable advanced periodicity detection
+  -p, --no-periodicity   disable advanced periodicity detection
+  -g, --max-gap <num>    max time gap in seconds to keep collapsing consecutive duplicates (default: 10)
   --no-collapse          disable in-place terminal rewriting (print raw stream with counts when changed)
   -h, --help             display help for command
 ```
