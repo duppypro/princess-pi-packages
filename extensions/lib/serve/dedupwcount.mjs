@@ -5,7 +5,8 @@ function toToken(raw) {
     return { kind: "num", value: Number(raw), raw };
   }
   if (/^[A-Za-z]$/.test(raw)) {
-    return { kind: "alpha", value: raw.toUpperCase().charCodeAt(0), raw: raw.toUpperCase() };
+    const upper = raw.toUpperCase();
+    return { kind: "alpha", value: upper.charCodeAt(0), raw: upper };
   }
   return null;
 }

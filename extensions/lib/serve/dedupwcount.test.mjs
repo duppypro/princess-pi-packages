@@ -26,7 +26,8 @@ test("supports monotonic letter streams as variable tokens", () => {
 });
 
 test("resets grouping when text pattern changes", () => {
-  const lines = ["status=1", "status=2", "other=3"];
+  const lines = ["status=1", "status=2", "other=3", "other=4"];
   const out = compressLines(lines);
   assert.equal(out[2], "other=3");
+  assert.equal(out[3], "☝️ +1 (#1=[3-4] up, smooth)");
 });
