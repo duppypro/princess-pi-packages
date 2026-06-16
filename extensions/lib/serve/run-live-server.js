@@ -321,8 +321,27 @@ if (!fs.existsSync(logDir)) {
 }
 const accessLogPath = path.join(logDir, `port-${port}-access.log`);
 
+// =========================================================================
+// AUTOMATIC LOG ROTATION CONFIGURATION
+// =========================================================================
+// Future Developers & LLMs: Edit the constant below to adjust the maximum size
+// of an individual access log file before it is automatically rotated.
+// This ensures that development log files do not grow infinitely on disk.
+// Default: 5 * 1024 * 1024 bytes (5 Megabytes).
+const MAX_LOG_FILE_SIZE_BYTES = 5 * 1024 * 1024; 
+// =========================================================================
+
+// Keep track of the active log file size in-memory to prevent slow disk reads (fs.stat) on every request.
+let currentLogSizeBytes = 0;
+try {
+	if (fs.existsSync(accessLogPath)) {
+		currentLogSizeBytes = fs.statSync(accessLogPath).size;
+	}
+} catch (_) {}
+
 /**
  * Writes an access log entry in Apache Common Log format.
+ * Implements automatic, zero-dependency, cross-platform log rotation.
  */
 function logAccess(req, res, timestamp) {
 	try {
@@ -338,8 +357,25 @@ function logAccess(req, res, timestamp) {
 		const dateStr = `${pad(d.getDate())}/${months[d.getMonth()]}/${d.getFullYear()}:${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} +0000`; // Assuming UTC for standardized logging
 		
 		const logLine = `${ip} - - [${dateStr}] "${method} ${url} ${httpVersion}" ${status} -\n`;
-		
-		fs.appendFile(accessLogPath, logLine, () => {});
+		const lineSize = Buffer.byteLength(logLine);
+
+		// Rotate the log file if writing this line would exceed our configured limit
+		if (currentLogSizeBytes + lineSize > MAX_LOG_FILE_SIZE_BYTES) {
+			try {
+				const oldLogPath = accessLogPath.replace(/\.log$/, ".old.log");
+				if (fs.existsSync(oldLogPath)) {
+					fs.unlinkSync(oldLogPath); // Safely remove previous backup
+				}
+				if (fs.existsSync(accessLogPath)) {
+					fs.renameSync(accessLogPath, oldLogPath); // Rotate active log to .old.log
+				}
+				currentLogSizeBytes = 0; // Reset byte counter for the fresh log file
+			} catch (_) {}
+		}
+
+		fs.appendFile(accessLogPath, logLine, () => {
+			currentLogSizeBytes += lineSize; // Track written bytes in-memory
+		});
 	} catch (_) {}
 }
 
