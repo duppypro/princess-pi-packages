@@ -181,12 +181,17 @@ Given a sequence of numeric slot values (e.g., `[3, 4, 5, 10, 11, 12, 13, 20]`):
 3.  Format as ranges if the run length is $\ge 2$ (e.g., `3-5`, `10-13`).
 4.  Join ranges and isolated singletons with commas: `3-5, 10-13, 20`.
 
-### Periodicity Analysis (Autocorrelation)
-1.  Store timestamps $t_1, t_2, \dots, t_n$ of matched occurrences.
-2.  Compute successive intervals $\Delta_i = t_{i} - t_{i-1}$.
-3.  If $n \ge 3$, calculate the mean and standard deviation of $\Delta$.
-4.  If standard deviation is very low (<10% of mean), report the interval directly: `every 5s`.
-5.  If variance is high, run an autocorrelation function over a set of lag steps to find dominant peak lags. Map peak lags to seconds/minutes and report the top 1-2 periods.
+### Periodicity Analysis (Timestamp Parsing & Autocorrelation)
+1.  **Timestamp Extraction**: For each input line, the tool attempts to parse a timestamp from the line using regex patterns for:
+    *   **ISO 8601 / RFC 3339**: e.g., `2026-06-16T12:00:01.123Z`, `2026-06-16 12:00:01,123`
+    *   **Apache / Common Log Format**: e.g., `10/Oct/2000:13:55:36 -0700`
+    *   **Epoch / Unix Timestamps**: e.g., `1718539200` (seconds) or `1718539200000` (milliseconds) at the start or inside brackets
+    *   **Fallback**: If no valid timestamp is parsed from the log content, the tool falls back to the system clock arrival time of the line (only useful for live piping).
+2.  Store the parsed/derived millisecond timestamps $t_1, t_2, \dots, t_n$ of matched occurrences.
+3.  Compute successive intervals $\Delta_i = t_{i} - t_{i-1}$.
+4.  If $n \ge 3$, calculate the mean and standard deviation of $\Delta$.
+5.  If standard deviation is very low (<10% of mean), report the interval directly: `every 5s`.
+6.  If variance is high, run an autocorrelation function over a set of lag steps to find dominant peak lags. Map peak lags to seconds/minutes and report the top 1-2 periods.
 
 ---
 
