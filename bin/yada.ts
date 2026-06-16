@@ -5,8 +5,6 @@
  * @description Dynamic streaming log deduplicator with fuzzy matching and periodicity detection.
  */
 
-import * as readline from "readline";
-
 // --- CLI Option Parsing ---
 interface CLIOptions {
   similarity: number;
@@ -400,17 +398,11 @@ function finalizeActiveBlock() {
 }
 
 // --- Main Processing Loop ---
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  terminal: false,
-});
-
 let lastLineTime = 0;
 let fastLineCount = 0;
 let isFastMode = false;
 
-rl.on("line", (line) => {
+function processLine(line: string) {
   // Rate detection to auto-switch between batch (cat) and stream (tail -f) modes
   const now = Date.now();
   const arrivalDelta = now - lastLineTime;
@@ -498,8 +490,23 @@ rl.on("line", (line) => {
     };
     renderBlock(activeBlock);
   }
+}
+
+let leftover = "";
+process.stdin.setEncoding("utf-8");
+
+process.stdin.on("data", (chunk) => {
+  const lines = (leftover + chunk).split("\n");
+  leftover = lines.pop() || "";
+
+  for (let i = 0; i < lines.length; i++) {
+    processLine(lines[i]);
+  }
 });
 
-rl.on("close", () => {
+process.stdin.on("end", () => {
+  if (leftover) {
+    processLine(leftover);
+  }
   finalizeActiveBlock();
 });
