@@ -6,7 +6,8 @@
   "type": "module",
   "bin": {
     "yada": "./bin/yada.ts",
-    "dedupwcount": "./bin/yada.ts"
+    "dedupwcount": "./bin/yada.ts",
+    "wtft": "./bin/wtft.ts"
   },
   "pi": {
     "extensions": ["./extensions"]
