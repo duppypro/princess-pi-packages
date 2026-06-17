@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
+    <meta charset="UTF-8">
+    <title>Pi Extensions: Log Deduplicator (dedup) Spec</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --box-bg: #2d2d2d;
+            --accent-blue: #569cd6;
+            --accent-green: #6a9955;
+            --accent-orange: #ce9178;
+            --accent-yellow: #dcdcaa;
+            --anchor-red: #e74c3c;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        h1, h2, h3 { color: var(--accent-blue); }
+        h1 { border-bottom: 2px solid var(--accent-blue); padding-bottom: 10px; }
+        h2 { margin-top: 2rem; }
+        code { background-color: var(--box-bg); padding: 2px 5px; border-radius: 4px; font-family: Consolas, monospace; color: var(--accent-orange); }
+        pre { background-color: var(--box-bg); padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #404040; }
+        pre code { background-color: transparent; color: var(--text-color); padding: 0; }
+        table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+        th { background: var(--box-bg); color: var(--accent-blue); padding: 8px 12px; text-align: left; border: 1px solid #404040; }
+        td { padding: 8px 12px; border: 1px solid #404040; }
+        tr:nth-child(even) { background: #252525; }
+        .tui-mock { font-family: Consolas, monospace; background: #000; color: #fff; padding: 20px; border-radius: 8px; border: 1px solid #333; margin: 20px 0; white-space: pre-wrap; line-height: 1.4; }
+        .highlight { color: var(--accent-yellow); }
+        .green { color: var(--accent-green); }
+        .blue { color: var(--accent-blue); }
+        .dim { color: #888; }
+        .verdict { background: #1a2e1a; border: 1px solid var(--accent-green); border-radius: 8px; padding: 12px 16px; margin: 1rem 0; }
+    </style>
+</head>
+<body>
+
+    <h1>EXT_DEDUP: Streaming Log Deduplicator</h1>
+    <p>A shell pipe filter and Pi extension. Primary use: <code>tail -f app.log | dedup</code>. Compresses repeated adjacent log lines into a single annotated summary, tracking number ranges and sequence direction across duplicate groups.</p>
+
+    <h2>Step 0 — Make vs Buy Analysis</h2>
+    <p>Is there already a unix tool or library that does this?</p>
+
+    <table>
+        <tr>
+            <th>Tool</th>
+            <th>Adjacent Dedup</th>
+            <th>Live Streaming</th>
+            <th>In-place Rewrite</th>
+            <th>Number Ranges</th>
+            <th>Seq Analysis</th>
+        </tr>
+        <tr>
+            <td><code>uniq -c</code></td>
+            <td>✅</td>
+            <td>✅ (waits for group end)</td>
+            <td>❌</td>
+            <td>❌</td>
+            <td>❌</td>
+        </tr>
+        <tr>
+            <td><code>lnav</code></td>
+            <td>partial</td>
+            <td>✅</td>
+            <td>✅ (full TUI only)</td>
+            <td>❌</td>
+            <td>❌</td>
+        </tr>
+        <tr>
+            <td>Chrome DevTools console</td>
+            <td>✅</td>
+            <td>✅</td>
+            <td>✅</td>
+            <td>❌</td>
+            <td>❌</td>
+        </tr>
+        <tr>
+            <td><code>logreduce</code> (Python)</td>
+            <td>❌ (anomaly only)</td>
+            <td>❌</td>
+            <td>❌</td>
+            <td>❌</td>
+            <td>❌</td>
+        </tr>
+        <tr>
+            <td><code>multitail</code></td>
+            <td>partial</td>
+            <td>✅</td>
+            <td>❌</td>
+            <td>❌</td>
+            <td>❌</td>
+        </tr>
+        <tr>
+            <td><strong>dedup (this)</strong></td>
+            <td>✅</td>
+            <td>✅</td>
+            <td>✅</td>
+            <td>✅</td>
+            <td>✅</td>
+        </tr>
+    </table>
+
+    <div class="verdict">
+        <strong>Verdict: Make.</strong> No existing tool combines streaming, in-place terminal rewriting, and number-range analysis. The closest is Chrome DevTools console collapsing, but that's browser-only and lacks numeric intelligence. <code>uniq -c</code> is the only real competition for the basic case but it can't rewrite in place and emits counts only after a group closes.
+    </div>
+
+    <h2>Step 1 — Name Proposals</h2>
+    <table>
+        <tr><th>Name</th><th>Vibe</th><th>Notes</th></tr>
+        <tr><td><code>squash</code></td><td>Compress, git-flavored</td><td>Evocative but overloaded with git squash</td></tr>
+        <tr><td><code>crunch</code></td><td>Satisfying compression</td><td>Clear, punchy, no conflicts</td></tr>
+        <tr><td><code>condense</code></td><td>Scientific, precise</td><td>Longer but unambiguous</td></tr>
+        <tr><td><strong><code>dedup</code></strong></td><td>Technical, explicit</td><td><strong>Recommended</strong> — matches the branch name, self-documenting in a pipeline</td></tr>
+        <tr><td><code>fold</code></td><td>Typographic</td><td>Already means line-wrap in some contexts</td></tr>
+        <tr><td><code>clump</code></td><td>Informal</td><td>Fun but unclear to newcomers</td></tr>
+    </table>
+    <p><strong>Chosen name: <code>dedup</code></strong>. In a pipeline like <code>tail -f app.log | dedup | grep ERROR</code>, the intent is immediately obvious. No existing POSIX conflicts.</p>
+
+    <h2>Step 2 — Feature Spec</h2>
+
+    <h3>2.1 Core Algorithm</h3>
+    <ol>
+        <li>Read stdin line-by-line.</li>
+        <li>For each line, compute its <strong>template</strong>: replace all numbers (integers, floats, negative) with the placeholder <code>{N}</code>.</li>
+        <li>If the template matches the current group's template → it's a <strong>duplicate</strong>: increment count, accumulate the number values in per-slot lists.</li>
+        <li>If the template does not match → <strong>group ends</strong>. Emit summary (see §2.2), start new group.</li>
+        <li>On EOF → flush the final group.</li>
+    </ol>
+
+    <h3>2.2 Output Modes</h3>
+    <p><strong>TTY mode</strong> (stdout is a terminal, e.g. <code>tail -f app.log | dedup</code>):</p>
+    <ul>
+        <li>First line of a group: print normally.</li>
+        <li>On each duplicate: use ANSI escape codes to move cursor up one line, clear it, and reprint as <code>👆 ×N  [reconstructed line]</code>.</li>
+    </ul>
+    <p><strong>Non-TTY mode</strong> (piped output, e.g. <code>tail -f app.log | dedup | grep foo</code>):</p>
+    <ul>
+        <li>First line of a group: print immediately.</li>
+        <li>Duplicates: silent (accumulate only).</li>
+        <li>When group ends with count > 1: print <code>  ↑ ×N  [reconstructed line]</code> as a follow-on annotation line.</li>
+    </ul>
+
+    <h3>2.3 Number Range and Sequence Display</h3>
+    <p>When reconstructing the summary line, each <code>{N}</code> slot is replaced with a formatted summary of all values observed in that slot:</p>
+    <ul>
+        <li><strong>Constant</strong> (all same value): show the value as-is — <code>5432</code></li>
+        <li><strong>Contiguous integer range</strong>: <code>[3-7]</code></li>
+        <li><strong>Gapped ranges</strong>: <code>[3-5, 8-10]</code></li>
+        <li><strong>Non-contiguous integers</strong>: <code>[1, 3, 7]</code></li>
+        <li><strong>Floats</strong>: <code>[1.2-3.7]</code> (min–max only)</li>
+    </ul>
+
+    <h3>2.4 Sequence Direction Annotation</h3>
+    <p>Appended to the range when the values form a detectable pattern (requires ≥ 3 values):</p>
+    <ul>
+        <li>Uniform step up: <code>↑2</code> (e.g. values 2, 4, 6, 8)</li>
+        <li>Uniform step down: <code>↓2</code></li>
+        <li>Irregular increase: <code>↑</code></li>
+        <li>Irregular decrease: <code>↓</code></li>
+        <li>Fluctuating: no annotation</li>
+    </ul>
+
+    <h3>2.5 Output Example</h3>
+    <div class="tui-mock">
+<span class="dim"># Input stream:</span>
+Connecting to db on port 5432... timeout after 3s
+Connecting to db on port 5433... timeout after 4s
+Connecting to db on port 5434... timeout after 5s
+AUTH OK for user admin
+AUTH OK for user admin
+AUTH OK for user admin
+New request from 192.168.1.10 pid=1042
+New request from 192.168.1.10 pid=1043
+
+<span class="dim"># dedup TTY output (rewriting in-place, shown as final state):</span>
+<span class="highlight">👆 ×3  Connecting to db on port [5432-5434]↑1... timeout after [3-5]↑1s</span>
+<span class="highlight">👆 ×3  AUTH OK for user admin</span>
+New request from 192.168.1.10 pid=[1042-1043]↑1</div>
+
+    <h2>Step 3 — Test Spec</h2>
+
+    <h3>Unit Tests (core.ts pure functions)</h3>
+    <table>
+        <tr><th>#</th><th>Function</th><th>Input</th><th>Expected Output</th></tr>
+        <tr><td>U1</td><td><code>normalizeTemplate</code></td><td><code>"port 5432 retry 3"</code></td><td><code>"port {N} retry {N}"</code></td></tr>
+        <tr><td>U2</td><td><code>normalizeTemplate</code></td><td><code>"no numbers here"</code></td><td><code>"no numbers here"</code></td></tr>
+        <tr><td>U3</td><td><code>normalizeTemplate</code></td><td><code>"temp -5.5C"</code></td><td><code>"temp {N}C"</code></td></tr>
+        <tr><td>U4</td><td><code>extractNumbers</code></td><td><code>"port 5432 retry 3"</code></td><td><code>[5432, 3]</code></td></tr>
+        <tr><td>U5</td><td><code>computeRanges</code></td><td><code>[3, 4, 5]</code></td><td><code>"[3-5]"</code></td></tr>
+        <tr><td>U6</td><td><code>computeRanges</code></td><td><code>[3, 4, 7, 8]</code></td><td><code>"[3-4, 7-8]"</code></td></tr>
+        <tr><td>U7</td><td><code>computeRanges</code></td><td><code>[5]</code></td><td><code>"5"</code></td></tr>
+        <tr><td>U8</td><td><code>analyzeSequence</code></td><td><code>[1, 2, 3, 4]</code></td><td><code>"↑1"</code></td></tr>
+        <tr><td>U9</td><td><code>analyzeSequence</code></td><td><code>[10, 8, 6]</code></td><td><code>"↓2"</code></td></tr>
+        <tr><td>U10</td><td><code>analyzeSequence</code></td><td><code>[1, 5, 2, 8]</code></td><td><code>""</code> (fluctuating)</td></tr>
+        <tr><td>U11</td><td><code>analyzeSequence</code></td><td><code>[1, 2]</code></td><td><code>""</code> (too few for pattern)</td></tr>
+        <tr><td>U12</td><td><code>formatSlot</code></td><td><code>{values: [5, 5, 5]}</code></td><td><code>"5"</code> (constant)</td></tr>
+        <tr><td>U13</td><td><code>formatSlot</code></td><td><code>{values: [1, 2, 3]}</code></td><td><code>"[1-3]↑1"</code></td></tr>
+        <tr><td>U22</td><td><code>formatSlot</code></td><td><code>{values: [1, 2, 5, 6]}</code></td><td><code>"[1-2, 5-6]↑"</code> — gapped but overall increasing → irregular ↑</td></tr>
+        <tr><td>U22b</td><td><code>formatSlot</code></td><td><code>{values: [1, 5, 3, 9]}</code></td><td><code>"[1, 3, 5, 9]"</code> — fluctuating, no annotation</td></tr>
+    </table>
+
+    <h3>Integration Tests (group lifecycle)</h3>
+    <table>
+        <tr><th>#</th><th>Scenario</th><th>Input lines</th><th>Expected buildSummaryLine</th></tr>
+        <tr><td>I1</td><td>Pure text dup (no numbers)</td><td><code>"Error: db down"</code> × 3</td><td><code>"👆 ×3  Error: db down"</code></td></tr>
+        <tr><td>I2</td><td>Single number monotonic</td><td><code>"Retry 1 of 5"</code>, <code>"Retry 2 of 5"</code>, <code>"Retry 3 of 5"</code></td><td><code>"👆 ×3  Retry [1-3]↑1 of 5"</code></td></tr>
+        <tr><td>I3</td><td>Two-slot number tracking</td><td><code>"Port 5432 timeout after 3s"</code>, <code>"Port 5433 timeout after 4s"</code></td><td><code>"👆 ×2  Port [5432-5433] timeout after [3-4]s"</code></td></tr>
+        <tr><td>I4</td><td>Non-matching line breaks group</td><td><code>isMatchingGroup</code> check: <code>"Port 5432 failed"</code> vs <code>"Port 9999 OK"</code></td><td>false (template differs)</td></tr>
+        <tr><td>I5</td><td>Non-matching line — same template</td><td><code>isMatchingGroup</code> check: <code>"Port 5432 failed"</code> vs <code>"Port 9999 failed"</code></td><td>true</td></tr>
+    </table>
+
+    <h2>Step 4 — I/O Strategy: readline vs Chunk-Buffered stdin</h2>
+    <p>After the initial implementation shipped (readline-based), a parallel agent working the same GitHub issue under the name <code>yada</code> claimed a 32.7x speedup by replacing Node's <code>readline</code> module with manual chunk-buffered <code>stdin.on("data")</code> parsing. That approach was ported here and benchmarked directly against the original.</p>
+
+    <h3>4.1 What Changed</h3>
+    <ul>
+        <li><code>extensions/lib/dedup/io-readline.ts</code> — the original implementation, extracted unchanged. Kept only as the benchmark baseline.</li>
+        <li><code>extensions/lib/dedup/io-chunked.ts</code> — ported from <code>yada</code>'s approach: reads raw <code>stdin</code> buffers via <code>"data"</code> events, manually splitting on <code>\n</code> with a leftover-buffer carry, instead of going through <code>readline.createInterface</code>.</li>
+        <li><code>extensions/dedup.ts</code> now calls <code>runFilterChunked()</code> as the live entry point. Both functions accept injectable <code>Readable</code>/<code>Writable</code> streams (defaulting to <code>process.stdin</code>/<code>process.stdout</code>) so they can be driven in-process for benchmarking, without spawning real subprocesses.</li>
+        <li><code>extensions/lib/dedup/benchmark.ts</code> — in-process benchmark comparing both, against a synthetic 17,000-line fixture (bursts of near-duplicate lines separated by unique lines, chunked into ~64KB pieces to mimic real OS pipe behavior).</li>
+    </ul>
+
+    <h3>4.2 Benchmark Results</h3>
+    <table>
+        <tr><th>Implementation</th><th>Avg</th><th>Speedup</th></tr>
+        <tr><td><code>readline</code> (baseline)</td><td>~30–35ms</td><td>1.00x</td></tr>
+        <tr><td>chunk-buffered</td><td>~28–34ms</td><td><strong>1.01–1.05x</strong></td></tr>
+    </table>
+    <p>At 300,000 lines the ratio holds at ~1.03x — it does not widen with scale, which rules out an O(N²) vs O(N) explanation for the difference.</p>
+
+    <div class="verdict" style="background: #2e1a1a; border-color: var(--anchor-red);">
+        <strong>The 32.7x claim does not hold up.</strong> Two things were checked:
+        <ol>
+            <li><code>yada</code>'s own <code>benchmark.ts</code> spawns a fresh subprocess per timed iteration and references <code>bin/yada-readline.ts</code> as the baseline — a file that was never committed to that repo. Running it directly throws <code>MODULE_NOT_FOUND</code>. The 32.7x number is not reproducible from what's actually in that repo.</li>
+            <li><code>yada</code>'s real complexity fix, found by diffing their two relevant commits, was a one-line guard (<code>if (isTTY &amp;&amp; !isFastMode) renderBlock(...)</code>) that stops an expensive per-line periodicity/range recomputation from running on every duplicate line in batch mode — an O(N²) → O(N) fix entirely orthogonal to <code>readline</code> vs chunked <code>stdin</code> parsing. This codebase's <code>buildSummaryLine</code> was never called redundantly per line in the first place, so there was no equivalent bug to fix here.</li>
+        </ol>
+        Chunk-buffered <code>stdin</code> is still adopted as the live implementation since it's a measured, if modest, real win with no downside — but the spec record should not imply it was ever an O(N²)-class fix.
+    </div>
+
+    <h2>Implementation Notes</h2>
+    <ul>
+        <li><strong>File layout</strong>: Pure logic in <code>extensions/lib/dedup/core.ts</code>; stream I/O strategies in <code>extensions/lib/dedup/io-chunked.ts</code> (live) and <code>io-readline.ts</code> (benchmark baseline); Pi extension + standalone entry in <code>extensions/dedup.ts</code>; tests in <code>extensions/lib/dedup/core.test.ts</code>; benchmark in <code>extensions/lib/dedup/benchmark.ts</code>.</li>
+        <li><strong>Standalone run</strong>: <code>npx tsx extensions/dedup.ts</code> (detects entry point via <code>import.meta.url</code>).</li>
+        <li><strong>Benchmark run</strong>: <code>npx tsx extensions/lib/dedup/benchmark.ts</code> — drives both I/O strategies in-process against a synthetic fixture, avoiding subprocess-spawn overhead in the measurement.</li>
+        <li><strong>Integer contiguity</strong>: Range gaps are computed on integer values only. Floats get min–max display.</li>
+        <li><strong>Sequence threshold</strong>: Direction/step annotation requires ≥ 3 values to be reliable.</li>
+        <li><strong>Terminal width</strong>: In-place ANSI rewrite assumes the summary line fits on one terminal line. Lines wider than the terminal may display imperfectly — known limitation, not in scope.</li>
+    </ul>
+
+</body>
+</html>
