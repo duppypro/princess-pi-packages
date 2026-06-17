@@ -14,17 +14,17 @@ for (const c of sampleColors) {
 }
 console.log("\n");
 
-console.log("--- Current WTFT Color Render Test ---");
+console.log("--- New Solarized Matte (with Rose Tests) Color Render Test ---");
 const current = [
-    { name: "Spec (ANSI 92)", code: "\x1b[92m" },
-    { name: "Mixed (120/208)", code: "\x1b[38;5;120;48;5;208m" },
-    { name: "Code (208)", code: "\x1b[38;5;208m" },
-    { name: "Tests (93)", code: "\x1b[93m" },
-    { name: "Research (95)", code: "\x1b[95m" },
-    { name: "Git (96)", code: "\x1b[96m" },
-    { name: "Grep (94)", code: "\x1b[94m" },
-    { name: "Prompt (37)", code: "\x1b[37m" },
-    { name: "Other (90)", code: "\x1b[90m" }
+    { name: "Spec (108)", code: "\x1b[38;5;108m" },
+    { name: "Mixed (108/173)", code: "\x1b[38;5;108;48;5;173m" },
+    { name: "Code (173)", code: "\x1b[38;5;173m" },
+    { name: "Tests (168)", code: "\x1b[38;5;168m" },
+    { name: "Research (134)", code: "\x1b[38;5;134m" },
+    { name: "Git (73)", code: "\x1b[38;5;73m" },
+    { name: "Grep (67)", code: "\x1b[38;5;67m" },
+    { name: "Prompt (223)", code: "\x1b[38;5;223m" },
+    { name: "Other (238)", code: "\x1b[38;5;238m" }
 ];
 for (const item of current) {
     console.log(`${item.name.padEnd(20)}: ${item.code}██████\x1b[0m`);
