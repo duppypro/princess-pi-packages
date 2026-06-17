@@ -14,16 +14,16 @@ for (const c of sampleColors) {
 }
 console.log("\n");
 
-console.log("--- New Solarized Matte (with Rose Tests) Color Render Test ---");
+console.log("--- New Solarized Matte (Swapped) Color Render Test ---");
 const current = [
     { name: "Spec (108)", code: "\x1b[38;5;108m" },
     { name: "Mixed (108/173)", code: "\x1b[38;5;108;48;5;173m" },
     { name: "Code (173)", code: "\x1b[38;5;173m" },
-    { name: "Tests (168)", code: "\x1b[38;5;168m" },
+    { name: "Tests (223)", code: "\x1b[38;5;223m" },
     { name: "Research (134)", code: "\x1b[38;5;134m" },
     { name: "Git (73)", code: "\x1b[38;5;73m" },
     { name: "Grep (67)", code: "\x1b[38;5;67m" },
-    { name: "Prompt (223)", code: "\x1b[38;5;223m" },
+    { name: "Prompt (168)", code: "\x1b[38;5;168m" },
     { name: "Other (238)", code: "\x1b[38;5;238m" }
 ];
 for (const item of current) {
