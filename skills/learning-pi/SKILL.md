@@ -53,15 +53,6 @@ This skill serves as the **primary, high-priority memory bank** of architectural
 
 ---
 
-## 8. Duppy's Workflow & Directory Hygiene
-This section documents Duppy's exact preferences for how he drives the Princess-Pi Coding Agent and organizes the workspace. These habits and rules are not documented anywhere on the web:
-
-### A. Non-Production Workspace Hygiene
-To keep project directories clean and organized, all non-production files must be explicitly compartmentalized. No "one-off" or temporary debug files are permitted in the repository root:
-1.  **`tests/`**: Dedicated solely to permanent, structured, and repeatable test suites that gate code quality (e.g. `tests/yada.test.ts`, `tests/benchmark.ts`).
-2.  **`debug/`**: For ephemeral, "quick-and-dirty" scripts written by Princess-Pi to verify assumptions, run diagnostic parsing, or answer one-off telemetry questions (e.g., `debug/parse_histogram.cjs`, `debug/probe_colors.cjs`).
-3.  **`research/`**: For prototypes, longer-term experimental code, or architectural draft calculations that may have value for reference but are not yet production-ready.
-
-### B. High-Contrast & Differentiable Visualizations
+## 8. Duppy's Color Standard for TUI Widgets
 - When rendering complex logs, charts, or category breakdowns, Duppy has a strong preference for **high-contrast, highly differentiable color schemes** (such as Synthwave or highly neon color ramps) to make different categories instantly distinguishable at a single glance.
 - To achieve this, Princess-Pi should always write verification scripts to test local terminal color rendering before deploying colors, ensuring they don't flatten over nested `ssh` or `tmux` boundaries.
