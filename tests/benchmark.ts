@@ -11,7 +11,7 @@ import { performance } from "perf_hooks";
 
 const yadaChunkBin = path.join(process.cwd(), "bin/yada.ts");
 const yadaReadlineBin = path.join(process.cwd(), "bin/yada-readline.ts");
-const logFixture = path.join(process.cwd(), "test/fixtures/access-17k.log");
+const logFixture = path.join(process.cwd(), "tests/fixtures/access-17k.log");
 
 interface BenchResult {
   avgTime: number;

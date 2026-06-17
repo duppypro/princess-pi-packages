@@ -290,7 +290,7 @@ To handle massive streaming or historical server logs efficiently, `yada` is opt
 2.  **$O(N)$ Linear-Complexity Rendering**: In batch/redirected modes (like `cat`), interactive cursor movement (`\x1b[1A`) is bypassed and intermediate log rendering (range calculation, template construction, periodicity autocorrelation) is completely skipped. Calculations are performed strictly **once** per duplicate block when finalized, dropping the execution complexity from quadratic $O(N^2)$ to linear $O(N)$.
 
 ### Side-by-Side Benchmark (17,000 log lines)
-Running our automated benchmark suite (`test/benchmark.ts`) comparing the baseline `readline` version against our optimized chunk buffering version:
+Running our automated benchmark suite (`tests/benchmark.ts`) comparing the baseline `readline` version against our optimized chunk buffering version:
 
 | Implementation | Time Complexity | Average Execution Time (17k lines) | Speedup |
 | :--- | :---: | :---: | :---: |
