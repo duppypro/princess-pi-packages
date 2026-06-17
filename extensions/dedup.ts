@@ -3,62 +3,20 @@
  * @spec docs/EXT_DEDUP.html
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import * as readline from "node:readline";
 import * as process from "node:process";
 import { fileURLToPath } from "node:url";
-import {
-    createGroup,
-    addToGroup,
-    buildSummaryLine,
-    isMatchingGroup,
-    type DupGroup,
-} from "./lib/dedup/core.js";
+import { runFilterChunked } from "./lib/dedup/io-chunked.js";
 
 // ---
 // Standalone pipe-filter mode
 // Invoked when the script is the entry point: tail -f app.log | npx tsx dedup.ts
+// Uses the chunk-buffered stdin reader (extensions/lib/dedup/io-chunked.ts) —
+// see extensions/lib/dedup/benchmark.ts for why this replaced the original
+// readline-based reader (still kept in io-readline.ts as the benchmark baseline).
 // ---
 
 function runFilter(): void {
-    const isTTY = process.stdout.isTTY ?? false;
-
-    let currentGroup: DupGroup | null = null;
-
-    const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-
-    rl.on("line", (line) => {
-        if (currentGroup === null) {
-            currentGroup = createGroup(line);
-            process.stdout.write(line + "\n");
-            return;
-        }
-
-        if (isMatchingGroup(currentGroup, line)) {
-            addToGroup(currentGroup, line);
-            const summary = buildSummaryLine(currentGroup);
-
-            if (isTTY) {
-                // Move up one line, clear it, reprint with updated count and ranges.
-                process.stdout.write("\x1b[1A\r\x1b[2K" + summary + "\n");
-            }
-            // Non-TTY: accumulate silently; emit on group end (below).
-        } else {
-            // Group boundary: flush previous group in non-TTY mode.
-            if (!isTTY && currentGroup.count > 1) {
-                process.stdout.write("  " + buildSummaryLine(currentGroup) + "\n");
-            }
-
-            currentGroup = createGroup(line);
-            process.stdout.write(line + "\n");
-        }
-    });
-
-    rl.on("close", () => {
-        // EOF: flush the final group if running non-TTY.
-        if (!isTTY && currentGroup && currentGroup.count > 1) {
-            process.stdout.write("  " + buildSummaryLine(currentGroup) + "\n");
-        }
-    });
+    void runFilterChunked();
 }
 
 // ---

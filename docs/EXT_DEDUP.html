@@ -218,10 +218,39 @@ New request from 192.168.1.10 pid=[1042-1043]↑1</div>
         <tr><td>I5</td><td>Non-matching line — same template</td><td><code>isMatchingGroup</code> check: <code>"Port 5432 failed"</code> vs <code>"Port 9999 failed"</code></td><td>true</td></tr>
     </table>
 
+    <h2>Step 4 — I/O Strategy: readline vs Chunk-Buffered stdin</h2>
+    <p>After the initial implementation shipped (readline-based), a parallel agent working the same GitHub issue under the name <code>yada</code> claimed a 32.7x speedup by replacing Node's <code>readline</code> module with manual chunk-buffered <code>stdin.on("data")</code> parsing. That approach was ported here and benchmarked directly against the original.</p>
+
+    <h3>4.1 What Changed</h3>
+    <ul>
+        <li><code>extensions/lib/dedup/io-readline.ts</code> — the original implementation, extracted unchanged. Kept only as the benchmark baseline.</li>
+        <li><code>extensions/lib/dedup/io-chunked.ts</code> — ported from <code>yada</code>'s approach: reads raw <code>stdin</code> buffers via <code>"data"</code> events, manually splitting on <code>\n</code> with a leftover-buffer carry, instead of going through <code>readline.createInterface</code>.</li>
+        <li><code>extensions/dedup.ts</code> now calls <code>runFilterChunked()</code> as the live entry point. Both functions accept injectable <code>Readable</code>/<code>Writable</code> streams (defaulting to <code>process.stdin</code>/<code>process.stdout</code>) so they can be driven in-process for benchmarking, without spawning real subprocesses.</li>
+        <li><code>extensions/lib/dedup/benchmark.ts</code> — in-process benchmark comparing both, against a synthetic 17,000-line fixture (bursts of near-duplicate lines separated by unique lines, chunked into ~64KB pieces to mimic real OS pipe behavior).</li>
+    </ul>
+
+    <h3>4.2 Benchmark Results</h3>
+    <table>
+        <tr><th>Implementation</th><th>Avg</th><th>Speedup</th></tr>
+        <tr><td><code>readline</code> (baseline)</td><td>~30–35ms</td><td>1.00x</td></tr>
+        <tr><td>chunk-buffered</td><td>~28–34ms</td><td><strong>1.01–1.05x</strong></td></tr>
+    </table>
+    <p>At 300,000 lines the ratio holds at ~1.03x — it does not widen with scale, which rules out an O(N²) vs O(N) explanation for the difference.</p>
+
+    <div class="verdict" style="background: #2e1a1a; border-color: var(--anchor-red);">
+        <strong>The 32.7x claim does not hold up.</strong> Two things were checked:
+        <ol>
+            <li><code>yada</code>'s own <code>benchmark.ts</code> spawns a fresh subprocess per timed iteration and references <code>bin/yada-readline.ts</code> as the baseline — a file that was never committed to that repo. Running it directly throws <code>MODULE_NOT_FOUND</code>. The 32.7x number is not reproducible from what's actually in that repo.</li>
+            <li><code>yada</code>'s real complexity fix, found by diffing their two relevant commits, was a one-line guard (<code>if (isTTY &amp;&amp; !isFastMode) renderBlock(...)</code>) that stops an expensive per-line periodicity/range recomputation from running on every duplicate line in batch mode — an O(N²) → O(N) fix entirely orthogonal to <code>readline</code> vs chunked <code>stdin</code> parsing. This codebase's <code>buildSummaryLine</code> was never called redundantly per line in the first place, so there was no equivalent bug to fix here.</li>
+        </ol>
+        Chunk-buffered <code>stdin</code> is still adopted as the live implementation since it's a measured, if modest, real win with no downside — but the spec record should not imply it was ever an O(N²)-class fix.
+    </div>
+
     <h2>Implementation Notes</h2>
     <ul>
-        <li><strong>File layout</strong>: Pure logic in <code>extensions/lib/dedup/core.ts</code>; Pi extension + standalone entry in <code>extensions/dedup.ts</code>; tests in <code>extensions/lib/dedup/core.test.ts</code>.</li>
+        <li><strong>File layout</strong>: Pure logic in <code>extensions/lib/dedup/core.ts</code>; stream I/O strategies in <code>extensions/lib/dedup/io-chunked.ts</code> (live) and <code>io-readline.ts</code> (benchmark baseline); Pi extension + standalone entry in <code>extensions/dedup.ts</code>; tests in <code>extensions/lib/dedup/core.test.ts</code>; benchmark in <code>extensions/lib/dedup/benchmark.ts</code>.</li>
         <li><strong>Standalone run</strong>: <code>npx tsx extensions/dedup.ts</code> (detects entry point via <code>import.meta.url</code>).</li>
+        <li><strong>Benchmark run</strong>: <code>npx tsx extensions/lib/dedup/benchmark.ts</code> — drives both I/O strategies in-process against a synthetic fixture, avoiding subprocess-spawn overhead in the measurement.</li>
         <li><strong>Integer contiguity</strong>: Range gaps are computed on integer values only. Floats get min–max display.</li>
         <li><strong>Sequence threshold</strong>: Direction/step annotation requires ≥ 3 values to be reliable.</li>
         <li><strong>Terminal width</strong>: In-place ANSI rewrite assumes the summary line fits on one terminal line. Lines wider than the terminal may display imperfectly — known limitation, not in scope.</li>
