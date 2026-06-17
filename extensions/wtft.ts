@@ -150,15 +150,18 @@ class PagerComponent {
 	}
 
 	render(width: number): string[] {
+		const termWidth = process.stdout.columns || 80;
 		const termHeight = process.stdout.rows || 24;
+		const displayWidth = Math.max(40, Math.floor(termWidth * 0.9)); // 90% width
 		const displayHeight = Math.max(5, termHeight - 4); // Leave space for headers/footers
 
 		const rendered: string[] = [];
-		rendered.push(`\x1b[1;36m┌─── WTFT Cost Audit Scrollable Pager ──────────────────────────┐\x1b[0m`);
+		const header = `┌─── WTFT Cost Audit Scrollable Pager ──────────────────────────┐`;
+		rendered.push(`\x1b[1;36m${header.padEnd(displayWidth, '─').slice(0, displayWidth)}\x1b[0m`);
 		
 		const limit = Math.min(this.lines.length, this.scrollOffset + displayHeight);
 		for (let i = this.scrollOffset; i < limit; i++) {
-			rendered.push("│ " + this.lines[i]);
+			rendered.push("│ " + this.lines[i].slice(0, displayWidth - 2));
 		}
 		
 		const actualPrinted = limit - this.scrollOffset;
@@ -166,7 +169,8 @@ class PagerComponent {
 			rendered.push("│");
 		}
 
-		rendered.push(`\x1b[1;36m└─── ↑↓/j/k navigate • PageUp/PageDown • q/Esc exit (Row ${this.scrollOffset + 1}/${this.lines.length}) ──┘\x1b[0m`);
+		const footer = `└─── ↑↓/j/k navigate • PageUp/PageDown • q/Esc exit (Row ${this.scrollOffset + 1}/${this.lines.length}) ──┘`;
+		rendered.push(`\x1b[1;36m${footer.padEnd(displayWidth, '─').slice(0, displayWidth)}\x1b[0m`);
 		return rendered;
 	}
 
@@ -240,6 +244,9 @@ function buildWtftLines(
 		timezone?: string;
 	}
 ): string[] | null {
+	const current = getSettings(ctx);
+	const mode = opts?.mode !== undefined ? opts.mode : current.mode;
+	
 	const branch = ctx.sessionManager.getBranch();
 	const interactions: Interaction[] = [];
 
@@ -280,7 +287,7 @@ function buildWtftLines(
 		}
 	}
 
-	return sharedBuildWtftLines(interactions, getSettings(ctx), opts);
+	return sharedBuildWtftLines(interactions, current, opts);
 }
 
 /**
