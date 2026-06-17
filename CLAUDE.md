@@ -7,6 +7,9 @@ This project contains custom extensions, skills, and documentation manifests for
 ## 🛠️ Tech Stack & Directory Structure
 *   **Runtime**: Node.js (TypeScript compiled to ES Modules).
 *   **`extensions/`**: The raw `.ts` extension scripts loaded directly by the Pi Agent (e.g. `serve.ts`, `wtft.ts`, `smush.ts`).
+*   **`tests/`**: Dedicated permanent test suites.
+*   **`debug/`**: Ephemeral scripts for quick debugging (e.g., one-off log parsers).
+*   **`research/`**: Prototypes and longer-term experimental code.
 *   **`skills/`**: Standard markdown-based memory files and skill guides.
 *   **`docs/`**: Flattened user specifications and documentation files.
     *   `docs/manifests/`: Command reference definitions (`.json` files) parsed dynamically by the `/serve` and `/wtft` extensions.
