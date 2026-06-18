@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Wrapper so `!./serve <args>` in Claude Code behaves like `/serve <args>` in Pi.
+exec npx tsx "$(dirname "$0")/bin/serve.ts" "$@"
