@@ -1,22 +1,23 @@
 {
-  "name": "/serve",
-  "tagline": "Secure HTTPS Server Utility for Pi",
-  "description": "Serves local directories securely using SSL/HTTPS certificates in a lightweight background process. Logs HTTP access automatically to ~/.pi-certs/logs/.",
+  "name": "serve",
+  "tagline": "Secure HTTPS Server Utility",
+  "description": "Serves local directories securely using SSL/HTTPS certificates in a lightweight background process. Logs HTTP access automatically to ~/.pi-certs/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve (or bare serve, once the repo root is on $PATH) CLI script from any other shell, including Claude Code's '!' prefix.",
+  "examples": [
+    { "args": "", "desc": "Serve public/ on 8080 and docs/ on 8081 (the defaults)." },
+    { "args": "--static", "desc": "Serve public/ and docs/ statically, with hot-reloading disabled." },
+    { "args": "src/ assets/", "desc": "Serve src/ on 8080 and assets/ on 8081." },
+    { "args": "secrets/ --force", "desc": "Serve a directory containing a .env file, bypassing the warning (CLI only)." },
+    { "args": "--kill 8080 docs/", "desc": "Kill the server on port 8080 and the server serving docs/." },
+    { "args": "--kill all", "desc": "Instantly terminate every active dev server across all worktrees." }
+  ],
   "usage": [
     { "flags": "[dirs...]", "desc": "Serve specified directories (default: public, docs) on HTTPS ports." },
     { "flags": "-s, --static", "desc": "Disable live reloading and serve pure static files without code injection or file watching." },
-    { "flags": "-S, --show", "desc": "Discover and display the active servers list." },
-    { "flags": "-H, --hide", "desc": "Hide the active servers list from the screen." },
+    { "flags": "-f, --force", "desc": "Bypass the .env secret warning and serve the directory anyway. CLI only — Pi prompts interactively instead." },
+    { "flags": "-S, --show", "desc": "Discover and display the active servers list. Pi only — no persistent widget in the CLI." },
+    { "flags": "-H, --hide", "desc": "Hide the active servers list from the screen. Pi only." },
     { "flags": "-L, --log", "desc": "List all active servers serving directories within this worktree." },
-    { "flags": "-k, --kill", "desc": "Kill all servers serving directories within this active worktree." },
-    { "flags": "-k, --kill [port|dir|all...]", "desc": "Kill specific servers by port, directory, or 'all' to stop all active servers." },
-    { "flags": "--help", "desc": "Display this help information." }
-  ],
-  "examples": [
-    { "cmd": "/serve", "desc": "Serves public/ on 8080 and docs/ on 8081." },
-    { "cmd": "/serve --static", "desc": "Serves public/ and docs/ statically with hot-reloading disabled." },
-    { "cmd": "/serve src/ assets/", "desc": "Serves src/ on 8080 and assets/ on 8081." },
-    { "cmd": "/serve -k 8080 docs/", "desc": "Kills server on port 8080 and server serving docs/." },
-    { "cmd": "/serve -k all", "desc": "Instantly terminates all active dev servers across all worktrees." }
+    { "flags": "-k, --kill [port|dir|all...]", "desc": "Kill servers by port, directory, or 'all'. Omit the target to kill every server in this worktree." },
+    { "flags": "-h, --help", "desc": "Display this help information." }
   ]
 }

@@ -129,6 +129,14 @@
         <em style="color: #666;">Loading command manifest...</em>
     </div>
 
+    <h3>CLI Mode (Outside Pi Coding Agent)</h3>
+    <p><code>bin/serve.ts</code> is a standalone, Pi-independent port that reuses <code>extensions/lib/serve/{process,domain,tui}.ts</code> directly (no duplicated logic). It's invokable as <code>./serve [args]</code> from the repo root, or bare <code>serve</code> once the repo root is added to <code>$PATH</code> — including via Claude Code's <code>!</code> prefix (e.g. <code>!./serve --log</code>), since Claude Code has no extension-dispatch mechanism that bypasses the model entirely the way Pi's <code>registerCommand</code> does.</p>
+    <ul>
+        <li><strong>Supported:</strong> default start, <code>--static</code>/<code>-s</code>, <code>--log</code>/<code>-L</code>, <code>--kill</code>/<code>-k</code>, <code>--help</code>/<code>-h</code> — identical behavior to the Pi extension.</li>
+        <li><strong>Omitted:</strong> <code>--hide</code>/<code>-H</code> and <code>--show</code>/<code>-S</code> have no CLI equivalent — there's no persistent TUI widget outside Pi to hide or show.</li>
+        <li><strong>Added:</strong> <code>--force</code>/<code>-f</code> bypasses the <code>.env</code> secret warning. The Pi extension can block on an interactive confirm dialog; the CLI can't safely assume a TTY is attached, so it skips directories containing <code>.env</code> by default and requires this flag to proceed.</li>
+    </ul>
+
     <h3>Bounded Context & Rules</h3>
     <ul>
         <li><strong>Stateless Tracking:</strong> Servers are identified dynamically by scanning the host OS. A server belongs to the active context if its served directory resides within <code>process.cwd()</code>.</li>
@@ -190,18 +198,23 @@ $ pi -r
                 const container = document.getElementById('serve-cmd-reference');
                 if (!container) return;
                 
+                // Pi-facing spec page shows the /serve invocation; the same manifest
+                // also renders correctly as ./serve via bin/serve.ts's CLI help (see
+                // CLAUDE.md "Manifest-driven --help" convention: examples before flags).
+                const invokedAs = "/serve";
                 let html = `<p><strong><code>${data.name}</code></strong> - ${data.tagline}</p>`;
                 html += `<p>${data.description}</p>`;
-                
-                html += `<h4 style="margin-bottom: 5px; color: var(--accent-yellow)">Usage</h4><ul style="margin-top: 0; padding-left: 20px;">`;
-                data.usage.forEach(u => {
-                    html += `<li style="margin-bottom: 5px; list-style-type: none;"><code>${data.name} ${u.flags}</code><br><span style="color: #aaa">${u.desc}</span></li>`;
-                });
-                html += `</ul>`;
-                
+
                 html += `<h4 style="margin-bottom: 5px; color: var(--accent-yellow)">Examples</h4><ul style="margin-top: 0; padding-left: 20px;">`;
                 data.examples.forEach(e => {
-                    html += `<li style="margin-bottom: 5px; list-style-type: none;"><code>${e.cmd}</code><br><span style="color: #aaa">${e.desc}</span></li>`;
+                    const fullCmd = e.args ? `${invokedAs} ${e.args}` : invokedAs;
+                    html += `<li style="margin-bottom: 5px; list-style-type: none;"><code>${fullCmd}</code><br><span style="color: #aaa">${e.desc}</span></li>`;
+                });
+                html += `</ul>`;
+
+                html += `<h4 style="margin-bottom: 5px; color: var(--accent-yellow)">Usage</h4><ul style="margin-top: 0; padding-left: 20px;">`;
+                data.usage.forEach(u => {
+                    html += `<li style="margin-bottom: 5px; list-style-type: none;"><code>${invokedAs} ${u.flags}</code><br><span style="color: #aaa">${u.desc}</span></li>`;
                 });
                 html += `</ul>`;
                 

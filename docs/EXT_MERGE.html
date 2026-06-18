@@ -38,18 +38,12 @@
     <h3>Overview</h3>
     <p>The <code>/merge</code> extension provides a zero-token, local command to automate the validation and integration of completed feature branches from separate Git worktrees into the <code>main</code> branch. It ensures compliance with the Princess-Pi 5-Step Development Flow without invoking costly LLM reasoning turns.</p>
 
+    <h3>CLI Mode (Outside Pi Coding Agent)</h3>
+    <p><code>bin/merge.ts</code> is a 1:1 standalone port of the same validation/merge/push sequence (plain <code>execSync</code> git calls, no Pi dependency). It's invokable as <code>./merge [commit-ish]</code> from the repo root, or bare <code>merge</code> once the repo root is added to <code>$PATH</code> — including via Claude Code's <code>!</code> prefix (e.g. <code>!./merge 638e9b4</code>), since Claude Code has no extension-dispatch mechanism that bypasses the model entirely the way Pi's <code>registerCommand</code> does. Behavior is identical to the Pi extension; only the output channel differs (<code>console.log</code> instead of <code>ctx.ui.notify</code>).</p>
+
     <h3>Command Reference</h3>
-    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <p><strong><code>/merge</code></strong> [commit-ish] [options]</p>
-        <p>Automate the verification and merging of a specific commit or the current worktree's branch into the <code>main</code> worktree branch.</p>
-        <h4 style="color: var(--accent-yellow); margin-bottom: 5px;">Arguments</h4>
-        <ul>
-            <li><code>commit-ish</code> - Optional commit hash, branch, or reference to merge (defaults to <code>HEAD</code>).</li>
-        </ul>
-        <h4 style="color: var(--accent-yellow); margin-bottom: 5px;">Options</h4>
-        <ul>
-            <li><code>--help</code> / <code>-h</code> - Display help information.</li>
-        </ul>
+    <div id="merge-cmd-reference" style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040;">
+        <em style="color: #666;">Loading command manifest...</em>
     </div>
 
     <h3>Verification Rules</h3>
@@ -71,5 +65,41 @@
         <li>Pushes the newly merged <code>main</code> branch to origin.</li>
         <li>Logs absolute success and returns focus to the active worktree, ready for the next development task.</li>
     </ol>
+
+    <script>
+        fetch('manifests/merge-cmd.json')
+            .then(r => r.json())
+            .then(data => {
+                const container = document.getElementById('merge-cmd-reference');
+                if (!container) return;
+
+                // Pi-facing spec page shows the /merge invocation; the same manifest
+                // also renders correctly as ./merge via bin/merge.ts's CLI help (see
+                // CLAUDE.md "Manifest-driven --help" convention: examples before flags).
+                const invokedAs = "/merge";
+                let html = `<p><strong><code>${data.name}</code></strong> - ${data.tagline}</p>`;
+                html += `<p>${data.description}</p>`;
+
+                html += `<h4 style="margin-bottom: 5px; color: var(--accent-yellow)">Examples</h4><ul style="margin-top: 0; padding-left: 20px;">`;
+                data.examples.forEach(e => {
+                    const fullCmd = e.args ? `${invokedAs} ${e.args}` : invokedAs;
+                    html += `<li style="margin-bottom: 5px; list-style-type: none;"><code>${fullCmd}</code><br><span style="color: #aaa">${e.desc}</span></li>`;
+                });
+                html += `</ul>`;
+
+                html += `<h4 style="margin-bottom: 5px; color: var(--accent-yellow)">Usage</h4><ul style="margin-top: 0; padding-left: 20px;">`;
+                data.usage.forEach(u => {
+                    html += `<li style="margin-bottom: 5px; list-style-type: none;"><code>${invokedAs} ${u.flags}</code><br><span style="color: #aaa">${u.desc}</span></li>`;
+                });
+                html += `</ul>`;
+
+                container.innerHTML = html;
+            })
+            .catch(err => {
+                const container = document.getElementById('merge-cmd-reference');
+                if (container) container.innerHTML = `<p style="color:var(--anchor-red)">Failed to load command manifest: ${err}</p>`;
+            });
+    </script>
+
 </body>
 </html>

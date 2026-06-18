@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Wrapper so `!./merge <ref>` in Claude Code behaves like `/merge <ref>` in Pi.
+exec npx tsx "$(dirname "$0")/bin/merge.ts" "$@"
