@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
+    <meta charset="UTF-8">
+    <title>Research: /serve Refactor — Static Complexity Analysis</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --box-bg: #2d2d2d;
+            --accent-blue: #569cd6;
+            --accent-green: #6a9955;
+            --accent-orange: #ce9178;
+            --accent-yellow: #dcdcaa;
+            --anchor-red: #e74c3c;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        h1, h2, h3 { color: var(--accent-blue); }
+        h1 { border-bottom: 2px solid var(--accent-blue); padding-bottom: 10px; }
+        h2 { margin-top: 2rem; }
+        code { background-color: var(--box-bg); padding: 2px 5px; border-radius: 4px; font-family: Consolas, monospace; color: var(--accent-orange); }
+        pre { background-color: var(--box-bg); padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #404040; }
+        pre code { background-color: transparent; color: var(--text-color); padding: 0; }
+        table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+        th { background: var(--box-bg); color: var(--accent-blue); padding: 8px 12px; text-align: left; border: 1px solid #404040; }
+        td { padding: 8px 12px; border: 1px solid #404040; }
+        tr:nth-child(even) { background: #252525; }
+        .verdict { background: #1a2e1a; border: 1px solid var(--accent-green); border-radius: 8px; padding: 12px 16px; margin: 1rem 0; }
+        .caveat { background: #2e2a1a; border: 1px solid var(--accent-yellow); border-radius: 8px; padding: 12px 16px; margin: 1rem 0; }
+        .better { color: var(--accent-green); font-weight: bold; }
+        .worse { color: var(--anchor-red); font-weight: bold; }
+        .flat { color: #888; }
+        .diagram { background: var(--box-bg); border: 1px solid #404040; border-radius: 8px; padding: 20px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+
+    <h2>Research: <code>/serve</code> Refactor — Static Complexity Analysis</h2>
+    <p><strong>Domain:</strong> Code Quality, Static Analysis, Maintainability Measurement</p>
+
+    <h3>1. What Changed</h3>
+    <p>A maintainability review of <code>extensions/serve.ts</code> identified a single 237–284 line command handler containing a sequential if-chain for all six <code>/serve</code> subcommands, plus duplicated process-kill logic. The refactor (commit <code>e0cbefe</code>, parent <code>386a74a</code>) extracted six named handler functions (<code>handleLog</code>, <code>handleHelp</code>, <code>handleHide</code>, <code>handleShow</code>, <code>handleKill</code>, <code>handleStart</code>) plus a small dispatch table, and added a shared <code>killProcess(pid)</code> helper in <code>extensions/lib/serve/process.ts</code>. Behavior was verified unchanged via direct execution against a mocked <code>pi</code>/<code>ctx</code> harness covering all 7 routes.</p>
+    <p>This report measures whether that refactor produced a measurable improvement, using static analysis tools rather than impression alone.</p>
+
+    <h3>2. Methodology</h3>
+    <ul>
+        <li><strong>Before</strong>: <code>git show 386a74a:extensions/serve.ts</code> (the commit immediately prior to the refactor).</li>
+        <li><strong>After</strong>: <code>extensions/serve.ts</code> at HEAD (commit <code>e0cbefe</code>).</li>
+        <li><strong>Type stripping</strong>: both versions transpiled TS→JS via <code>esbuild --format=cjs --target=es2015</code>, since the complexity tools below predate TypeScript and can't parse type annotations/interfaces. Lowering to ES2015 also converts <code>async</code>/<code>await</code> into generator-based state machines — relevant when reading the raw numbers below (see §5 caveats).</li>
+        <li><strong>Tool 1 — <code>plato</code> v1.7.0</strong> (wraps <code>escomplex</code>): cyclomatic complexity, Halstead metrics (Volume, Difficulty, Effort, estimated Bugs), Maintainability Index, per-function breakdown.</li>
+        <li><strong>Tool 2 — ESLint <code>complexity</code> rule</strong> (built-in, threshold set to 1 to report every function's score): independent cyclomatic complexity calculation, used to cross-validate Tool 1's numbers rather than trust a single source.</li>
+    </ul>
+    <p>Halstead <strong>Volume</strong> is the closest thing to an information-theoretic "entropy" measure in this toolset: <code>V = N · log₂(n)</code>, where <code>n</code> is the vocabulary size (distinct operators + operands) and <code>N</code> is the program length (total operators + operands). It measures the size of the information content a reader must process — not how well that information is organized.</p>
+
+    <h3>3. Results — Whole-Module Aggregate</h3>
+    <table>
+        <tr><th>Metric</th><th>Before</th><th>After</th><th>Raw Δ</th><th>Verdict</th></tr>
+        <tr><td>Cyclomatic complexity (sum)</td><td>58</td><td>54</td><td>−6.9%</td><td class="flat">~flat</td></tr>
+        <tr><td>Halstead Volume <em>(lower is better)</em></td><td>17,107</td><td>18,234</td><td>+6.6%</td><td class="worse">unfavorable</td></tr>
+        <tr><td>Halstead Difficulty <em>(lower is better)</em></td><td>57.26</td><td>59.93</td><td>+4.7%</td><td class="worse">unfavorable</td></tr>
+        <tr><td>Halstead estimated bugs <em>(lower is better)</em></td><td>5.70</td><td>6.08</td><td>+6.7%</td><td class="worse">unfavorable</td></tr>
+        <tr><td><strong>Maintainability Index</strong> <em>(higher is better, 0–171)</em></td><td>62.84</td><td><strong>69.45</strong></td><td>+10.5%</td><td class="better">favorable</td></tr>
+        <tr><td>Detected functions/closures</td><td>37</td><td>59</td><td>+22 units</td><td class="flat">expected (more, smaller units)</td></tr>
+    </table>
+    <p><em>Raw Δ is always the literal change in the number (so "+" always means the value increased). The Verdict column is the separate judgment of whether that increase is good or bad for that specific metric — they are not the same axis, which is why an increasing metric can still be marked unfavorable.</em></p>
+    <p>Taken alone, this table looks unflattering — most raw totals went up slightly. That's expected and not a red flag: total behavior didn't change, so total decision-logic and vocabulary couldn't shrink. What moved in the right direction is the Maintainability Index, which is the one metric here explicitly designed to reward spreading logic across more, smaller units rather than just summing raw totals.</p>
+
+    <h3>4. Results — Worst Single Unit (the metric that actually matters)</h3>
+    <p>The more honest comparison is the single most complex unit a developer has to hold in their head at once — before, that was one undifferentiated handler; after, it's the largest individual named function.</p>
+    <table>
+        <tr><th>Metric</th><th>Before (1 blob)</th><th>After (worst function)</th><th>Change</th></tr>
+        <tr><td>Cyclomatic complexity (plato/escomplex)</td><td>34</td><td>14</td><td class="better">−59%</td></tr>
+        <tr><td>Cyclomatic complexity (ESLint, cross-check)</td><td>42</td><td>15</td><td class="better">−64%</td></tr>
+        <tr><td>Physical lines of code</td><td>237</td><td>93</td><td class="better">−61%</td></tr>
+        <tr><td>Halstead Volume</td><td>8,344</td><td>2,742</td><td class="better">−67%</td></tr>
+        <tr><td>Halstead Difficulty</td><td>39.14</td><td>21.20</td><td class="better">−46%</td></tr>
+        <tr><td>Halstead estimated bugs</td><td>2.78</td><td>0.91</td><td class="better">−67%</td></tr>
+    </table>
+    <p>Two independent tools (plato/escomplex's AST-based cyclomatic counter, and ESLint's separate implementation) disagree on the absolute numbers — expected, since cyclomatic complexity has no single universally-agreed counting convention — but agree completely on direction and land within 5 points of each other on relative magnitude (~59–64% reduction).</p>
+
+    <h3>5. Named, Independently-Readable Units</h3>
+    <table>
+        <tr><th>Before</th><th>After</th></tr>
+        <tr><td><code>getOrCreateCertificates</code> (only named helper besides the wrapper)</td><td><code>getOrCreateCertificates</code>, <code>handleLog</code>, <code>handleHelp</code>, <code>handleHide</code>, <code>handleShow</code>, <code>handleKill</code>, <code>handleStart</code></td></tr>
+    </table>
+    <p>Every subcommand now has a name, a defined boundary, and could be unit-tested in isolation by calling it directly with a mocked <code>ctx</code> — which is exactly how this refactor was verified (see commit <code>e0cbefe</code>).</p>
+
+    <div class="verdict">
+        <strong>Verdict:</strong> the refactor did not reduce the total amount of logic in the file (it couldn't, without changing behavior) — it redistributed that logic from one 237–284 line, complexity-34/42 blob into 6 named functions, the worst of which now sits at complexity 14/15 and 93 lines. The Maintainability Index improvement (+10.5%) and the worst-case reduction (~60–67% across complexity, volume, and estimated-bugs) are the two metrics that actually capture this; the flat-to-slightly-worse aggregate totals are an artifact of measuring total information content rather than its organization, and should not be read as the refactor having no effect.
+    </div>
+
+    <div class="caveat">
+        <strong>Caveats:</strong>
+        <ul>
+            <li>These tools (<code>escomplex</code>, last published ~2016) predate TypeScript and can't parse it directly — both versions were transpiled to plain JS via <code>esbuild</code> first. Absolute numbers reflect the transpiled output, not the original TS source line-for-line, though the comparison is fair since both sides went through an identical pipeline.</li>
+            <li>Lowering to ES2015 target converts <code>async</code>/<code>await</code> into generator-based state machines, which is why ESLint reports the top function as a "Generator function" rather than an arrow function, and partially explains why its complexity count (42) differs from escomplex's (34) for the same logical unit.</li>
+            <li>Cyclomatic complexity, Halstead metrics, and the Maintainability Index are all decades-old heuristics with known blind spots (e.g. they can't tell well-named code from poorly-named code, or judge whether closures-over-shared-state are the right design choice for a given file). They're a useful cross-check against impression, not a replacement for the human review that originally motivated this refactor.</li>
+        </ul>
+    </div>
+
+    <h3>6. Reproduction</h3>
+    <pre><code>mkdir -p /tmp/serve-analysis
+git show 386a74a:extensions/serve.ts > /tmp/serve-analysis/before.ts
+cp extensions/serve.ts /tmp/serve-analysis/after.ts
+cd /tmp/serve-analysis
+npx --yes esbuild before.ts --format=cjs --target=es2015 --outfile=before.js
+npx --yes esbuild after.ts  --format=cjs --target=es2015 --outfile=after.js
+npx --yes plato -r -d plato-before before.js
+npx --yes plato -r -d plato-after  after.js
+# per-function detail: plato-before/files/before_js/report.json (same for after)
+# ESLint cross-check: eslint --no-config-lookup -c eslint.config.mjs {before,after}.js
+#   with rule: complexity: ["warn", 1]</code></pre>
+
+</body>
+</html>

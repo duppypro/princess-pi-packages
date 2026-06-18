@@ -110,6 +110,17 @@ export function findPidByPort(port: number): Promise<number | null> {
 	});
 }
 
+// Terminates a process by PID. Tries SIGKILL via the Node API first (fast,
+// no subprocess); falls back to a shell `kill -9` if that throws (e.g. PID
+// owned by a different user/namespace where process.kill is rejected).
+export function killProcess(pid: number): void {
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch (e) {
+		exec(`kill -9 ${pid}`);
+	}
+}
+
 export function fetchPageTitle(url: string): Promise<string> {
 	return new Promise((resolve) => {
 		const isSsl = url.startsWith("https");

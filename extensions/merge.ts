@@ -14,21 +14,25 @@ export default function mergeExtension(pi: ExtensionAPI) {
 			const argsList = (args || "").trim().split(/\s+/).filter(Boolean);
 			if (argsList.includes("-h") || argsList.includes("--help")) {
 				try {
-					const manifestPath = path.join(process.cwd(), "docs", "extensions", "manifests", "merge-cmd.json");
+					const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
 					const manifestStr = fs.readFileSync(manifestPath, "utf8");
 					const manifest = JSON.parse(manifestStr);
+					const invokedAs = "/merge";
 
 					let helpText = `\x1b[1m\x1b[36m${manifest.name}\x1b[0m - ${manifest.tagline}\n\n`;
 					helpText += `${manifest.description}\n\n`;
 
-					helpText += `\x1b[1mUsage:\x1b[0m\n`;
-					for (const u of manifest.usage) {
-						helpText += `  ${manifest.name} ${(u.flags).padEnd(28)} ${u.desc}\n`;
+					// Examples first (with mock parameters), full flag enumeration after —
+					// see CLAUDE.md "Manifest-driven --help" convention.
+					helpText += `\x1b[1mExamples:\x1b[0m\n`;
+					for (const e of manifest.examples) {
+						const fullCmd = e.args ? `${invokedAs} ${e.args}` : invokedAs;
+						helpText += `  ${fullCmd.padEnd(30)} ${e.desc}\n`;
 					}
 
-					helpText += `\n\x1b[1mExamples:\x1b[0m\n`;
-					for (const e of manifest.examples) {
-						helpText += `  ${(e.cmd).padEnd(30)} ${e.desc}\n`;
+					helpText += `\n\x1b[1mUsage:\x1b[0m\n`;
+					for (const u of manifest.usage) {
+						helpText += `  ${invokedAs} ${(u.flags).padEnd(28)} ${u.desc}\n`;
 					}
 
 					ctx.ui.notify(helpText, "info");
