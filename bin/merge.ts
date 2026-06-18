@@ -17,16 +17,20 @@ function run(): void {
 		try {
 			const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
 			const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+			const invokedAs = "./merge"; // CLI entry point; bare `merge` also works once repo root is on $PATH
 
 			let helpText = `\x1b[1m\x1b[36m${manifest.name}\x1b[0m - ${manifest.tagline}\n\n`;
 			helpText += `${manifest.description}\n\n`;
-			helpText += `\x1b[1mUsage:\x1b[0m\n`;
-			for (const u of manifest.usage) {
-				helpText += `  ${manifest.name} ${(u.flags as string).padEnd(28)} ${u.desc}\n`;
-			}
-			helpText += `\n\x1b[1mExamples:\x1b[0m\n`;
+			// Examples first (with mock parameters), full flag enumeration after —
+			// see CLAUDE.md "Manifest-driven --help" convention.
+			helpText += `\x1b[1mExamples:\x1b[0m\n`;
 			for (const e of manifest.examples) {
-				helpText += `  ${(e.cmd as string).padEnd(30)} ${e.desc}\n`;
+				const fullCmd = e.args ? `${invokedAs} ${e.args}` : invokedAs;
+				helpText += `  ${fullCmd.padEnd(30)} ${e.desc}\n`;
+			}
+			helpText += `\n\x1b[1mUsage:\x1b[0m\n`;
+			for (const u of manifest.usage) {
+				helpText += `  ${invokedAs} ${(u.flags as string).padEnd(28)} ${u.desc}\n`;
 			}
 			console.log(helpText);
 		} catch (err) {

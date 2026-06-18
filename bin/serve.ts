@@ -57,12 +57,18 @@ function handleHelp(): void {
 	try {
 		const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
 		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+		const invokedAs = "./serve"; // CLI entry point; bare `serve` also works once repo root is on $PATH
 
 		let helpText = `${manifest.name} - ${manifest.tagline}\n\n${manifest.description}\n\n`;
-		helpText += `Usage:\n`;
-		for (const u of manifest.usage) helpText += `  ${manifest.name} ${(u.flags as string).padEnd(28)} ${u.desc}\n`;
-		helpText += `\nExamples:\n`;
-		for (const e of manifest.examples) helpText += `  ${(e.cmd as string).padEnd(30)} ${e.desc}\n`;
+		// Examples first (with mock parameters), full flag enumeration after —
+		// see CLAUDE.md "Manifest-driven --help" convention.
+		helpText += `Examples:\n`;
+		for (const e of manifest.examples) {
+			const fullCmd = e.args ? `${invokedAs} ${e.args}` : invokedAs;
+			helpText += `  ${fullCmd.padEnd(30)} ${e.desc}\n`;
+		}
+		helpText += `\nUsage:\n`;
+		for (const u of manifest.usage) helpText += `  ${invokedAs} ${(u.flags as string).padEnd(28)} ${u.desc}\n`;
 		console.log(helpText);
 	} catch (err) {
 		console.error(`⚠️ Failed to load command manifest: ${err}`);
