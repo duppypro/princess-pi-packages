@@ -1,23 +1,40 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env -S node --experimental-strip-types
 /**
  * @package princess-pi-packages
  * @command merge
  * @description Standalone CLI port of extensions/merge.ts (Multi-Worktree Git Merger).
  * Runs the identical validation/merge/push sequence without the Pi runtime —
- * invokable directly (npx tsx bin/merge.ts <ref>) or via the ./merge wrapper script.
+ * invokable directly (node --experimental-strip-types bin/merge.ts <ref>) or via the
+ * ./merge wrapper / the npm-global `merge` bin.
+ *
+ * Why `node --experimental-strip-types` (not `npx tsx`): once npm-installed globally
+ * for cross-harness use (Claude Code), a tsx shebang triggers a network fetch on every
+ * fresh environment. Node 22's native type-stripping needs zero deps and matches wtft.ts.
  */
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// --- Step-5 gate matcher (shared by the validation check and the suggestion scan).
+// Loosened from a literal `startsWith("Code and Spec Approved:")` to accept our actual
+// commit convention `Code and Spec Approved (Step 5): ...` — i.e. an optional
+// parenthetical (and surrounding whitespace) before the colon. Why a single shared
+// const: the gate and the "did you mean this commit?" suggestion must agree exactly.
+const STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
 
 function run(): void {
 	const argsList = process.argv.slice(2).filter(Boolean);
 
 	if (argsList.includes("-h") || argsList.includes("--help")) {
 		try {
-			const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
+			// Resolve the manifest relative to THIS script, not process.cwd(): once installed
+			// globally the tool runs from arbitrary repos (rogue-savvy, etc.) where cwd/docs
+			// doesn't exist. bin/ is one level under the package root, so go up one.
+			const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+			const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
 			const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-			const invokedAs = "./merge"; // CLI entry point; bare `merge` also works once repo root is on $PATH
+			const invokedAs = "merge"; // npm-global bin name; `./merge` wrapper also works
 
 			let helpText = `\x1b[1m\x1b[36m${manifest.name}\x1b[0m - ${manifest.tagline}\n\n`;
 			helpText += `${manifest.description}\n\n`;
@@ -98,7 +115,7 @@ function run(): void {
 
 		// 6. Validate that the target commit was a "Code and Spec Approved" Step 5 commit
 		const targetCommitMsg = execSync(`git log -1 --pretty=%B ${targetHash}`, { cwd: currentCwd, encoding: "utf8" }).trim();
-		if (!targetCommitMsg.startsWith("Code and Spec Approved:")) {
+		if (!STEP5_SUBJECT.test(targetCommitMsg)) {
 			let suggestedStep5Hash = "";
 			let suggestedStep5Msg = "";
 			try {
@@ -108,7 +125,7 @@ function run(): void {
 					if (spaceIdx !== -1) {
 						const hash = line.substring(0, spaceIdx).trim();
 						const msg = line.substring(spaceIdx + 1).trim();
-						if (msg.startsWith("Code and Spec Approved:")) {
+						if (STEP5_SUBJECT.test(msg)) {
 							suggestedStep5Hash = hash;
 							suggestedStep5Msg = msg;
 							break;
@@ -127,7 +144,7 @@ function run(): void {
 			throw new Error(errorMsg);
 		}
 
-		// 7. Find the 'main' worktree
+		// 7. Locate a dedicated 'main' worktree, if one exists.
 		const worktreeLines = execSync("git worktree list", { cwd: currentCwd, encoding: "utf8" }).trim().split("\n");
 		let mainCwd = "";
 		for (const line of worktreeLines) {
@@ -138,32 +155,66 @@ function run(): void {
 				mainCwd = spaceIdx !== -1 ? beforeBranch.substring(0, spaceIdx).trim() : beforeBranch;
 			}
 		}
+		const haveMainWorktree = !!mainCwd && fs.existsSync(mainCwd) && mainCwd !== currentCwd;
 
-		if (!mainCwd || !fs.existsSync(mainCwd)) {
-			throw new Error("Could not find the 'main' branch worktree from 'git worktree list'.");
+		if (haveMainWorktree) {
+			// --- Multi-worktree path (Pi's original design): merge inside the isolated
+			// 'main' worktree, never disturbing the feature checkout.
+			const mainStatus = execSync("git status --porcelain", { cwd: mainCwd, encoding: "utf8" }).trim();
+			if (mainStatus !== "") {
+				throw new Error(`The 'main' branch worktree at ${mainCwd} is not clean. Please clean or stash changes there first.\n${mainStatus}`);
+			}
+			console.log("📡 Pulling latest 'main' from origin...");
+			execSync("git checkout main", { cwd: mainCwd, stdio: "ignore" });
+			execSync("git pull --ff-only origin main", { cwd: mainCwd, stdio: "ignore" });
+			console.log(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`);
+			execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
+			console.log("📡 Pushing merged 'main' branch to origin...");
+			execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
+			console.log(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
+			console.log(`💪 Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
+		} else {
+			// --- Single-checkout fallback (the common Claude Code case): no dedicated
+			// 'main' worktree, so integrate in-place. We checkout main here, merge, push,
+			// then ALWAYS return to the feature branch — even on failure — so the user is
+			// never stranded on main or mid-merge. The current tree was verified clean at
+			// step 2, so switching branches is safe.
+			console.log("🪵 No dedicated 'main' worktree found — using in-place single-checkout merge.");
+			try {
+				// Ensure a local 'main' exists (fresh clones may only have origin/main).
+				let hasLocalMain = true;
+				try {
+					execSync("git rev-parse --verify --quiet refs/heads/main", { cwd: currentCwd, stdio: "ignore" });
+				} catch {
+					hasLocalMain = false;
+				}
+				console.log("📡 Checking out and updating 'main'...");
+				if (hasLocalMain) {
+					execSync("git checkout main", { cwd: currentCwd, stdio: "ignore" });
+					execSync("git pull --ff-only origin main", { cwd: currentCwd, stdio: "ignore" });
+				} else {
+					execSync("git checkout -b main origin/main", { cwd: currentCwd, stdio: "ignore" });
+				}
+				console.log(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main'...`);
+				execSync(`git merge ${targetHash}`, { cwd: currentCwd, stdio: "ignore" });
+				console.log("📡 Pushing merged 'main' branch to origin...");
+				execSync("git push origin main", { cwd: currentCwd, stdio: "ignore" });
+			} catch (mergeErr: any) {
+				// Abort any half-finished merge so the working tree is restored.
+				try { execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" }); } catch { /* not mid-merge */ }
+				const detail = mergeErr?.message || String(mergeErr);
+				throw new Error(
+					`In-place merge into 'main' failed and was rolled back (you are back on '${currentBranch}').\n` +
+					`Likely a merge conflict or a non-fast-forward 'main' (someone pushed). Fix by updating 'main' and re-running, ` +
+					`or resolve manually.\nUnderlying error:\n${detail}`
+				);
+			} finally {
+				// ALWAYS return to the feature branch the user started on.
+				try { execSync(`git checkout ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" }); } catch { /* best-effort */ }
+			}
+			console.log(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
+			console.log(`💪 Ready for the next task! You are back in '${currentCwd}' on branch '${currentBranch}'.`);
 		}
-
-		// 8. Verify main worktree is clean
-		const mainStatus = execSync("git status --porcelain", { cwd: mainCwd, encoding: "utf8" }).trim();
-		if (mainStatus !== "") {
-			throw new Error(`The 'main' branch worktree at ${mainCwd} is not clean. Please clean or stash changes there first.\n${mainStatus}`);
-		}
-
-		// 9. Pull the latest 'main' branch in main worktree to ensure it is up-to-date with remote
-		console.log("📡 Pulling latest 'main' from origin...");
-		execSync("git checkout main", { cwd: mainCwd, stdio: "ignore" });
-		execSync("git pull origin main", { cwd: mainCwd, stdio: "ignore" });
-
-		// 10. Merge the target commit into 'main'
-		console.log(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`);
-		execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
-
-		// 11. Push 'main' to origin
-		console.log("📡 Pushing merged 'main' branch to origin...");
-		execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
-
-		console.log(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-		console.log(`💪 Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
 	} catch (err: any) {
 		const errMsg = err?.message || String(err);
 		console.error(`❌ Merge Aborted:\n${errMsg}`);
