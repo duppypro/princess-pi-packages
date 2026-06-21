@@ -7,7 +7,7 @@
   "bin": {
     "yada": "./bin/yada.ts",
     "dedupwcount": "./bin/yada.ts",
-    "wtft": "./bin/wtft.ts",
+    "wtft": "./bin/wtft.mjs",
     "merge": "./bin/merge.mjs"
   },
   "pi": {
