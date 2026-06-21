@@ -9,6 +9,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 // --- INLINED FROM extensions/lib/wtft-shared.ts ---
+import * as path from "node:path";
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
   if (match) {
@@ -264,7 +265,7 @@ function buildTickLine(maxCost, barWidth) {
     if (l.start > currentIndex) {
       result += outArr.slice(currentIndex, l.start).join("");
     }
-    result += `\x1B[30;47m${l.text}\x1B[0m`;
+    result += `\x1B[38;5;16;48;5;255m${l.text}\x1B[0m`;
     currentIndex = l.start + l.text.length;
   }
   if (currentIndex < barWidth) {
