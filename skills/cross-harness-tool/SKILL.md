@@ -46,8 +46,7 @@ If a tool relies heavily on shared TypeScript libraries (`extensions/lib/`), man
 npx esbuild bin/tool.ts --bundle --platform=node --format=esm --target=node18 --outfile=bin/tool.mjs
 ```
 **🚨 Gotchas (Learned in #9 and #10):**
-1. **The Compilation Ghost:** When you modify the shared TypeScript library (`extensions/lib/...`), the Pi extension will instantly pick up the changes via `/reload`. **However, the `.mjs` binary will not!** You must explicitly re-run `esbuild` to bake the changes into the `.mjs` file *before* you commit. If you forget, the global NPM package will deploy the stale logic.
-2. **Duplicate Imports:** `esbuild` may inline a shared `.ts` file that has its own `import * as fs from "node:fs"`. If `bin/tool.ts` also imports `fs`, Node will crash with `SyntaxError: Identifier 'fs' has already been declared`. You must write a script to strip duplicate core node module imports from the final `.mjs` file if you are manually concatenating them, or rely strictly on a pure `esbuild --bundle` output which handles deduplication automatically.
+1. **The Compilation Ghost:** When you modify the shared TypeScript library (`extensions/lib/...`), the Pi extension will instantly pick up the changes via `/reload`. **However, the `.mjs` binary will not!** You must explicitly run `npm run build` to bake the changes into the `.mjs` file *before* you commit. If you forget, the global NPM package will deploy the stale logic. The `build.mjs` script automatically handles `esbuild` and duplicate import stripping.
 2. **Path Resolution:** If you use `--bundle`, any files spawned as child processes (like `run-live-server.js` in `/serve`) must **not** be bundled into the `.mjs` file, as they must remain discrete physical files on disk for `node:child_process` to target.
 3. **NPM Testing (`npm link` vs `npm install -g`):**
    - When developing locally, `npm link` will symlink your repository's `bin/` folder to your global path.
