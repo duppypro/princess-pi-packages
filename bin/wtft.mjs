@@ -9,6 +9,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 // --- INLINED FROM extensions/lib/wtft-shared.ts ---
+import * as path from "node:path";
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
   if (match) {
@@ -371,9 +372,22 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   }
   const scaleMax = calculateScaleMax(totalSessionCost);
   const labelWidth = Math.max(...displayedBins.map((b) => b.label.length), 5);
-  const prefixWidth = mode === "cumulative" ? labelWidth + 18 : labelWidth + 10;
+  let prefixWidth = labelWidth + 2;
+  let maxIncLen = 6;
+  let maxCostLen = 6;
+  if (mode === "cumulative") {
+    maxIncLen = Math.max(...displayedBins.map((bin) => {
+      const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
+      return `${incSign}${formatCost(bin.incremental_cost ?? 0)}`.length;
+    }), 6);
+    maxCostLen = Math.max(...displayedBins.map((b) => formatCost(b.total_cost).length), 6);
+    prefixWidth += maxIncLen + 2 + maxCostLen + 2;
+  } else {
+    maxCostLen = Math.max(...displayedBins.map((b) => formatCost(b.total_cost).length), 6);
+    prefixWidth += maxCostLen + 2;
+  }
   const finalWidth = Math.max(width, 40);
-  const maxBarWidth = finalWidth - prefixWidth - 4;
+  const maxBarWidth = finalWidth - prefixWidth - 3;
   const newestBin = displayedBins[0];
   let titleDateStr = "";
   if (newestBin) {
@@ -461,13 +475,13 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     if (mode === "cumulative") {
       const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
       const incStr = `${incSign}${formatCost(bin.incremental_cost ?? 0)}`;
-      const incPart = padString(incStr, 6);
+      const incPart = padString(incStr, maxIncLen);
       const coloredInc = `\x1B[90m${incPart}\x1B[0m`;
-      const costPart = padString(formatCost(bin.total_cost), 6);
+      const costPart = padString(formatCost(bin.total_cost), maxCostLen);
       const coloredCost = `\x1B[1;37m${costPart}\x1B[0m`;
       widgetLines.push(`${coloredLabel}  ${coloredInc}  ${coloredCost}  ${barStr}`);
     } else {
-      const costPart = padString(formatCost(bin.total_cost), 6);
+      const costPart = padString(formatCost(bin.total_cost), maxCostLen);
       const coloredCost = `\x1B[1;37m${costPart}\x1B[0m`;
       widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
     }
