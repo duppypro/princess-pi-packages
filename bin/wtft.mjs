@@ -399,7 +399,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     const labelPrefix = padString(titleDateStr, prefixWidth);
     const ticksLine = buildTickLine(scaleMax, maxBarWidth);
     if (ticksLine) {
-      widgetLines.push(labelPrefix + `\x1B[2m${ticksLine}\x1B[0m`);
+      widgetLines.push(labelPrefix + `\x1B[90m${ticksLine}\x1B[0m`);
     }
   }
   for (let i = 0; i < displayedBins.length; i++) {
@@ -408,7 +408,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       const labelDay = formatMmmDdStr(bin.dateStr);
       const dayChangeText = `\u2500\u2500\u2500 ${labelDay} `;
       const dividerLine = dayChangeText + "\u2500".repeat(Math.max(0, finalWidth - dayChangeText.length));
-      widgetLines.push(`\x1B[2m${dividerLine}\x1B[0m`);
+      widgetLines.push(`\x1B[90m${dividerLine}\x1B[0m`);
     }
     const barWidth = scaleMax > 0 ? Math.round(bin.total_cost / scaleMax * maxBarWidth) : 0;
     const chars = distributeChars(bin.costs, barWidth);
@@ -441,7 +441,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       barStr += `\x1B[38;5;238m${"\u2591".repeat(chars.other)}\x1B[0m`;
     }
     const labelPart = padString(bin.label, labelWidth);
-    const coloredLabel = `\x1B[2m${labelPart}\x1B[0m`;
+    const coloredLabel = `\x1B[90m${labelPart}\x1B[0m`;
     if (mode === "cumulative") {
       const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
       const incStr = `${incSign}${formatCost(bin.incremental_cost ?? 0)}`;
