@@ -539,35 +539,60 @@ function buildWtftLines(interactions2, defaultSettings2, opts) {
       const dividerLine = dayChangeText + "\u2500".repeat(Math.max(0, finalWidth - dayChangeText.length));
       widgetLines.push(`\x1B[90m${dividerLine}\x1B[0m`);
     }
-    const barWidth = scaleMax > 0 ? Math.round(bin.total_cost / scaleMax * maxBarWidth) : 0;
-    const chars = distributeChars(bin.costs, barWidth);
     let barStr = "";
-    if (chars.spec > 0) {
-      barStr += `\x1B[38;5;108m${"\u2588".repeat(chars.spec)}\x1B[0m`;
-    }
-    if (chars.mixed > 0) {
-      barStr += `\x1B[38;5;108;48;5;173m${"\u2592".repeat(chars.mixed)}\x1B[0m`;
-    }
-    if (chars.code > 0) {
-      barStr += `\x1B[38;5;173m${"\u2588".repeat(chars.code)}\x1B[0m`;
-    }
-    if (chars.tests > 0) {
-      barStr += `\x1B[38;5;223m${"\u2588".repeat(chars.tests)}\x1B[0m`;
-    }
-    if (chars.research > 0) {
-      barStr += `\x1B[38;5;134m${"\u2588".repeat(chars.research)}\x1B[0m`;
-    }
-    if (chars.git > 0) {
-      barStr += `\x1B[38;5;73m${"\u2588".repeat(chars.git)}\x1B[0m`;
-    }
-    if (chars.grep > 0) {
-      barStr += `\x1B[38;5;67m${"\u2588".repeat(chars.grep)}\x1B[0m`;
-    }
-    if (chars.prompt > 0) {
-      barStr += `\x1B[38;5;168m${"\u2591".repeat(chars.prompt)}\x1B[0m`;
-    }
-    if (chars.other > 0) {
-      barStr += `\x1B[38;5;238m${"\u2591".repeat(chars.other)}\x1B[0m`;
+    if (mode2 === "cumulative") {
+      const barWidth = scaleMax > 0 ? Math.round(bin.total_cost / scaleMax * maxBarWidth) : 0;
+      const chars = distributeChars(bin.costs, barWidth);
+      if (chars.spec > 0) {
+        barStr += `\x1B[38;5;108m${"\u2588".repeat(chars.spec)}\x1B[0m`;
+      }
+      if (chars.mixed > 0) {
+        barStr += `\x1B[38;5;108;48;5;173m${"\u2592".repeat(chars.mixed)}\x1B[0m`;
+      }
+      if (chars.code > 0) {
+        barStr += `\x1B[38;5;173m${"\u2588".repeat(chars.code)}\x1B[0m`;
+      }
+      if (chars.tests > 0) {
+        barStr += `\x1B[38;5;223m${"\u2588".repeat(chars.tests)}\x1B[0m`;
+      }
+      if (chars.research > 0) {
+        barStr += `\x1B[38;5;134m${"\u2588".repeat(chars.research)}\x1B[0m`;
+      }
+      if (chars.git > 0) {
+        barStr += `\x1B[38;5;73m${"\u2588".repeat(chars.git)}\x1B[0m`;
+      }
+      if (chars.grep > 0) {
+        barStr += `\x1B[38;5;67m${"\u2588".repeat(chars.grep)}\x1B[0m`;
+      }
+      if (chars.prompt > 0) {
+        barStr += `\x1B[38;5;168m${"\u2591".repeat(chars.prompt)}\x1B[0m`;
+      }
+      if (chars.other > 0) {
+        barStr += `\x1B[38;5;238m${"\u2591".repeat(chars.other)}\x1B[0m`;
+      }
+    } else {
+      const cells = Array(maxBarWidth).fill(" ");
+      const categoriesInReverse = [
+        { cat: "other", color: "\x1B[38;5;238m", char: "\u2591" },
+        { cat: "prompt", color: "\x1B[38;5;168m", char: "\u2591" },
+        { cat: "grep", color: "\x1B[38;5;67m", char: "\u2588" },
+        { cat: "git", color: "\x1B[38;5;73m", char: "\u2588" },
+        { cat: "research", color: "\x1B[38;5;134m", char: "\u2588" },
+        { cat: "tests", color: "\x1B[38;5;223m", char: "\u2588" },
+        { cat: "code", color: "\x1B[38;5;173m", char: "\u2588" },
+        { cat: "mixed", color: "\x1B[38;5;108;48;5;173m", char: "\u2592" },
+        { cat: "spec", color: "\x1B[38;5;108m", char: "\u2588" }
+      ];
+      for (const { cat, color, char } of categoriesInReverse) {
+        const cost = bin.costs[cat] || 0;
+        if (cost > 0 && scaleMax > 0) {
+          const pos = Math.round(cost / scaleMax * (maxBarWidth - 1));
+          if (pos >= 0 && pos < maxBarWidth) {
+            cells[pos] = `${color}${char}\x1B[0m`;
+          }
+        }
+      }
+      barStr = cells.join("");
     }
     const labelPart = padString(bin.label, labelWidth);
     const coloredLabel = `\x1B[90m${labelPart}\x1B[0m`;
