@@ -131,7 +131,8 @@ export function buildDiscoveredSummary(servers: ServerInstance[], cwd: string = 
 		const logPadded = padVisual(logPath, 49);
 
 		const isSsl = server.url.startsWith("https");
-		const protocolLabelPlain = isSsl ? "Secure HTTPS" : "Plain HTTP";
+		const typeLabel = server.isLive ? "Live" : "Static";
+		const protocolLabelPlain = isSsl ? `Secure HTTPS - ${typeLabel}` : `Plain HTTP - ${typeLabel}`;
 		const statusTextPlain = `200 OK (${protocolLabelPlain})`;
 		const statusTextPadded = padVisual(statusTextPlain, 47);
 		const coloredStatus = isSsl ? `\x1b[32m${statusTextPadded}\x1b[0m` : `\x1b[33m${statusTextPadded}\x1b[0m`;
