@@ -227,48 +227,62 @@ function calculateScaleMax(total) {
     return Math.ceil(total);
   }
 }
-function buildTickLine(maxCost, barWidth) {
+function buildTickLine(maxCost, barWidth, prefixWidth, labelPrefix) {
   if (maxCost <= 0 || barWidth < 15) return null;
-  const outArr = Array(barWidth).fill("\u2500");
-  const midIdx = Math.floor(barWidth / 2);
-  const q1Idx = Math.floor(barWidth / 4);
-  const q3Idx = Math.floor(barWidth * 3 / 4);
-  outArr[0] = "\u253F";
-  outArr[barWidth - 1] = "\u253F";
-  outArr[midIdx] = "\u253F";
-  outArr[q1Idx] = "\u253F";
-  outArr[q3Idx] = "\u253F";
+  const totalWidth = prefixWidth + barWidth;
+  const chars = Array(totalWidth).fill("\u2500");
+  const cleanPrefix = labelPrefix.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  for (let i = 0; i < cleanPrefix.length; i++) {
+    chars[i] = cleanPrefix[i];
+  }
+  const ticks = [
+    prefixWidth,
+    prefixWidth + Math.floor(barWidth / 4),
+    prefixWidth + Math.floor(barWidth / 2),
+    prefixWidth + Math.floor(barWidth * 3 / 4),
+    prefixWidth + barWidth - 1
+  ];
+  for (const t of ticks) {
+    if (t < chars.length) chars[t] = "\u253F";
+  }
   const labels = [];
-  const tryPlaceLabel = (text, startIdx) => {
+  const tickValues = [0, maxCost / 4, maxCost / 2, maxCost * 3 / 4, maxCost];
+  for (let i = 0; i < ticks.length; i++) {
+    const text = `$${tickValues[i].toFixed(2)}`;
     const displayStr = ` ${text} `;
-    const len = displayStr.length;
-    if (startIdx + len > barWidth) startIdx = barWidth - len;
-    if (startIdx < 0) return false;
+    const dotIdx = displayStr.indexOf(".");
+    const startIdx = ticks[i] - dotIdx;
+    const endIdx = startIdx + displayStr.length;
+    let overlap = false;
     for (const l of labels) {
-      if (startIdx < l.start + l.text.length && startIdx + len > l.start) {
-        return false;
+      if (startIdx < l.end && endIdx > l.start) {
+        overlap = true;
+        break;
       }
     }
-    labels.push({ text: displayStr, start: startIdx });
-    return true;
-  };
-  tryPlaceLabel("$0.00", 0);
-  tryPlaceLabel(`$${maxCost.toFixed(2)}`, barWidth - 1);
-  tryPlaceLabel(`$${(maxCost / 2).toFixed(2)}`, midIdx);
-  tryPlaceLabel(`$${(maxCost / 4).toFixed(2)}`, q1Idx);
-  tryPlaceLabel(`$${(maxCost * 3 / 4).toFixed(2)}`, q3Idx);
+    if (!overlap) {
+      labels.push({
+        text: displayStr,
+        start: startIdx,
+        end: endIdx
+      });
+    }
+  }
   labels.sort((a, b) => a.start - b.start);
   let result = "";
-  let currentIndex = 0;
+  let cursor = 0;
   for (const l of labels) {
-    if (l.start > currentIndex) {
-      result += outArr.slice(currentIndex, l.start).join("");
+    if (l.start > cursor) {
+      result += chars.slice(cursor, Math.min(l.start, chars.length)).join("");
+      if (l.start > chars.length) {
+        result += " ".repeat(l.start - Math.max(cursor, chars.length));
+      }
     }
     result += `\x1B[7m${l.text}\x1B[27m`;
-    currentIndex = l.start + l.text.length;
+    cursor = Math.max(cursor, l.end);
   }
-  if (currentIndex < barWidth) {
-    result += outArr.slice(currentIndex).join("");
+  if (cursor < chars.length) {
+    result += chars.slice(cursor).join("");
   }
   return result;
 }
@@ -359,7 +373,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const labelWidth = Math.max(...displayedBins.map((b) => b.label.length), 5);
   const prefixWidth = mode === "cumulative" ? labelWidth + 18 : labelWidth + 10;
   const finalWidth = Math.max(width, 40);
-  const maxBarWidth = finalWidth - prefixWidth;
+  const maxBarWidth = finalWidth - prefixWidth - 4;
   const newestBin = displayedBins[0];
   let titleDateStr = "";
   if (newestBin) {
@@ -396,19 +410,19 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     widgetLines.push(legendStr);
   }
   if (showTicks && scaleMax > 0) {
-    const dateLabel = `\u2500\u2500\u2500 ${titleDateStr} `;
+    const dateLabel = `\u2500\u2500 ${titleDateStr} `;
     const paddingLen = Math.max(0, prefixWidth - dateLabel.length);
     const labelPrefix = dateLabel + "\u2500".repeat(paddingLen);
-    const ticksLine = buildTickLine(scaleMax, maxBarWidth);
+    const ticksLine = buildTickLine(scaleMax, maxBarWidth, prefixWidth, labelPrefix);
     if (ticksLine) {
-      widgetLines.push(`\x1B[90m${labelPrefix}${ticksLine}\x1B[0m`);
+      widgetLines.push(`\x1B[90m${ticksLine}\x1B[0m`);
     }
   }
   for (let i = 0; i < displayedBins.length; i++) {
     const bin = displayedBins[i];
     if (showTicks && i > 0 && bin.dateStr !== displayedBins[i - 1].dateStr) {
       const labelDay = formatMmmDdStr(bin.dateStr);
-      const dayChangeText = `\u2500\u2500\u2500 ${labelDay} `;
+      const dayChangeText = `\u2500\u2500 ${labelDay} `;
       const dividerLine = dayChangeText + "\u2500".repeat(Math.max(0, finalWidth - dayChangeText.length));
       widgetLines.push(`\x1B[90m${dividerLine}\x1B[0m`);
     }
