@@ -4,6 +4,24 @@ This repository bundles Princess-Pi's custom extensions and tools into a single,
 
 ---
 
+## 🎯 Mission — Cross-Harness Tooling
+
+The goal of this repo is **one implementation of each tool that works across coding-agent harnesses** —
+today **Pi Coding Agent** and **Claude Code**, with room for others. Each capability is built to be:
+
+- **Callable as a plain CLI** (`#!/usr/bin/env node` ESM JS) so any shell — and Claude Code via its
+  `!` prefix or a single Bash call — can run it with **zero LLM reasoning turns** on the success path
+  and a fix-instructing error on the failure path;
+- **Usable as a Pi extension** (`/command` via `registerCommand`), optionally with a **live TUI widget**
+  (e.g. `/wtft`'s turn-event cost tracker);
+- **Driven by one shared manifest** (`docs/manifests/*-cmd.json`) so `--help` renders identically
+  everywhere.
+
+`merge` is the reference cross-harness tool; `wtft`/`serve` are being brought to the same bar (issues
+#9, #10). **To build a new cross-harness tool, follow `skills/cross-harness-tool/SKILL.md`.**
+
+---
+
 ## 📦 What's Included
 
 | Extension | Command / Tool | Description |

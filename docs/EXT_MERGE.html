@@ -3,7 +3,7 @@
 <head>
     <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
     <meta charset="UTF-8">
-    <title>Pi Extensions: Multi-Worktree Git Merger Spec</title>
+    <title>Pi Extensions: Git→main Merger Spec (worktree or single-checkout)</title>
     <style>
         :root {
             --bg-color: #1e1e1e;
@@ -32,14 +32,15 @@
     </style>
 </head>
 <body>
-    <h2>Multi-Worktree Git Merger Utility (<code>merge.ts</code>)</h2>
-    <p><strong>Domain:</strong> Git Automation, Multi-Worktree Workflows & Step-Based Releases</p>
+    <h2>Git→main Merger Utility (<code>merge.mjs</code>)</h2>
+    <p><strong>Domain:</strong> Git Automation, Multi-Worktree <em>and</em> Single-Checkout Workflows & Step-Based Releases</p>
 
     <h3>Overview</h3>
-    <p>The <code>/merge</code> extension provides a zero-token, local command to automate the validation and integration of completed feature branches from separate Git worktrees into the <code>main</code> branch. It ensures compliance with the Princess-Pi 5-Step Development Flow without invoking costly LLM reasoning turns.</p>
+    <p>The <code>/merge</code> command provides a zero-token, local utility to automate the validation and integration of a completed Step 5 feature branch (or a specific stable commit) into the <code>main</code> branch. It ensures compliance with the Princess-Pi 5-Step Development Flow without invoking costly LLM reasoning turns.</p>
 
-    <h3>CLI Mode (Outside Pi Coding Agent)</h3>
-    <p><code>bin/merge.ts</code> is a 1:1 standalone port of the same validation/merge/push sequence (plain <code>execSync</code> git calls, no Pi dependency). It's invokable as <code>./merge [commit-ish]</code> from the repo root, or bare <code>merge</code> once the repo root is added to <code>$PATH</code> — including via Claude Code's <code>!</code> prefix (e.g. <code>!./merge 638e9b4</code>), since Claude Code has no extension-dispatch mechanism that bypasses the model entirely the way Pi's <code>registerCommand</code> does. Behavior is identical to the Pi extension; only the output channel differs (<code>console.log</code> instead of <code>ctx.ui.notify</code>).</p>
+    <h3>CLI Mode (Outside Pi Coding Agent) — Cross-Harness</h3>
+    <p><code>bin/merge.mjs</code> is a standalone port of the same validation/merge/push sequence (plain <code>execSync</code> git calls, no Pi dependency). It is <strong>plain ESM JavaScript</strong> (<code>#!/usr/bin/env node</code>) rather than TypeScript on purpose: when installed globally for Claude Code (<code>npm install -g github:duppypro/princess-pi-packages</code>), the bin lives under <code>node_modules/</code>, where Node refuses <code>--experimental-strip-types</code> (<code>ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING</code>); plain JS needs no <code>tsx</code> and no build step. Invoke it as the npm-global <code>merge [commit-ish]</code>, via the <code>./merge</code> wrapper from the repo root, or through Claude Code's <code>!</code> prefix (e.g. <code>!merge 638e9b4</code>) — Claude has no extension-dispatch that bypasses the model the way Pi's <code>registerCommand</code> does, so the CLI is how it stays zero-token there. Behavior matches the Pi extension; only the output channel differs (<code>console.log</code> instead of <code>ctx.ui.notify</code>). The typed twin <code>extensions/merge.ts</code> remains the Pi-runtime version.</p>
+    <p><strong>Worktree vs single-checkout:</strong> if a dedicated <code>main</code> git-worktree exists, the merge runs there and never disturbs the feature checkout (Pi's original multi-worktree design). Otherwise — the common Claude Code case — it falls back to an <strong>in-place single-checkout merge</strong> in the current repo, always returning you to your feature branch afterward and rolling back (<code>git merge --abort</code>) on conflict.</p>
 
     <h3>Command Reference</h3>
     <div id="merge-cmd-reference" style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040;">
@@ -52,18 +53,26 @@
         <li><strong>No Self-Merge:</strong> Rejects running the command if the active worktree is already on the <code>main</code> branch.</li>
         <li><strong>Clean Feature Worktree:</strong> Verifies that the current feature worktree contains no uncommitted (staged or unstaged) modifications.</li>
         <li><strong>In Sync with Origin:</strong> Fetches origin and ensures the targeted commit-ish is present in the history of the remote tracking branch (preventing unpushed commits).</li>
-        <li><strong>Step 5 Validation:</strong> Validates that the targeted commit's message begins with <code>Code and Spec Approved:</code> (conforming to Step 5 of the Princess-Pi standard). If it does not, the command fails and automatically suggests the command to merge the most recent historical commit that <em>does</em> meet this standard.</li>
-        <li><strong>Clean Main Worktree:</strong> Finds the <code>main</code> worktree directory and verifies that it contains no uncommitted changes.</li>
+        <li><strong>Step 5 Validation:</strong> Validates the targeted commit's subject against <code>/^Code and Spec Approved(\s*\([^)]*\))?\s*:/</code> — i.e. it must begin with <code>Code and Spec Approved</code> followed by an optional parenthetical (e.g. <code>Code and Spec Approved (Step 5):</code>) and a colon, conforming to Step 5 of the Princess-Pi standard. If it does not, the command fails and automatically suggests the most recent historical commit that <em>does</em> meet this standard.</li>
+        <li><strong>Clean Target (when a <code>main</code> worktree exists):</strong> If a dedicated <code>main</code> worktree is found, verifies it contains no uncommitted changes. In single-checkout mode this step is skipped — the current feature worktree was already verified clean above, and the tool switches branches in place.</li>
     </ol>
 
     <h3>Merge and Push Execution</h3>
-    <p>Once all validations pass, the utility performs the integration automatically inside the <code>main</code> worktree directory using <code>git</code> commands in that path:</p>
+    <p>Once all validations pass, the utility integrates and pushes automatically. Two paths:</p>
+    <p><strong>Multi-worktree path</strong> — inside the dedicated <code>main</code> worktree directory:</p>
     <ol>
         <li>Switches/ensures the main worktree is on the <code>main</code> branch.</li>
-        <li>Pulls the latest updates from <code>origin/main</code>.</li>
-        <li>Merges the validated target commit into the <code>main</code> branch (leaving any subsequent unapproved commits on the feature branch).</li>
+        <li>Pulls the latest updates from <code>origin/main</code> (<code>--ff-only</code>).</li>
+        <li>Merges the validated target commit into <code>main</code> (leaving any subsequent unapproved commits on the feature branch).</li>
         <li>Pushes the newly merged <code>main</code> branch to origin.</li>
-        <li>Logs absolute success and returns focus to the active worktree, ready for the next development task.</li>
+        <li>Logs success; the active feature worktree was never touched.</li>
+    </ol>
+    <p><strong>Single-checkout fallback</strong> — in the current repo, wrapped so it always returns you to the feature branch:</p>
+    <ol>
+        <li>Checks out <code>main</code> in place (creating it from <code>origin/main</code> if the local branch is absent) and pulls <code>--ff-only</code>.</li>
+        <li>Merges the validated target commit into <code>main</code>.</li>
+        <li>Pushes <code>main</code> to origin.</li>
+        <li>On any failure, runs <code>git merge --abort</code> and reports an LLM-actionable error; a <code>finally</code> step always checks the feature branch back out, so you are never stranded on <code>main</code> or mid-merge.</li>
     </ol>
 
     <script>
@@ -74,7 +83,7 @@
                 if (!container) return;
 
                 // Pi-facing spec page shows the /merge invocation; the same manifest
-                // also renders correctly as ./merge via bin/merge.ts's CLI help (see
+                // also renders correctly as the `merge` CLI help via bin/merge.mjs (see
                 // CLAUDE.md "Manifest-driven --help" convention: examples before flags).
                 const invokedAs = "/merge";
                 let html = `<p><strong><code>${data.name}</code></strong> - ${data.tagline}</p>`;
