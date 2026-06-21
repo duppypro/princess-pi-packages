@@ -30,6 +30,27 @@ pi install https://github.com/dproctor/princess-pi-packages
 
 Once installed, Pi will automatically load the extensions and skills found in this package into every session.
 
+### Cross-harness CLI install (Claude Code & any shell)
+
+The same tools are exposed as standalone CLIs (no Pi runtime) for Claude Code and other
+harnesses. Install them globally **from GitHub `main`** (not a local clone) with npm — the
+`-g` flag makes this cwd-independent, so run it from anywhere (e.g. `~`):
+
+```bash
+npm install -g github:duppypro/princess-pi-packages
+```
+
+This puts the `bin` commands on your `$PATH`: **`merge`**, **`serve`**, `wtft`, `yada`/`dedupwcount`.
+In Claude Code, invoke them with the `!` prefix (e.g. `!merge <commit-ish>`) or let the agent
+run them as a single Bash call — they spend **zero LLM reasoning turns** on the success path and
+emit fix-instructing errors on the failure path. Requires **Node ≥ 22** (native TypeScript
+type-stripping; no `tsx`/build step). Re-run the same command to update.
+
+> `merge` works in both layouts: a dedicated `main` git-worktree (merges there, leaving your
+> feature checkout untouched) **or** a plain single checkout (merges in-place, then returns you
+> to your feature branch; rolls back on conflict). It enforces the Step 5 "Code and Spec Approved"
+> gate before any push.
+
 ### Managing Extensions
 
 You can toggle specific extensions and skills on or off at any time using the built-in Pi Configuration interface:
