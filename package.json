@@ -8,6 +8,7 @@
     "yada": "./bin/yada.ts",
     "dedupwcount": "./bin/yada.ts",
     "wtft": "./bin/wtft.mjs",
+    "serve": "./bin/serve.mjs",
     "merge": "./bin/merge.mjs"
   },
   "pi": {
