@@ -9,6 +9,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 // --- INLINED FROM extensions/lib/wtft-shared.ts ---
+import * as path from "node:path";
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
   if (match) {
@@ -446,7 +447,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
       const incStr = `${incSign}${formatCost(bin.incremental_cost ?? 0)}`;
       const incPart = padString(incStr, 6);
-      const coloredInc = `\x1B[37m${incPart}\x1B[0m`;
+      const coloredInc = `\x1B[90m${incPart}\x1B[0m`;
       const costPart = padString(formatCost(bin.total_cost), 6);
       const coloredCost = `\x1B[1;37m${costPart}\x1B[0m`;
       widgetLines.push(`${coloredLabel}  ${coloredInc}  ${coloredCost}  ${barStr}`);
