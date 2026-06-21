@@ -753,11 +753,6 @@ for (const line of lines) {
   } catch {
   }
 }
-if (showOther) {
-  const output = renderOtherHistogram(interactions, width);
-  console.log(output);
-  process.exit(0);
-}
 var defaultSettings = {
   interval: "1h",
   limit: 100,
@@ -780,4 +775,9 @@ if (!outputLines) {
 }
 for (const line of outputLines) {
   console.log(line);
+}
+if (showOther) {
+  console.log("");
+  const otherOutput = renderOtherHistogram(interactions, width);
+  console.log(otherOutput);
 }
