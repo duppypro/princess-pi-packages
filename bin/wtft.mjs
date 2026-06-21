@@ -397,7 +397,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   }
   if (showTicks && scaleMax > 0) {
     const dateLabel = `\u2500\u2500\u2500 ${titleDateStr} `;
-    const labelPrefix = padString(dateLabel, prefixWidth);
+    const paddingLen = Math.max(0, prefixWidth - dateLabel.length);
+    const labelPrefix = dateLabel + "\u2500".repeat(paddingLen);
     const ticksLine = buildTickLine(scaleMax, maxBarWidth);
     if (ticksLine) {
       widgetLines.push(`\x1B[90m${labelPrefix}${ticksLine}\x1B[0m`);
