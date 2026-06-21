@@ -265,7 +265,7 @@ function buildTickLine(maxCost, barWidth) {
     if (l.start > currentIndex) {
       result += outArr.slice(currentIndex, l.start).join("");
     }
-    result += `\x1B[38;5;16;48;5;255m${l.text}\x1B[0m`;
+    result += `\x1B[7m${l.text}\x1B[27m`;
     currentIndex = l.start + l.text.length;
   }
   if (currentIndex < barWidth) {
