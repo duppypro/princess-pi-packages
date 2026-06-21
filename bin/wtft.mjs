@@ -420,17 +420,17 @@ function getVisualLength(str) {
   }
   return len;
 }
-function buildWtftLines(interactions2, defaultSettings2, opts) {
-  const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings2.interval;
-  const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings2.limit;
-  const width2 = opts?.width !== void 0 ? opts.width : defaultSettings2.width;
-  const showTicks2 = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings2.showTicks;
-  const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings2.mode;
-  const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings2.timezone;
+function buildWtftLines(interactions, defaultSettings, opts) {
+  const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
+  const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
+  const width2 = opts?.width !== void 0 ? opts.width : defaultSettings.width;
+  const showTicks2 = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings.showTicks;
+  const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings.mode;
+  const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings.timezone;
   const intervalConfig = parseInterval(intervalStr2);
   const binMap = /* @__PURE__ */ new Map();
   let totalSessionCost = 0;
-  for (const interaction of interactions2) {
+  for (const interaction of interactions) {
     const classification = classifyInteraction(interaction);
     const { key, label, dateStr } = getBinInfo(interaction.timestamp, intervalConfig, tz);
     totalSessionCost += interaction.cost;
@@ -612,15 +612,15 @@ function buildWtftLines(interactions2, defaultSettings2, opts) {
   }
   return widgetLines;
 }
-function renderOtherHistogram(interactions2, maxWidth = 80) {
+function renderOtherHistogram(interactions, maxWidth = 80) {
   const commandMap = /* @__PURE__ */ new Map();
-  for (const interaction of interactions2) {
+  for (const interaction of interactions) {
     const classification = classifyInteraction(interaction);
     if (classification === "other") {
       const primaryCommands = [];
       for (const rawCmd of interaction.commands) {
-        const lines2 = rawCmd.split("\n");
-        for (const line of lines2) {
+        const lines = rawCmd.split("\n");
+        for (const line of lines) {
           const trimmed = line.trim();
           if (trimmed && !trimmed.startsWith("#")) {
             const parts = trimmed.split(" ");
@@ -722,88 +722,240 @@ for (let i = 2; i < process.argv.length; i++) {
     }
   }
 }
-function findLatestSession(harness = "auto") {
+function discoverSessions(harness = "auto") {
   const piSessionsDir = path2.join(os.homedir(), ".pi", "agent", "sessions");
-  let claudeSessionsDir = null;
+  let claudeSessionsDirs = [];
   const claudeProjectsDir = path2.join(os.homedir(), ".claude", "projects");
   if (fs.existsSync(claudeProjectsDir)) {
     const cwdSlug = process.cwd().replace(/[/\\\\]/g, "-");
     const possibleDir = path2.join(claudeProjectsDir, cwdSlug, "sessions");
     const alternativeDir = path2.join(claudeProjectsDir, cwdSlug);
-    if (fs.existsSync(possibleDir)) claudeSessionsDir = possibleDir;
-    else if (fs.existsSync(alternativeDir)) claudeSessionsDir = alternativeDir;
+    if (fs.existsSync(possibleDir)) claudeSessionsDirs.push(possibleDir);
+    if (fs.existsSync(alternativeDir)) claudeSessionsDirs.push(alternativeDir);
   }
-  let newestFile = null;
-  let newestMtime = 0;
-  const walk = (dir) => {
+  const candidates = [];
+  const walk = (dir, type) => {
     const files = fs.readdirSync(dir);
     for (const f of files) {
       const fullPath = path2.join(dir, f);
       const stat = fs.statSync(fullPath);
       if (stat.isDirectory()) {
-        walk(fullPath);
-      } else if (f.endsWith(".jsonl")) {
-        if (stat.mtimeMs > newestMtime) {
-          newestMtime = stat.mtimeMs;
-          newestFile = fullPath;
+        if (f !== "subagents" && f !== "tool-results" && f !== "memory") {
+          walk(fullPath, type);
         }
+      } else if (f.endsWith(".jsonl")) {
+        candidates.push({
+          path: fullPath,
+          harness: type,
+          timestamp: stat.mtimeMs,
+          name: f
+        });
       }
     }
   };
   try {
     if (harness === "auto" || harness === "pi") {
-      if (fs.existsSync(piSessionsDir)) walk(piSessionsDir);
+      if (fs.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
     }
     if (harness === "auto" || harness === "claude-code") {
-      if (claudeSessionsDir) walk(claudeSessionsDir);
+      for (const dir of claudeSessionsDirs) {
+        if (fs.existsSync(dir)) walk(dir, "claude-code");
+      }
     }
   } catch {
   }
-  return newestFile;
+  return candidates.sort((a, b) => b.timestamp - a.timestamp);
 }
-var finalSessionPath = targetSessionPath || findLatestSession(harnessOption);
-if (!finalSessionPath || !fs.existsSync(finalSessionPath)) {
-  console.error("\u274C Error: No active session log files found. Ensure Pi has been run, or specify an explicit session log path with -s.");
-  process.exit(1);
-}
-var lines = fs.readFileSync(finalSessionPath, "utf8").split("\n");
-var interactions = [];
-for (const line of lines) {
-  if (!line.trim()) continue;
+function getSessionSummary(filePath) {
+  let turns = 0;
+  let cost = 0;
   try {
-    const entry = JSON.parse(line);
-    const interaction = parseEntryToInteraction(entry);
-    if (interaction) {
-      interactions.push(interaction);
+    const content = fs.readFileSync(filePath, "utf8");
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const entry = JSON.parse(line);
+      if (entry.type === "assistant" || entry.message && entry.message.role === "assistant") {
+        turns++;
+      }
+      const i = parseEntryToInteraction(entry);
+      if (i) {
+        cost += i.cost;
+      }
     }
   } catch {
   }
+  return { turns, cost };
 }
-var defaultSettings = {
-  interval: "1h",
-  limit: 100,
-  width: 80,
-  showTicks: true,
-  mode: "cumulative",
-  timezone: void 0
-};
-var outputLines = buildWtftLines(interactions, defaultSettings, {
-  interval: intervalStr,
-  limit,
-  width,
-  showTicks,
-  mode,
-  timezone
+async function selectSessionPrompt(candidates) {
+  return new Promise((resolve) => {
+    if (!process.stdout.isTTY) {
+      console.log(`\x1B[90mNon-interactive environment detected. Defaulting to newest session [1]:\x1B[0m`);
+      for (let i = 0; i < Math.min(candidates.length, 5); i++) {
+        const c = candidates[i];
+        const stats = getSessionSummary(c.path);
+        const shortName = c.name.length > 25 ? `${c.name.substring(0, 10)}...${c.name.substring(c.name.length - 15)}` : c.name;
+        const dateStr = new Date(c.timestamp).toLocaleString();
+        console.log(`  [${i + 1}] ${shortName.padEnd(28)} (${dateStr}) - ${stats.turns} turns, $${stats.cost.toFixed(2)} [${c.harness.toUpperCase()}]`);
+      }
+      console.log(`\x1B[90mRun 'wtft -s <number>' to target a specific session index.\x1B[0m
+`);
+      resolve(candidates[0].path);
+      return;
+    }
+    let selectedIndex = 0;
+    const limit2 = 10;
+    const displayCandidates = candidates.slice(0, limit2);
+    const statsList = displayCandidates.map((c) => getSessionSummary(c.path));
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    process.stdout.write("\x1B[?25l");
+    const render = () => {
+      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
+`;
+      for (let i = 0; i < displayCandidates.length; i++) {
+        const c = displayCandidates[i];
+        const stats = statsList[i];
+        const shortName = c.name.length > 25 ? `${c.name.substring(0, 10)}...${c.name.substring(c.name.length - 15)}` : c.name;
+        const dateStr = new Date(c.timestamp).toLocaleString();
+        const isSelected = i === selectedIndex;
+        const prefix = isSelected ? `\x1B[36m\x1B[1m > \x1B[0m` : "   ";
+        const highlight = isSelected ? `\x1B[1m\x1B[36m` : "";
+        const reset = isSelected ? `\x1B[0m` : "";
+        out += `${prefix}${highlight}${shortName.padEnd(28)}${reset} \x1B[90m(${dateStr})\x1B[0m  \x1B[32m$${stats.cost.toFixed(2).padStart(6)}\x1B[0m \x1B[90m(${stats.turns} turns) [${c.harness.toUpperCase()}]\x1B[0m
+`;
+      }
+      process.stdout.write(out);
+    };
+    const cleanScreen = () => {
+      const linesToClear = displayCandidates.length + 1;
+      process.stdout.write(`\x1B[${linesToClear}A\x1B[J`);
+    };
+    render();
+    const onKey = (key) => {
+      if (key === "") {
+        cleanup();
+        process.exit(130);
+      } else if (key === "\r" || key === "\n") {
+        cleanup();
+        resolve(displayCandidates[selectedIndex].path);
+      } else if (key === "\x1B[A" || key === "k") {
+        selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
+        cleanScreen();
+        render();
+      } else if (key === "\x1B[B" || key === "j") {
+        selectedIndex = (selectedIndex + 1) % displayCandidates.length;
+        cleanScreen();
+        render();
+      }
+    };
+    const cleanup = () => {
+      stdin.removeListener("data", onKey);
+      stdin.setRawMode(false);
+      stdin.pause();
+      process.stdout.write("\x1B[?25h");
+    };
+    stdin.on("data", onKey);
+  });
+}
+async function main() {
+  const isIndex = /^\d+$/.test(targetSessionPath || "");
+  const candidates = discoverSessions(harnessOption);
+  let finalSessionPath = "";
+  if (targetSessionPath && isIndex) {
+    const idx = parseInt(targetSessionPath, 10);
+    if (idx > 0 && idx <= candidates.length) {
+      finalSessionPath = candidates[idx - 1].path;
+    } else {
+      console.error(`\u274C Error: Session index '${targetSessionPath}' is out of range. Discovered ${candidates.length} sessions.`);
+      process.exit(1);
+    }
+  } else if (targetSessionPath) {
+    finalSessionPath = targetSessionPath;
+  } else {
+    if (candidates.length === 0) {
+      console.error("\u274C Error: No active session log files found. Ensure Pi or Claude has been run, or specify an explicit session log path with -s.");
+      process.exit(1);
+    } else if (candidates.length === 1) {
+      finalSessionPath = candidates[0].path;
+    } else {
+      finalSessionPath = await selectSessionPrompt(candidates);
+    }
+  }
+  if (!finalSessionPath || !fs.existsSync(finalSessionPath)) {
+    console.error("\u274C Error: Selected session log file path is invalid or does not exist.");
+    process.exit(1);
+  }
+  const sessionFiles = [finalSessionPath];
+  const extName = path2.extname(finalSessionPath);
+  if (extName === ".jsonl") {
+    const baseName = path2.basename(finalSessionPath, extName);
+    const parentDir = path2.dirname(finalSessionPath);
+    const possibleSubagentsDir = path2.join(parentDir, baseName, "subagents");
+    if (fs.existsSync(possibleSubagentsDir)) {
+      try {
+        const subFiles = fs.readdirSync(possibleSubagentsDir);
+        for (const f of subFiles) {
+          if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
+            sessionFiles.push(path2.join(possibleSubagentsDir, f));
+          }
+        }
+      } catch {
+      }
+    }
+  }
+  const lines = [];
+  for (const file of sessionFiles) {
+    try {
+      const content = fs.readFileSync(file, "utf8");
+      lines.push(...content.split("\n"));
+    } catch {
+    }
+  }
+  const interactions = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      const interaction = parseEntryToInteraction(entry);
+      if (interaction) {
+        interactions.push(interaction);
+      }
+    } catch {
+    }
+  }
+  const defaultSettings = {
+    interval: "1h",
+    limit: 100,
+    width: 80,
+    showTicks: true,
+    mode: "cumulative",
+    timezone: void 0
+  };
+  const outputLines = buildWtftLines(interactions, defaultSettings, {
+    interval: intervalStr,
+    limit,
+    width,
+    showTicks,
+    mode,
+    timezone
+  });
+  if (!outputLines) {
+    console.log("No binned data found in session logs.");
+    process.exit(0);
+  }
+  for (const line of outputLines) {
+    console.log(line);
+  }
+  if (showOther) {
+    console.log("");
+    const otherOutput = renderOtherHistogram(interactions, width);
+    console.log(otherOutput);
+  }
+}
+main().catch((err) => {
+  console.error(`\u274C System Error: ${err.message}`);
+  process.exit(1);
 });
-if (!outputLines) {
-  console.log("No binned data found in session logs.");
-  process.exit(0);
-}
-for (const line of outputLines) {
-  console.log(line);
-}
-if (showOther) {
-  console.log("");
-  const otherOutput = renderOtherHistogram(interactions, width);
-  console.log(otherOutput);
-}
