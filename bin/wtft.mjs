@@ -9,7 +9,6 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 // --- INLINED FROM extensions/lib/wtft-shared.ts ---
-import * as path from "node:path";
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
   if (match) {
