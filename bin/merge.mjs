@@ -1,15 +1,19 @@
-#!/usr/bin/env -S node --experimental-strip-types
+#!/usr/bin/env node
 /**
  * @package princess-pi-packages
  * @command merge
- * @description Standalone CLI port of extensions/merge.ts (Multi-Worktree Git Merger).
+ * @description Standalone CLI port of extensions/merge.ts (Git→main Merger).
  * Runs the identical validation/merge/push sequence without the Pi runtime —
- * invokable directly (node --experimental-strip-types bin/merge.ts <ref>) or via the
- * ./merge wrapper / the npm-global `merge` bin.
+ * invokable directly (node bin/merge.mjs <ref>), via the ./merge wrapper, or as the
+ * npm-global `merge` bin.
  *
- * Why `node --experimental-strip-types` (not `npx tsx`): once npm-installed globally
- * for cross-harness use (Claude Code), a tsx shebang triggers a network fetch on every
- * fresh environment. Node 22's native type-stripping needs zero deps and matches wtft.ts.
+ * Why plain ESM JavaScript (.mjs), not a TypeScript bin: this tool is installed
+ * GLOBALLY (`npm install -g github:duppypro/princess-pi-packages`) for cross-harness
+ * use (Claude Code). Node refuses `--experimental-strip-types` for files living under
+ * `node_modules/` (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING — exactly where a global
+ * install puts this file), and an `npx tsx` shebang would trigger a per-environment
+ * network fetch. Plain `#!/usr/bin/env node` JS needs zero deps, no build step, and
+ * runs anywhere. The typed twin remains extensions/merge.ts (the Pi runtime version).
  */
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -23,7 +27,7 @@ import { fileURLToPath } from "node:url";
 // const: the gate and the "did you mean this commit?" suggestion must agree exactly.
 const STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
 
-function run(): void {
+function run() {
 	const argsList = process.argv.slice(2).filter(Boolean);
 
 	if (argsList.includes("-h") || argsList.includes("--help")) {
@@ -47,7 +51,7 @@ function run(): void {
 			}
 			helpText += `\n\x1b[1mUsage:\x1b[0m\n`;
 			for (const u of manifest.usage) {
-				helpText += `  ${invokedAs} ${(u.flags as string).padEnd(28)} ${u.desc}\n`;
+				helpText += `  ${invokedAs} ${u.flags.padEnd(28)} ${u.desc}\n`;
 			}
 			console.log(helpText);
 		} catch (err) {
@@ -139,7 +143,7 @@ function run(): void {
 			let errorMsg = `The target commit ${targetHash.substring(0, 7)} is not a Step 5 'Code and Spec Approved' commit.\nTarget commit message: "${targetCommitMsg.split("\n")[0]}"\nMerges to main are only permitted for commits in the Step 5 Approved state.`;
 
 			if (suggestedStep5Hash) {
-				errorMsg += `\n\n💡 Suggestion: A previous Step 5 commit was found in your history:\n   Hash: \x1b[33m${suggestedStep5Hash.substring(0, 7)}\x1b[0m\n   Message: "${suggestedStep5Msg}"\n\nTo merge up to that stable checkpoint, run:\n   \x1b[36m./merge ${suggestedStep5Hash.substring(0, 7)}\x1b[0m`;
+				errorMsg += `\n\n💡 Suggestion: A previous Step 5 commit was found in your history:\n   Hash: \x1b[33m${suggestedStep5Hash.substring(0, 7)}\x1b[0m\n   Message: "${suggestedStep5Msg}"\n\nTo merge up to that stable checkpoint, run:\n   \x1b[36mmerge ${suggestedStep5Hash.substring(0, 7)}\x1b[0m`;
 			}
 			throw new Error(errorMsg);
 		}
@@ -199,7 +203,7 @@ function run(): void {
 				execSync(`git merge ${targetHash}`, { cwd: currentCwd, stdio: "ignore" });
 				console.log("📡 Pushing merged 'main' branch to origin...");
 				execSync("git push origin main", { cwd: currentCwd, stdio: "ignore" });
-			} catch (mergeErr: any) {
+			} catch (mergeErr) {
 				// Abort any half-finished merge so the working tree is restored.
 				try { execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" }); } catch { /* not mid-merge */ }
 				const detail = mergeErr?.message || String(mergeErr);
@@ -215,7 +219,7 @@ function run(): void {
 			console.log(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
 			console.log(`💪 Ready for the next task! You are back in '${currentCwd}' on branch '${currentBranch}'.`);
 		}
-	} catch (err: any) {
+	} catch (err) {
 		const errMsg = err?.message || String(err);
 		console.error(`❌ Merge Aborted:\n${errMsg}`);
 		process.exitCode = 1;

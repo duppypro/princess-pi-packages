@@ -40,11 +40,16 @@ harnesses. Install them globally **from GitHub `main`** (not a local clone) with
 npm install -g github:duppypro/princess-pi-packages
 ```
 
-This puts the `bin` commands on your `$PATH`: **`merge`**, **`serve`**, `wtft`, `yada`/`dedupwcount`.
-In Claude Code, invoke them with the `!` prefix (e.g. `!merge <commit-ish>`) or let the agent
-run them as a single Bash call — they spend **zero LLM reasoning turns** on the success path and
-emit fix-instructing errors on the failure path. Requires **Node ≥ 22** (native TypeScript
-type-stripping; no `tsx`/build step). Re-run the same command to update.
+This puts **`merge`** on your `$PATH` as a plain-Node CLI (`#!/usr/bin/env node`, no build step).
+In Claude Code, invoke it with the `!` prefix (e.g. `!merge <commit-ish>`) or let the agent run it
+as a single Bash call — it spends **zero LLM reasoning turns** on the success path and emits
+fix-instructing errors on the failure path. Requires **Node ≥ 18** (ESM). Re-run the install to update.
+
+> **Cross-harness status:** only `merge` is verified as a global CLI today. The other bins
+> (`wtft`, `yada`/`dedupwcount`, `serve`) are still TypeScript and rely on `--experimental-strip-types`,
+> which **Node refuses for files under `node_modules/`** (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) —
+> so they don't yet run from a global install. Porting them to plain `.mjs` (the same fix `merge` got)
+> is tracked separately (goal #1).
 
 > `merge` works in both layouts: a dedicated `main` git-worktree (merges there, leaving your
 > feature checkout untouched) **or** a plain single checkout (merges in-place, then returns you

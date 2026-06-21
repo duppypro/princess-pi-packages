@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# --- Sandbox acceptance test for bin/merge.ts single-checkout fallback (issue #8).
+# --- Sandbox acceptance test for bin/merge.mjs single-checkout fallback (issue #8).
 # Builds a bare "remote" + single-checkout clone (NO main worktree), then drives the
-# real merge tool through success + error paths. Throwaway: lives in /tmp.
+# real merge tool through success + error paths. Throwaway scratch: lives in /tmp.
 set -u
-MERGE="/home/princess-pi/git-projects/princess-pi-packages/bin/merge.ts"
-RUN(){ node --experimental-strip-types "$MERGE" "$@"; }
+MERGE="/home/princess-pi/git-projects/princess-pi-packages/bin/merge.mjs"
+RUN(){ node "$MERGE" "$@"; }
 ROOT=/tmp/merge-sandbox
 PASS=0; FAIL=0
 ok(){ echo "  ✅ $1"; PASS=$((PASS+1)); }
 no(){ echo "  ❌ $1"; FAIL=$((FAIL+1)); }
 
 fresh(){
-  rm -rf "$ROOT/remote.git" "$ROOT/work"
+  rm -rf "$ROOT/remote.git" "$ROOT/work" "$ROOT/work2"   # work2 too: T5 leaves it behind
   git init -q --bare "$ROOT/remote.git"
   git clone -q "$ROOT/remote.git" "$ROOT/work"
   cd "$ROOT/work"
