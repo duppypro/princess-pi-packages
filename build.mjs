@@ -21,31 +21,18 @@ async function buildAll() {
   console.log("✅ bin/serve.mjs compiled successfully.");
 
   // 2. Build wtft.mjs
-  // For wtft, we use the shared library but need to stitch it to the pure JS bin logic
   await build({
-    entryPoints: ["extensions/lib/wtft-shared.ts"],
+    entryPoints: ["bin/wtft.ts"],
     bundle: true,
     platform: "node",
     format: "esm",
     target: "node18",
-    outfile: "debug/wtft-shared.mjs"
+    outfile: "bin/wtft.mjs"
   });
 
-  let shared = fs.readFileSync("debug/wtft-shared.mjs", "utf8");
-  let bin = fs.readFileSync("bin/wtft.mjs", "utf8");
-
-  const parts = bin.split("// --- END INLINED LOGIC ---");
-  const header = bin.split("// --- INLINED FROM extensions/lib/wtft-shared.ts ---")[0];
-
-  let finalCode = `${header}// --- INLINED FROM extensions/lib/wtft-shared.ts ---
-${shared}
-// --- END INLINED LOGIC ---${parts[1]}`;
-
-  // Strip duplicate path imports
-  finalCode = finalCode.replace(/\/\/ --- INLINED FROM extensions\/lib\/wtft-shared\.ts ---\nimport \* as path from "node:path";\n/, "// --- INLINED FROM extensions/lib/wtft-shared.ts ---\n");
-
-  fs.writeFileSync("bin/wtft.mjs", finalCode);
-  fs.unlinkSync("debug/wtft-shared.mjs");
+  let wtftCode = fs.readFileSync("bin/wtft.mjs", "utf8");
+  wtftCode = wtftCode.replace(/^#!\/usr\/bin\/env -S node --experimental-strip-types\n/, "#!/usr/bin/env node\n");
+  fs.writeFileSync("bin/wtft.mjs", wtftCode);
   console.log("✅ bin/wtft.mjs compiled successfully.");
 }
 

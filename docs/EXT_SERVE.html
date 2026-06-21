@@ -129,8 +129,13 @@
         <em style="color: #666;">Loading command manifest...</em>
     </div>
 
-    <h3>CLI Mode (Outside Pi Coding Agent)</h3>
-    <p><code>bin/serve.ts</code> is a standalone, Pi-independent port that reuses <code>extensions/lib/serve/{process,domain,tui}.ts</code> directly (no duplicated logic). It's invokable as <code>./serve [args]</code> from the repo root, or bare <code>serve</code> once the repo root is added to <code>$PATH</code> — including via Claude Code's <code>!</code> prefix (e.g. <code>!./serve --log</code>), since Claude Code has no extension-dispatch mechanism that bypasses the model entirely the way Pi's <code>registerCommand</code> does.</p>
+    <h3>CLI Mode (Outside Pi Coding Agent) — Cross-Harness</h3>
+    <p><code>bin/serve.mjs</code> is a standalone, Pi-independent port that provides zero-token command execution outside of Pi. Just like <code>wtft</code> and <code>merge</code>, it uses <strong>esbuild</strong> to natively bundle its shared TypeScript logic (from <code>extensions/lib/serve/</code>) into a single, pure ESM JavaScript binary. Because it is pure JavaScript (<code>#!/usr/bin/env node</code>), it can be installed globally for cross-harness use without triggering Node's <code>--experimental-strip-types</code> <code>node_modules</code> errors.</p>
+    
+    <p><strong>Installation (Global CLI):</strong></p>
+    <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0; font-family: monospace;">npm install -g github:duppypro/princess-pi-packages</pre>
+    <p>Once installed, invoke it as the npm-global <code>serve [args]</code>, via the <code>./serve</code> wrapper from the repo root, or through Claude Code's shell-escape prefix (e.g. <code>!serve --log</code>). Since Claude Code has no extension-dispatch mechanism to bypass the LLM reasoning loop like Pi's <code>registerCommand</code>, this CLI enables identical zero-token usage in that harness.</p>
+
     <ul>
         <li><strong>Supported:</strong> default start, <code>--static</code>/<code>-s</code>, <code>--log</code>/<code>-L</code>, <code>--kill</code>/<code>-k</code>, <code>--help</code>/<code>-h</code> — identical behavior to the Pi extension.</li>
         <li><strong>Omitted:</strong> <code>--hide</code>/<code>-H</code> and <code>--show</code>/<code>-S</code> have no CLI equivalent — there's no persistent TUI widget outside Pi to hide or show.</li>

@@ -586,6 +586,54 @@ function buildWtftLines(interactions2, defaultSettings2, opts) {
   }
   return widgetLines;
 }
+function renderOtherHistogram(interactions2, maxWidth = 80) {
+  const commandMap = /* @__PURE__ */ new Map();
+  for (const interaction of interactions2) {
+    const classification = classifyInteraction(interaction);
+    if (classification === "other") {
+      const primaryCommands = [];
+      for (const rawCmd of interaction.commands) {
+        const lines2 = rawCmd.split("\n");
+        for (const line of lines2) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith("#")) {
+            const parts = trimmed.split(" ");
+            const primary = parts[0];
+            if (primary) {
+              primaryCommands.push(primary);
+              break;
+            }
+          }
+        }
+      }
+      for (const cmd of primaryCommands) {
+        const existing = commandMap.get(cmd) || { count: 0, cost: 0 };
+        commandMap.set(cmd, {
+          count: existing.count + 1,
+          cost: existing.cost + interaction.cost
+        });
+      }
+    }
+  }
+  if (commandMap.size === 0) {
+    return "No 'Other' commands found in this session.";
+  }
+  let output = "--- 'Other' Command Histogram ---\n";
+  const sortedEntries = Array.from(commandMap.entries()).sort((a, b) => b[1].count - a[1].count);
+  let maxCmdLen = 0;
+  for (const cmd of commandMap.keys()) maxCmdLen = Math.max(maxCmdLen, cmd.length);
+  const countWidth = 7;
+  const costWidth = 10;
+  for (const [cmd, data] of sortedEntries) {
+    const countStr = `(${data.count})`.padStart(countWidth);
+    const costStr = `$${data.cost.toFixed(4)}`.padStart(costWidth);
+    const barWidth = Math.max(5, maxWidth - maxCmdLen - countWidth - costWidth - 10);
+    const bar = "#".repeat(Math.min(data.count, barWidth));
+    output += `${cmd.padEnd(maxCmdLen)} ${costStr} ${countStr} : ${bar}
+`;
+  }
+  return output;
+}
 
 // bin/wtft.ts
 var intervalStr = "1h";
@@ -596,6 +644,7 @@ var showTicks = true;
 var targetSessionPath = void 0;
 var timezone = void 0;
 var harnessOption = "auto";
+var showOther = false;
 function printHelp() {
   console.log(`
 Usage: wtft [options]
@@ -611,6 +660,7 @@ Options:
   --ticks                 Enable the proportional cost scale ticks above the bars (default behavior).
   --no-ticks              Disable the proportional cost scale ticks above the bars.
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
+  -o, --other             Instead of the visual timeline, print a histogram of commands categorized as 'Other'.
   -h, --help              Display this help menu.
 `);
 }
@@ -637,6 +687,8 @@ for (let i = 2; i < process.argv.length; i++) {
     showTicks = true;
   } else if (arg === "-t" || arg === "--tz") {
     timezone = process.argv[++i];
+  } else if (arg === "-o" || arg === "--other") {
+    showOther = true;
   } else if (arg === "--harness") {
     const val = process.argv[++i];
     if (val === "pi" || val === "claude-code" || val === "auto") {
@@ -700,6 +752,11 @@ for (const line of lines) {
     }
   } catch {
   }
+}
+if (showOther) {
+  const output = renderOtherHistogram(interactions, width);
+  console.log(output);
+  process.exit(0);
 }
 var defaultSettings = {
   interval: "1h",
