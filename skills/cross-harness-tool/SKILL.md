@@ -30,7 +30,7 @@ Register the CLI in `package.json` `bin`: `"<name>": "./bin/<name>.mjs"`.
 
 ## Rule 1 — The CLI bin is plain `.mjs`, never TypeScript
 
-**Why (non-obvious, learned in #8):** the CLI is installed globally for Claude via
+**Why (non-obvious, learned in #8 and #9):** the CLI is installed globally for Claude via
 `npm install -g github:duppypro/princess-pi-packages`, which places the bin under `node_modules/`.
 
 - ❌ `#!/usr/bin/env -S node --experimental-strip-types` → Node **refuses** to strip types under
@@ -40,19 +40,18 @@ Register the CLI in `package.json` `bin`: `"<name>": "./bin/<name>.mjs"`.
 - ✅ `#!/usr/bin/env node` + plain ESM JavaScript → zero deps, no build step, runs anywhere incl. under
   `node_modules/`. Requires Node ≥ 18.
 
-Keep the typed version in `extensions/<name>.ts` (Pi). If you want type-checking on the bin too, write
-the logic in `extensions/lib/<name>/` as `.ts` for the Pi side and hand-port a thin `.mjs` entry, OR keep
-the bin logic in `.mjs` and treat `extensions/<name>.ts` as the typed twin (what `merge` does). Avoid a
-build step (repo philosophy: no Vite/Webpack/tsc pipeline).
-
-Resolve bundled files (e.g. the manifest) **relative to the script**, not `process.cwd()` — the installed
-tool runs from arbitrary repos:
-```js
-import { fileURLToPath } from "node:url";
-import * as path from "node:path";
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "<name>-cmd.json");
+### The Bundling Approach (`esbuild`)
+If a tool relies heavily on shared TypeScript libraries (`extensions/lib/`), manually porting it to `.mjs` is messy. Instead, use `esbuild` to compile and bundle the TypeScript dependencies directly into the `bin/tool.mjs` file:
+```bash
+npx esbuild bin/tool.ts --bundle --platform=node --format=esm --target=node18 --outfile=bin/tool.mjs
 ```
+**🚨 Gotchas (Learned in #9):**
+1. **Duplicate Imports:** `esbuild` may inline a shared `.ts` file that has its own `import * as fs from "node:fs"`. If `bin/tool.ts` also imports `fs`, Node will crash with `SyntaxError: Identifier 'fs' has already been declared`. You must write a script to strip duplicate core node module imports from the final `.mjs` file if you are manually concatenating them, or rely strictly on a pure `esbuild --bundle` output which handles deduplication automatically.
+2. **Path Resolution:** If you use `--bundle`, any files spawned as child processes (like `run-live-server.js` in `/serve`) must **not** be bundled into the `.mjs` file, as they must remain discrete physical files on disk for `node:child_process` to target.
+3. **NPM Testing (`npm link` vs `npm install -g`):**
+   - When developing locally, `npm link` will symlink your repository's `bin/` folder to your global path.
+   - However, your shell often caches the path to the old globally-installed binary. If you type `tool --help` and don't see your changes, you must run `hash -r` in bash to clear the path cache, or test using the explicit path `./bin/tool.mjs`.
+   - **Never run `npm update` to pull changes from a Git URL.** NPM often fails to pull the latest `HEAD` commit from a Git URL during `npm update`. Always use `npm install -g github:duppypro/princess-pi-packages` to aggressively force NPM to fetch and overwrite the global symlink.
 
 ---
 
