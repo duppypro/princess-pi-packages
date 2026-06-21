@@ -9,7 +9,6 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 // --- INLINED FROM extensions/lib/wtft-shared.ts ---
-import * as path from "node:path";
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
   if (match) {
@@ -397,10 +396,11 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     widgetLines.push(legendStr);
   }
   if (showTicks && scaleMax > 0) {
-    const labelPrefix = padString(titleDateStr, prefixWidth);
+    const dateLabel = `\u2500\u2500\u2500 ${titleDateStr} `;
+    const labelPrefix = padString(dateLabel, prefixWidth);
     const ticksLine = buildTickLine(scaleMax, maxBarWidth);
     if (ticksLine) {
-      widgetLines.push(labelPrefix + `\x1B[90m${ticksLine}\x1B[0m`);
+      widgetLines.push(`\x1B[90m${labelPrefix}${ticksLine}\x1B[0m`);
     }
   }
   for (let i = 0; i < displayedBins.length; i++) {
