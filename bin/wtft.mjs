@@ -1,14 +1,90 @@
 #!/usr/bin/env node
-/**
- * @package princess-pi-packages
- * @command wtft
- * @description Standalone CLI port of extensions/wtft.ts.
- */
+
+// bin/wtft.ts
 import * as fs from "node:fs";
-import * as path from "node:path";
+import * as path2 from "node:path";
 import * as os from "node:os";
 
-// --- INLINED FROM extensions/lib/wtft-shared.ts ---
+// extensions/lib/wtft-shared.ts
+import * as path from "node:path";
+function calculateClaudeCost(model, usage) {
+  if (!usage) return 0;
+  let inputPrice = 3;
+  let outputPrice = 15;
+  let cacheWritePrice = 3.75;
+  let cacheReadPrice = 0.3;
+  const m = (model || "").toLowerCase();
+  if (m.includes("haiku")) {
+    inputPrice = 0.8;
+    outputPrice = 4;
+    cacheWritePrice = 1;
+    cacheReadPrice = 0.08;
+  } else if (m.includes("opus")) {
+    inputPrice = 15;
+    outputPrice = 75;
+    cacheWritePrice = 18.75;
+    cacheReadPrice = 1.5;
+  }
+  const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.cache_creation_input_tokens || 0) * (cacheWritePrice / 1e6) + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
+  return cost;
+}
+function parseEntryToInteraction(entry) {
+  if (!entry) return null;
+  const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
+  const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
+  if (isPiSchema || isClaudeSchema) {
+    const assistantMsg = entry.message;
+    let cost = 0;
+    if (assistantMsg.usage?.cost?.total !== void 0) {
+      cost = assistantMsg.usage.cost.total;
+    } else if (assistantMsg.model && assistantMsg.usage) {
+      cost = calculateClaudeCost(assistantMsg.model, assistantMsg.usage);
+    }
+    let timestampStr = assistantMsg.timestamp || entry.timestamp;
+    let timestamp = 0;
+    if (typeof timestampStr === "string") {
+      timestamp = new Date(timestampStr).getTime();
+    } else if (typeof timestampStr === "number") {
+      timestamp = timestampStr;
+    }
+    const files = [];
+    const commands = [];
+    const texts = [];
+    if (Array.isArray(assistantMsg.content)) {
+      for (const block of assistantMsg.content) {
+        if (block.type === "text") {
+          texts.push(block.text);
+        } else if (block.type === "thinking") {
+          texts.push(block.thinking);
+        } else if (block.type === "toolCall") {
+          const name = block.name;
+          const args = block.arguments || {};
+          if (name === "read") {
+            if (args.path) files.push({ path: args.path, action: "read" });
+          } else if (name === "write" || name === "edit") {
+            if (args.path) files.push({ path: args.path, action: "write" });
+          } else if (name === "bash") {
+            if (args.command) commands.push(args.command);
+          }
+        } else if (block.type === "tool_use") {
+          const name = (block.name || "").toLowerCase();
+          const args = block.input || {};
+          if (name === "read" || name === "view" || name === "glob" || name === "ls") {
+            const p = args.file_path || args.path || args.directory || args.target;
+            if (p) files.push({ path: p, action: "read" });
+          } else if (name === "edit" || name === "write" || name === "replace") {
+            const p = args.file_path || args.path || args.target;
+            if (p) files.push({ path: p, action: "write" });
+          } else if (name === "bash" || name === "run") {
+            if (args.command) commands.push(args.command);
+          }
+        }
+      }
+    }
+    return { timestamp, cost, files, commands, texts };
+  }
+  return null;
+}
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
   if (match) {
@@ -321,17 +397,17 @@ function getVisualLength(str) {
   }
   return len;
 }
-function buildWtftLines(interactions, defaultSettings, opts) {
-  const intervalStr = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
-  const limit = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
-  const width = opts?.width !== void 0 ? opts.width : defaultSettings.width;
-  const showTicks = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings.showTicks;
-  const mode = opts?.mode !== void 0 ? opts.mode : defaultSettings.mode;
-  const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings.timezone;
-  const intervalConfig = parseInterval(intervalStr);
+function buildWtftLines(interactions2, defaultSettings2, opts) {
+  const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings2.interval;
+  const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings2.limit;
+  const width2 = opts?.width !== void 0 ? opts.width : defaultSettings2.width;
+  const showTicks2 = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings2.showTicks;
+  const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings2.mode;
+  const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings2.timezone;
+  const intervalConfig = parseInterval(intervalStr2);
   const binMap = /* @__PURE__ */ new Map();
   let totalSessionCost = 0;
-  for (const interaction of interactions) {
+  for (const interaction of interactions2) {
     const classification = classifyInteraction(interaction);
     const { key, label, dateStr } = getBinInfo(interaction.timestamp, intervalConfig, tz);
     totalSessionCost += interaction.cost;
@@ -348,7 +424,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     bin.total_cost += interaction.cost;
   }
   const sortedBins = Array.from(binMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map((entry) => entry[1]);
-  if (mode === "cumulative") {
+  if (mode2 === "cumulative") {
     const runningCosts = {};
     for (const cat of ["spec", "code", "mixed", "tests", "research", "git", "grep", "prompt", "other"]) {
       runningCosts[cat] = 0;
@@ -365,7 +441,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     }
   }
   const reversedBins = sortedBins.reverse();
-  const displayedBins = reversedBins.slice(0, limit);
+  const displayedBins = reversedBins.slice(0, limit2);
   if (displayedBins.length === 0) {
     return null;
   }
@@ -374,7 +450,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   let prefixWidth = labelWidth + 2;
   let maxIncLen = 6;
   let maxCostLen = 6;
-  if (mode === "cumulative") {
+  if (mode2 === "cumulative") {
     maxIncLen = Math.max(...displayedBins.map((bin) => {
       const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
       return `${incSign}${formatCost(bin.incremental_cost ?? 0)}`.length;
@@ -385,7 +461,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     maxCostLen = Math.max(...displayedBins.map((b) => formatCost(b.total_cost).length), 6);
     prefixWidth += maxCostLen + 2;
   }
-  const finalWidth = Math.max(width, 40);
+  const finalWidth = Math.max(width2, 40);
   const maxBarWidth = finalWidth - prefixWidth - 3;
   const newestBin = displayedBins[0];
   let titleDateStr = "";
@@ -422,7 +498,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     widgetLines.push(titleLeft);
     widgetLines.push(legendStr);
   }
-  if (showTicks && scaleMax > 0) {
+  if (showTicks2 && scaleMax > 0) {
     const dateLabel = `\u2500\u2500 ${titleDateStr} `;
     const paddingLen = Math.max(0, prefixWidth - dateLabel.length);
     const labelPrefix = dateLabel + "\u2500".repeat(paddingLen);
@@ -433,7 +509,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   }
   for (let i = 0; i < displayedBins.length; i++) {
     const bin = displayedBins[i];
-    if (showTicks && i > 0 && bin.dateStr !== displayedBins[i - 1].dateStr) {
+    if (showTicks2 && i > 0 && bin.dateStr !== displayedBins[i - 1].dateStr) {
       const labelDay = formatMmmDdStr(bin.dateStr);
       const dayChangeText = `\u2500\u2500 ${labelDay} `;
       const dividerLine = dayChangeText + "\u2500".repeat(Math.max(0, finalWidth - dayChangeText.length));
@@ -471,7 +547,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     }
     const labelPart = padString(bin.label, labelWidth);
     const coloredLabel = `\x1B[90m${labelPart}\x1B[0m`;
-    if (mode === "cumulative") {
+    if (mode2 === "cumulative") {
       const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
       const incStr = `${incSign}${formatCost(bin.incremental_cost ?? 0)}`;
       const incPart = padString(incStr, maxIncLen);
@@ -487,37 +563,23 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   }
   return widgetLines;
 }
-export {
-  buildTickLine,
-  buildWtftLines,
-  calculateScaleMax,
-  classifyInteraction,
-  distributeChars,
-  formatCost,
-  formatMmmDdStr,
-  getBinInfo,
-  getIsoWeekAndMonday,
-  getVisualLength,
-  getZonedParts,
-  padString,
-  parseInterval
-};
 
-// --- END INLINED LOGIC ---
-
-let intervalStr = "1h";
-let limit = 100;
-let width = 80;
-let mode = "cumulative";
-let showTicks = true;
-let targetSessionPath = void 0;
-let timezone = void 0;
+// bin/wtft.ts
+var intervalStr = "1h";
+var limit = 100;
+var width = 80;
+var mode = "cumulative";
+var showTicks = true;
+var targetSessionPath = void 0;
+var timezone = void 0;
+var harnessOption = "auto";
 function printHelp() {
   console.log(`
 Usage: wtft [options]
 
 Options:
   -s, --session <path>    Specify an explicit session .jsonl log file path (defaults to latest active session).
+  --harness <type>        Target a specific harness for auto-discovery (pi, claude-code, or auto). Default: auto.
   -i, --interval <val>    Group cost data into binned intervals (e.g., 1m, 7m, 4h, 1d, 2w; default: 1h).
   -l, --limit <number>    Limit the number of interval bars displayed (default: 100).
   -w, --width <number>    Set the maximum character width of the CLI output (default: 80).
@@ -552,17 +614,30 @@ for (let i = 2; i < process.argv.length; i++) {
     showTicks = true;
   } else if (arg === "-t" || arg === "--tz") {
     timezone = process.argv[++i];
+  } else if (arg === "--harness") {
+    const val = process.argv[++i];
+    if (val === "pi" || val === "claude-code" || val === "auto") {
+      harnessOption = val;
+    }
   }
 }
-function findLatestSession() {
-  const sessionsDir = path.join(os.homedir(), ".pi", "agent", "sessions");
-  if (!fs.existsSync(sessionsDir)) return null;
+function findLatestSession(harness = "auto") {
+  const piSessionsDir = path2.join(os.homedir(), ".pi", "agent", "sessions");
+  let claudeSessionsDir = null;
+  const claudeProjectsDir = path2.join(os.homedir(), ".claude", "projects");
+  if (fs.existsSync(claudeProjectsDir)) {
+    const cwdSlug = process.cwd().replace(/[/\\\\]/g, "-");
+    const possibleDir = path2.join(claudeProjectsDir, cwdSlug, "sessions");
+    const alternativeDir = path2.join(claudeProjectsDir, cwdSlug);
+    if (fs.existsSync(possibleDir)) claudeSessionsDir = possibleDir;
+    else if (fs.existsSync(alternativeDir)) claudeSessionsDir = alternativeDir;
+  }
   let newestFile = null;
   let newestMtime = 0;
   const walk = (dir) => {
     const files = fs.readdirSync(dir);
     for (const f of files) {
-      const fullPath = path.join(dir, f);
+      const fullPath = path2.join(dir, f);
       const stat = fs.statSync(fullPath);
       if (stat.isDirectory()) {
         walk(fullPath);
@@ -575,53 +650,35 @@ function findLatestSession() {
     }
   };
   try {
-    walk(sessionsDir);
+    if (harness === "auto" || harness === "pi") {
+      if (fs.existsSync(piSessionsDir)) walk(piSessionsDir);
+    }
+    if (harness === "auto" || harness === "claude-code") {
+      if (claudeSessionsDir) walk(claudeSessionsDir);
+    }
   } catch {
-    return null;
   }
   return newestFile;
 }
-const finalSessionPath = targetSessionPath || findLatestSession();
+var finalSessionPath = targetSessionPath || findLatestSession(harnessOption);
 if (!finalSessionPath || !fs.existsSync(finalSessionPath)) {
   console.error("\u274C Error: No active session log files found. Ensure Pi has been run, or specify an explicit session log path with -s.");
   process.exit(1);
 }
-const lines = fs.readFileSync(finalSessionPath, "utf8").split("\n");
-const interactions = [];
+var lines = fs.readFileSync(finalSessionPath, "utf8").split("\n");
+var interactions = [];
 for (const line of lines) {
   if (!line.trim()) continue;
   try {
     const entry = JSON.parse(line);
-    if (entry.type === "message" && entry.message && entry.message.role === "assistant") {
-      const assistantMsg = entry.message;
-      const cost = assistantMsg.usage?.cost?.total || 0;
-      const timestamp = assistantMsg.timestamp || new Date(entry.timestamp).getTime();
-      const files = [];
-      const commands = [];
-      const texts = [];
-      if (Array.isArray(assistantMsg.content)) {
-        for (const block of assistantMsg.content) {
-          if (block.type === "text") texts.push(block.text);
-          else if (block.type === "thinking") texts.push(block.thinking);
-          else if (block.type === "toolCall") {
-            const name = block.name;
-            const args = block.arguments || {};
-            if (name === "read") {
-              if (args.path) files.push({ path: args.path, action: "read" });
-            } else if (name === "write" || name === "edit") {
-              if (args.path) files.push({ path: args.path, action: "write" });
-            } else if (name === "bash") {
-              if (args.command) commands.push(args.command);
-            }
-          }
-        }
-      }
-      interactions.push({ timestamp, cost, files, commands, texts });
+    const interaction = parseEntryToInteraction(entry);
+    if (interaction) {
+      interactions.push(interaction);
     }
   } catch {
   }
 }
-const defaultSettings = {
+var defaultSettings = {
   interval: "1h",
   limit: 100,
   width: 80,
@@ -629,7 +686,7 @@ const defaultSettings = {
   mode: "cumulative",
   timezone: void 0
 };
-const outputLines = buildWtftLines(interactions, defaultSettings, {
+var outputLines = buildWtftLines(interactions, defaultSettings, {
   interval: intervalStr,
   limit,
   width,
