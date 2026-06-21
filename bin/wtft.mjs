@@ -76,7 +76,30 @@ function parseEntryToInteraction(entry) {
             const p = args.file_path || args.path || args.target;
             if (p) files.push({ path: p, action: "write" });
           } else if (name === "bash" || name === "run") {
-            if (args.command) commands.push(args.command);
+            if (args.command) {
+              commands.push(args.command);
+              const cmdLines = args.command.split("\n");
+              for (const line of cmdLines) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith("cat ") || trimmed.startsWith("head ") || trimmed.startsWith("tail ")) {
+                  const parts = trimmed.split(/\s+/);
+                  if (parts.length > 1) {
+                    const possiblePath = parts[1].replace(/['"]/g, "");
+                    if (possiblePath && !possiblePath.startsWith("-")) {
+                      files.push({ path: possiblePath, action: "read" });
+                    } else if (parts.length > 2 && parts[1].startsWith("-")) {
+                      for (let i = 2; i < parts.length; i++) {
+                        const candidate = parts[i].replace(/['"]/g, "");
+                        if (!candidate.startsWith("-") && isNaN(Number(candidate))) {
+                          files.push({ path: candidate, action: "read" });
+                          break;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -112,7 +135,7 @@ function classifyInteraction(interaction) {
       category = "code";
     } else {
       const ext = path.extname(norm).toLowerCase();
-      if ([".ts", ".js", ".mjs", ".json", ".css", ".tsx", ".jsx", ".py", ".rs", ".go", ".sh", ".yml", ".yaml"].includes(ext)) {
+      if ([".ts", ".js", ".mjs", ".json", ".css", ".tsx", ".jsx", ".py", ".rs", ".go", ".sh", ".yml", ".yaml", ".sql"].includes(ext) || norm.endsWith(".gitignore") || norm.endsWith(".dockerignore")) {
         category = "code";
       }
     }
