@@ -468,7 +468,8 @@ function buildWtftLines(interactions2, defaultSettings2, opts) {
   if (displayedBins.length === 0) {
     return null;
   }
-  const scaleMax = calculateScaleMax(totalSessionCost);
+  const maxBarValue = mode2 === "cumulative" ? totalSessionCost : Math.max(...displayedBins.map((b) => b.total_cost), 0);
+  const scaleMax = calculateScaleMax(maxBarValue);
   const labelWidth = Math.max(...displayedBins.map((b) => b.label.length), 5);
   let prefixWidth = labelWidth + 2;
   let maxIncLen = 6;
