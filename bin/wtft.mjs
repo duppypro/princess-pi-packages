@@ -4,6 +4,7 @@
 import * as fs from "node:fs";
 import * as path2 from "node:path";
 import * as os from "node:os";
+import { execSync } from "node:child_process";
 
 // extensions/lib/wtft-shared.ts
 import * as path from "node:path";
@@ -526,8 +527,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const leftLen = getVisualLength(titleLeft);
   const legendLen = getVisualLength(legendStr);
   const totalNeeded = leftLen + legendLen + 4;
-  if (totalNeeded <= finalWidth) {
-    const remainingSpaces = finalWidth - leftLen - legendLen;
+  if (totalNeeded <= finalWidth - 3) {
+    const remainingSpaces = finalWidth - 3 - leftLen - legendLen;
     const titleLine = titleLeft + " ".repeat(remainingSpaces) + legendStr;
     widgetLines.push(titleLine);
   } else {
@@ -548,7 +549,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     if (showTicks2 && i > 0 && bin.dateStr !== displayedBins[i - 1].dateStr) {
       const labelDay = formatMmmDdStr(bin.dateStr);
       const dayChangeText = `\u2500\u2500 ${labelDay} `;
-      const dividerLine = dayChangeText + "\u2500".repeat(Math.max(0, finalWidth - dayChangeText.length));
+      const dividerLine = dayChangeText + "\u2500".repeat(Math.max(0, finalWidth - 3 - dayChangeText.length));
       widgetLines.push(`\x1B[90m${dividerLine}\x1B[0m`);
     }
     let barStr = "";
@@ -674,6 +675,24 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
 }
 
 // bin/wtft.ts
+function getTerminalWidth() {
+  if (process.stdout.columns) return process.stdout.columns;
+  if (process.env.TMUX) {
+    try {
+      const tmuxWidth = execSync("tmux display-message -p '#{pane_width}'", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
+      const num = parseInt(tmuxWidth, 10);
+      if (!isNaN(num) && num > 0) return num;
+    } catch (e) {
+    }
+  }
+  try {
+    const cols = execSync("tput cols", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
+    const num = parseInt(cols, 10);
+    if (!isNaN(num) && num > 0) return num;
+  } catch (e) {
+  }
+  return 80;
+}
 var intervalStr = "1h";
 var limit = 100;
 var widthOption = null;
@@ -938,7 +957,7 @@ async function main() {
     } catch {
     }
   }
-  const termColumns = process.stdout.columns || 80;
+  const termColumns = getTerminalWidth();
   const width = Math.min(widthOption !== null ? widthOption : termColumns, 240);
   const defaultSettings = {
     interval: "1h",
