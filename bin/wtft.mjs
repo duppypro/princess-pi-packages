@@ -28,6 +28,29 @@ function calculateClaudeCost(model, usage) {
   const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.cache_creation_input_tokens || 0) * (cacheWritePrice / 1e6) + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
+function extractFilesFromBashCommand(command, files) {
+  const cmdLines = command.split("\n");
+  for (const line of cmdLines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("cat ") || trimmed.startsWith("head ") || trimmed.startsWith("tail ")) {
+      const parts = trimmed.split(/\s+/);
+      if (parts.length > 1) {
+        const possiblePath = parts[1].replace(/['"]/g, "");
+        if (possiblePath && !possiblePath.startsWith("-")) {
+          files.push({ path: possiblePath, action: "read" });
+        } else if (parts.length > 2 && parts[1].startsWith("-")) {
+          for (let i = 2; i < parts.length; i++) {
+            const candidate = parts[i].replace(/['"]/g, "");
+            if (!candidate.startsWith("-") && isNaN(Number(candidate))) {
+              files.push({ path: candidate, action: "read" });
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+}
 function parseEntryToInteraction(entry) {
   if (!entry) return null;
   const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
@@ -64,7 +87,10 @@ function parseEntryToInteraction(entry) {
           } else if (name === "write" || name === "edit") {
             if (args.path) files.push({ path: args.path, action: "write" });
           } else if (name === "bash") {
-            if (args.command) commands.push(args.command);
+            if (args.command) {
+              commands.push(args.command);
+              extractFilesFromBashCommand(args.command, files);
+            }
           }
         } else if (block.type === "tool_use") {
           const name = (block.name || "").toLowerCase();
@@ -78,27 +104,7 @@ function parseEntryToInteraction(entry) {
           } else if (name === "bash" || name === "run") {
             if (args.command) {
               commands.push(args.command);
-              const cmdLines = args.command.split("\n");
-              for (const line of cmdLines) {
-                const trimmed = line.trim();
-                if (trimmed.startsWith("cat ") || trimmed.startsWith("head ") || trimmed.startsWith("tail ")) {
-                  const parts = trimmed.split(/\s+/);
-                  if (parts.length > 1) {
-                    const possiblePath = parts[1].replace(/['"]/g, "");
-                    if (possiblePath && !possiblePath.startsWith("-")) {
-                      files.push({ path: possiblePath, action: "read" });
-                    } else if (parts.length > 2 && parts[1].startsWith("-")) {
-                      for (let i = 2; i < parts.length; i++) {
-                        const candidate = parts[i].replace(/['"]/g, "");
-                        if (!candidate.startsWith("-") && isNaN(Number(candidate))) {
-                          files.push({ path: candidate, action: "read" });
-                          break;
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+              extractFilesFromBashCommand(args.command, files);
             }
           }
         }
