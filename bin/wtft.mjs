@@ -429,7 +429,7 @@ function getVisualLength(str) {
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
   const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
-  const width2 = opts?.width !== void 0 ? opts.width : defaultSettings.width;
+  const width = opts?.width !== void 0 ? opts.width : defaultSettings.width;
   const showTicks2 = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings.showTicks;
   const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings.mode;
   const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings.timezone;
@@ -491,7 +491,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     maxCostLen = Math.max(...displayedBins.map((b) => formatCost(b.total_cost).length), 6);
     prefixWidth += maxCostLen + 2;
   }
-  const finalWidth = Math.max(width2, 40);
+  const finalWidth = Math.max(width, 40);
   const maxBarWidth = finalWidth - prefixWidth - 3;
   const newestBin = displayedBins[0];
   let titleDateStr = "";
@@ -670,7 +670,7 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
 // bin/wtft.ts
 var intervalStr = "1h";
 var limit = 100;
-var width = 80;
+var widthOption = null;
 var mode = "cumulative";
 var showTicks = true;
 var targetSessionPath = void 0;
@@ -708,7 +708,7 @@ for (let i = 2; i < process.argv.length; i++) {
   } else if (arg === "-l" || arg === "--limit") {
     limit = parseInt(process.argv[++i], 10);
   } else if (arg === "-w" || arg === "--width") {
-    width = parseInt(process.argv[++i], 10);
+    widthOption = parseInt(process.argv[++i], 10);
   } else if (arg === "-c" || arg === "--cumulative") {
     mode = "cumulative";
   } else if (arg === "-b" || arg === "--bucket") {
@@ -932,10 +932,12 @@ async function main() {
     } catch {
     }
   }
+  const termColumns = process.stdout.columns || 80;
+  const width = Math.min(widthOption !== null ? widthOption : termColumns, 240);
   const defaultSettings = {
     interval: "1h",
     limit: 100,
-    width: 80,
+    width,
     showTicks: true,
     mode: "cumulative",
     timezone: void 0
