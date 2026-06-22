@@ -131,7 +131,13 @@ function classifyInteraction(interaction) {
   for (const f of interaction.files) {
     const norm = f.path.replace(/\\/g, "/");
     let category = null;
-    if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path.extname(norm).toLowerCase() === ".md") {
+    if (norm.includes("node_modules/")) {
+      if (path.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
+        category = "research";
+      } else {
+        category = "code";
+      }
+    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path.extname(norm).toLowerCase() === ".md") {
       category = "spec";
     } else if (norm.startsWith("tests/") || norm.includes("/tests/")) {
       category = "tests";
