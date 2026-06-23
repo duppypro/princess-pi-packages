@@ -3,6 +3,12 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+// Step-5 gate matcher (shared by the validation check and the suggestion scan).
+// Loosened from a literal `startsWith("Code and Spec Approved:")` to accept our actual
+// commit convention `Code and Spec Approved (Step 5): ...` — i.e. an optional
+// parenthetical (and surrounding whitespace) before the colon.
+const STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
+
 // ---
 // MAIN EXTENSION ENTRY POINT
 // ---
@@ -100,7 +106,7 @@ export default function mergeExtension(pi: ExtensionAPI) {
 
 				// 6. Validate that the target commit was a "Code and Spec Approved" Step 5 commit
 				const targetCommitMsg = execSync(`git log -1 --pretty=%B ${targetHash}`, { cwd: currentCwd, encoding: "utf8" }).trim();
-				if (!targetCommitMsg.startsWith("Code and Spec Approved:")) {
+				if (!STEP5_SUBJECT.test(targetCommitMsg)) {
 					// Search for the most recent Step 5 commit in history to suggest
 					let suggestedStep5Hash = "";
 					let suggestedStep5Msg = "";
@@ -111,7 +117,7 @@ export default function mergeExtension(pi: ExtensionAPI) {
 							if (spaceIdx !== -1) {
 								const hash = line.substring(0, spaceIdx).trim();
 								const msg = line.substring(spaceIdx + 1).trim();
-								if (msg.startsWith("Code and Spec Approved:")) {
+								if (STEP5_SUBJECT.test(msg)) {
 									suggestedStep5Hash = hash;
 									suggestedStep5Msg = msg;
 									break;
