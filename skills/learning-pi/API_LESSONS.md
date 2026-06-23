@@ -51,3 +51,25 @@ Do not load this file into the prompt context unless specifically asked about Pi
 ## 8. Duppy's Color Standard for TUI Widgets
 - When rendering complex logs, charts, or category breakdowns, Duppy has a strong preference for **high-contrast, highly differentiable color schemes** (such as Synthwave or highly neon color ramps) to make different categories instantly distinguishable at a single glance.
 - To achieve this, Princess-Pi should always write verification scripts to test local terminal color rendering before deploying colors, ensuring they don't flatten over nested `ssh` or `tmux` boundaries.
+
+---
+
+## 9. Development & Hot-Swapping Workflows (Heavy Hammer vs. Frictionless local)
+**The Lesson:** Testing local extension changes can be approached in two ways depending on the developer's preference and desired environment purity.
+
+*   **The "Duppy's Heavy Hammer" Method (Persistent Remote-Main Fetch):**
+    The user can publish, push to remote Git `main`, and then run:
+    ```bash
+    pi update --extensions    # Force-fetch and compile from remote Git
+    /reload                   # Inside the TUI: Hot-reload loaded extensions
+    ```
+    This method is highly robust as it pulls from a clean remote repository, making it easy to spot versioning or remote-caching bugs.
+    
+*   **The On-the-Fly Clamping & Sandbox Method (Local Sandbox):**
+    For quick iterations without making remote commits:
+    ```bash
+    pi -e ./                  # Starts a new session with local packages temporarily loaded
+    ```
+    To automatically scale back any locked or default large dimensions (e.g. standardizing width default to `240` max), the shared core compiler should dynamically query terminal columns at rendering time and clamp values using:
+    `const width = Math.min(configuredWidth, getTerminalWidth(isWidget))`
+    This ensures that even with a fixed default of 240, the layout instantly auto-fits the screen dynamically during resize.
