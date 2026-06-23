@@ -136,7 +136,7 @@ export default function mergeExtension(pi: ExtensionAPI) {
 					throw new Error(errorMsg);
 				}
 
-				// 7. Find the 'main' worktree
+				// 7. Locate a dedicated 'main' worktree, if one exists.
 				const worktreeLines = execSync("git worktree list", { cwd: currentCwd, encoding: "utf8" }).trim().split("\n");
 				let mainCwd = "";
 				for (const line of worktreeLines) {
@@ -144,39 +144,69 @@ export default function mergeExtension(pi: ExtensionAPI) {
 						const idx = line.lastIndexOf("[main]");
 						const beforeBranch = line.substring(0, idx).trim();
 						const spaceIdx = beforeBranch.lastIndexOf(" ");
-						if (spaceIdx !== -1) {
-							mainCwd = beforeBranch.substring(0, spaceIdx).trim();
-						} else {
-							mainCwd = beforeBranch;
-						}
+						mainCwd = spaceIdx !== -1 ? beforeBranch.substring(0, spaceIdx).trim() : beforeBranch;
 					}
 				}
+				const haveMainWorktree = !!mainCwd && fs.existsSync(mainCwd) && mainCwd !== currentCwd;
 
-				if (!mainCwd || !fs.existsSync(mainCwd)) {
-					throw new Error("Could not find the 'main' branch worktree from 'git worktree list'.");
+				if (haveMainWorktree) {
+					// --- Multi-worktree path (Pi's original design): merge inside the isolated
+					// 'main' worktree, never disturbing the feature checkout.
+					const mainStatus = execSync("git status --porcelain", { cwd: mainCwd, encoding: "utf8" }).trim();
+					if (mainStatus !== "") {
+						throw new Error(`The 'main' branch worktree at ${mainCwd} is not clean. Please clean or stash changes there first.\n${mainStatus}`);
+					}
+					ctx.ui.notify("📡 Pulling latest 'main' from origin...", "info");
+					execSync("git checkout main", { cwd: mainCwd, stdio: "ignore" });
+					execSync("git pull --ff-only origin main", { cwd: mainCwd, stdio: "ignore" });
+					ctx.ui.notify(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`, "info");
+					execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
+					ctx.ui.notify("📡 Pushing merged 'main' branch to origin...", "info");
+					execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
+					ctx.ui.notify(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`, "info");
+					ctx.ui.notify(`💪 Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`, "info");
+				} else {
+					// --- Single-checkout fallback (the common Claude Code case): no dedicated
+					// 'main' worktree, so integrate in-place. We checkout main here, merge, push,
+					// then ALWAYS return to the feature branch — even on failure — so the user is
+					// never stranded on main or mid-merge. The current tree was verified clean at
+					// step 2, so switching branches is safe.
+					ctx.ui.notify("🪵 No dedicated 'main' worktree found — using in-place single-checkout merge.", "info");
+					try {
+						// Ensure a local 'main' exists (fresh clones may only have origin/main).
+						let hasLocalMain = true;
+						try {
+							execSync("git rev-parse --verify --quiet refs/heads/main", { cwd: currentCwd, stdio: "ignore" });
+						} catch {
+							hasLocalMain = false;
+						}
+						ctx.ui.notify("📡 Checking out and updating 'main'...", "info");
+						if (hasLocalMain) {
+							execSync("git checkout main", { cwd: currentCwd, stdio: "ignore" });
+							execSync("git pull --ff-only origin main", { cwd: currentCwd, stdio: "ignore" });
+						} else {
+							execSync("git checkout -b main origin/main", { cwd: currentCwd, stdio: "ignore" });
+						}
+						ctx.ui.notify(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main'...`, "info");
+						execSync(`git merge ${targetHash}`, { cwd: currentCwd, stdio: "ignore" });
+						ctx.ui.notify("📡 Pushing merged 'main' branch to origin...", "info");
+						execSync("git push origin main", { cwd: currentCwd, stdio: "ignore" });
+					} catch (mergeErr: any) {
+						// Abort any half-finished merge so the working tree is restored.
+						try { execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" }); } catch { /* not mid-merge */ }
+						const detail = mergeErr?.message || String(mergeErr);
+						throw new Error(
+							`In-place merge into 'main' failed and was rolled back (you are back on '${currentBranch}').\n` +
+							`Likely a merge conflict or a non-fast-forward 'main' (someone pushed). Fix by updating 'main' and re-running, ` +
+							`or resolve manually.\nUnderlying error:\n${detail}`
+						);
+					} finally {
+						// ALWAYS return to the feature branch the user started on.
+						try { execSync(`git checkout ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" }); } catch { /* best-effort */ }
+					}
+					ctx.ui.notify(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`, "info");
+					ctx.ui.notify(`💪 Ready for the next task! You are on branch '${currentBranch}'.`, "info");
 				}
-
-				// 8. Verify main worktree is clean
-				const mainStatus = execSync("git status --porcelain", { cwd: mainCwd, encoding: "utf8" }).trim();
-				if (mainStatus !== "") {
-					throw new Error(`The 'main' branch worktree at ${mainCwd} is not clean. Please clean or stash changes there first.\n${mainStatus}`);
-				}
-
-				// 9. Pull the latest 'main' branch in main worktree to ensure it is up-to-date with remote
-				ctx.ui.notify("📡 Pulling latest 'main' from origin...", "info");
-				execSync("git checkout main", { cwd: mainCwd, stdio: "ignore" });
-				execSync("git pull origin main", { cwd: mainCwd, stdio: "ignore" });
-
-				// 10. Merge the target commit into 'main'
-				ctx.ui.notify(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`, "info");
-				execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
-
-				// 11. Push 'main' to origin
-				ctx.ui.notify("📡 Pushing merged 'main' branch to origin...", "info");
-				execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
-
-				ctx.ui.notify(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`, "info");
-				ctx.ui.notify(`💪 Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`, "info");
 
 			} catch (err: any) {
 				const errMsg = err?.message || String(err);
