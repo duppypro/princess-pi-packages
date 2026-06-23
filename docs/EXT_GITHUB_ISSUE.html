@@ -9,21 +9,21 @@
     <p><strong>Domain:</strong> Code Intelligence & External Integrations</p>
 
     <h3>Overview</h3>
-    <p>The GitHub Issue Autocomplete extension hooks into the active Pi session to provide instant, fuzzy-searchable autocompletion for GitHub issues whenever the user types <code>#</code> in the prompt. It dynamically parses the remote origin of the active Git worktree to determine the target repository.</p>
+    <p>The GitHub Issue Autocomplete extension hooks into the active Pi session to provide instant, fuzzy-searchable autocompletion for GitHub issues across multiple sibling repositories whenever the user types <code>#</code> in the prompt.</p>
 
     <h3>Core Architecture</h3>
     <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <p><strong>1. Lifecycle Hooking:</strong></p>
-        <p>Instead of fetching issues on every keystroke, the extension hooks into the <code>session_start</code> event. It eagerly fetches up to 100 open issues in the background.</p>
+        <p><strong>1. Repository Discovery & Resolution:</strong></p>
+        <p>On session startup, the extension auto-discovers all Git repositories residing at the same folder level as the CWD (by scanning sibling directories and synchronously parsing their <code>.git/config</code> files). This provides instant, O(1) local resolution without spawning slow child processes.</p>
         
-        <p><strong>2. Dependency Validation (gh CLI):</strong></p>
-        <p>The extension executes <code>gh issue list --repo &lt;repo&gt; --json number,title,state</code>. If the CLI is missing or unauthenticated, it presents a helpful error notification with installation instructions.</p>
+        <p><strong>2. Two-Stage Autocomplete Modes:</strong></p>
+        <ul>
+            <li><strong>Repo Selection Mode (digits not typed):</strong> Typing <code>#</code> triggers a dropdown list of all discovered sibling repositories (e.g. <code>btw#</code>, <code>princess-pi-packages#</code>), with the active CWD repository highlighted first. Arrow navigation dynamically updates the input text.</li>
+            <li><strong>Issue Selection Mode (digits typed):</strong> As soon as the user types a digit after <code>#</code>, the extension parses the targeted repository (falling back to CWD repo if omitted) and triggers a background query to fetch its open issues via <code>gh issue list --repo &lt;owner/repo&gt;</code>. These are cached in-memory.</li>
+        </ul>
 
-        <p><strong>3. TUI Provider Layer:</strong></p>
-        <p>Registers a custom <code>AutocompleteProvider</code> with <code>ctx.ui.addAutocompleteProvider</code> that matches tokens prefixed with <code>#</code> and fuzzy-filters the cached issue list in real-time.</p>
+        <p><strong>3. Title Expansion & Output:</strong></p>
+        <p>When an issue is selected from the fuzzy-filtered suggestions list, the completed text inserts both the cross-repo issue reference and the double-quoted issue title, ending up with: <code>repo-name#number "Issue Title"</code> (e.g. <code>princess-pi-packages#25 "BUG: TPM Rate Limiter widget..."</code>).</p>
     </div>
-
-    <h3>Directory Sync Notes</h3>
-    <p>Because the issue cache is primed on <code>session_start</code> using the active directory's remote repository, executing a <code>/cd</code> or <code>/mv-session</code> command mid-session to shift into a repository with a <em>different</em> remote origin will <strong>not</strong> automatically bust the issue cache. The user must issue a <code>/reload</code> command to trigger a new <code>session_start</code> event and re-hydrate the autocomplete list with the new repository's issues.</p>
 </body>
 </html>
