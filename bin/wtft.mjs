@@ -4,10 +4,10 @@
 import * as fs from "node:fs";
 import * as path2 from "node:path";
 import * as os from "node:os";
-import { execSync } from "node:child_process";
 
 // extensions/lib/wtft-shared.ts
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 function calculateClaudeCost(model, usage) {
   if (!usage) return 0;
   let inputPrice = 3;
@@ -433,10 +433,41 @@ function getVisualLength(str) {
   }
   return len;
 }
+function getTerminalWidth(isWidget = false) {
+  let width = 80;
+  if (process.stdout && process.stdout.columns) {
+    width = process.stdout.columns;
+  } else if (process.stderr && process.stderr.columns) {
+    width = process.stderr.columns;
+  } else if (process.env.COLUMNS) {
+    const num = parseInt(process.env.COLUMNS, 10);
+    if (!isNaN(num) && num > 0) width = num;
+  }
+  if (width === 80 && process.env.TMUX) {
+    try {
+      const tmuxWidth = execSync("tmux display-message -p '#{pane_width}'", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
+      const num = parseInt(tmuxWidth, 10);
+      if (!isNaN(num) && num > 0) width = num;
+    } catch (e) {
+    }
+  }
+  if (width === 80) {
+    try {
+      const cols = execSync("tput cols", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
+      const num = parseInt(cols, 10);
+      if (!isNaN(num) && num > 0) width = num;
+    } catch (e) {
+    }
+  }
+  return isWidget ? width - 4 : width;
+}
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
   const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
-  const width = opts?.width !== void 0 ? opts.width : defaultSettings.width;
+  const isWidget = opts?.isWidget ?? false;
+  const termWidth = getTerminalWidth(isWidget);
+  const rawWidth = opts?.width !== void 0 ? opts.width : defaultSettings.width;
+  const width = Math.min(rawWidth, termWidth);
   const showTicks2 = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings.showTicks;
   const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings.mode;
   const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings.timezone;
@@ -675,29 +706,6 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
 }
 
 // bin/wtft.ts
-function getTerminalWidth() {
-  if (process.stdout && process.stdout.columns) return process.stdout.columns;
-  if (process.stderr && process.stderr.columns) return process.stderr.columns;
-  if (process.env.COLUMNS) {
-    const num = parseInt(process.env.COLUMNS, 10);
-    if (!isNaN(num) && num > 0) return num;
-  }
-  if (process.env.TMUX) {
-    try {
-      const tmuxWidth = execSync("tmux display-message -p '#{pane_width}'", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
-      const num = parseInt(tmuxWidth, 10);
-      if (!isNaN(num) && num > 0) return num;
-    } catch (e) {
-    }
-  }
-  try {
-    const cols = execSync("tput cols", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
-    const num = parseInt(cols, 10);
-    if (!isNaN(num) && num > 0) return num;
-  } catch (e) {
-  }
-  return 80;
-}
 var intervalStr = "1h";
 var limit = 100;
 var widthOption = null;
@@ -963,7 +971,7 @@ async function main() {
     }
   }
   const termColumns = getTerminalWidth();
-  const width = Math.min(widthOption !== null ? widthOption : termColumns, 240);
+  const width = Math.min(widthOption !== null ? widthOption : 240, termColumns, 240);
   const defaultSettings = {
     interval: "1h",
     limit: 100,
