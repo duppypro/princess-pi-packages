@@ -109,8 +109,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 				`\n\x1b[1m\x1b[33m⚠️  REMINDER: You have active background servers running in this repository:\x1b[0m\n` +
 				serverLinks + `\n\n` +
 				`\x1b[33mThese servers will remain active during your "pause". To stop them, resume this session and run:\x1b[0m\n` +
-				`  \x1b[1m/serve --kill\x1b[0m\n\n` +
-				`\x1b[1m\x1b[36m🔒 VPS Security Note:\x1b[0m If deploying on a remote VPS (like Hostinger), remember to configure your firewall (UFW or Hostinger Control Panel) to block unauthorized access to these development ports.\n`
+				`  \x1b[1m/serve --kill\x1b[0m\n`
 			);
 		}
 	});
@@ -321,7 +320,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 				"-C", cert,
 				"-K", key,
 				"-p", String(port),
-				"-a", "0.0.0.0"
+				"-a", "127.0.0.1"
 			] : [
 				runnerPath,
 				targetDir,
@@ -329,7 +328,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 				"-C", cert,
 				"-K", key,
 				"-p", String(port),
-				"-a", "0.0.0.0"
+				"-a", "127.0.0.1"
 			];
 
 			const serverProcess = spawn(spawnCmd, spawnArgs, {
@@ -353,13 +352,6 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		const fullSummary = buildDiscoveredSummary(allActiveServers, process.cwd());
 		ctx.ui.notify(fullSummary, "info");
-
-		// Print one-time Hostinger/VPS firewall warning per session
-		const hasShownWarning = ctx.sessionManager.getEntries().some(e => e.type === "custom" && e.customType === "serve-firewall-warning");
-		if (!hasShownWarning) {
-			ctx.ui.notify(`\x1b[1m\x1b[36m🔒 VPS Security Note:\x1b[0m Since you are running this on a live network, remember to configure your host firewall (like UFW or your Hostinger VPS Control Panel) to block unauthorized inbound traffic to these dev ports.\n`, "warning");
-			pi.appendEntry("serve-firewall-warning", { shown: true });
-		}
 	}
 
 	// --- Dispatch table: matches the raw trimmed args to the right subcommand handler ---

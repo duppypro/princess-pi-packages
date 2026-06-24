@@ -7,15 +7,10 @@ import { ServerInstance } from "./domain.js";
 let cachedPublicIp: string | null = null;
 
 export async function resolveIp(): Promise<string> {
-	if (cachedPublicIp) return cachedPublicIp;
-	try {
-		cachedPublicIp = await getPublicIp();
-	} catch (e) {
-		cachedPublicIp = "127.0.0.1";
-	}
-	return cachedPublicIp;
+	return "127.0.0.1";
 }
 
+// Kept for potential future use if needed, but no longer called
 function getPublicIp(): Promise<string> {
 	return new Promise((resolve) => {
 		https.get("https://api.ipify.org", { timeout: 1000 }, (res) => {

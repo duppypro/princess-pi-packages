@@ -18,35 +18,8 @@ function isInsideRepo(dir, cwd = process.cwd()) {
 import * as https from "node:https";
 import * as http from "node:http";
 import { exec } from "node:child_process";
-var cachedPublicIp = null;
 async function resolveIp() {
-  if (cachedPublicIp) return cachedPublicIp;
-  try {
-    cachedPublicIp = await getPublicIp();
-  } catch (e) {
-    cachedPublicIp = "127.0.0.1";
-  }
-  return cachedPublicIp;
-}
-function getPublicIp() {
-  return new Promise((resolve2) => {
-    https.get("https://api.ipify.org", { timeout: 1e3 }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => {
-        data += chunk;
-      });
-      res.on("end", () => {
-        const ip = data.trim();
-        if (ip && ip.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
-          resolve2(ip);
-        } else {
-          resolve2("127.0.0.1");
-        }
-      });
-    }).on("error", () => {
-      resolve2("127.0.0.1");
-    });
-  });
+  return "127.0.0.1";
 }
 function discoverServers() {
   return new Promise((resolve2) => {

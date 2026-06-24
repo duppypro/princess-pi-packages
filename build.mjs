@@ -93,6 +93,22 @@ async function buildAll() {
   wtftCode = wtftCode.replace(/^#!\/usr\/bin\/env -S node --experimental-strip-types\n/, "#!/usr/bin/env node\n");
   fs.writeFileSync("bin/wtft.mjs", wtftCode);
   console.log("✅ bin/wtft.mjs compiled successfully.");
+
+  // 3. Build merge.mjs
+  await build({
+    entryPoints: ["bin/merge.ts"],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node18",
+    outfile: "bin/merge.mjs"
+  });
+
+  let mergeCode = fs.readFileSync("bin/merge.mjs", "utf8");
+  mergeCode = mergeCode.replace(/^#!\/usr\/bin\/env node\n/, ""); // strip if present
+  mergeCode = "#!/usr/bin/env node\n" + mergeCode;
+  fs.writeFileSync("bin/merge.mjs", mergeCode);
+  console.log("✅ bin/merge.mjs compiled successfully.");
 }
 
 buildAll().catch((err) => {
