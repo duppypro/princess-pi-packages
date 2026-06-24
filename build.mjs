@@ -1,7 +1,66 @@
 import { build } from "esbuild";
 import fs from "fs";
+import path from "path";
+
+// Recursively find all SKILL.md files
+function findSkillFiles(dir) {
+  let results = [];
+  const list = fs.readdirSync(dir);
+  for (const file of list) {
+    if (file === "node_modules" || file === ".git") continue;
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+    if (stat && stat.isDirectory()) {
+      results = results.concat(findSkillFiles(filePath));
+    } else if (file === "SKILL.md") {
+      results.push(filePath);
+    }
+  }
+  return results;
+}
+
+function validateSkills() {
+  console.log("🔍 Validating SKILL.md files...");
+  const skillFiles = findSkillFiles(process.cwd());
+  let errors = 0;
+
+  for (const filePath of skillFiles) {
+    const content = fs.readFileSync(filePath, "utf8");
+    // Extract frontmatter (between first and second ---)
+    const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!match) {
+      console.error(`❌ [Skill Format Error] ${filePath}: No frontmatter found.`);
+      errors++;
+      continue;
+    }
+
+    const frontmatter = match[1];
+    const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+    if (!nameMatch) {
+      console.error(`❌ [Skill Format Error] ${filePath}: 'name' field is missing in frontmatter.`);
+      errors++;
+      continue;
+    }
+
+    const name = nameMatch[1].trim();
+    // Validate characters: must be lowercase a-z, 0-9, and hyphens only
+    const validNameRegex = /^[a-z0-9-]+$/;
+    if (!validNameRegex.test(name)) {
+      console.error(`❌ [Skill Format Error] ${filePath}: name "${name}" contains invalid characters (must be lowercase a-z, 0-9, hyphens only).`);
+      errors++;
+    }
+  }
+
+  if (errors > 0) {
+    throw new Error(`${errors} skill validation error(s) found.`);
+  }
+  console.log(`✅ Validated ${skillFiles.length} SKILL.md file(s).`);
+}
 
 async function buildAll() {
+  // Validate skills first
+  validateSkills();
+
   console.log("🛠️  Building cross-harness CLI binaries...");
 
   // 1. Build serve.mjs

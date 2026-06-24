@@ -1,5 +1,5 @@
 ---
-name: cross_harness_tool
+name: cross-harness-tool
 description: Recipe for building/porting a tool that works in BOTH Pi (as a /command + optional TUI widget) and Claude Code (as a zero-token CLI), driven by one shared manifest.
 ---
 
