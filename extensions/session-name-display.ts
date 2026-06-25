@@ -3,7 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 
 export default function sessionNameDisplayExtension(pi: ExtensionAPI) {
-  // Wrap sessionManager.appendSessionInfo to automatically style any set session name immediately
+  // Wrap sessionManager to handle automatic styling and prevent normalization warnings
   const wrapSessionManager = (ctx: any) => {
     const sessionManager = ctx.sessionManager;
     if (sessionManager && !sessionManager.__isSessionNameDisplayWrapped) {
@@ -14,8 +14,21 @@ export default function sessionNameDisplayExtension(pi: ExtensionAPI) {
           const styledName = ctx.ui.theme.fg("thinkingOff", `\x1b[7m ${plainName} \x1b[27m`);
           return originalAppend.call(this, styledName);
         };
-        sessionManager.__isSessionNameDisplayWrapped = true;
       }
+
+      const originalGetSessionName = sessionManager.getSessionName;
+      if (typeof originalGetSessionName === "function") {
+        sessionManager.getSessionName = function (this: any, ...args: any[]) {
+          const name = originalGetSessionName.apply(this, args);
+          // Strip colors when checked by handleNameCommand to avoid "normalized" warnings
+          if (name && new Error().stack?.includes("handleNameCommand")) {
+            return stripAnsi(name).trim();
+          }
+          return name;
+        };
+      }
+
+      sessionManager.__isSessionNameDisplayWrapped = true;
     }
   };
 
