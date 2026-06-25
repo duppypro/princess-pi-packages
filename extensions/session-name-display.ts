@@ -8,7 +8,7 @@ export default function sessionNameDisplayExtension(pi: ExtensionAPI) {
     }
     // Only style if it isn't already styled to prevent runaway ANSI wrapping
     if (!name.includes("\x1b[")) {
-      // Use "border" (same as prompt separator lines) + \x1b[7m (inverse) 
+      // Use "thinkingOff" (the exact color of the inactive prompt borders) + \x1b[7m (inverse) to match perfectly
       const styledName = ctx.ui.theme.fg("border", `\x1b[7m ${name} \x1b[27m`);
       pi.setSessionName(styledName);
     }
