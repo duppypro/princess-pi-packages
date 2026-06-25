@@ -13,7 +13,7 @@ This project contains custom extensions, skills, and documentation manifests for
 *   **Runtime**: Node.js (≥ 18). Pi extensions are `.ts`; standalone CLI bins are being standardized to plain ESM JavaScript (`.mjs`) — see the cross-harness convention below.
 *   **`extensions/`**: The raw `.ts` extension scripts loaded directly by the Pi Agent (e.g. `serve.ts`, `wtft.ts`, `smush.ts`). These remain the **typed twin** of any CLI bin.
 *   **`bin/`**: Standalone, Pi-independent CLI ports of extensions whose logic doesn't need the Pi runtime. Invokable from any shell, including Claude Code's `!` prefix — Claude Code has no extension-dispatch that bypasses the model the way Pi's `registerCommand` does, so the CLI is the practical zero-token substitute. Each command also gets a same-named wrapper script at the repo root (e.g. `./merge`) execing the bin.
-    *   **Cross-harness convention (why `.mjs`):** CLI bins should be **plain ESM JavaScript** with `#!/usr/bin/env node` — *not* `--experimental-strip-types` and *not* `npx tsx`. When installed globally for Claude (`npm install -g github:duppypro/princess-pi-packages`) the bin lives under `node_modules/`, where Node **refuses** type-stripping (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) and an `npx tsx` shebang forces a per-environment network fetch. Plain `.mjs` needs zero deps and no build step. **Reference implementation: `bin/merge.mjs` (#8).** `wtft`/`serve`/`yada` are still `.ts` and don't yet run from a global install — tracked in #9 (wtft) and #10 (serve).
+    *   **Cross-harness convention (why `.mjs`):** CLI bins should be **plain ESM JavaScript** with `#!/usr/bin/env node` — *not* `--experimental-strip-types` and *not* `npx tsx`. When installed globally for Claude (`npm install -g github:duppypro/princess-pi-packages`) the bin lives under `node_modules/`, where Node **refuses** type-stripping (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) and an `npx tsx` shebang forces a per-environment network fetch. Plain `.mjs` needs zero deps and no build step. **Reference implementations: `bin/merge.mjs`, `bin/serve.mjs`, `bin/wtft.mjs`.** `yada` is still `.ts` and doesn't yet run safely from a global install — tracked in #31.
 *   **`tests/`**: Dedicated permanent test suites.
 *   **`debug/`**: Ephemeral scripts for quick debugging (e.g., one-off log parsers).
 *   **`research/`**: Prototypes and longer-term experimental code.
@@ -52,8 +52,8 @@ makes this cwd-independent; pulls from the remote, not a local clone):
 ```bash
 npm install -g github:duppypro/princess-pi-packages
 ```
-Today only `merge` is a verified global CLI (plain `.mjs`); `wtft`/`yada`/`serve` await the
-`.mjs` port (#9, #10). Re-run the command to update.
+Today `merge`, `wtft`, and `serve` are verified global CLIs (plain `.mjs`); `yada` awaits the
+`.mjs` port (#31). Re-run the command to update.
 
 ### 3. Hot-Swapping & Updates
 When you make changes to files and push them, trigger a re-download and TUI compilation:
