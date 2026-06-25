@@ -446,32 +446,32 @@ function getVisualLength(str) {
   return len;
 }
 function getTerminalWidth(isWidget = false) {
-  let width = 80;
+  let width2 = 80;
   if (process.stdout && process.stdout.columns) {
-    width = process.stdout.columns;
+    width2 = process.stdout.columns;
   } else if (process.stderr && process.stderr.columns) {
-    width = process.stderr.columns;
+    width2 = process.stderr.columns;
   } else if (process.env.COLUMNS) {
     const num = parseInt(process.env.COLUMNS, 10);
-    if (!isNaN(num) && num > 0) width = num;
+    if (!isNaN(num) && num > 0) width2 = num;
   }
-  if (width === 80 && process.env.TMUX) {
+  if (width2 === 80 && process.env.TMUX) {
     try {
       const tmuxWidth = execSync("tmux display-message -p '#{pane_width}'", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
       const num = parseInt(tmuxWidth, 10);
-      if (!isNaN(num) && num > 0) width = num;
+      if (!isNaN(num) && num > 0) width2 = num;
     } catch (e) {
     }
   }
-  if (width === 80) {
+  if (width2 === 80) {
     try {
       const cols = execSync("tput cols", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
       const num = parseInt(cols, 10);
-      if (!isNaN(num) && num > 0) width = num;
+      if (!isNaN(num) && num > 0) width2 = num;
     } catch (e) {
     }
   }
-  return isWidget ? width - 4 : width;
+  return isWidget ? width2 - 4 : width2;
 }
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
@@ -479,7 +479,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const isWidget = opts?.isWidget ?? false;
   const termWidth = getTerminalWidth(isWidget);
   const rawWidth = opts?.width !== void 0 ? opts.width : defaultSettings.width;
-  const width = Math.min(rawWidth, termWidth);
+  const width2 = Math.min(rawWidth, termWidth);
   const showTicks2 = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings.showTicks;
   const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings.mode;
   const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings.timezone;
@@ -541,7 +541,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     maxCostLen = Math.max(...displayedBins.map((b) => formatCost(b.total_cost).length), 6);
     prefixWidth += maxCostLen + 2;
   }
-  const finalWidth = Math.max(width, 40);
+  const finalWidth = Math.max(width2, 40);
   const maxBarWidth = finalWidth - prefixWidth - 3;
   const newestBin = displayedBins[0];
   let titleDateStr = "";
@@ -747,6 +747,15 @@ Options:
   -h, --help              Display this help menu.
 `);
 }
+var hasInterval = false;
+var hasLimit = false;
+var hasWidth = false;
+var hasCumulative = false;
+var hasBucket = false;
+var hasNoTicks = false;
+var hasTicks = false;
+var hasTz = false;
+var hasOther = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
@@ -756,22 +765,31 @@ for (let i = 2; i < process.argv.length; i++) {
     targetSessionPath = process.argv[++i];
   } else if (arg === "-i" || arg === "--interval") {
     intervalStr = process.argv[++i];
+    hasInterval = true;
   } else if (arg === "-l" || arg === "--limit") {
     limit = parseInt(process.argv[++i], 10);
+    hasLimit = true;
   } else if (arg === "-w" || arg === "--width") {
     widthOption = parseInt(process.argv[++i], 10);
+    hasWidth = true;
   } else if (arg === "-c" || arg === "--cumulative") {
     mode = "cumulative";
+    hasCumulative = true;
   } else if (arg === "-b" || arg === "--bucket") {
     mode = "bucket";
+    hasBucket = true;
   } else if (arg === "--no-ticks") {
     showTicks = false;
+    hasNoTicks = true;
   } else if (arg === "--ticks") {
     showTicks = true;
+    hasTicks = true;
   } else if (arg === "-t" || arg === "--tz") {
     timezone = process.argv[++i];
+    hasTz = true;
   } else if (arg === "-o" || arg === "--other") {
     showOther = true;
+    hasOther = true;
   } else if (arg === "--harness") {
     const val = process.argv[++i];
     if (val === "pi" || val === "claude-code" || val === "auto") {
@@ -972,10 +990,33 @@ async function main() {
     }
   }
   const interactions = [];
+  let disabledEmoji = false;
+  let sessionInterval;
+  let sessionLimit;
+  let sessionWidth;
+  let sessionMode;
+  let sessionShowTicks;
+  let sessionTimezone;
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line);
+      if (entry.type === "custom" && entry.customType === "emoji-settings") {
+        if (entry.data && typeof entry.data.disabled === "boolean") {
+          disabledEmoji = entry.data.disabled;
+        }
+      } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+        if (entry.data) {
+          if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
+          if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
+          if (typeof entry.data.width === "number") sessionWidth = entry.data.width;
+          if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
+            sessionMode = entry.data.mode;
+          }
+          if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
+          if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
+        }
+      }
       const interaction = parseEntryToInteraction(entry);
       if (interaction) {
         interactions.push(interaction);
@@ -984,22 +1025,28 @@ async function main() {
     }
   }
   const termColumns = getTerminalWidth();
-  const width = Math.min(widthOption !== null ? widthOption : 240, termColumns, 240);
+  const finalWidth = hasWidth ? widthOption : sessionWidth ?? Math.min(240, termColumns, 240);
+  const finalInterval = hasInterval ? intervalStr : sessionInterval ?? "1h";
+  const finalLimit = hasLimit ? limit : sessionLimit ?? 100;
+  const finalMode = hasCumulative || hasBucket ? mode : sessionMode ?? "cumulative";
+  const finalShowTicks = hasTicks || hasNoTicks ? showTicks : sessionShowTicks ?? true;
+  const finalTimezone = hasTz ? timezone : sessionTimezone;
   const defaultSettings = {
     interval: "1h",
     limit: 100,
-    width,
+    width: finalWidth,
     showTicks: true,
     mode: "cumulative",
     timezone: void 0
   };
   const outputLines = buildWtftLines(interactions, defaultSettings, {
-    interval: intervalStr,
-    limit,
-    width,
-    showTicks,
-    mode,
-    timezone
+    interval: finalInterval,
+    limit: finalLimit,
+    width: finalWidth,
+    showTicks: finalShowTicks,
+    mode: finalMode,
+    timezone: finalTimezone,
+    disabledEmoji
   });
   if (!outputLines) {
     console.log("No binned data found in session logs.");
