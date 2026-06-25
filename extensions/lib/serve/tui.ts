@@ -58,6 +58,18 @@ export function padVisual(str: string, targetLen: number): string {
 	return str + " ".repeat(targetLen - currentLen);
 }
 
+export function isEmojiDisabled(ctx: any): boolean {
+	if (!ctx || !ctx.sessionManager) return false;
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type === "custom" && entry.customType === "emoji-settings") {
+			if (entry.data && typeof entry.data.disabled === "boolean") {
+				return entry.data.disabled;
+			}
+		}
+	}
+	return false;
+}
+
 export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisible: boolean, cwd: string = process.cwd()) {
 	if (!isWidgetVisible) {
 		ctx.ui.setWidget("serve-ports", undefined);
@@ -65,7 +77,8 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 	}
 
 	if (servers.length > 0) {
-		const widgetLines: string[] = ["\x1b[1m\x1b[32m🟢 Active HTTPS Servers:\x1b[0m"];
+		const emojiPrefix = isEmojiDisabled(ctx) ? "[ON] " : "🟢 ";
+		const widgetLines: string[] = [`\x1b[1m\x1b[32m${emojiPrefix}Active HTTPS Servers:\x1b[0m`];
 		
 		// This Worktree
 		widgetLines.push(`\x1b[1m\x1b[35m--- This Worktree ---\x1b[0m`);

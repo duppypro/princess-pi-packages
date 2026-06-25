@@ -554,7 +554,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     titleDateStr = `${months[nowParts.month - 1]}-${pad(nowParts.day)}`;
   }
   const widgetLines = [];
-  const titleLeft = "\u{1F4B8} WTF Tokens?";
+  const disabledEmoji = opts?.disabledEmoji !== void 0 ? opts.disabledEmoji : defaultSettings.disabledEmoji;
+  const titleLeft = disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
   const legendItems = [
     `\x1B[38;5;108m\u2588\x1B[0m Spec`,
     `\x1B[38;5;108;48;5;173m\u2592\x1B[0m Mixed`,

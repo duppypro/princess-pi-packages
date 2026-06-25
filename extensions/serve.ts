@@ -354,6 +354,14 @@ export default function serveExtension(pi: ExtensionAPI) {
 		ctx.ui.notify(fullSummary, "info");
 	}
 
+	async function handleEmojiToggle(enabled: boolean, ctx: any): Promise<void> {
+		pi.appendEntry("emoji-settings", { disabled: !enabled });
+		const servers = await discoverServers();
+		updateWidget(ctx, servers, isWidgetVisible, process.cwd());
+		const statusText = enabled ? "enabled" : "disabled";
+		ctx.ui.notify(`Emoji icons in widgets have been ${statusText}.`, "info");
+	}
+
 	// --- Dispatch table: matches the raw trimmed args to the right subcommand handler ---
 	// `--kill` needs a prefix-match (it carries trailing target args); the rest are exact flags.
 	const routes: { test: (args: string) => boolean; handler: (args: string, ctx: any) => Promise<void> }[] = [
@@ -361,6 +369,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 		{ test: (a) => a === "--help" || a === "-h", handler: (_a, ctx) => handleHelp(ctx) },
 		{ test: (a) => a === "--hide" || a === "-H", handler: (_a, ctx) => handleHide(ctx) },
 		{ test: (a) => a === "--show" || a === "-S", handler: (_a, ctx) => handleShow(ctx) },
+		{ test: (a) => a === "--no-emojii" || a === "--no-emoji", handler: (_a, ctx) => handleEmojiToggle(false, ctx) },
+		{ test: (a) => a === "--emojii" || a === "--emoji", handler: (_a, ctx) => handleEmojiToggle(true, ctx) },
 		{ test: (a) => /^(--kill|--cancel|--off|-k)(\s|$)/.test(a), handler: handleKill },
 	];
 
