@@ -16,8 +16,8 @@
     { "flags": "-f, --force", "desc": "Bypass the .env secret warning and serve the directory anyway. CLI only — Pi prompts interactively instead." },
     { "flags": "-S, --show", "desc": "Discover and display the active servers list. Pi only — no persistent widget in the CLI." },
     { "flags": "-H, --hide", "desc": "Hide the active servers list from the screen. Pi only." },
-    { "flags": "--no-emojii", "desc": "Disable emoji icons and use clean single-width ASCII characters for TUI widgets." },
-    { "flags": "--emojii", "desc": "Enable emoji icons in TUI widgets." },
+    { "flags": "--no-emoji", "desc": "Disable emoji icons and use clean single-width ASCII characters for TUI widgets." },
+    { "flags": "--emoji", "desc": "Enable emoji icons in TUI widgets." },
     { "flags": "-L, --log", "desc": "List all active servers serving directories within this worktree." },
     { "flags": "-k, --kill [port|dir|all...]", "desc": "Kill servers by port, directory, or 'all'. Omit the target to kill every server in this worktree." },
     { "flags": "-h, --help", "desc": "Display this help information." }
