@@ -11,7 +11,8 @@
     "dedupwcount": "./bin/yada.ts",
     "wtft": "./bin/wtft.mjs",
     "serve": "./bin/serve.mjs",
-    "merge": "./bin/merge.mjs"
+    "merge": "./bin/merge.mjs",
+    "patch-pi-widgets": "./bin/patch-pi-widgets.mjs"
   },
   "pi": {
     "extensions": [
