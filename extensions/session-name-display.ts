@@ -9,7 +9,7 @@ export default function sessionNameDisplayExtension(pi: ExtensionAPI) {
     // Only style if it isn't already styled to prevent runaway ANSI wrapping
     if (!name.includes("\x1b[")) {
       // Use "thinkingOff" (the exact color of the inactive prompt borders) + \x1b[7m (inverse) to match perfectly
-      const styledName = ctx.ui.theme.fg("border", `\x1b[7m ${name} \x1b[27m`);
+      const styledName = ctx.ui.theme.fg("thinkingOff", `\x1b[7m ${name} \x1b[27m`);
       pi.setSessionName(styledName);
     }
   });
@@ -21,7 +21,7 @@ export default function sessionNameDisplayExtension(pi: ExtensionAPI) {
       name = "_ANONYMOUS_";
     }
     if (!name.includes("\x1b[")) {
-      const styledName = ctx.ui.theme.fg("border", `\x1b[7m ${name} \x1b[27m`);
+      const styledName = ctx.ui.theme.fg("thinkingOff", `\x1b[7m ${name} \x1b[27m`);
       pi.setSessionName(styledName);
     }
   });
