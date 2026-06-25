@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Research: Tools Refactor Analysis & Strategic Plan (June 2026)</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --box-bg: #2d2d2d;
+            --accent-blue: #569cd6;
+            --accent-green: #6a9955;
+            --accent-orange: #ce9178;
+            --accent-yellow: #dcdcaa;
+            --anchor-red: #e74c3c;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        h1, h2, h3 { color: var(--accent-blue); border-bottom: 1px solid #404040; padding-bottom: 5px; }
+        code { background-color: var(--box-bg); padding: 2px 5px; border-radius: 4px; font-family: Consolas, monospace; color: var(--accent-orange); }
+        pre { background-color: var(--box-bg); padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #404040; }
+        .good { border-left: 4px solid var(--accent-green); padding-left: 10px; margin: 10px 0; background: rgba(106, 153, 85, 0.1); }
+        .bad { border-left: 4px solid var(--anchor-red); padding-left: 10px; margin: 10px 0; background: rgba(231, 76, 60, 0.1); }
+        .plan { border-left: 4px solid var(--accent-blue); padding-left: 10px; margin: 10px 0; background: rgba(86, 156, 214, 0.1); }
+        table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+        th { background: var(--box-bg); color: var(--accent-blue); padding: 8px 12px; text-align: left; border: 1px solid #404040; }
+        td { padding: 8px 12px; border: 1px solid #404040; }
+    </style>
+</head>
+<body>
+
+    <h1>Tools Refactor Analysis & Plan (June 2026)</h1>
+    <p><strong>Prepared by:</strong> Princess-Pi</p>
+    <p><strong>Domain:</strong> Architecture, Code Quality, Cross-Harness Scalability</p>
+
+    <h2>Part 1: Critique of Past Refactoring (The <code>/serve</code> Analysis)</h2>
+    <p>In our previous review of the <code>/serve</code> refactor, we evaluated the breakdown of a massive monolithic command handler. The associated report (<code>SERVE_REFACTOR_ANALYSIS.html</code>) relied heavily on static analysis heuristics (Cyclomatic Complexity, Halstead metrics). Here is a frank developer-centric assessment of that refactoring effort.</p>
+
+    <div class="good">
+        <strong>The Good:</strong><br>
+        1. Identifying the monolith: Recognizing that a 265-line <code>if/else</code> chain is unmaintainable was correct.<br>
+        2. Deduplication: Extracting the fallback <code>kill -9</code> pattern into a shared process helper successfully removed duplicated logic.<br>
+        3. Dispatch Table Routing: Moving away from sequential <code>if/else</code> checks to a mapped route array reduced branching logic.
+    </div>
+
+    <div class="bad">
+        <strong>The Bad (Where the analysis fell short):</strong><br>
+        1. <strong>Loss of Type Safety:</strong> The refactored handlers lazily typed the Pi context as <code>ctx: any</code>. This defeats the purpose of using a typed SDK in TypeScript.<br>
+        2. <strong>Leaky Closures & Global State:</strong> The extracted functions remained inside the <code>serveExtension(pi)</code> closure and mutated global variables (like <code>isWidgetVisible</code>) instead of being pure functions. This prevents true modularity and testability.<br>
+        3. <strong>Brittle Argument Parsing:</strong> Relying on regex (<code>/^(--kill|-k)/.test(args)</code>) for command routing is a fragile anti-pattern compared to a robust CLI argument parser.<br>
+        4. <strong>Vanity Metrics:</strong> The analysis report proudly highlighted a 60% reduction in "Worst Single Unit" complexity. This is a mathematical tautology (chopping a block into six pieces naturally makes each piece smaller). It did not actually decrease the entropy or structural coupling of the code.
+    </div>
+
+    <h2>Part 2: Current State of Other Tools (TPM, MERGE, WTFT)</h2>
+    <p>Reviewing our existing toolset reveals similar architectural anti-patterns that need addressing before we expand to support new platforms (like Open Code, Codex, or Gemini CLI).</p>
+
+    <h3>1. Rate Limiter (TPM / <code>rate-limiter.ts</code>)</h3>
+    <p><strong>Observations:</strong></p>
+    <ul>
+        <li><strong>Hardcoded Model Taxonomy:</strong> The <code>getModelShortName</code> function and <code>MODEL_QUOTA_REGISTRY</code> are heavily hardcoded to specific Claude and Gemini model strings. Adding OpenAI or Codex support here requires modifying the core tool logic.</li>
+        <li><strong>Session Parsing Duplication:</strong> It implements its own custom `.jsonl` file reader to scan <code>~/.claude/projects/</code> and <code>~/.pi/agent/sessions/</code>.</li>
+        <li><strong>Tightly Coupled State:</strong> Widget rendering, TPM math, and file I/O are interwoven in <code>updateRateLimiterWidget</code>.</li>
+    </ul>
+
+    <h3>2. WTFT (<code>wtft.ts</code>)</h3>
+    <p><strong>Observations:</strong></p>
+    <ul>
+        <li><strong>Manual Argument Parsing:</strong> Contains a massive 100+ line <code>parseArgs</code> function filled with <code>if/else if</code> string matching for flags like <code>--limit</code>, <code>-H</code>, <code>--tz</code>.</li>
+        <li><strong>Session Parsing Duplication:</strong> Just like the Rate Limiter, WTFT parses the same session `.jsonl` files to compute token usage, but does so using entirely different code.</li>
+    </ul>
+
+    <h3>3. Merge (<code>merge.ts</code>)</h3>
+    <p><strong>Observations:</strong></p>
+    <ul>
+        <li>Recently refactored to extract core Git logic into <code>lib/merge/core.ts</code>.</li>
+        <li>Successfully implemented the cross-harness `.mjs` CLI port pattern.</li>
+        <li><strong>Missed Opportunity:</strong> Still uses custom localized help-manifest loading instead of a centralized help/manifest rendering utility.</li>
+    </ul>
+
+    <h2>Part 3: DRY Opportunities & Cross-Harness Extensibility</h2>
+    <p>To support Claude Code, Pi, and future platforms (Open Code, Codex, Gemini CLI) efficiently, we must abstract away environment-specific logic. We need a core set of shared libraries.</p>
+
+    <table>
+        <tr>
+            <th>Module Concept</th>
+            <th>Problem Solved</th>
+            <th>Target Consumers</th>
+        </tr>
+        <tr>
+            <td><code>lib/core/args.ts</code></td>
+            <td>Replaces brittle regex and massive <code>if/else</code> chains with a unified, typed CLI argument parser (similar to <code>minimist</code>/<code>mri</code>).</td>
+            <td><code>serve</code>, <code>wtft</code>, <code>merge</code></td>
+        </tr>
+        <tr>
+            <td><code>lib/core/sessions.ts</code></td>
+            <td>Unifies the logic for locating, reading, and tailing `.jsonl` session files across Pi, Claude Code, and future agent harnesses.</td>
+            <td><code>rate-limiter</code>, <code>wtft</code></td>
+        </tr>
+        <tr>
+            <td><code>lib/core/models.ts</code></td>
+            <td>Centralizes the taxonomy of LLMs. Maps raw model strings (e.g. <code>claude-3-5-sonnet-20241022</code>) to shortcodes, context limits, and token rate quotas. Easily extensible for OpenAI/Codex.</td>
+            <td><code>rate-limiter</code>, <code>wtft</code></td>
+        </tr>
+        <tr>
+            <td><code>lib/core/ui.ts</code></td>
+            <td>Abstracts terminal output. Can render as an ANSI table for standard CLI tools or integrate with Pi's interactive TUI context. Also unifies `--help` manifest loading.</td>
+            <td>All Extensions and CLI bins</td>
+        </tr>
+    </table>
+
+    <h2>Part 4: The June Refactoring Plan</h2>
+
+    <div class="plan">
+        <strong>Phase 1: Centralize Argument Parsing & Help Menus</strong>
+        <ul>
+            <li>Create <code>lib/core/args.ts</code>.</li>
+            <li>Refactor <code>wtft.ts</code> and <code>serve.ts</code> to strip out custom string matching.</li>
+            <li>Unify manifest-driven <code>--help</code> output logic across all commands.</li>
+        </ul>
+        
+        <strong>Phase 2: Unify Log Parsing & Model Taxonomies</strong>
+        <ul>
+            <li>Extract the model token limits and shortcode generation from <code>rate-limiter.ts</code> into <code>lib/core/models.ts</code>. Ensure the registry is agnostic enough to accept new providers.</li>
+            <li>Extract `.jsonl` reading logic from both <code>rate-limiter</code> and <code>wtft</code> into a shared <code>lib/core/sessions.ts</code>.</li>
+        </ul>
+
+        <strong>Phase 3: Cross-Harness UI & CLI Support</strong>
+        <ul>
+            <li>Port <code>rate-limiter.ts</code> to <code>bin/tpm.mjs</code> so Claude Code users can type <code>!tpm</code> to view their current rate limits without needing the Pi TUI.</li>
+            <li>Ensure all extracted core modules use strict TypeScript interfaces, avoiding the <code>any</code> anti-pattern observed in the <code>/serve</code> refactor.</li>
+        </ul>
+    </div>
+
+    <p>By implementing this plan, we transition from writing isolated "scripts" to maintaining a cohesive, scalable toolchain capable of running anywhere.</p>
+</body>
+</html>
