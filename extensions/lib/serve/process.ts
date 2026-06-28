@@ -1,7 +1,8 @@
 import * as https from "node:https";
 import * as http from "node:http";
+import * as path from "node:path";
 import { exec } from "node:child_process";
-import { ServerInstance } from "./domain.js";
+import { ServerInstance, getClientSlug } from "./domain.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -68,19 +69,21 @@ export function discoverServers(): Promise<ServerInstance[]> {
 					}
 				}
 
-				const isSsl = line.includes(" -S") || line.includes(" --ssl");
 				const isLive = line.includes("run-live-server");
-				const protocol = isSsl ? "https" : "http";
-				const url = `${protocol}://${ip}:${port}`;
+				const localUrl = `http://127.0.0.1:${port}`;
+				
+				const absoluteDir = path.resolve(process.cwd(), dir);
+				const clientSlug = getClientSlug(absoluteDir);
+				const url = `https://princess-pi.dev/preview/${clientSlug}/`;
 
-				let title = isSsl ? "Secure HTTPS Page" : "Index Page";
+				let title = "Index Page";
 				try {
-					title = await fetchPageTitle(url);
+					title = await fetchPageTitle(localUrl);
 				} catch (e) {
 					// ignore
 				}
 
-				servers.push({ port, dir, url, title, isLive });
+				servers.push({ port, dir, url, localUrl, title, isLive, clientSlug });
 			}
 
 			resolve(servers);

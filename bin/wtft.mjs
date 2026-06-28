@@ -445,41 +445,42 @@ function getVisualLength(str) {
   }
   return len;
 }
-function getTerminalWidth(isWidget = false) {
-  let width2 = 80;
+function getTerminalWidth(isWidget = false, disabledEmoji = false) {
+  let width = 80;
   if (process.stdout && process.stdout.columns) {
-    width2 = process.stdout.columns;
+    width = process.stdout.columns;
   } else if (process.stderr && process.stderr.columns) {
-    width2 = process.stderr.columns;
+    width = process.stderr.columns;
   } else if (process.env.COLUMNS) {
     const num = parseInt(process.env.COLUMNS, 10);
-    if (!isNaN(num) && num > 0) width2 = num;
+    if (!isNaN(num) && num > 0) width = num;
   }
-  if (width2 === 80 && process.env.TMUX) {
+  if (width === 80 && process.env.TMUX) {
     try {
       const tmuxWidth = execSync("tmux display-message -p '#{pane_width}'", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
       const num = parseInt(tmuxWidth, 10);
-      if (!isNaN(num) && num > 0) width2 = num;
+      if (!isNaN(num) && num > 0) width = num;
     } catch (e) {
     }
   }
-  if (width2 === 80) {
+  if (width === 80) {
     try {
       const cols = execSync("tput cols", { stdio: ["inherit", "pipe", "ignore"], encoding: "utf8" }).trim();
       const num = parseInt(cols, 10);
-      if (!isNaN(num) && num > 0) width2 = num;
+      if (!isNaN(num) && num > 0) width = num;
     } catch (e) {
     }
   }
-  return isWidget ? width2 - 4 : width2;
+  return isWidget ? disabledEmoji ? width - 2 : width - 4 : width;
 }
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
   const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
   const isWidget = opts?.isWidget ?? false;
-  const termWidth = getTerminalWidth(isWidget);
+  const disabledEmoji = opts?.disabledEmoji !== void 0 ? opts.disabledEmoji : defaultSettings.disabledEmoji;
+  const termWidth = getTerminalWidth(isWidget, disabledEmoji);
   const rawWidth = opts?.width !== void 0 ? opts.width : defaultSettings.width;
-  const width2 = Math.min(rawWidth, termWidth);
+  const width = Math.min(rawWidth, termWidth);
   const showTicks2 = opts?.showTicks !== void 0 ? opts.showTicks : defaultSettings.showTicks;
   const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings.mode;
   const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings.timezone;
@@ -541,7 +542,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     maxCostLen = Math.max(...displayedBins.map((b) => formatCost(b.total_cost).length), 6);
     prefixWidth += maxCostLen + 2;
   }
-  const finalWidth = Math.max(width2, 40);
+  const finalWidth = Math.max(width, 40);
   const maxBarWidth = finalWidth - prefixWidth - 3;
   const newestBin = displayedBins[0];
   let titleDateStr = "";
@@ -554,7 +555,6 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     titleDateStr = `${months[nowParts.month - 1]}-${pad(nowParts.day)}`;
   }
   const widgetLines = [];
-  const disabledEmoji = opts?.disabledEmoji !== void 0 ? opts.disabledEmoji : defaultSettings.disabledEmoji;
   const titleLeft = disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
   const legendItems = [
     `\x1B[38;5;108m\u2588\x1B[0m Spec`,
