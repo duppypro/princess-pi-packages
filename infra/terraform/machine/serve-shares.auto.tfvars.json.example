@@ -1,0 +1,11 @@
+{
+  "shares": {
+    "princess-pi-packages-docs": {
+      "hostname": "princess-pi-packages-docs.vps.preview.princess-pi.dev",
+      "port": 8080,
+      "dir": "/home/princess-pi/git-projects/princess-pi-packages/docs",
+      "slug": "princess-pi-packages/docs",
+      "emails": ["duppygro@gmail.com"]
+    }
+  }
+}

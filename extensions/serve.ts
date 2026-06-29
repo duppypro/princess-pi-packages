@@ -14,7 +14,8 @@ import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
-import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "./lib/serve/nginx.js";
+import { resolveCascadeAcl, ensureServeAclGitIgnored } from "./lib/serve/acl-cascade.js";
+import { upsertShare, removeShare, applyTerraform } from "./lib/serve/cloudflare.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { updateWidget, shortenPath, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
 
@@ -226,21 +227,21 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 
 		for (const killed of killedList) {
-			if (killed.clientSlug) {
-				try {
-					updateNginxPort(killed.clientSlug, null);
-				} catch (err: any) {
-					ctx.ui.notify(`⚠️ Map Cleanup Error for ${killed.clientSlug}: ${err.message}`, "error");
-				}
+			try {
+				removeShare({ slug: killed.clientSlug, port: killed.port });
+			} catch (err: any) {
+				ctx.ui.notify(`⚠️ Share cleanup error for ${killed.clientSlug ?? killed.port}: ${err.message}`, "error");
 			}
 		}
 
 		if (killedList.length > 0) {
-			const reloadErr = reloadNginx();
-			if (reloadErr) {
-				ctx.ui.notify(`⚠️ Cleaned maps, but NGINX reload failed.\nError: ${reloadErr}`, "warning");
+			const tf = applyTerraform();
+			if (tf.skipped) {
+				ctx.ui.notify(`⚠️ Local servers stopped; Cloudflare gate NOT updated (terraform not installed).`, "warning");
+			} else if (!tf.ok) {
+				ctx.ui.notify(`⚠️ Local servers stopped, but terraform apply failed:\n${tf.output}`, "warning");
 			} else {
-				ctx.ui.notify(`✅ Cleaned up routing entries and reloaded NGINX.`, "info");
+				ctx.ui.notify(`✅ Removed Cloudflare routes for the killed shares.`, "info");
 			}
 		}
 
@@ -262,6 +263,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		let startPort = 8080;
 		const ip = await resolveIp();
+
+		ensureServeAclGitIgnored();
+		const provisioned: { slug: string; gatedUrl: string; port: number }[] = [];
 
 		for (const rawDir of dirs) {
 			const targetDir = path.resolve(process.cwd(), rawDir);
@@ -301,10 +305,10 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const port = startPort++;
 
-			// Secure Dynamic Gating Validation (.serve-acl file must exist)
+			// Cascade ACL: union of .serve-acl from targetDir up to ~ (#32). Empty => refuse.
 			let emails: string[];
 			try {
-				emails = parseAclFile(targetDir);
+				emails = resolveCascadeAcl(targetDir);
 			} catch (err: any) {
 				ctx.ui.notify(`⚠️ Failed to start server for "${rawDir}": ${err.message}`, "error");
 				continue;
@@ -337,18 +341,25 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 
-			// Write Dynamic Maps and trigger NGINX reload
+			// Record the desired share for Terraform; provisioned in one apply after the loop (#32).
 			try {
-				updateNginxAcls(clientSlug, emails);
-				updateNginxPort(clientSlug, port);
-				const reloadErr = reloadNginx();
-				if (reloadErr) {
-					ctx.ui.notify(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`, "warning");
-				} else {
-					ctx.ui.notify(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`, "info");
-				}
+				const { gatedUrl } = upsertShare({ slug: clientSlug, dir: targetDir, port, emails });
+				provisioned.push({ slug: clientSlug, gatedUrl, port });
 			} catch (err: any) {
-				ctx.ui.notify(`⚠️ Dynamic Map/ACL Error: ${err.message}`, "error");
+				ctx.ui.notify(`⚠️ Failed to record share for ${clientSlug}: ${err.message}`, "error");
+			}
+		}
+
+		// One Terraform apply -> Cloudflare Access apps/policies + tunnel ingress (#32).
+		if (provisioned.length > 0) {
+			const tf = applyTerraform();
+			if (tf.skipped) {
+				ctx.ui.notify(`⚠️ Cloudflare gate NOT provisioned (terraform not installed) — loopback only.`, "warning");
+			} else if (!tf.ok) {
+				ctx.ui.notify(`⚠️ terraform apply failed; loopback is up but the gate may be stale:\n${tf.output}`, "warning");
+			} else {
+				const lines = provisioned.map(p => `• ${p.gatedUrl}  (local test: http://127.0.0.1:${p.port}/)`).join("\n");
+				ctx.ui.notify(`✅ Cloudflare gate provisioned:\n${lines}`, "info");
 			}
 		}
 

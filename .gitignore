@@ -8,3 +8,11 @@ tmp/
 # oauth2-proxy live secrets (real cfg holds client_secret/cookie_secret) — keep only .example
 infra/deploy/oauth2-proxy-live-serve.cfg
 
+# Terraform — local state, plugins, real tfvars/secrets, and /serve's machine-local desired state
+infra/terraform/**/.terraform/
+infra/terraform/**/.terraform.lock.hcl
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.*
+infra/terraform/**/terraform.tfvars
+infra/terraform/machine/serve-shares.auto.tfvars.json
+

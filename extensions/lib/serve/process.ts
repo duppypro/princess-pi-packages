@@ -3,6 +3,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { exec } from "node:child_process";
 import { ServerInstance, getClientSlug } from "./domain.js";
+import { hostnameForSlug } from "./cloudflare.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -80,7 +81,7 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				
 				const absoluteDir = path.resolve(process.cwd(), dir);
 				const clientSlug = getClientSlug(absoluteDir);
-				const url = `https://princess-pi.dev/live/${clientSlug}/?token=duppy_live_token_777`;
+				const url = `https://${hostnameForSlug(clientSlug)}/`;
 
 				let title = "Index Page";
 				try {

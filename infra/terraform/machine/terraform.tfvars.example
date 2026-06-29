@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (gitignored) or set as TFC workspace variables.
+# CLOUDFLARE_API_TOKEN must be exported in the environment / set as a TFC env var.
+# var.shares is supplied automatically by /serve via serve-shares.auto.tfvars.json.
+
+tfc_org = "REPLACE_TFC_ORG"
+machine = "vps" # this host's id; must match PI_SERVE_MACHINE used by /serve

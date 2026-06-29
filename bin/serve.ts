@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
-import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "../extensions/lib/serve/nginx.js";
+import { resolveCascadeAcl, ensureServeAclGitIgnored } from "../extensions/lib/serve/acl-cascade.js";
+import { upsertShare, removeShare, applyTerraform } from "../extensions/lib/serve/cloudflare.js";
 import { shortenPath, buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
@@ -111,21 +112,22 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 	}
 
 	for (const killed of killedList) {
-		if (killed.clientSlug) {
-			try {
-				updateNginxPort(killed.clientSlug, null);
-			} catch (err: any) {
-				console.error(`⚠️ Map Cleanup Error for ${killed.clientSlug}: ${err.message}`);
-			}
+		try {
+			removeShare({ slug: killed.clientSlug, port: killed.port });
+		} catch (err: any) {
+			console.error(`⚠️ Share cleanup error for ${killed.clientSlug ?? killed.port}: ${err.message}`);
 		}
 	}
 
+	// One Terraform apply tears down the Cloudflare Access apps/policies/DNS for killed shares (#32).
 	if (killedList.length > 0) {
-		const reloadErr = reloadNginx();
-		if (reloadErr) {
-			console.warn(`⚠️ Cleaned maps, but NGINX reload failed. Error: ${reloadErr}`);
+		const tf = applyTerraform();
+		if (tf.skipped) {
+			console.warn(`⚠️ Local servers stopped; Cloudflare gate NOT updated (terraform not installed).`);
+		} else if (!tf.ok) {
+			console.warn(`⚠️ Local servers stopped, but terraform apply failed:\n${tf.output}`);
 		} else {
-			console.log(`✅ Cleaned up routing entries and reloaded NGINX.`);
+			console.log(`✅ Removed Cloudflare routes for the killed shares.`);
 		}
 	}
 	console.log(buildKilledSummary(killedList, process.cwd()));
@@ -140,6 +142,9 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	if (dirs.length === 0) dirs = ["public", "docs"];
 
 	let startPort = 8080;
+
+	ensureServeAclGitIgnored();
+	const provisioned: { slug: string; gatedUrl: string; port: number }[] = [];
 
 	for (const rawDir of dirs) {
 		const targetDir = path.resolve(process.cwd(), rawDir);
@@ -167,10 +172,10 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
 
-		// Secure Dynamic Gating Validation (.serve-acl file must exist)
+		// Cascade ACL: union of .serve-acl from targetDir up to ~ (#32). Empty => refuse.
 		let emails: string[];
 		try {
-			emails = parseAclFile(targetDir);
+			emails = resolveCascadeAcl(targetDir);
 		} catch (err: any) {
 			console.error(`⚠️ Failed to start server for "${rawDir}": ${err.message}`);
 			continue;
@@ -188,18 +193,26 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
 
-		// Write Dynamic Maps and trigger NGINX reload
+		// Record the desired share for Terraform; provisioned in one apply after the loop (#32).
 		try {
-			updateNginxAcls(clientSlug, emails);
-			updateNginxPort(clientSlug, port);
-			const reloadErr = reloadNginx();
-			if (reloadErr) {
-				console.warn(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`);
-			} else {
-				console.log(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`);
-			}
+			const { gatedUrl } = upsertShare({ slug: clientSlug, dir: targetDir, port, emails });
+			provisioned.push({ slug: clientSlug, gatedUrl, port });
 		} catch (err: any) {
-			console.error(`⚠️ Dynamic Map/ACL Error: ${err.message}`);
+			console.error(`⚠️ Failed to record share for ${clientSlug}: ${err.message}`);
+		}
+	}
+
+	// One Terraform apply for the whole batch -> Cloudflare Access apps/policies + tunnel ingress (#32).
+	if (provisioned.length > 0) {
+		const tf = applyTerraform();
+		if (tf.skipped) {
+			console.warn(`⚠️ Cloudflare gate NOT provisioned (terraform not installed) — loopback only:`);
+			for (const p of provisioned) console.warn(`   • planned ${p.gatedUrl} (local: http://127.0.0.1:${p.port}/)`);
+		} else if (!tf.ok) {
+			console.warn(`⚠️ terraform apply failed; loopback is up but the gate may be stale:\n${tf.output}`);
+		} else {
+			console.log(`✅ Cloudflare gate provisioned:`);
+			for (const p of provisioned) console.log(`   • ${p.gatedUrl}  (local test: http://127.0.0.1:${p.port}/)`);
 		}
 	}
 

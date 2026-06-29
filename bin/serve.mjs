@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // bin/serve.ts
-import * as fs2 from "node:fs";
-import * as path5 from "node:path";
-import { fileURLToPath } from "node:url";
+import * as fs3 from "node:fs";
+import * as path6 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { spawn } from "node:child_process";
 
 // extensions/lib/serve/domain.ts
@@ -37,16 +37,110 @@ function getClientSlug(targetDir, cwd = process.cwd()) {
 // extensions/lib/serve/process.ts
 import * as https from "node:https";
 import * as http from "node:http";
-import * as path2 from "node:path";
+import * as path3 from "node:path";
 import { exec } from "node:child_process";
+
+// extensions/lib/serve/cloudflare.js
+import * as fs from "node:fs";
+import * as path2 from "node:path";
+import * as os from "node:os";
+import * as crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+var PREVIEW_BASE = "preview.princess-pi.dev";
+var MAX_LABEL = 50;
+var __dirname = path2.dirname(fileURLToPath(import.meta.url));
+var MACHINE_TF_DIR = path2.resolve(__dirname, "../../../infra/terraform/machine");
+var SHARES_TFVARS = path2.join(MACHINE_TF_DIR, "serve-shares.auto.tfvars.json");
+function machineId() {
+  const raw = process.env.PI_SERVE_MACHINE || os.hostname().split(".")[0] || "host";
+  return slugify(raw) || "host";
+}
+function slugify(slug) {
+  return String(slug).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, MAX_LABEL).replace(/-+$/g, "");
+}
+function labelFor(slug, shares = {}) {
+  const base = slugify(slug);
+  const owner = Object.entries(shares).find(([, s]) => s.slug === slug);
+  if (owner) return owner[0];
+  const collision = Object.entries(shares).some(([label, s]) => label === base && s.slug !== slug);
+  if (!collision) return base;
+  const suffix = crypto.createHash("sha256").update(slug).digest("hex").slice(0, 6);
+  return `${slugify(base.slice(0, MAX_LABEL - 7))}-${suffix}`;
+}
+function hostnameFor(label, machine = machineId()) {
+  return `${label}.${machine}.${PREVIEW_BASE}`;
+}
+function gatedUrlFor(label, machine = machineId()) {
+  return `https://${hostnameFor(label, machine)}/`;
+}
+function readShares() {
+  if (!fs.existsSync(SHARES_TFVARS)) return {};
+  try {
+    const data = JSON.parse(fs.readFileSync(SHARES_TFVARS, "utf8"));
+    return data && data.shares ? data.shares : {};
+  } catch {
+    return {};
+  }
+}
+function writeShares(shares) {
+  fs.mkdirSync(MACHINE_TF_DIR, { recursive: true });
+  fs.writeFileSync(SHARES_TFVARS, JSON.stringify({ shares }, null, 2) + "\n", "utf8");
+}
+function upsertShare({ slug, dir, port, emails, machine = machineId() }) {
+  const shares = readShares();
+  const label = labelFor(slug, shares);
+  shares[label] = { hostname: hostnameFor(label, machine), port, dir, slug, emails };
+  writeShares(shares);
+  return { label, hostname: shares[label].hostname, gatedUrl: gatedUrlFor(label, machine) };
+}
+function removeShare({ slug, port }) {
+  const shares = readShares();
+  const entry = Object.entries(shares).find(
+    ([, s]) => slug != null && s.slug === slug || port != null && s.port === port
+  );
+  if (!entry) return null;
+  delete shares[entry[0]];
+  writeShares(shares);
+  return entry[0];
+}
+function hostnameForSlug(slug, machine = machineId()) {
+  const shares = readShares();
+  const found = Object.entries(shares).find(([, s]) => s.slug === slug);
+  return found ? found[1].hostname : hostnameFor(slugify(slug), machine);
+}
+function isTerraformAvailable() {
+  try {
+    execFileSync("terraform", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function applyTerraform({ dryRun = process.env.PI_SERVE_DRY_RUN === "1" } = {}) {
+  if (!isTerraformAvailable()) {
+    return { ok: false, skipped: true, output: "terraform not installed" };
+  }
+  const action = dryRun ? "plan" : "apply";
+  const args = ["-chdir=" + MACHINE_TF_DIR, action, "-input=false"];
+  if (!dryRun) args.push("-auto-approve");
+  try {
+    const output = execFileSync("terraform", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { ok: true, skipped: false, output };
+  } catch (err) {
+    return { ok: false, skipped: false, output: err.stderr || err.message || String(err) };
+  }
+}
+
+// extensions/lib/serve/process.ts
 async function resolveIp() {
   return "127.0.0.1";
 }
 function discoverServers() {
-  return new Promise((resolve4) => {
+  return new Promise((resolve6) => {
     exec("ps aux | grep -E 'http-server|run-live-server' | grep -v grep", async (error, stdout) => {
       if (error || !stdout) {
-        resolve4([]);
+        resolve6([]);
         return;
       }
       const servers = [];
@@ -78,9 +172,9 @@ function discoverServers() {
         }
         const isLive = line.includes("run-live-server");
         const localUrl = `http://127.0.0.1:${port}`;
-        const absoluteDir = path2.resolve(process.cwd(), dir);
+        const absoluteDir = path3.resolve(process.cwd(), dir);
         const clientSlug = getClientSlug(absoluteDir);
-        const url = `https://princess-pi.dev/live/${clientSlug}/?token=duppy_live_token_777`;
+        const url = `https://${hostnameForSlug(clientSlug)}/`;
         let title = "Index Page";
         try {
           title = await fetchPageTitle(localUrl);
@@ -88,22 +182,22 @@ function discoverServers() {
         }
         servers.push({ port, dir, url, localUrl, title, isLive, clientSlug, pid });
       }
-      resolve4(servers);
+      resolve6(servers);
     });
   });
 }
 function findPidByPort(port) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve6) => {
     exec(`lsof -t -i :${port}`, (error, stdout) => {
       if (error || !stdout) {
-        resolve4(null);
+        resolve6(null);
         return;
       }
       const pids = stdout.split("\n").map((p) => p.trim()).filter((p) => p.length > 0);
       if (pids.length > 0) {
-        resolve4(parseInt(pids[0], 10));
+        resolve6(parseInt(pids[0], 10));
       } else {
-        resolve4(null);
+        resolve6(null);
       }
     });
   });
@@ -137,7 +231,7 @@ async function killServerInstance(server) {
   return confirmProcessKilled(pid);
 }
 function fetchPageTitle(url) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve6) => {
     const isSsl = url.startsWith("https");
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : void 0;
@@ -151,18 +245,18 @@ function fetchPageTitle(url) {
       res.on("end", () => {
         const match = data.match(/<title>([^<]+)<\/title>/i);
         if (match && match[1]) {
-          resolve4(match[1].trim());
+          resolve6(match[1].trim());
         } else {
-          resolve4(isSsl ? "Secure HTTPS Page" : "Web Page");
+          resolve6(isSsl ? "Secure HTTPS Page" : "Web Page");
         }
       });
     }).on("error", () => {
-      resolve4(isSsl ? "Secure HTTPS Page" : "Web Page");
+      resolve6(isSsl ? "Secure HTTPS Page" : "Web Page");
     });
   });
 }
 function checkServerStatus(url) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve6) => {
     const isSsl = url.startsWith("https");
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : void 0;
@@ -170,222 +264,94 @@ function checkServerStatus(url) {
       res.on("error", () => {
       });
       res.resume();
-      resolve4(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
+      resolve6(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
     });
     req.on("error", (err) => {
       if (err.code === "ECONNREFUSED") {
-        resolve4("[-] Offline (Connection Refused)");
+        resolve6("[-] Offline (Connection Refused)");
       } else {
-        resolve4(`[-] Offline (${err.code || err.message})`);
+        resolve6(`[-] Offline (${err.code || err.message})`);
       }
     });
   });
 }
 
-// extensions/lib/serve/nginx.js
-import * as fs from "node:fs";
-import * as path3 from "node:path";
-import * as os from "node:os";
-import { execSync as execSync2 } from "node:child_process";
-var ACL_MAP_PATH = "/etc/nginx/serve-acls.map";
-var PORTS_MAP_PATH = "/etc/nginx/serve-ports.map";
-function escapeRegExp(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function parseAclFile(targetDir) {
-  const homeDir = os.homedir();
-  const gitIgnoreDir = path3.join(homeDir, ".config", "git");
-  const gitIgnorePath = path3.join(gitIgnoreDir, "ignore");
-  try {
-    if (!fs.existsSync(gitIgnoreDir)) {
-      fs.mkdirSync(gitIgnoreDir, { recursive: true });
-    }
-    let ignoreContent = "";
-    if (fs.existsSync(gitIgnorePath)) {
-      ignoreContent = fs.readFileSync(gitIgnorePath, "utf8");
-    }
-    if (!ignoreContent.includes(".serve-acl")) {
-      const separator = ignoreContent.endsWith("\n") || ignoreContent === "" ? "" : "\n";
-      fs.appendFileSync(gitIgnorePath, `${separator}.serve-acl
-`);
-    }
-  } catch (err) {
-  }
-  const aclPath = path3.join(targetDir, ".serve-acl");
-  if (!fs.existsSync(aclPath)) {
-    const configDir = path3.join(homeDir, ".config", "princess-pi");
-    const defaultAclPath = path3.join(configDir, "default-acl");
-    let defaultEmails = [];
-    if (fs.existsSync(defaultAclPath)) {
-      try {
-        defaultEmails = fs.readFileSync(defaultAclPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-      } catch (e) {
-      }
-    }
-    if (defaultEmails.length === 0) {
-      let gitEmail = "";
-      try {
-        gitEmail = execSync2("git config --get user.email", { encoding: "utf8" }).trim();
-      } catch (e) {
-      }
-      if (!gitEmail || !gitEmail.includes("@")) {
-        gitEmail = "david@princess-pi.dev";
-      }
-      defaultEmails = [gitEmail];
-      try {
-        if (!fs.existsSync(configDir)) {
-          fs.mkdirSync(configDir, { recursive: true });
-        }
-        fs.writeFileSync(defaultAclPath, `# Global default ACL for /serve
-${gitEmail}
-`, "utf8");
-      } catch (e) {
-      }
-    }
-    try {
-      const localContent = [
-        "# Local Access Control List for /serve",
-        "# Authorized Google email accounts mapped to this client path",
-        ...defaultEmails
-      ].join("\n") + "\n";
-      fs.writeFileSync(aclPath, localContent, "utf8");
-    } catch (err) {
-      throw new Error(`Failed to auto-seed local .serve-acl file in "${targetDir}": ${err.message}`);
-    }
-  }
-  const content = fs.readFileSync(aclPath, "utf8");
-  const lines = content.split(/\r?\n/);
+// extensions/lib/serve/acl-cascade.js
+import * as fs2 from "node:fs";
+import * as path4 from "node:path";
+import * as os2 from "node:os";
+var ACL_FILENAME = ".serve-acl";
+function parseAclContent(content) {
   const emails = [];
-  for (const line of lines) {
-    let cleaned = line;
-    const hashIdx = line.indexOf("#");
-    if (hashIdx !== -1) {
-      cleaned = line.substring(0, hashIdx);
-    }
-    cleaned = cleaned.trim();
+  for (const rawLine of content.split(/\r?\n/)) {
+    const hashIdx = rawLine.indexOf("#");
+    const cleaned = (hashIdx === -1 ? rawLine : rawLine.slice(0, hashIdx)).trim();
     if (!cleaned) continue;
     if (cleaned.includes("@") && cleaned.includes(".")) {
       emails.push(cleaned);
     } else {
-      throw new Error(`Invalid email address found in .serve-acl: "${cleaned}"`);
+      throw new Error(`Invalid email address in ${ACL_FILENAME}: "${cleaned}"`);
     }
-  }
-  if (emails.length === 0) {
-    throw new Error(`The .serve-acl file must contain at least one valid email address.`);
   }
   return emails;
 }
-function updateNginxAcls(clientSlug, emails) {
-  let content = "";
-  if (fs.existsSync(ACL_MAP_PATH)) {
-    try {
-      content = fs.readFileSync(ACL_MAP_PATH, "utf8");
-    } catch (err) {
-      console.warn(`\u26A0\uFE0F Warning: Could not read ${ACL_MAP_PATH}: ${err}`);
-      return;
-    }
+function readAclFile(dir) {
+  const aclPath = path4.join(dir, ACL_FILENAME);
+  if (!fs2.existsSync(aclPath)) return [];
+  return parseAclContent(fs2.readFileSync(aclPath, "utf8"));
+}
+function aclSearchPath(targetDir, homeDir = os2.homedir()) {
+  const home = path4.resolve(homeDir);
+  let dir = path4.resolve(targetDir);
+  const chain = [];
+  while (true) {
+    chain.push(dir);
+    if (dir === home) break;
+    const parent = path4.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
-  const lines = content.split(/\r?\n/);
-  const emailMap = /* @__PURE__ */ new Map();
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const match = trimmed.match(/^\s*['"]?([^'"]+)['"]?\s+['"]?([^'"]+)['"]?\s*;\s*$/);
-    if (match) {
-      const email = match[1].trim();
-      const value = match[2].trim();
-      if (value === "all") {
-        emailMap.set(email, "all");
-      } else {
-        const slugs = value.split(/\s+/).filter(Boolean);
-        const slugSet = new Set(slugs);
-        emailMap.set(email, slugSet);
+  return chain;
+}
+function resolveCascadeAcl(targetDir, homeDir = os2.homedir()) {
+  const seen = /* @__PURE__ */ new Set();
+  const emails = [];
+  for (const dir of aclSearchPath(targetDir, homeDir)) {
+    for (const email of readAclFile(dir)) {
+      if (!seen.has(email)) {
+        seen.add(email);
+        emails.push(email);
       }
     }
   }
-  for (const [email, value] of emailMap.entries()) {
-    if (value instanceof Set) {
-      value.delete(clientSlug);
-      if (value.size === 0) {
-        emailMap.delete(email);
-      }
-    }
+  if (emails.length === 0) {
+    throw new Error(
+      `No reviewers authorized for "${targetDir}". Add at least one email to a ${ACL_FILENAME} here or in any parent up to ~/${ACL_FILENAME}.`
+    );
   }
-  for (const email of emails) {
-    const value = emailMap.get(email);
-    if (value === "all") {
-      continue;
-    }
-    if (value instanceof Set) {
-      value.add(clientSlug);
-    } else {
-      emailMap.set(email, /* @__PURE__ */ new Set([clientSlug]));
-    }
-  }
-  const updatedLines = [
-    "# Matches authorized Google emails to their allowed client slug.",
-    "# Space-separated values allow multiple slug mappings without duplicate keys."
-  ];
-  for (const [email, value] of emailMap.entries()) {
-    if (value === "all") {
-      updatedLines.push(`"${email}" "all";`);
-    } else if (value instanceof Set && value.size > 0) {
-      const slugsStr = Array.from(value).join(" ");
-      updatedLines.push(`"${email}" "${slugsStr}";`);
-    }
-  }
-  try {
-    fs.writeFileSync(ACL_MAP_PATH, updatedLines.join("\n") + "\n", { mode: 436 });
-  } catch (err) {
-    throw new Error(`Failed to write to ${ACL_MAP_PATH}: ${err}. Ensure the file is writable by the princess-pi group.`);
-  }
+  return emails;
 }
-function updateNginxPort(clientSlug, port) {
-  let content = "";
-  if (fs.existsSync(PORTS_MAP_PATH)) {
-    try {
-      content = fs.readFileSync(PORTS_MAP_PATH, "utf8");
-    } catch (err) {
-      console.warn(`\u26A0\uFE0F Warning: Could not read ${PORTS_MAP_PATH}: ${err}`);
-      return;
-    }
-  }
-  const lines = content.split(/\r?\n/);
-  const updatedLines = [];
-  const escapedSlug = escapeRegExp(clientSlug);
-  const portMatcher = new RegExp(`^\\s*['"]?${escapedSlug}['"]?\\s+\\d+\\s*;`);
-  for (const line of lines) {
-    if (line.trim() && !portMatcher.test(line)) {
-      updatedLines.push(line);
-    }
-  }
-  if (port !== null) {
-    updatedLines.push(`"${clientSlug}" ${port};`);
-  }
+function ensureServeAclGitIgnored(homeDir = os2.homedir()) {
   try {
-    fs.writeFileSync(PORTS_MAP_PATH, updatedLines.join("\n") + "\n", { mode: 436 });
-  } catch (err) {
-    throw new Error(`Failed to write to ${PORTS_MAP_PATH}: ${err}. Ensure the file is writable by the princess-pi group.`);
-  }
-  if (port === null) {
-    updateNginxAcls(clientSlug, []);
-  }
-}
-function reloadNginx() {
-  try {
-    execSync2("sudo /usr/sbin/nginx -s reload", { stdio: "ignore" });
-    return null;
-  } catch (err) {
-    return err.message || String(err);
+    const gitIgnoreDir = path4.join(homeDir, ".config", "git");
+    const gitIgnorePath = path4.join(gitIgnoreDir, "ignore");
+    if (!fs2.existsSync(gitIgnoreDir)) fs2.mkdirSync(gitIgnoreDir, { recursive: true });
+    let content = fs2.existsSync(gitIgnorePath) ? fs2.readFileSync(gitIgnorePath, "utf8") : "";
+    if (!content.includes(ACL_FILENAME)) {
+      const sep = content === "" || content.endsWith("\n") ? "" : "\n";
+      fs2.appendFileSync(gitIgnorePath, `${sep}${ACL_FILENAME}
+`);
+    }
+  } catch {
   }
 }
 
 // extensions/lib/serve/tui.ts
-import * as path4 from "node:path";
+import * as path5 from "node:path";
 function shortenPath(rawPath, cwd = process.cwd()) {
   let rel = rawPath;
-  if (path4.isAbsolute(rawPath)) {
-    rel = path4.relative(cwd, rawPath) || rawPath;
+  if (path5.isAbsolute(rawPath)) {
+    rel = path5.relative(cwd, rawPath) || rawPath;
   }
   if (rel.length > 25) {
     rel = "..." + rel.slice(-22);
@@ -502,8 +468,8 @@ ${lines.join("\n")}`);
 }
 function handleHelp() {
   try {
-    const manifestPath = path5.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path6.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs3.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let helpText = `${manifest.name} - ${manifest.tagline}
 
@@ -576,20 +542,21 @@ async function handleKill(trimmedArgs) {
     return;
   }
   for (const killed of killedList) {
-    if (killed.clientSlug) {
-      try {
-        updateNginxPort(killed.clientSlug, null);
-      } catch (err) {
-        console.error(`\u26A0\uFE0F Map Cleanup Error for ${killed.clientSlug}: ${err.message}`);
-      }
+    try {
+      removeShare({ slug: killed.clientSlug, port: killed.port });
+    } catch (err) {
+      console.error(`\u26A0\uFE0F Share cleanup error for ${killed.clientSlug ?? killed.port}: ${err.message}`);
     }
   }
   if (killedList.length > 0) {
-    const reloadErr = reloadNginx();
-    if (reloadErr) {
-      console.warn(`\u26A0\uFE0F Cleaned maps, but NGINX reload failed. Error: ${reloadErr}`);
+    const tf = applyTerraform();
+    if (tf.skipped) {
+      console.warn(`\u26A0\uFE0F Local servers stopped; Cloudflare gate NOT updated (terraform not installed).`);
+    } else if (!tf.ok) {
+      console.warn(`\u26A0\uFE0F Local servers stopped, but terraform apply failed:
+${tf.output}`);
     } else {
-      console.log(`\u2705 Cleaned up routing entries and reloaded NGINX.`);
+      console.log(`\u2705 Removed Cloudflare routes for the killed shares.`);
     }
   }
   console.log(buildKilledSummary(killedList, process.cwd()));
@@ -601,22 +568,24 @@ async function handleStart(trimmedArgs) {
   dirs = dirs.filter((d) => d !== "--static" && d !== "-s" && d !== "--force" && d !== "-f");
   if (dirs.length === 0) dirs = ["public", "docs"];
   let startPort = 8080;
+  ensureServeAclGitIgnored();
+  const provisioned = [];
   for (const rawDir of dirs) {
-    const targetDir = path5.resolve(process.cwd(), rawDir);
-    if (!fs2.existsSync(targetDir) || !fs2.statSync(targetDir).isDirectory()) {
+    const targetDir = path6.resolve(process.cwd(), rawDir);
+    if (!fs3.existsSync(targetDir) || !fs3.statSync(targetDir).isDirectory()) {
       console.warn(`\u26A0\uFE0F Warning: Directory "${rawDir}" does not exist. Skipping.`);
       continue;
     }
     const activeServers = await discoverServers();
     const hasMatchingTypeServer = activeServers.some(
-      (s) => path5.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic
+      (s) => path6.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic
     );
     if (hasMatchingTypeServer) {
       console.log(`\u2139\uFE0F Note: Directory "${rawDir}" is already being served ${isStatic ? "statically" : "live-reloading"}. Skipping.`);
       continue;
     }
-    const envPath = path5.join(targetDir, ".env");
-    if (fs2.existsSync(envPath) && !force) {
+    const envPath = path6.join(targetDir, ".env");
+    if (fs3.existsSync(envPath) && !force) {
       console.warn(`\u26A0\uFE0F Found .env file in "${rawDir}"! Skipping (pass --force to serve anyway).`);
       continue;
     }
@@ -624,29 +593,36 @@ async function handleStart(trimmedArgs) {
     const port = startPort++;
     let emails;
     try {
-      emails = parseAclFile(targetDir);
+      emails = resolveCascadeAcl(targetDir);
     } catch (err) {
       console.error(`\u26A0\uFE0F Failed to start server for "${rawDir}": ${err.message}`);
       continue;
     }
     const clientSlug = getClientSlug(targetDir);
-    const __dirname = path5.dirname(fileURLToPath(import.meta.url));
-    const runnerPath = path5.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
+    const __dirname2 = path6.dirname(fileURLToPath2(import.meta.url));
+    const runnerPath = path6.resolve(__dirname2, "../extensions/lib/serve/run-live-server.js");
     const spawnCmd = isStatic ? "npx" : "node";
     const spawnArgs = isStatic ? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"] : [runnerPath, targetDir, "--slug", clientSlug, "-p", String(port), "-a", "127.0.0.1"];
     const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
     serverProcess.unref();
     try {
-      updateNginxAcls(clientSlug, emails);
-      updateNginxPort(clientSlug, port);
-      const reloadErr = reloadNginx();
-      if (reloadErr) {
-        console.warn(`\u26A0\uFE0F Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`);
-      } else {
-        console.log(`\u2705 NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`);
-      }
+      const { gatedUrl } = upsertShare({ slug: clientSlug, dir: targetDir, port, emails });
+      provisioned.push({ slug: clientSlug, gatedUrl, port });
     } catch (err) {
-      console.error(`\u26A0\uFE0F Dynamic Map/ACL Error: ${err.message}`);
+      console.error(`\u26A0\uFE0F Failed to record share for ${clientSlug}: ${err.message}`);
+    }
+  }
+  if (provisioned.length > 0) {
+    const tf = applyTerraform();
+    if (tf.skipped) {
+      console.warn(`\u26A0\uFE0F Cloudflare gate NOT provisioned (terraform not installed) \u2014 loopback only:`);
+      for (const p of provisioned) console.warn(`   \u2022 planned ${p.gatedUrl} (local: http://127.0.0.1:${p.port}/)`);
+    } else if (!tf.ok) {
+      console.warn(`\u26A0\uFE0F terraform apply failed; loopback is up but the gate may be stale:
+${tf.output}`);
+    } else {
+      console.log(`\u2705 Cloudflare gate provisioned:`);
+      for (const p of provisioned) console.log(`   \u2022 ${p.gatedUrl}  (local test: http://127.0.0.1:${p.port}/)`);
     }
   }
   await new Promise((r) => setTimeout(r, 1200));

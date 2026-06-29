@@ -534,10 +534,13 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 
 		if (aclChanged && clientSlug) {
 			try {
-				const { parseAclFile, updateNginxAcls, reloadNginx } = await import("./nginx.js");
-				const emails = parseAclFile(targetDir);
-				updateNginxAcls(clientSlug, emails);
-				reloadNginx();
+				// .serve-acl changed mid-session: re-resolve the cascade and re-apply (#32).
+				const { resolveCascadeAcl } = await import("./acl-cascade.js");
+				const { upsertShare, applyTerraform } = await import("./cloudflare.js");
+				const emails = resolveCascadeAcl(targetDir);
+				upsertShare({ slug: clientSlug, dir: targetDir, port, emails });
+				const tf = applyTerraform();
+				if (!tf.ok && !tf.skipped) console.error(`⚠️ [Live ACL] terraform apply failed: ${tf.output}`);
 			} catch (err) {
 				console.error(`⚠️ [Live ACL Error] Failed to update ACL dynamically: ${err.message}`);
 			}
