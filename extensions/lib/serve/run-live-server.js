@@ -261,8 +261,7 @@ function generateDirectoryIndex(dirPath, requestPath) {
 	<div class="list">`;
 
 	if (requestPath !== "/" && requestPath !== "") {
-		const parentPath = path.dirname(requestPath);
-		html += `<a class="parent-dir" href="${parentPath === "." ? "/" : parentPath}"><span class="icon">📁</span>.. (Parent Directory)</a>`;
+		html += `<a class="parent-dir" href="../"><span class="icon">📁</span>.. (Parent Directory)</a>`;
 	}
 
 	try {
@@ -279,11 +278,10 @@ function generateDirectoryIndex(dirPath, requestPath) {
 			if (entry.name.startsWith(".") || entry.name === "node_modules") {
 				continue;
 			}
-			const relativeHref = path.join(requestPath, entry.name).replace(/\\/g, "/");
 			if (entry.isDirectory()) {
-				html += `<a href="${relativeHref}/"><span class="icon">📁</span>${entry.name}/</a>`;
+				html += `<a href="${entry.name}/"><span class="icon">📁</span>${entry.name}/</a>`;
 			} else {
-				html += `<a href="${relativeHref}"><span class="icon">📄</span>${entry.name}</a>`;
+				html += `<a href="${entry.name}"><span class="icon">📄</span>${entry.name}</a>`;
 			}
 		}
 	} catch (err) {
