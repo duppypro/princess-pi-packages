@@ -60,6 +60,8 @@ function discoverServers() {
         const parts = line.split(/\s+/);
         const httpServerIdx = parts.findIndex((p) => p.includes("http-server") || p.includes("run-live-server"));
         if (httpServerIdx === -1) continue;
+        const parsedPid = Number.parseInt(parts[1], 10);
+        const pid = Number.isNaN(parsedPid) ? void 0 : parsedPid;
         let dir = "current";
         for (let i = httpServerIdx + 1; i < parts.length; i++) {
           const part = parts[i];
@@ -84,7 +86,7 @@ function discoverServers() {
           title = await fetchPageTitle(localUrl);
         } catch (e) {
         }
-        servers.push({ port, dir, url, localUrl, title, isLive, clientSlug });
+        servers.push({ port, dir, url, localUrl, title, isLive, clientSlug, pid });
       }
       resolve4(servers);
     });
@@ -112,6 +114,27 @@ function killProcess(pid) {
   } catch (e) {
     exec(`kill -9 ${pid}`);
   }
+}
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+async function confirmProcessKilled(pid, retries = 10, delayMs = 100) {
+  for (let i = 0; i < retries; i++) {
+    if (!isProcessAlive(pid)) return true;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return !isProcessAlive(pid);
+}
+async function killServerInstance(server) {
+  const pid = server.pid ?? await findPidByPort(server.port);
+  if (!pid) return false;
+  killProcess(pid);
+  return confirmProcessKilled(pid);
 }
 function fetchPageTitle(url) {
   return new Promise((resolve4) => {
@@ -520,8 +543,11 @@ async function handleKill(trimmedArgs) {
     }
     for (const server of targetsToKill) {
       const statusBefore = await checkServerStatus(server.localUrl || server.url);
-      const pid = await findPidByPort(server.port);
-      if (pid) killProcess(pid);
+      const killed = await killServerInstance(server);
+      if (!killed) {
+        console.warn(`\u26A0\uFE0F Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`);
+        continue;
+      }
       const statusAfter = await checkServerStatus(server.localUrl || server.url);
       killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, clientSlug: server.clientSlug, title: server.title, statusBefore, statusAfter });
     }
@@ -533,8 +559,11 @@ async function handleKill(trimmedArgs) {
       );
       if (matchedServer) {
         const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-        const pid = await findPidByPort(matchedServer.port);
-        if (pid) killProcess(pid);
+        const killed = await killServerInstance(matchedServer);
+        if (!killed) {
+          console.warn(`\u26A0\uFE0F Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`);
+          continue;
+        }
         const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
         killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, clientSlug: matchedServer.clientSlug, title: matchedServer.title, statusBefore, statusAfter });
       } else {

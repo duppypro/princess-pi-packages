@@ -7,6 +7,10 @@ export interface ServerInstance {
 	url: string;
 	title: string;
 	isLive?: boolean;
+	// PID captured at discovery time from `ps` (single source of truth for killing — see #39).
+	pid?: number;
+	localUrl?: string;
+	clientSlug?: string;
 }
 
 export interface KilledServerInstance extends ServerInstance {
