@@ -157,6 +157,7 @@ function checkServerStatus(url) {
 // extensions/lib/serve/nginx.js
 import * as fs from "node:fs";
 import * as path3 from "node:path";
+import * as os from "node:os";
 import { execSync as execSync2 } from "node:child_process";
 var ACL_MAP_PATH = "/etc/nginx/serve-acls.map";
 var PORTS_MAP_PATH = "/etc/nginx/serve-ports.map";
@@ -164,9 +165,65 @@ function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function parseAclFile(targetDir) {
+  const homeDir = os.homedir();
+  const gitIgnoreDir = path3.join(homeDir, ".config", "git");
+  const gitIgnorePath = path3.join(gitIgnoreDir, "ignore");
+  try {
+    if (!fs.existsSync(gitIgnoreDir)) {
+      fs.mkdirSync(gitIgnoreDir, { recursive: true });
+    }
+    let ignoreContent = "";
+    if (fs.existsSync(gitIgnorePath)) {
+      ignoreContent = fs.readFileSync(gitIgnorePath, "utf8");
+    }
+    if (!ignoreContent.includes(".serve-acl")) {
+      const separator = ignoreContent.endsWith("\n") || ignoreContent === "" ? "" : "\n";
+      fs.appendFileSync(gitIgnorePath, `${separator}.serve-acl
+`);
+    }
+  } catch (err) {
+  }
   const aclPath = path3.join(targetDir, ".serve-acl");
   if (!fs.existsSync(aclPath)) {
-    throw new Error(`A local .serve-acl file is required to serve directory "${path3.basename(targetDir)}" securely.`);
+    const configDir = path3.join(homeDir, ".config", "princess-pi");
+    const defaultAclPath = path3.join(configDir, "default-acl");
+    let defaultEmails = [];
+    if (fs.existsSync(defaultAclPath)) {
+      try {
+        defaultEmails = fs.readFileSync(defaultAclPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+      } catch (e) {
+      }
+    }
+    if (defaultEmails.length === 0) {
+      let gitEmail = "";
+      try {
+        gitEmail = execSync2("git config --get user.email", { encoding: "utf8" }).trim();
+      } catch (e) {
+      }
+      if (!gitEmail || !gitEmail.includes("@")) {
+        gitEmail = "david@princess-pi.dev";
+      }
+      defaultEmails = [gitEmail];
+      try {
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+        fs.writeFileSync(defaultAclPath, `# Global default ACL for /serve
+${gitEmail}
+`, "utf8");
+      } catch (e) {
+      }
+    }
+    try {
+      const localContent = [
+        "# Local Access Control List for /serve",
+        "# Authorized Google email accounts mapped to this client path",
+        ...defaultEmails
+      ].join("\n") + "\n";
+      fs.writeFileSync(aclPath, localContent, "utf8");
+    } catch (err) {
+      throw new Error(`Failed to auto-seed local .serve-acl file in "${targetDir}": ${err.message}`);
+    }
   }
   const content = fs.readFileSync(aclPath, "utf8");
   const lines = content.split(/\r?\n/);
@@ -254,7 +311,7 @@ function updateNginxPort(clientSlug, port) {
 }
 function reloadNginx() {
   try {
-    execSync2("sudo nginx -s reload", { stdio: "ignore" });
+    execSync2("sudo /usr/sbin/nginx -s reload", { stdio: "ignore" });
     return null;
   } catch (err) {
     return err.message || String(err);

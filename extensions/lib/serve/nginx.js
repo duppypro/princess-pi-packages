@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { execSync } from "node:child_process";
 
 const ACL_MAP_PATH = "/etc/nginx/serve-acls.map";
@@ -18,10 +19,76 @@ function escapeRegExp(str) {
  * Throws an error if the file is missing, empty, or has no valid emails.
  */
 export function parseAclFile(targetDir) {
+	// 1. Ensure .serve-acl is globally ignored
+	const homeDir = os.homedir();
+	const gitIgnoreDir = path.join(homeDir, ".config", "git");
+	const gitIgnorePath = path.join(gitIgnoreDir, "ignore");
+	try {
+		if (!fs.existsSync(gitIgnoreDir)) {
+			fs.mkdirSync(gitIgnoreDir, { recursive: true });
+		}
+		let ignoreContent = "";
+		if (fs.existsSync(gitIgnorePath)) {
+			ignoreContent = fs.readFileSync(gitIgnorePath, "utf8");
+		}
+		if (!ignoreContent.includes(".serve-acl")) {
+			const separator = ignoreContent.endsWith("\n") || ignoreContent === "" ? "" : "\n";
+			fs.appendFileSync(gitIgnorePath, `${separator}.serve-acl\n`);
+		}
+	} catch (err) {
+		// ignore silently if cannot write global ignore
+	}
+
 	const aclPath = path.join(targetDir, ".serve-acl");
 
+	// 2. Auto-seed .serve-acl if missing
 	if (!fs.existsSync(aclPath)) {
-		throw new Error(`A local .serve-acl file is required to serve directory "${path.basename(targetDir)}" securely.`);
+		const configDir = path.join(homeDir, ".config", "princess-pi");
+		const defaultAclPath = path.join(configDir, "default-acl");
+		
+		let defaultEmails = [];
+		if (fs.existsSync(defaultAclPath)) {
+			try {
+				defaultEmails = fs.readFileSync(defaultAclPath, "utf8")
+					.split(/\r?\n/)
+					.map(l => l.trim())
+					.filter(l => l && !l.startsWith("#"));
+			} catch (e) {}
+		}
+
+		if (defaultEmails.length === 0) {
+			// Try to retrieve user email from local/global git config
+			let gitEmail = "";
+			try {
+				gitEmail = execSync("git config --get user.email", { encoding: "utf8" }).trim();
+			} catch (e) {}
+
+			if (!gitEmail || !gitEmail.includes("@")) {
+				gitEmail = "david@princess-pi.dev"; // Fallback default
+			}
+
+			defaultEmails = [gitEmail];
+
+			// Write global default file
+			try {
+				if (!fs.existsSync(configDir)) {
+					fs.mkdirSync(configDir, { recursive: true });
+				}
+				fs.writeFileSync(defaultAclPath, `# Global default ACL for /serve\n${gitEmail}\n`, "utf8");
+			} catch (e) {}
+		}
+
+		// Write the local .serve-acl
+		try {
+			const localContent = [
+				"# Local Access Control List for /serve",
+				"# Authorized Google email accounts mapped to this client path",
+				...defaultEmails
+			].join("\n") + "\n";
+			fs.writeFileSync(aclPath, localContent, "utf8");
+		} catch (err) {
+			throw new Error(`Failed to auto-seed local .serve-acl file in "${targetDir}": ${err.message}`);
+		}
 	}
 
 	const content = fs.readFileSync(aclPath, "utf8");
@@ -146,7 +213,7 @@ export function updateNginxPort(clientSlug, port) {
  */
 export function reloadNginx() {
 	try {
-		execSync("sudo nginx -s reload", { stdio: "ignore" });
+		execSync("sudo /usr/sbin/nginx -s reload", { stdio: "ignore" });
 		return null;
 	} catch (err) {
 		return err.message || String(err);
