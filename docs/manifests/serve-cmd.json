@@ -1,7 +1,7 @@
 {
   "name": "serve",
-  "tagline": "Secure HTTPS Server Utility",
-  "description": "Serves local directories securely using SSL/HTTPS certificates in a lightweight background process. Logs HTTP access automatically to ~/.pi-certs/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve (or bare serve, once the repo root is on $PATH) CLI script from any other shell, including Claude Code's '!' prefix.",
+  "tagline": "Secure Loopback Dev Server (Cloudflare-gated)",
+  "description": "Serves local directories over plain HTTP on loopback (127.0.0.1) in a lightweight background process, gated at the Cloudflare edge (Tunnel + Access) so only allow-listed reviewers can view them. Logs access to ~/.config/pi-serve/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve (or bare serve, once the repo root is on $PATH) CLI script from any other shell, including Claude Code's '!' prefix.",
   "examples": [
     { "args": "", "desc": "Serve public/ on 8080 and docs/ on 8081 (the defaults)." },
     { "args": "--static", "desc": "Serve public/ and docs/ statically, with hot-reloading disabled." },

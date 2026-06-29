@@ -49,16 +49,16 @@
     
 <h3>Core Architecture</h3>
     <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <h4>1. Native HTTPS File Server (Default Mode)</h4>
+        <h4>1. Native HTTP Loopback File Server (Default Mode)</h4>
         <ul>
-            <li><strong>Zero Dependencies:</strong> Built strictly using Node.js standard library modules (<code>node:https</code>, <code>node:fs</code>, <code>node:path</code>, <code>node:mime</code>/custom mappings).</li>
+            <li><strong>Zero Dependencies:</strong> Built strictly using Node.js standard library modules (<code>node:http</code>, <code>node:fs</code>, <code>node:path</code>, <code>node:mime</code>/custom mappings).</li>
             <li><strong>Cache Control:</strong> Sets headers to strictly bypass browser caches (<code>Cache-Control: no-store, no-cache, must-revalidate</code>) to prevent sticky dev states.</li>
             <li><strong>Client Script Injection:</strong> Automatically intercepts outgoing <code>.html</code> file read streams to inject a tiny (~15 lines) native SSE listener script before the closing <code>&lt;/body&gt;</code> tag.</li>
         </ul>
 
         <h4>2. Lightweight Live-Reload Protocol (SSE)</h4>
         <ul>
-            <li><strong>Server-Sent Events:</strong> Avoids the overhead of external WebSockets packages (like <code>ws</code>). Exposes a special endpoint (<code>/__live-reload</code>) using standard HTTP/HTTPS protocols.</li>
+            <li><strong>Server-Sent Events:</strong> Avoids the overhead of external WebSockets packages (like <code>ws</code>). Exposes a special endpoint (<code>/__live-reload</code>) using standard HTTP.</li>
             <li><strong>Auto-Reconnections:</strong> Browsers natively support reconnecting to SSE event streams out-of-the-box via the built-in <code>EventSource</code> API.</li>
         </ul>
 
@@ -88,7 +88,7 @@
     <h3>Step-by-Step Data Flow</h3>
     <ol>
         <li>User executes <code>/serve</code>.</li>
-        <li>Server reads persistent keys from <code>~/.pi-certs/</code> and spins up the native HTTPS Server.</li>
+        <li>Server binds plain HTTP on <code>127.0.0.1</code> (loopback); TLS is terminated at the Cloudflare edge and a <code>cloudflared</code> Tunnel forwards authenticated traffic to the port (#32).</li>
         <li>Server traverses the target workspace directory to build the dependency map.</li>
         <li>Browser requests <code>does-it-glider.html</code>.</li>
         <li>Server reads the file, injects the SSE Client Script, and streams it to the browser.</li>
@@ -147,16 +147,15 @@
         <li><strong>Stateless Tracking:</strong> Servers are identified dynamically by scanning the host OS. A server belongs to the active context if its served directory resides within <code>process.cwd()</code>.</li>
         <li><strong>Security:</strong> Scans target directories for <code>.env</code> files and prompts for confirmation before exposing them over the network.</li>
         <li><strong>Deduplication:</strong> Prevents multiple HTTP servers from spawning on the exact same absolute directory path.</li>
-        <li><strong>Dual Dev Modes:</strong> Runs as a native, live-reloading server with hot CSS injections by default. Passing the <code>--static</code> or <code>-s</code> flag falls back to a standard static HTTP/HTTPS file server (spawning <code>http-server</code>) with no code injections or watchers.</li>
+        <li><strong>Dual Dev Modes:</strong> Runs as a native, live-reloading server with hot CSS injections by default. Passing the <code>--static</code> or <code>-s</code> flag falls back to a standard static HTTP file server (spawning <code>http-server</code>) with no code injections or watchers.</li>
     </ul>
 
-    <h3>Security & Certificates</h3>
+    <h3>Security &amp; Edge TLS</h3>
     <ul>
-        <li><strong>Certificate Storage:</strong> SSL certificates (<code>cert.pem</code> and <code>key.pem</code>) are stored persistently in the user's home directory under <code>~/.pi-certs/</code>. This ensures they survive system reboots and prevents browser certificate fingerprint mismatch warnings.</li>
-        <li><strong>Auto-Generation:</strong> If missing, 2048-bit RSA self-signed certificates are automatically generated securely using the host's <code>openssl</code> CLI.</li>
-        <li><strong>Conflict Prevention:</strong> Storing certificates in the user's home directory (with owner-only read/write permissions) avoids the permission conflicts and security risks associated with shared temporary directories.</li>
-        <li><strong>Access Logging & Automatic Rotation:</strong> The custom dev server natively implements Apache Common Log Format access logging. Logs are written to <code>~/.pi-certs/logs/port-&lt;PORT&gt;-access.log</code>. To prevent logs from consuming excessive disk space, the server includes a built-in, cross-platform, zero-dependency log rotation function. Once an active log exceeds 5MB, it is automatically rotated to a <code>.old.log</code> backup (capping total disk usage per server at exactly 10MB). This operates entirely inside the background process independent of any active Pi CLI sessions.</li>
-        <li><strong>VPS Firewall Protection:</strong> Because <code>/serve</code> exposes directories to all network interfaces, users on a VPS must explicitly restrict port access using their host's firewall (e.g., UFW or Hostinger Control Panel) to block unauthorized traffic.</li>
+        <li><strong>No local certificates:</strong> the dev server binds plain HTTP on <code>127.0.0.1</code> (loopback). TLS is terminated at the <strong>Cloudflare edge</strong>, and a <code>cloudflared</code> Tunnel forwards authenticated traffic to the loopback port (see #32). No <code>cert.pem</code>/<code>key.pem</code> or <code>~/.pi-certs/</code> are used any more.</li>
+        <li><strong>Authentication:</strong> access is gated by <strong>Cloudflare Access</strong> (per-directory email allow-list cascaded from <code>.serve-acl</code>), not by the server itself. Automated tests bypass on loopback, or through the edge via an Access service token.</li>
+        <li><strong>Access Logging & Automatic Rotation:</strong> The custom dev server natively implements Apache Common Log Format access logging. Logs are written to <code>~/.config/pi-serve/logs/port-&lt;PORT&gt;-access.log</code>. To prevent logs from consuming excessive disk space, the server includes a built-in, cross-platform, zero-dependency log rotation function. Once an active log exceeds 5MB, it is automatically rotated to a <code>.old.log</code> backup (capping total disk usage per server at exactly 10MB). This operates entirely inside the background process independent of any active Pi CLI sessions.</li>
+        <li><strong>Loopback binding + VPS firewall:</strong> preview servers bind loopback only (never <code>0.0.0.0</code>), so they are not directly reachable from the network — the only public door is the Cloudflare edge. A host firewall (UFW) remains required as defense-in-depth (#38).</li>
     </ul>
 
     <h3>Worktree Resolution & Multi-Serving</h3>

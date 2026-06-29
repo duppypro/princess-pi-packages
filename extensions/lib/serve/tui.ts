@@ -87,7 +87,7 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 		if (thisRepo.length > 0) {
 			for (const server of thisRepo) {
 				const typeLabel = server.isLive ? "\x1b[32m(Live)\x1b[0m" : "\x1b[33m(Static)\x1b[0m";
-				const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+				const logPath = `~/.config/pi-serve/logs/port-${server.port}-access.log`;
 				widgetLines.push(`• \x1b[36m${shortenPath(server.dir, cwd)}\x1b[0m ${typeLabel} @ \x1b[4m\x1b[34m${server.url}\x1b[0m \x1b[90m(Logs: ${logPath})\x1b[0m`);
 			}
 		} else {
@@ -100,7 +100,7 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 		if (otherRepo.length > 0) {
 			for (const server of otherRepo) {
 				const typeLabel = server.isLive ? "\x1b[32m(Live)\x1b[0m" : "\x1b[33m(Static)\x1b[0m";
-				const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+				const logPath = `~/.config/pi-serve/logs/port-${server.port}-access.log`;
 				widgetLines.push(`• \x1b[36m${shortenPath(server.dir, cwd)}\x1b[0m ${typeLabel} @ \x1b[4m\x1b[34m${server.url}\x1b[0m \x1b[90m(Logs: ${logPath})\x1b[0m`);
 			}
 		} else {
@@ -139,7 +139,7 @@ export function buildDiscoveredSummary(servers: ServerInstance[], cwd: string = 
 	const summaryParts: string[] = [];
 	for (const server of servers) {
 		const titlePadded = padVisual(server.title, 48);
-		const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+		const logPath = `~/.config/pi-serve/logs/port-${server.port}-access.log`;
 		const logPadded = padVisual(logPath, 49);
 
 		const isSsl = server.url.startsWith("https");

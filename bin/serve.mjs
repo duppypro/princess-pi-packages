@@ -426,7 +426,7 @@ function buildDiscoveredSummary(servers, cwd = process.cwd()) {
   const summaryParts = [];
   for (const server of servers) {
     const titlePadded = padVisual(server.title, 48);
-    const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+    const logPath = `~/.config/pi-serve/logs/port-${server.port}-access.log`;
     const logPadded = padVisual(logPath, 49);
     const isSsl = server.url.startsWith("https");
     const typeLabel = server.isLive ? "Live" : "Static";
@@ -459,7 +459,7 @@ async function handleLog() {
     return;
   }
   const lines = repoServers.map((s) => {
-    const logPath = `~/.pi-certs/logs/port-${s.port}-access.log`;
+    const logPath = `~/.config/pi-serve/logs/port-${s.port}-access.log`;
     return `\u2022 ${shortenPath(s.dir, process.cwd())} @ ${s.url} (Logs: ${logPath})`;
   });
   console.log(`\u{1F680} Servers active in this repository:

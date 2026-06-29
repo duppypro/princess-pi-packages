@@ -48,16 +48,16 @@
 
     <h3>Core Architecture</h3>
     <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <h4>1. Native HTTPS File Server</h4>
+        <h4>1. Native HTTP Loopback File Server</h4>
         <ul>
-            <li><strong>Zero Dependencies:</strong> Built strictly using Node.js standard library modules (<code>node:https</code>, <code>node:fs</code>, <code>node:path</code>, <code>node:mime</code>/custom mappings).</li>
+            <li><strong>Zero Dependencies:</strong> Built strictly using Node.js standard library modules (<code>node:http</code>, <code>node:fs</code>, <code>node:path</code>, <code>node:mime</code>/custom mappings).</li>
             <li><strong>Cache Control:</strong> Sets headers to strictly bypass browser caches (<code>Cache-Control: no-store, no-cache, must-revalidate</code>) to prevent sticky dev states.</li>
             <li><strong>Client Script Injection:</strong> Automatically intercepts outgoing <code>.html</code> file read streams to inject a tiny (~15 lines) native SSE listener script before the closing <code>&lt;/body&gt;</code> tag.</li>
         </ul>
 
         <h4>2. Lightweight Live-Reload Protocol (SSE)</h4>
         <ul>
-            <li><strong>Server-Sent Events:</strong> Avoids the overhead of external WebSockets packages (like <code>ws</code>). Exposes a special endpoint (<code>/__live-reload</code>) using standard HTTP/HTTPS protocols.</li>
+            <li><strong>Server-Sent Events:</strong> Avoids the overhead of external WebSockets packages (like <code>ws</code>). Exposes a special endpoint (<code>/__live-reload</code>) using standard HTTP.</li>
             <li><strong>Auto-Reconnections:</strong> Browsers natively support reconnecting to SSE event streams out-of-the-box via the built-in <code>EventSource</code> API.</li>
         </ul>
 
@@ -84,7 +84,7 @@
     <h3>Step-by-Step Data Flow</h3>
     <ol>
         <li>User executes <code>/serve</code>.</li>
-        <li>Server reads persistent keys from <code>~/.pi-certs/</code> and spins up the native HTTPS Server.</li>
+        <li>Server binds plain HTTP on <code>127.0.0.1</code> (loopback); TLS is terminated at the Cloudflare edge and a <code>cloudflared</code> Tunnel forwards authenticated traffic to the port (#32).</li>
         <li>Server traverses the target workspace directory to build the dependency map.</li>
         <li>Browser requests <code>does-it-glider.html</code>.</li>
         <li>Server reads the file, injects the SSE Client Script, and streams it to the browser.</li>

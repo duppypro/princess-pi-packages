@@ -29,7 +29,7 @@ async function handleLog(): Promise<void> {
 		return;
 	}
 	const lines = repoServers.map((s) => {
-		const logPath = `~/.pi-certs/logs/port-${s.port}-access.log`;
+		const logPath = `~/.config/pi-serve/logs/port-${s.port}-access.log`;
 		return `• ${shortenPath(s.dir, process.cwd())} @ ${s.url} (Logs: ${logPath})`;
 	});
 	console.log(`🚀 Servers active in this repository:\n\n${lines.join("\n")}`);

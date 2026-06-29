@@ -91,7 +91,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 		const lines = repoServers.map(s => {
-			const logPath = `~/.pi-certs/logs/port-${s.port}-access.log`;
+			const logPath = `~/.config/pi-serve/logs/port-${s.port}-access.log`;
 			return `• \x1b[36m${shortenPath(s.dir, process.cwd())}\x1b[0m @ \x1b[4m\x1b[34m${s.url}\x1b[0m \x1b[90m(Logs: ${logPath})\x1b[0m`;
 		});
 		ctx.ui.notify(`🚀 Servers active in this repository:\n\n${lines.join("\n")}`, "info");
