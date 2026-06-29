@@ -1,0 +1,29 @@
+# ---
+# systemd unit — oauth2-proxy for princess-pi.dev/live/ (#32)
+# Install:
+#   sudo cp infra/deploy/oauth2-proxy-live-serve.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now oauth2-proxy-live-serve
+# WHY systemd: the existing :4180/:4181 proxies are started by hand and die on reboot.
+# A unit makes :4182 survive restarts and restart-on-crash. (Consider converting the
+# other two later for the same reason.)
+# ---
+[Unit]
+Description=oauth2-proxy (princess-pi.dev /live/ Google OAuth gate, :4182)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=princess-pi
+Group=princess-pi
+ExecStart=/home/princess-pi/bin/oauth2-proxy --config /home/princess-pi/git-projects/princess-pi-packages/infra/deploy/oauth2-proxy-live-serve.cfg
+Restart=on-failure
+RestartSec=2
+# Hardening: no privileges needed (binds loopback high port, reads its own config).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/princess-pi/.config/princess-pi
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

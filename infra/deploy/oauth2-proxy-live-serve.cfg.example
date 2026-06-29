@@ -1,0 +1,43 @@
+# ---
+# oauth2-proxy — Google OAuth gate for princess-pi.dev/live/<slug>/  (#32, #38 F2)
+#
+# Copy to `oauth2-proxy-live-serve.cfg` (gitignored) and fill the three secrets.
+# Run via the systemd unit (oauth2-proxy-live-serve.service) or directly:
+#   ~/bin/oauth2-proxy --config infra/deploy/oauth2-proxy-live-serve.cfg
+#
+# Pattern: nginx terminates TLS and gates /live/ via auth_request -> this proxy on
+# 127.0.0.1:4182. The proxy does AUTHENTICATION only (is this a known reviewer?);
+# nginx serve-acls.map does per-slug AUTHORIZATION (may this email see this slug?).
+# ---
+
+provider = "google"
+
+# --- from the Google Cloud OAuth 2.0 "Web application" client for princess-pi.dev ---
+client_id     = "REPLACE_WITH_PRINCESS_PI_DEV_CLIENT_ID.apps.googleusercontent.com"
+client_secret = "REPLACE_WITH_CLIENT_SECRET"
+
+# --- 32-byte URL-safe random:  openssl rand -base64 32 | tr -- '+/' '-_' | tr -d '=' ---
+cookie_secret  = "REPLACE_WITH_RANDOM_COOKIE_SECRET"
+cookie_name    = "_serve_live_oauth"
+cookie_secure  = true
+cookie_domains = ["princess-pi.dev"]
+
+# --- localhost only; nginx proxies /oauth2/ here ---
+http_address      = "127.0.0.1:4182"
+reverse_proxy     = true
+trusted_proxy_ips = ["127.0.0.1/32", "::1/128"]
+
+# --- public callback nginx exposes (MUST match the Google client redirect URI) ---
+redirect_url = "https://princess-pi.dev/oauth2/callback"
+
+# --- AUTHN gate: the union of all reviewer emails, compiled from cascaded .serve-acl
+#     files by /serve. NOT email_domains=["*"] — that would fail OPEN (any Google
+#     account gets a session). oauth2-proxy watches this file and reloads on change. ---
+# email_domains             = []
+authenticated_emails_file = "/home/princess-pi/.config/princess-pi/authenticated-emails.txt"
+
+# --- nginx owns the upstream via auth_request; a static stub keeps the proxy happy ---
+upstreams = ["static://202"]
+
+# show the Google sign-in button rather than auto-redirecting
+skip_provider_button = false
