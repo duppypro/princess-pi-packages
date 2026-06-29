@@ -339,7 +339,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 				if (reloadErr) {
 					ctx.ui.notify(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`, "warning");
 				} else {
-					ctx.ui.notify(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/preview/${clientSlug}/`, "info");
+					ctx.ui.notify(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`, "info");
 				}
 			} catch (err: any) {
 				ctx.ui.notify(`⚠️ Dynamic Map/ACL Error: ${err.message}`, "error");

@@ -34,7 +34,7 @@
 </head>
 <body>
     <h1>Spec: Secure Dynamic <code>/serve</code> Tool with DNS, trusted SSL, and Google OAuth</h1>
-    <p>This specification outlines the architecture, routing patterns, ACL security, and local tool changes required to securely serve local web assets under <code>https://princess-pi.dev/preview/&lt;client_slug&gt;/</code> paths.</p>
+    <p>This specification outlines the architecture, routing patterns, ACL security, and local tool changes required to securely serve local web assets under <code>https://princess-pi.dev/live/&lt;client_slug&gt;/</code> paths.</p>
 
     <h2>1. Make vs Buy Analysis</h2>
     <table>
@@ -170,9 +170,9 @@ location = /oauth2/auth {
     proxy_pass_request_body off;
 }
 
-# --- Dynamic Client Preview /preview/&lt;client_slug&gt;/ ---
+# --- Dynamic Client Preview /live/&lt;client_slug&gt;/ ---
 # Strictly allows optional nested paths (e.g. repo/dir) while blocking parent traversal.
-location ~ ^/preview/(?<client_slug>[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?)(?<remaining_path>/.*)?$ {
+location ~ ^/live/(?<client_slug>[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?)(?<remaining_path>/.*)?$ {
     # 1. Trigger Authentication
     auth_request /oauth2/auth;
     error_page 401 = /oauth2/start?rd=$request_uri;
@@ -220,7 +220,7 @@ location ~ ^/preview/(?<client_slug>[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?)(?<remain
 location / {
     # If the referer indicates the request originated from a client preview,
     # route the asset to the correct client port.
-    if ($http_referer ~* /preview/(?<referer_slug>[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?)/) {
+    if ($http_referer ~* /live/(?<referer_slug>[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?)/) {
         set $client_slug $referer_slug;
         proxy_pass http://127.0.0.1:$active_serve_port;
     }
@@ -244,7 +244,7 @@ location / {
                 <li><strong>Stop:</strong> Deletes or comments out the entry for the matching slug.</li>
             </ul>
         </li>
-        <li><strong>Public URL Output:</strong> Replaces local loopback display outputs with the clean URL: <br><code>🚀 Served at: https://princess-pi.dev/preview/&lt;client_slug&gt;/</code>.</li>
+        <li><strong>Public URL Output:</strong> Replaces local loopback display outputs with the clean URL: <br><code>🚀 Served at: https://princess-pi.dev/live/&lt;client_slug&gt;/</code>.</li>
     </ol>
 
     <h2>5. Verification Plan</h2>
@@ -253,8 +253,8 @@ location / {
         <li><strong>NGINX Compilation Tests:</strong> Validate NGINX configuration using <code>sudo nginx -t</code> to verify mapping directives and dynamic regex patterns compile without error.</li>
         <li><strong>Access Gating Verification:</strong>
             <ul>
-                <li>Authorized user matching slug (e.g., <code>rogue-client@gmail.com</code> accessing <code>/preview/rogue-savvy</code>): HTTP 200.</li>
-                <li>Authorized user with different slug (e.g., <code>client-a@gmail.com</code> accessing <code>/preview/rogue-savvy</code>): HTTP 403 Forbidden.</li>
+                <li>Authorized user matching slug (e.g., <code>rogue-client@gmail.com</code> accessing <code>/live/rogue-savvy</code>): HTTP 200.</li>
+                <li>Authorized user with different slug (e.g., <code>client-a@gmail.com</code> accessing <code>/live/rogue-savvy</code>): HTTP 403 Forbidden.</li>
                 <li>Unmapped user (e.g., <code>stranger@gmail.com</code>): HTTP 403 Forbidden.</li>
                 <li>Company administrator (e.g., <code>david@princess-pi.dev</code>): HTTP 200 for all paths.</li>
             </ul>

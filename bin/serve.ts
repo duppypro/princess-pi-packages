@@ -190,7 +190,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 			if (reloadErr) {
 				console.warn(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`);
 			} else {
-				console.log(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/preview/${clientSlug}/`);
+				console.log(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`);
 			}
 		} catch (err: any) {
 			console.error(`⚠️ Dynamic Map/ACL Error: ${err.message}`);

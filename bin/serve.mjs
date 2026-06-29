@@ -78,7 +78,7 @@ function discoverServers() {
         const localUrl = `http://127.0.0.1:${port}`;
         const absoluteDir = path2.resolve(process.cwd(), dir);
         const clientSlug = getClientSlug(absoluteDir);
-        const url = `https://princess-pi.dev/preview/${clientSlug}/`;
+        const url = `https://princess-pi.dev/live/${clientSlug}/`;
         let title = "Index Page";
         try {
           title = await fetchPageTitle(localUrl);
@@ -520,7 +520,7 @@ async function handleStart(trimmedArgs) {
       if (reloadErr) {
         console.warn(`\u26A0\uFE0F Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`);
       } else {
-        console.log(`\u2705 NGINX reloaded. Routing mapped for https://princess-pi.dev/preview/${clientSlug}/`);
+        console.log(`\u2705 NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`);
       }
     } catch (err) {
       console.error(`\u26A0\uFE0F Dynamic Map/ACL Error: ${err.message}`);
