@@ -119,6 +119,8 @@ function fetchPageTitle(url) {
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : void 0;
     getter(url, { agent, timeout: 500 }, (res) => {
+      res.on("error", () => {
+      });
       let data = "";
       res.on("data", (chunk) => {
         data += chunk;
@@ -142,6 +144,9 @@ function checkServerStatus(url) {
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : void 0;
     const req = getter(url, { agent, timeout: 400 }, (res) => {
+      res.on("error", () => {
+      });
+      res.resume();
       resolve4(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
     });
     req.on("error", (err) => {

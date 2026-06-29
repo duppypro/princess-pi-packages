@@ -15,6 +15,7 @@ export async function resolveIp(): Promise<string> {
 function getPublicIp(): Promise<string> {
 	return new Promise((resolve) => {
 		https.get("https://api.ipify.org", { timeout: 1000 }, (res) => {
+			res.on("error", () => {}); // Prevent unhandled stream crashes
 			let data = "";
 			res.on("data", (chunk) => { data += chunk; });
 			res.on("end", () => {
@@ -126,6 +127,7 @@ export function fetchPageTitle(url: string): Promise<string> {
 		const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : undefined;
 
 		getter(url, { agent, timeout: 500 } as any, (res) => {
+			res.on("error", () => {}); // Prevent unhandled stream crashes
 			let data = "";
 			res.on("data", (chunk) => { data += chunk; });
 			res.on("end", () => {
@@ -149,6 +151,8 @@ export function checkServerStatus(url: string): Promise<string> {
 		const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : undefined;
 
 		const req = getter(url, { agent, timeout: 400 } as any, (res) => {
+			res.on("error", () => {}); // Prevent unhandled stream crashes
+			res.resume(); // Safely consume/discard stream to prevent memory leaks and ECONNRESET crashes
 			resolve(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
 		});
 
