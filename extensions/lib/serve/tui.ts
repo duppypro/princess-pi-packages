@@ -119,14 +119,13 @@ export function buildKilledSummary(killedList: KilledServerInstance[], cwd: stri
 	for (const server of killedList) {
 		const beforePadded = padVisual(server.statusBefore, 47);
 		const afterPadded = padVisual(server.statusAfter, 48);
-		const urlPadded = padVisual(server.url, 50);
 
 		const labelStr = `${shortenPath(server.dir, cwd)} - Port ${server.port}`;
 		const headerDashes = "─".repeat(Math.max(1, 53 - labelStr.length));
 
 		summaryParts.push(
 			`${borderStyle}┌─ [${labelStr}] ${headerDashes}┐\x1b[0m\n` +
-			`${borderStyle}│\x1b[0m  \x1b[1mURL:\x1b[0m \x1b[34m${urlPadded}\x1b[0m ${borderStyle}│\x1b[0m\n` +
+			`${borderStyle}│\x1b[0m  \x1b[1mURL:\x1b[0m \x1b[4m\x1b[34m${server.url || server.localUrl}\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mBefore:\x1b[0m ${beforePadded} ${borderStyle}│\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mAfter:\x1b[0m \x1b[31m${afterPadded}\x1b[0m ${borderStyle}│\x1b[0m\n` +
 			`${borderStyle}└` + "─".repeat(58) + `┘\x1b[0m`
@@ -140,7 +139,6 @@ export function buildDiscoveredSummary(servers: ServerInstance[], cwd: string = 
 	const summaryParts: string[] = [];
 	for (const server of servers) {
 		const titlePadded = padVisual(server.title, 48);
-		const urlPadded = padVisual(server.url, 50);
 		const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
 		const logPadded = padVisual(logPath, 49);
 
@@ -156,7 +154,7 @@ export function buildDiscoveredSummary(servers: ServerInstance[], cwd: string = 
 
 		summaryParts.push(
 			`${borderStyle}┌─ [${labelStr}] ${headerDashes}┐\x1b[0m\n` +
-			`${borderStyle}│\x1b[0m  \x1b[1mURL:\x1b[0m \x1b[34m${urlPadded}\x1b[0m ${borderStyle}│\x1b[0m\n` +
+			`${borderStyle}│\x1b[0m  \x1b[1mURL:\x1b[0m \x1b[4m\x1b[34m${server.url}\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mLogs:\x1b[0m \x1b[36m${logPadded}\x1b[0m ${borderStyle}│\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mTitle:\x1b[0m ${titlePadded} ${borderStyle}│\x1b[0m\n` +
 			`${borderStyle}│\x1b[0m  \x1b[1mStatus:\x1b[0m ${coloredStatus} ${borderStyle}│\x1b[0m\n` +

@@ -418,12 +418,11 @@ function buildKilledSummary(killedList, cwd = process.cwd()) {
   for (const server of killedList) {
     const beforePadded = padVisual(server.statusBefore, 47);
     const afterPadded = padVisual(server.statusAfter, 48);
-    const urlPadded = padVisual(server.url, 50);
     const labelStr = `${shortenPath(server.dir, cwd)} - Port ${server.port}`;
     const headerDashes = "\u2500".repeat(Math.max(1, 53 - labelStr.length));
     summaryParts.push(
       `${borderStyle}\u250C\u2500 [${labelStr}] ${headerDashes}\u2510\x1B[0m
-${borderStyle}\u2502\x1B[0m  \x1B[1mURL:\x1B[0m \x1B[34m${urlPadded}\x1B[0m ${borderStyle}\u2502\x1B[0m
+${borderStyle}\u2502\x1B[0m  \x1B[1mURL:\x1B[0m \x1B[4m\x1B[34m${server.url || server.localUrl}\x1B[0m
 ${borderStyle}\u2502\x1B[0m  \x1B[1mBefore:\x1B[0m ${beforePadded} ${borderStyle}\u2502\x1B[0m
 ${borderStyle}\u2502\x1B[0m  \x1B[1mAfter:\x1B[0m \x1B[31m${afterPadded}\x1B[0m ${borderStyle}\u2502\x1B[0m
 ${borderStyle}\u2514` + "\u2500".repeat(58) + `\u2518\x1B[0m`
@@ -438,7 +437,6 @@ function buildDiscoveredSummary(servers, cwd = process.cwd()) {
   const summaryParts = [];
   for (const server of servers) {
     const titlePadded = padVisual(server.title, 48);
-    const urlPadded = padVisual(server.url, 50);
     const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
     const logPadded = padVisual(logPath, 49);
     const isSsl = server.url.startsWith("https");
@@ -451,7 +449,7 @@ function buildDiscoveredSummary(servers, cwd = process.cwd()) {
     const headerDashes = "\u2500".repeat(Math.max(1, 53 - labelStr.length));
     summaryParts.push(
       `${borderStyle}\u250C\u2500 [${labelStr}] ${headerDashes}\u2510\x1B[0m
-${borderStyle}\u2502\x1B[0m  \x1B[1mURL:\x1B[0m \x1B[34m${urlPadded}\x1B[0m ${borderStyle}\u2502\x1B[0m
+${borderStyle}\u2502\x1B[0m  \x1B[1mURL:\x1B[0m \x1B[4m\x1B[34m${server.url}\x1B[0m
 ${borderStyle}\u2502\x1B[0m  \x1B[1mLogs:\x1B[0m \x1B[36m${logPadded}\x1B[0m ${borderStyle}\u2502\x1B[0m
 ${borderStyle}\u2502\x1B[0m  \x1B[1mTitle:\x1B[0m ${titlePadded} ${borderStyle}\u2502\x1B[0m
 ${borderStyle}\u2502\x1B[0m  \x1B[1mStatus:\x1B[0m ${coloredStatus} ${borderStyle}\u2502\x1B[0m
