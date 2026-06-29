@@ -5,3 +5,6 @@ sessions/
 *.log
 tmp/
 
+# oauth2-proxy live secrets (real cfg holds client_secret/cookie_secret) — keep only .example
+infra/deploy/oauth2-proxy-live-serve.cfg
+
