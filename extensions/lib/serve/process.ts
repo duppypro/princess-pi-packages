@@ -75,7 +75,7 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				
 				const absoluteDir = path.resolve(process.cwd(), dir);
 				const clientSlug = getClientSlug(absoluteDir);
-				const url = `https://princess-pi.dev/live/${clientSlug}/`;
+				const url = `https://princess-pi.dev/live/${clientSlug}/?token=duppy_live_token_777`;
 
 				let title = "Index Page";
 				try {
