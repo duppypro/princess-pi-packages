@@ -1,3 +1,6 @@
+> ⚠️ **OBSOLETE (#32):** there are no nginx maps any more — per-share authZ is now Cloudflare
+> Access policies (see `docs/SPEC_SECURE_DYNAMIC_SERVE.md`). Kept for history (relates to issue #35).
+
 # Spec Draft: Resolve Duplicate Key NGINX Map Conflicts
 
 ## Goal

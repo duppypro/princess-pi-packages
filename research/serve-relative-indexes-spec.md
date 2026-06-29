@@ -1,3 +1,8 @@
+> ℹ️ **STILL VALID under #32** — and more important now: with subdomain-per-slug
+> (`<label>.<machine>.preview.princess-pi.dev`) there is no `/live/<slug>/` path prefix, so
+> directory-index links **must** be relative to resolve correctly. The `/live/` references below
+> are stale wording; the relative-links requirement stands (issue #37).
+
 # Spec Draft: Use Purely Relative Links in Directory Indexes
 
 ## Goal

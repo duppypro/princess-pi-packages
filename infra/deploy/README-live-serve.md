@@ -1,3 +1,13 @@
+# ⚠️ DEPRECATED — superseded by the Cloudflare design (#32)
+
+> This oauth2-proxy + nginx `/live/` runbook is **retired**. The current approach is
+> **Cloudflare Tunnel + Access** — see `docs/SPEC_SECURE_DYNAMIC_SERVE.md` and
+> `infra/terraform/README.md`. This file and the sibling `oauth2-proxy-live-serve.*`
+> are kept only until the cutover commit (spec §12), so the live token path keeps
+> working until Cloudflare is stood up. **Do not follow the steps below for new setup.**
+
+---
+
 # Standing up real OAuth for `princess-pi.dev/live/` (#32, closes #38 F2)
 
 Replaces the interim static token with a real Google-OAuth gate on `:4182`.

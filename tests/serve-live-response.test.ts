@@ -1,3 +1,6 @@
+// ⚠️ DEPRECATED (#32): integration test for the retired nginx `/live/` + `?token=` gate. Valid
+// only while the legacy oauth2-proxy/nginx path is still live; removed at the Cloudflare cutover
+// (spec §12). The replacement edge tests (loopback + Access service token) live in the runbook.
 import * as https from "node:https";
 import * as http from "node:http";
 import * as assert from "node:assert";

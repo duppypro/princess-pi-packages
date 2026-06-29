@@ -1,3 +1,7 @@
+> ⚠️ **OBSOLETE (#32):** URLs are no longer path-based (`/preview/` or `/live/`) — `/serve` now
+> uses **subdomain-per-slug** (`<label>.<machine>.preview.princess-pi.dev`). See
+> `docs/SPEC_SECURE_DYNAMIC_SERVE.md`. Kept for history (relates to issue #33).
+
 # Spec Draft: Change /serve URL path from /preview/ to /live/
 
 ## Goal

@@ -1,4 +1,7 @@
 # ---
+# ⚠️ DEPRECATED — superseded by Cloudflare Tunnel + Access (#32). Retained until the cutover
+# commit (spec §12). New design: docs/SPEC_SECURE_DYNAMIC_SERVE.md + infra/terraform/.
+#
 # systemd unit — oauth2-proxy for princess-pi.dev/live/ (#32)
 # Install:
 #   sudo cp infra/deploy/oauth2-proxy-live-serve.service /etc/systemd/system/

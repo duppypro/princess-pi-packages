@@ -1,3 +1,9 @@
+// ---
+// ⚠️ DEPRECATED (#32): writes the retired /etc/nginx/serve-acls.map + serve-ports.map for the
+// oauth2-proxy `/live/` gate. The active path is the Cloudflare Tunnel + Access driver in
+// cloudflare.js (per-share Access app/policy). Nothing imports this module any more; it is kept
+// only until the cutover commit (spec §12), then removed. Do not add new callers.
+// ---
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";

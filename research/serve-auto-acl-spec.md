@@ -1,3 +1,9 @@
+> ⚠️ **PARTIALLY SUPERSEDED (#32):** the **global git-ignore** of `.serve-acl` is retained
+> (`ensureServeAclGitIgnored` in `acl-cascade.js`). The **per-dir auto-seed** is dropped — the
+> new cascade resolver unions `.serve-acl` up to `~/.serve-acl` (the cascade root grants you
+> everything), so no per-directory seeding is needed. See `docs/SPEC_SECURE_DYNAMIC_SERVE.md`
+> (relates to issue #34).
+
 # Spec Draft: Auto-seed local .serve-acl and Ignore Globally
 
 ## Goal

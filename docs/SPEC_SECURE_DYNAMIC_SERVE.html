@@ -33,6 +33,12 @@
     </style>
 </head>
 <body>
+    <div style="border:2px solid var(--accent-orange); background:#3a2a1a; padding:1em; margin-bottom:1.5em; border-radius:6px;">
+        <strong>⚠️ DEPRECATED — superseded by the Cloudflare design.</strong><br>
+        This describes the retired oauth2-proxy + nginx <code>/live/</code> approach. The current,
+        authoritative spec is <code>docs/SPEC_SECURE_DYNAMIC_SERVE.md</code> (Cloudflare Tunnel +
+        Access, subdomain-per-slug, Terraform). Kept for history only (#32).
+    </div>
     <h1>Spec: Secure Dynamic <code>/serve</code> Tool with DNS, trusted SSL, and Google OAuth</h1>
     <p>This specification outlines the architecture, routing patterns, ACL security, and local tool changes required to securely serve local web assets under <code>https://princess-pi.dev/live/&lt;client_slug&gt;/</code> paths.</p>
 

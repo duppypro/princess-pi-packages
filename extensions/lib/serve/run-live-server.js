@@ -21,8 +21,8 @@ for (let i = 0; i < args.length; i++) {
 let port = 8080;
 let clientSlug = "";
 // Fail-safe default: this server has no auth of its own and is always fronted by the
-// nginx /live/<slug>/ gate, so it must bind loopback. We honor -a for parity with the
-// static (http-server) path, but a non-loopback value is refused below (see #38).
+// Cloudflare Access gate (via the cloudflared Tunnel, #32), so it must bind loopback. We honor
+// -a for parity with the static (http-server) path, but a non-loopback value is refused below (#38).
 let bind_address = "127.0.0.1";
 
 for (let i = 0; i < args.length; i++) {
@@ -36,7 +36,7 @@ for (let i = 0; i < args.length; i++) {
 	}
 }
 
-// --- Refuse any non-loopback bind (defense-in-depth; nginx is the only public door) ---
+// --- Refuse any non-loopback bind (defense-in-depth; Cloudflare is the only public door) ---
 if (!["127.0.0.1", "::1", "localhost"].includes(bind_address)) {
 	console.warn(`[serve] refusing non-loopback bind address "${bind_address}"; forcing 127.0.0.1 (#38).`);
 	bind_address = "127.0.0.1";
@@ -558,13 +558,12 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 
 // Start Server listening
 // ---
-// WHY loopback: these preview servers are meant to be reached ONLY through the nginx
-// `princess-pi.dev/live/<slug>/` vhost, which auth-gates via oauth2-proxy and then proxies
-// to 127.0.0.1:<port>. Binding 0.0.0.0 exposed them directly on the public IP, bypassing the
-// entire auth gate (see issue #38, F1). `bind_address` is honored from -a but clamped to
-// loopback above, so nginx stays the sole authenticated entry point. Defense-in-depth: host
-// firewall still required.
+// WHY loopback: these preview servers are reached ONLY through Cloudflare Access via the
+// cloudflared Tunnel (#32), which auth-gates and forwards to 127.0.0.1:<port>. Binding 0.0.0.0
+// exposed them directly on the public IP, bypassing the entire auth gate (see issue #38, F1).
+// `bind_address` is honored from -a but clamped to loopback above, so Cloudflare stays the sole
+// authenticated entry point. Defense-in-depth: host firewall still required.
 // ---
 server.listen(port, bind_address, () => {
-	console.log(`Live dev server active at ${bind_address}:${port} (loopback only; reach via nginx)`);
+	console.log(`Live dev server active at ${bind_address}:${port} (loopback only; reach via Cloudflare)`);
 });

@@ -1,4 +1,8 @@
 # ---
+# ⚠️ DEPRECATED — superseded by Cloudflare Tunnel + Access (#32). Retained only until the
+# cutover commit (spec §12) so the live token path keeps working. New design:
+# docs/SPEC_SECURE_DYNAMIC_SERVE.md + infra/terraform/. Do not deploy this for new setup.
+#
 # oauth2-proxy — Google OAuth gate for princess-pi.dev/live/<slug>/  (#32, #38 F2)
 #
 # Copy to `oauth2-proxy-live-serve.cfg` (gitignored) and fill the three secrets.
