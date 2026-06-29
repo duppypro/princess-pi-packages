@@ -542,6 +542,13 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 });
 
 // Start Server listening
-server.listen(port, "0.0.0.0", () => {
-	console.log(`Live dev server active at port ${port}`);
+// ---
+// WHY 127.0.0.1 (not 0.0.0.0): these preview servers are meant to be reached ONLY through
+// the nginx `princess-pi.dev/live/<slug>/` vhost, which auth-gates via oauth2-proxy and
+// then proxies to 127.0.0.1:<port>. Binding 0.0.0.0 exposed them directly on the public
+// IP, bypassing the entire auth gate (see issue #38, F1). Loopback keeps nginx as the
+// sole, authenticated entry point. Defense-in-depth: host firewall still required.
+// ---
+server.listen(port, "127.0.0.1", () => {
+	console.log(`Live dev server active at port ${port} (loopback only; reach via nginx)`);
 });
