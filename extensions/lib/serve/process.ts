@@ -55,6 +55,11 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				const httpServerIdx = parts.findIndex(p => p.includes("http-server") || p.includes("run-live-server"));
 				if (httpServerIdx === -1) continue;
 
+				// `ps aux` columns: USER(0) PID(1) ... — capture the PID here so the kill path
+				// uses the SAME source as discovery, instead of a fragile second `lsof` lookup (#39).
+				const parsedPid = Number.parseInt(parts[1], 10);
+				const pid = Number.isNaN(parsedPid) ? undefined : parsedPid;
+
 				let dir = "current";
 				for (let i = httpServerIdx + 1; i < parts.length; i++) {
 					const part = parts[i];
@@ -84,7 +89,7 @@ export function discoverServers(): Promise<ServerInstance[]> {
 					// ignore
 				}
 
-				servers.push({ port, dir, url, localUrl, title, isLive, clientSlug });
+				servers.push({ port, dir, url, localUrl, title, isLive, clientSlug, pid });
 			}
 
 			resolve(servers);
@@ -118,6 +123,37 @@ export function killProcess(pid: number): void {
 	} catch (e) {
 		exec(`kill -9 ${pid}`);
 	}
+}
+
+// True if the PID still exists. `process.kill(pid, 0)` sends no signal; it throws ESRCH
+// when the process is gone, or EPERM when it exists but we may not signal it (still alive).
+export function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e: any) {
+		return e?.code === "EPERM";
+	}
+}
+
+// Polls until the PID is gone (SIGKILL is fast but reaping/socket release is async).
+export async function confirmProcessKilled(pid: number, retries = 10, delayMs = 100): Promise<boolean> {
+	for (let i = 0; i < retries; i++) {
+		if (!isProcessAlive(pid)) return true;
+		await new Promise(r => setTimeout(r, delayMs));
+	}
+	return !isProcessAlive(pid);
+}
+
+// Single, reliable kill path for a discovered server (#39). Uses the PID captured at
+// discovery time; falls back to an lsof-by-port lookup only if that's missing. Returns true
+// ONLY when the process is actually confirmed gone — so callers can fail loud instead of
+// silently reporting a still-running server as "terminated".
+export async function killServerInstance(server: ServerInstance): Promise<boolean> {
+	const pid = server.pid ?? (await findPidByPort(server.port));
+	if (!pid) return false;
+	killProcess(pid);
+	return confirmProcessKilled(pid);
 }
 
 export function fetchPageTitle(url: string): Promise<string> {

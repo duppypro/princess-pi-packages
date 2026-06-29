@@ -14,7 +14,7 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, findPidByPort, killProcess } from "../extensions/lib/serve/process.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "../extensions/lib/serve/nginx.js";
 import { shortenPath, buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
 
@@ -74,8 +74,11 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 		}
 		for (const server of targetsToKill) {
 			const statusBefore = await checkServerStatus(server.localUrl || server.url);
-			const pid = await findPidByPort(server.port);
-			if (pid) killProcess(pid);
+			const killed = await killServerInstance(server);
+			if (!killed) {
+				console.warn(`⚠️ Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`);
+				continue;
+			}
 			const statusAfter = await checkServerStatus(server.localUrl || server.url);
 			killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, clientSlug: server.clientSlug, title: server.title, statusBefore, statusAfter });
 		}
@@ -89,8 +92,11 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 			);
 			if (matchedServer) {
 				const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-				const pid = await findPidByPort(matchedServer.port);
-				if (pid) killProcess(pid);
+				const killed = await killServerInstance(matchedServer);
+				if (!killed) {
+					console.warn(`⚠️ Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`);
+					continue;
+				}
 				const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
 				killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, clientSlug: matchedServer.clientSlug, title: matchedServer.title, statusBefore, statusAfter });
 			} else {

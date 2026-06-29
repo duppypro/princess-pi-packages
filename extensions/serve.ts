@@ -13,7 +13,7 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, findPidByPort, killProcess } from "./lib/serve/process.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
 import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "./lib/serve/nginx.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { updateWidget, shortenPath, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
@@ -165,8 +165,11 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			for (const server of targetsToKill) {
 				const statusBefore = await checkServerStatus(server.localUrl || server.url);
-				const pid = await findPidByPort(server.port);
-				if (pid) killProcess(pid);
+				const killed = await killServerInstance(server);
+				if (!killed) {
+					ctx.ui.notify(`⚠️ Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`, "warning");
+					continue;
+				}
 				const statusAfter = await checkServerStatus(server.localUrl || server.url);
 
 				killedList.push({
@@ -193,8 +196,11 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 				if (matchedServer) {
 					const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-					const pid = await findPidByPort(matchedServer.port);
-					if (pid) killProcess(pid);
+					const killed = await killServerInstance(matchedServer);
+					if (!killed) {
+						ctx.ui.notify(`⚠️ Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`, "warning");
+						continue;
+					}
 
 					const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
 
