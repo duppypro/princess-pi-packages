@@ -17,9 +17,13 @@ for (let i = 0; i < args.length; i++) {
 	}
 }
 
-// Find port and slug
+// Find port, slug, and bind address
 let port = 8080;
 let clientSlug = "";
+// Fail-safe default: this server has no auth of its own and is always fronted by the
+// nginx /live/<slug>/ gate, so it must bind loopback. We honor -a for parity with the
+// static (http-server) path, but a non-loopback value is refused below (see #38).
+let bind_address = "127.0.0.1";
 
 for (let i = 0; i < args.length; i++) {
 	const arg = args[i];
@@ -27,7 +31,15 @@ for (let i = 0; i < args.length; i++) {
 		port = parseInt(args[i + 1], 10);
 	} else if (arg === "--slug") {
 		clientSlug = args[i + 1];
+	} else if (arg === "-a" || arg === "--address") {
+		bind_address = args[i + 1];
 	}
+}
+
+// --- Refuse any non-loopback bind (defense-in-depth; nginx is the only public door) ---
+if (!["127.0.0.1", "::1", "localhost"].includes(bind_address)) {
+	console.warn(`[serve] refusing non-loopback bind address "${bind_address}"; forcing 127.0.0.1 (#38).`);
+	bind_address = "127.0.0.1";
 }
 
 const MIME_TYPES = {
@@ -543,12 +555,13 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 
 // Start Server listening
 // ---
-// WHY 127.0.0.1 (not 0.0.0.0): these preview servers are meant to be reached ONLY through
-// the nginx `princess-pi.dev/live/<slug>/` vhost, which auth-gates via oauth2-proxy and
-// then proxies to 127.0.0.1:<port>. Binding 0.0.0.0 exposed them directly on the public
-// IP, bypassing the entire auth gate (see issue #38, F1). Loopback keeps nginx as the
-// sole, authenticated entry point. Defense-in-depth: host firewall still required.
+// WHY loopback: these preview servers are meant to be reached ONLY through the nginx
+// `princess-pi.dev/live/<slug>/` vhost, which auth-gates via oauth2-proxy and then proxies
+// to 127.0.0.1:<port>. Binding 0.0.0.0 exposed them directly on the public IP, bypassing the
+// entire auth gate (see issue #38, F1). `bind_address` is honored from -a but clamped to
+// loopback above, so nginx stays the sole authenticated entry point. Defense-in-depth: host
+// firewall still required.
 // ---
-server.listen(port, "127.0.0.1", () => {
-	console.log(`Live dev server active at port ${port} (loopback only; reach via nginx)`);
+server.listen(port, bind_address, () => {
+	console.log(`Live dev server active at ${bind_address}:${port} (loopback only; reach via nginx)`);
 });
