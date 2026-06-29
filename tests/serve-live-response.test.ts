@@ -3,7 +3,7 @@ import * as http from "node:http";
 import * as assert from "node:assert";
 
 // Helper to make a request to NGINX on localhost simulating princess-pi.dev Host header
-function requestNginx(path: string): Promise<{ statusCode: number; headers: any; body: string }> {
+function requestNginx(path: string, customHeaders: Record<string, string> = {}): Promise<{ statusCode: number; headers: any; body: string }> {
 	return new Promise((resolve, reject) => {
 		const agent = new https.Agent({ rejectUnauthorized: false });
 		const req = https.get(
@@ -11,7 +11,8 @@ function requestNginx(path: string): Promise<{ statusCode: number; headers: any;
 			{
 				agent,
 				headers: {
-					Host: "princess-pi.dev"
+					Host: "princess-pi.dev",
+					...customHeaders
 				},
 				timeout: 1000
 			},
@@ -33,7 +34,7 @@ function requestNginx(path: string): Promise<{ statusCode: number; headers: any;
 }
 
 async function runTests() {
-	console.log("🧪 Running Automated Live NGINX Response Tests...");
+	console.log("🧪 Running Automated Live NGINX Response & Cookie Session Tests...");
 
 	try {
 		// Test 1: Accessing without token should return 403 Forbidden (since OAuth proxy is offline)
@@ -49,14 +50,32 @@ async function runTests() {
 		console.log("\nTest 2: Requesting /live/ with secure bypass token...");
 		const res2 = await requestNginx("/live/princess-pi-packages/docs/?token=duppy_live_token_777");
 		console.log(`- Status: ${res2.statusCode}`);
-		console.log(`- Content-Type: ${res2.headers["content-type"]}`);
+		console.log(`- Set-Cookie Headers:`, res2.headers["set-cookie"]);
 		assert.strictEqual(res2.statusCode, 200);
 		assert.match(res2.body, /Index of \//);
-		console.log("✅ Test 2 Passed: Token bypass allowed with 200 OK!");
+		
+		// Extract Cookie from Set-Cookie header
+		const setCookies = res2.headers["set-cookie"] || [];
+		const sessionCookie = setCookies.find((c: string) => c.startsWith("princess_bypass_token="));
+		assert.ok(sessionCookie, "Expected NGINX to return a 'princess_bypass_token' session cookie!");
+		const cookieValue = sessionCookie.split(";")[0];
+		console.log(`- Extracted Session Cookie: ${cookieValue}`);
+		console.log("✅ Test 2 Passed: Token bypass allowed with 200 OK and Set-Cookie session established!");
 
-		console.log("\n🎉 ALL LIVE RESPONSE TESTS PASSED SUCCESSFULLY!");
+		// Test 3: Accessing a sub-link WITHOUT token, but WITH the session cookie
+		console.log("\nTest 3: Requesting relative sub-asset without token but with Session Cookie...");
+		const res3 = await requestNginx("/live/princess-pi-packages/docs/SPEC_SECURE_DYNAMIC_SERVE.html", {
+			Cookie: cookieValue
+		});
+		console.log(`- Status: ${res3.statusCode}`);
+		console.log(`- Content Length: ${res3.body.length} bytes`);
+		assert.strictEqual(res3.statusCode, 200);
+		assert.match(res3.body, /Spec: Secure Dynamic/);
+		console.log("✅ Test 3 Passed: Sub-asset access with Session Cookie approved with 200 OK!");
+
+		console.log("\n🎉 ALL LIVE MULTI-REQUEST SESSION TESTS PASSED SUCCESSFULLY!");
 	} catch (err: any) {
-		console.error("\n❌ Live Response Test Failed:", err.message);
+		console.error("\n❌ Live Session Test Failed:", err.message);
 		process.exit(1);
 	}
 }
