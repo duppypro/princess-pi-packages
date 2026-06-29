@@ -258,18 +258,52 @@ function updateNginxAcls(clientSlug, emails) {
     }
   }
   const lines = content.split(/\r?\n/);
-  const updatedLines = [];
-  const escapedSlug = escapeRegExp(clientSlug);
-  const slugMatcher = new RegExp(`\\s+['"]?${escapedSlug}['"]?\\s*;\\s*(\\s*#.*)?$`);
+  const emailMap = /* @__PURE__ */ new Map();
   for (const line of lines) {
-    if (line.trim() && !slugMatcher.test(line)) {
-      updatedLines.push(line);
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = trimmed.match(/^\s*['"]?([^'"]+)['"]?\s+['"]?([^'"]+)['"]?\s*;\s*$/);
+    if (match) {
+      const email = match[1].trim();
+      const value = match[2].trim();
+      if (value === "all") {
+        emailMap.set(email, "all");
+      } else {
+        const slugs = value.split(/\s+/).filter(Boolean);
+        const slugSet = new Set(slugs);
+        emailMap.set(email, slugSet);
+      }
     }
   }
-  if (emails.length > 0) {
-    updatedLines.push(`# --- Previews for ${clientSlug} ---`);
-    for (const email of emails) {
-      updatedLines.push(`"${email}" "${clientSlug}";`);
+  for (const [email, value] of emailMap.entries()) {
+    if (value instanceof Set) {
+      value.delete(clientSlug);
+      if (value.size === 0) {
+        emailMap.delete(email);
+      }
+    }
+  }
+  for (const email of emails) {
+    const value = emailMap.get(email);
+    if (value === "all") {
+      continue;
+    }
+    if (value instanceof Set) {
+      value.add(clientSlug);
+    } else {
+      emailMap.set(email, /* @__PURE__ */ new Set([clientSlug]));
+    }
+  }
+  const updatedLines = [
+    "# Matches authorized Google emails to their allowed client slug.",
+    "# Space-separated values allow multiple slug mappings without duplicate keys."
+  ];
+  for (const [email, value] of emailMap.entries()) {
+    if (value === "all") {
+      updatedLines.push(`"${email}" "all";`);
+    } else if (value instanceof Set && value.size > 0) {
+      const slugsStr = Array.from(value).join(" ");
+      updatedLines.push(`"${email}" "${slugsStr}";`);
     }
   }
   try {

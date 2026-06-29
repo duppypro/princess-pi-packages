@@ -137,22 +137,66 @@ export function updateNginxAcls(clientSlug, emails) {
 	}
 
 	const lines = content.split(/\r?\n/);
-	const updatedLines = [];
-	const escapedSlug = escapeRegExp(clientSlug);
-	// Regex matches: key "clientSlug"; or key 'clientSlug'; or key clientSlug;
-	const slugMatcher = new RegExp(`\\s+['"]?${escapedSlug}['"]?\\s*;\\s*(\\s*#.*)?$`);
+	const emailMap = new Map(); // Map<string, Set<string> | "all">
 
+	// Parse current map file
 	for (const line of lines) {
-		if (line.trim() && !slugMatcher.test(line)) {
-			updatedLines.push(line);
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) continue;
+
+		// Match: "email" "value"; or email value;
+		// Example: "david@princess-pi.dev" "all";
+		const match = trimmed.match(/^\s*['"]?([^'"]+)['"]?\s+['"]?([^'"]+)['"]?\s*;\s*$/);
+		if (match) {
+			const email = match[1].trim();
+			const value = match[2].trim();
+
+			if (value === "all") {
+				emailMap.set(email, "all");
+			} else {
+				const slugs = value.split(/\s+/).filter(Boolean);
+				const slugSet = new Set(slugs);
+				emailMap.set(email, slugSet);
+			}
 		}
 	}
 
-	// Append the new mappings
-	if (emails.length > 0) {
-		updatedLines.push(`# --- Previews for ${clientSlug} ---`);
-		for (const email of emails) {
-			updatedLines.push(`"${email}" "${clientSlug}";`);
+	// 1. Remove current clientSlug from all email records (cleanup)
+	for (const [email, value] of emailMap.entries()) {
+		if (value instanceof Set) {
+			value.delete(clientSlug);
+			if (value.size === 0) {
+				emailMap.delete(email);
+			}
+		}
+	}
+
+	// 2. Add current clientSlug for the newly requested emails (if not "all")
+	for (const email of emails) {
+		const value = emailMap.get(email);
+		if (value === "all") {
+			// already has global access, do nothing
+			continue;
+		}
+		if (value instanceof Set) {
+			value.add(clientSlug);
+		} else {
+			emailMap.set(email, new Set([clientSlug]));
+		}
+	}
+
+	// 3. Rebuild map file content
+	const updatedLines = [
+		"# Matches authorized Google emails to their allowed client slug.",
+		"# Space-separated values allow multiple slug mappings without duplicate keys."
+	];
+
+	for (const [email, value] of emailMap.entries()) {
+		if (value === "all") {
+			updatedLines.push(`"${email}" "all";`);
+		} else if (value instanceof Set && value.size > 0) {
+			const slugsStr = Array.from(value).join(" ");
+			updatedLines.push(`"${email}" "${slugsStr}";`);
 		}
 	}
 
