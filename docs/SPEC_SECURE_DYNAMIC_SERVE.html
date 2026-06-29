@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
+    <meta charset="UTF-8">
+    <title>Spec: Secure Dynamic /serve Tool with DNS, trusted SSL, and Google OAuth</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --box-bg: #2d2d2d;
+            --accent-blue: #569cd6;
+            --accent-green: #6a9955;
+            --accent-orange: #ce9178;
+            --accent-yellow: #dcdcaa;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6; 
+            max-width: 1000px; 
+            margin: 0 auto; 
+            padding: 2rem; 
+        }
+        h1, h2, h3 { color: var(--accent-blue); }
+        h1 { border-bottom: 2px solid var(--accent-blue); padding-bottom: 10px; }
+        h2 { margin-top: 2rem; }
+        code { background: var(--box-bg); padding: 2px 4px; border-radius: 4px; }
+        pre { background: var(--box-bg); padding: 15px; border-radius: 8px; overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #404040; padding: 8px; text-align: left; }
+    </style>
+</head>
+<body>
+    <h1>Spec: Secure Dynamic <code>/serve</code> Tool with DNS, trusted SSL, and Google OAuth</h1>
+    <p>This specification outlines the architecture, routing patterns, ACL security, and local tool changes required to securely serve local web assets under <code>https://princess-pi.dev/preview/&lt;client_slug&gt;/</code> paths.</p>
+
+    <h2>1. Make vs Buy Analysis</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Solution</th>
+                <th>OAuth & Gating</th>
+                <th>Zero SSL Overhead Locally</th>
+                <th>Multi-Tenant Map Gating</th>
+                <th>Integration with Local CLI</th>
+                <th>Dynamic Path-Based Routing</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>ngrok</strong></td>
+                <td>⚠️ Paid/Complex</td>
+                <td>✅ Yes</td>
+                <td>❌ No</td>
+                <td>❌ Custom wrapper needed</td>
+                <td>❌ Random domains</td>
+            </tr>
+            <tr>
+                <td><strong>Cloudflare Tunnels</strong></td>
+                <td>⚠️ Needs Access policy</td>
+                <td>✅ Yes</td>
+                <td>❌ No</td>
+                <td>❌ Heavy agent</td>
+                <td>⚠️ Subdomains only</td>
+            </tr>
+            <tr>
+                <td><strong><code>/serve</code> Upgrade (Map Pattern)</strong></td>
+                <td>✅ Yes (Unified port 4182)</td>
+                <td>✅ Yes (Loopback only)</td>
+                <td>✅ Yes (Map ACLs)</td>
+                <td>✅ Yes (Zero config)</td>
+                <td>✅ Yes (Exact subpaths)</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><strong>Conclusion: Make (Upgrade <code>/serve</code>).</strong> Upgrading our existing tool with a VPS-side NGINX map-based reverse proxy configuration offers complete end-to-end routing control, Zero-SSL overhead locally, and a unified Google login without requiring extra runtime dependencies or third-party service subscriptions.</p>
+
+    <h2>2. Dynamic Client Slug Creation Rules</h2>
+    <p>To support clean, multi-tenant workspace routing, the local <code>/serve</code> command will automatically construct the <code>&lt;client_slug&gt;</code> using the following fallback rules:</p>
+    <ol>
+        <li><strong>Inside a Git Repository (Subdirectory):</strong> If serving a subdirectory (e.g., <code>docs</code>) inside a Git repository (e.g., <code>rogue-savvy</code>), the slug is: <code>&lt;repo_name&gt;/&lt;dir_name&gt;</code> (e.g., <code>rogue-savvy/docs</code>).</li>
+        <li><strong>Inside a Git Repository (Root/No Directory Specified):</strong> If serving the root directory of a repository, the slug is just the repository name: <code>&lt;repo_name&gt;</code> (e.g., <code>rogue-savvy</code>). No <code>/root</code> or trailing slash is added.</li>
+        <li><strong>Outside a Git Repository (Fallback):</strong> If run outside a Git repository, the slug is determined by the current directory's folder name.</li>
+    </ol>
+
+    <h2>3. Architecture & Edge Routing</h2>
+    
+    <h3>A. Gating Daemon: OAuth2 Proxy Config</h3>
+    <p>A unified daemon running on port <code>4182</code> handles the Google OAuth handshake. It is configured to allow any Google login globally, delegating the precise client-specific authorization to downstream NGINX map checks.</p>
+    <pre>
+# /home/princess-pi/git-projects/princess-pi-packages/infra/deploy/oauth2-proxy-live-serve.cfg
+provider = "google"
+client_id = "&lt;google_client_id&gt;"
+client_secret = "&lt;google_client_secret&gt;"
+cookie_secret = "PqJXAo3v1ZFV4RiFH-PVdIZykHbb6VEPJWVwudZ_5aE"
+cookie_name = "_princess_pi_serve_oauth"
+cookie_secure = true
+cookie_domains = ["princess-pi.dev"]
+http_address = "127.0.0.1:4182"
+reverse_proxy = true
+trusted_proxy_ips = ["127.0.0.1/32", "::1/128"]
+redirect_url = "https://princess-pi.dev/oauth2/callback"
+email_domains = ["*"]
+upstreams = ["static://202"]
+skip_provider_button = false
+    </pre>
+
+    <h3>B. Dynamic NGINX Map Routing</h3>
+    <p>NGINX maps act as a secure, fast, and light database. Both maps reside in <code>/etc/nginx/</code> and are writable by the <code>princess-pi</code> group to allow the `/serve` CLI tool to write port mappings without requiring sudo root privileges.</p>
+    
+    <h4>1. Access Control List Map: <code>/etc/nginx/serve-acls.map</code></h4>
+    <pre>
+# Matches authorized Google emails to their allowed client slug.
+# "all" is a special value granting internal administrators global access.
+david@princess-pi.dev        "all";
+princess@princess-pi.dev      "all";
+
+# Client specific mappings
+client-a@gmail.com            "client-a";
+client-b@hotmail.com          "client-b";
+rogue-client@gmail.com        "rogue-savvy";
+rogue-docs-client@gmail.com   "rogue-savvy/docs";
+    </pre>
+
+    <h4>2. Port Routing Map: <code>/etc/nginx/serve-ports.map</code></h4>
+    <pre>
+# Dynamic loopback ports updated in real-time by the local `/serve` CLI.
+rogue-savvy                  8080;
+rogue-savvy/docs             8081;
+    </pre>
+
+    <h3>C. NGINX Site Block Configuration</h3>
+    <p>Injected at the top level of <code>/etc/nginx/sites-available/princess-pi.dev</code> (outside the <code>server</code> block):</p>
+    <pre>
+# --- Maps email address to allowed client slug ---
+map $user_email $allowed_client_slug {
+    default "";
+    include /etc/nginx/serve-acls.map;
+}
+
+# --- Maps client slug to active loopback port ---
+map $client_slug $active_serve_port {
+    default "";
+    include /etc/nginx/serve-ports.map;
+}
+    </pre>
+
+    <p>Inside the HTTPS <code>server</code> block:</p>
+    <pre>
+# --- oauth2-proxy endpoints for princess-pi.dev (Port 4182) ---
+location /oauth2/ {
+    proxy_pass       http://127.0.0.1:4182;
+    proxy_set_header Host                    $host;
+    proxy_set_header X-Real-IP               $remote_addr;
+    proxy_set_header X-Forwarded-For         $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto       $scheme;
+    proxy_set_header X-Auth-Request-Redirect $request_uri;
+}
+
+# --- oauth2 auth check subrequest ---
+location = /oauth2/auth {
+    proxy_pass       http://127.0.0.1:4182;
+    proxy_set_header Host             $host;
+    proxy_set_header X-Real-IP        $remote_addr;
+    proxy_set_header X-Forwarded-For  $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Content-Length   "";
+    proxy_pass_request_body off;
+}
+
+# --- Dynamic Client Preview /preview/&lt;client_slug&gt;/ ---
+# Strictly allows optional nested paths (e.g. repo/dir) while blocking parent traversal.
+location ~ ^/preview/(?<client_slug>[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?)(?<remaining_path>/.*)?$ {
+    # 1. Trigger Authentication
+    auth_request /oauth2/auth;
+    error_page 401 = /oauth2/start?rd=$request_uri;
+
+    # Capture the email returned by oauth2-proxy
+    auth_request_set $user_email $upstream_http_x_auth_request_email;
+
+    # 2. Authorization Rules
+    if ($allowed_client_slug = "") {
+        return 403 "Forbidden: Email not authorized to view previews.";
+    }
+
+    set $auth_status "deny";
+    if ($allowed_client_slug = "all") {
+        set $auth_status "allow";
+    }
+    if ($allowed_client_slug = $client_slug) {
+        set $auth_status "allow";
+    }
+
+    if ($auth_status = "deny") {
+        return 403 "Forbidden: You do not have permission to view this client's preview.";
+    }
+
+    # 3. Port Lookup
+    if ($active_serve_port = "") {
+        return 503 "Service Unavailable: Preview server is not currently running.";
+    }
+
+    # 4. Proxy-Pass to Dynamic localhost port
+    proxy_pass http://127.0.0.1:$active_serve_port$remaining_path$is_args$args;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # WebSocket / SSE support (critical for hot reloading!)
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_buffering off;
+}
+
+# --- Root location fallback for absolute/root-relative assets ---
+location / {
+    # If the referer indicates the request originated from a client preview,
+    # route the asset to the correct client port.
+    if ($http_referer ~* /preview/(?<referer_slug>[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)?)/) {
+        set $client_slug $referer_slug;
+        proxy_pass http://127.0.0.1:$active_serve_port;
+    }
+
+    # Default to main portfolio/backend app
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+    </pre>
+
+    <h2>4. Tool Updates (<code>/serve</code> Command)</h2>
+    <ol>
+        <li><strong>No SSL Generation:</strong> Remove SSL/TLS file generation and the reliance on <code>~/.pi-certs</code> inside the local tool runtime. All local servers run strictly on plain HTTP.</li>
+        <li><strong>Relative EventSource Connection:</strong> In <code>extensions/lib/serve/run-live-server.js</code>, modify the browser injection script to connect to a relative <code>EventSource("__live-reload")</code> instead of the root-relative <code>/__live-reload</code>.</li>
+        <li><strong>Live Port Writing:</strong> When a server is successfully spawned or killed, the tool directly updates the key-value entry in <code>/etc/nginx/serve-ports.map</code>:
+            <ul>
+                <li><strong>Start:</strong> Writes <code>&lt;client_slug&gt; &lt;port&gt;;</code>.</li>
+                <li><strong>Stop:</strong> Deletes or comments out the entry for the matching slug.</li>
+            </ul>
+        </li>
+        <li><strong>Public URL Output:</strong> Replaces local loopback display outputs with the clean URL: <br><code>🚀 Served at: https://princess-pi.dev/preview/&lt;client_slug&gt;/</code>.</li>
+    </ol>
+
+    <h2>5. Verification Plan</h2>
+    <ul>
+        <li><strong>Local Command Tests:</strong> Run <code>/serve docs</code> inside <code>rogue-savvy</code> and verify it starts an HTTP server on loopback, correctly identifies slug <code>rogue-savvy/docs</code>, writes to <code>/etc/nginx/serve-ports.map</code>, and prints the public URL.</li>
+        <li><strong>NGINX Compilation Tests:</strong> Validate NGINX configuration using <code>sudo nginx -t</code> to verify mapping directives and dynamic regex patterns compile without error.</li>
+        <li><strong>Access Gating Verification:</strong>
+            <ul>
+                <li>Authorized user matching slug (e.g., <code>rogue-client@gmail.com</code> accessing <code>/preview/rogue-savvy</code>): HTTP 200.</li>
+                <li>Authorized user with different slug (e.g., <code>client-a@gmail.com</code> accessing <code>/preview/rogue-savvy</code>): HTTP 403 Forbidden.</li>
+                <li>Unmapped user (e.g., <code>stranger@gmail.com</code>): HTTP 403 Forbidden.</li>
+                <li>Company administrator (e.g., <code>david@princess-pi.dev</code>): HTTP 200 for all paths.</li>
+            </ul>
+        </li>
+        <li><strong>Live Reload & Asset Resolving Verification:</strong> Load a page via the preview URL, check that assets (images, CSS, JS) and EventSource hot-reload connection resolve correctly.</li>
+    </ul>
+</body>
+</html>

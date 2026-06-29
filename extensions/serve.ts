@@ -12,8 +12,9 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
-import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
+import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, findPidByPort, killProcess } from "./lib/serve/process.js";
+import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "./lib/serve/nginx.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { updateWidget, shortenPath, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
 
@@ -23,42 +24,7 @@ let isWidgetVisible = true;
 // Active instance tracking to self-prune leaked event bus listeners across reloads
 let activeInstanceId = "";
 
-/**
- * Ensures that self-signed SSL/TLS certificates exist in the user's home directory.
- * If they do not exist, they are generated securely using OpenSSL.
- */
-function getOrCreateCertificates(ctx: any): { cert: string; key: string } {
-	const certsDir = path.join(os.homedir(), ".pi-certs");
-	const certPath = path.join(certsDir, "cert.pem");
-	const keyPath = path.join(certsDir, "key.pem");
-
-	if (!fs.existsSync(certsDir)) {
-		try {
-			fs.mkdirSync(certsDir, { recursive: true, mode: 0o700 });
-		} catch (err) {
-			ctx.ui.notify(`⚠️ Failed to create directory "${certsDir}": ${err}`, "error");
-		}
-	}
-
-	if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
-		ctx.ui.notify("🔑 Generating persistent self-signed SSL certificates in ~/.pi-certs/...", "info");
-		try {
-			execSync(
-				`openssl req -newkey rsa:2048 -new -nodes -x509 -days 3650 -keyout "${keyPath}" -out "${certPath}" -subj "/CN=localhost"`,
-				{ stdio: "ignore" }
-			);
-			// Restrict file permissions for security
-			try {
-				fs.chmodSync(keyPath, 0o600);
-				fs.chmodSync(certPath, 0o644);
-			} catch (_) {}
-		} catch (err) {
-			ctx.ui.notify(`⚠️ Failed to generate SSL certificates with openssl: ${err}`, "error");
-		}
-	}
-
-	return { cert: certPath, key: keyPath };
-}
+// No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
 export default function serveExtension(pi: ExtensionAPI) {
 	const myInstanceId = Math.random().toString(36).substring(2, 11);
@@ -198,15 +164,17 @@ export default function serveExtension(pi: ExtensionAPI) {
 			}
 
 			for (const server of targetsToKill) {
-				const statusBefore = await checkServerStatus(server.url);
+				const statusBefore = await checkServerStatus(server.localUrl || server.url);
 				const pid = await findPidByPort(server.port);
 				if (pid) killProcess(pid);
-				const statusAfter = await checkServerStatus(server.url);
+				const statusAfter = await checkServerStatus(server.localUrl || server.url);
 
 				killedList.push({
 					port: server.port,
 					dir: server.dir,
 					url: server.url,
+					localUrl: server.localUrl,
+					clientSlug: server.clientSlug,
 					title: server.title,
 					statusBefore,
 					statusAfter
@@ -224,16 +192,18 @@ export default function serveExtension(pi: ExtensionAPI) {
 				});
 
 				if (matchedServer) {
-					const statusBefore = await checkServerStatus(matchedServer.url);
+					const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
 					const pid = await findPidByPort(matchedServer.port);
 					if (pid) killProcess(pid);
 
-					const statusAfter = await checkServerStatus(matchedServer.url);
+					const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
 
 					killedList.push({
 						port: matchedServer.port,
 						dir: matchedServer.dir,
 						url: matchedServer.url,
+						localUrl: matchedServer.localUrl,
+						clientSlug: matchedServer.clientSlug,
 						title: matchedServer.title,
 						statusBefore,
 						statusAfter
@@ -247,6 +217,25 @@ export default function serveExtension(pi: ExtensionAPI) {
 		if (killedList.length === 0) {
 			ctx.ui.notify("No servers were terminated.", "warning");
 			return;
+		}
+
+		for (const killed of killedList) {
+			if (killed.clientSlug) {
+				try {
+					updateNginxPort(killed.clientSlug, null);
+				} catch (err: any) {
+					ctx.ui.notify(`⚠️ Map Cleanup Error for ${killed.clientSlug}: ${err.message}`, "error");
+				}
+			}
+		}
+
+		if (killedList.length > 0) {
+			const reloadErr = reloadNginx();
+			if (reloadErr) {
+				ctx.ui.notify(`⚠️ Cleaned maps, but NGINX reload failed.\nError: ${reloadErr}`, "warning");
+			} else {
+				ctx.ui.notify(`✅ Cleaned up routing entries and reloaded NGINX.`, "info");
+			}
 		}
 
 		const remainingServers = await discoverServers();
@@ -305,7 +294,16 @@ export default function serveExtension(pi: ExtensionAPI) {
 			}
 
 			const port = startPort++;
-			const { cert, key } = getOrCreateCertificates(ctx);
+
+			// Secure Dynamic Gating Validation (.serve-acl file must exist)
+			let emails: string[];
+			try {
+				emails = parseAclFile(targetDir);
+			} catch (err: any) {
+				ctx.ui.notify(`⚠️ Failed to start server for "${rawDir}": ${err.message}`, "error");
+				continue;
+			}
+			const clientSlug = getClientSlug(targetDir);
 
 			const __filename = fileURLToPath(import.meta.url);
 			const __dirname = path.dirname(__filename);
@@ -316,17 +314,12 @@ export default function serveExtension(pi: ExtensionAPI) {
 				"--",
 				"http-server",
 				targetDir,
-				"-S",
-				"-C", cert,
-				"-K", key,
 				"-p", String(port),
 				"-a", "127.0.0.1"
 			] : [
 				runnerPath,
 				targetDir,
-				"-S",
-				"-C", cert,
-				"-K", key,
+				"--slug", clientSlug,
 				"-p", String(port),
 				"-a", "127.0.0.1"
 			];
@@ -337,6 +330,20 @@ export default function serveExtension(pi: ExtensionAPI) {
 			});
 
 			serverProcess.unref();
+
+			// Write Dynamic Maps and trigger NGINX reload
+			try {
+				updateNginxAcls(clientSlug, emails);
+				updateNginxPort(clientSlug, port);
+				const reloadErr = reloadNginx();
+				if (reloadErr) {
+					ctx.ui.notify(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`, "warning");
+				} else {
+					ctx.ui.notify(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/preview/${clientSlug}/`, "info");
+				}
+			} catch (err: any) {
+				ctx.ui.notify(`⚠️ Dynamic Map/ACL Error: ${err.message}`, "error");
+			}
 		}
 
 		await new Promise(r => setTimeout(r, 1200));

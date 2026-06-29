@@ -2,8 +2,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as https from "node:https";
 import * as http from "node:http";
+import * as os from "node:os";
 
 // --- Argument Parsing ---
 const args = process.argv.slice(2);
@@ -17,26 +17,17 @@ for (let i = 0; i < args.length; i++) {
 	}
 }
 
-// Find port, cert, and key
+// Find port and slug
 let port = 8080;
-let certPath = "";
-let keyPath = "";
+let clientSlug = "";
 
 for (let i = 0; i < args.length; i++) {
 	const arg = args[i];
 	if (arg === "-p" || arg === "--port") {
 		port = parseInt(args[i + 1], 10);
-	} else if (arg === "-C" || arg === "--cert") {
-		certPath = args[i + 1];
-	} else if (arg === "-K" || arg === "--key") {
-		keyPath = args[i + 1];
+	} else if (arg === "--slug") {
+		clientSlug = args[i + 1];
 	}
-}
-
-// Ensure SSL credentials exist
-if (!certPath || !keyPath || !fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
-	console.error("Error: SSL certificate or key path is missing or invalid.");
-	process.exit(1);
 }
 
 const MIME_TYPES = {
@@ -205,7 +196,7 @@ const INJECTION_SCRIPT = `
 if (!window.__live_reload_injected) {
 	window.__live_reload_injected = true;
 	(function() {
-		const es = new EventSource('/__live-reload');
+		const es = new EventSource('__live-reload');
 		es.onmessage = (e) => {
 			const data = JSON.parse(e.data);
 			if (data.type === 'css') {
@@ -313,7 +304,7 @@ function generateDirectoryIndex(dirPath, requestPath) {
 // --- Server Lifecycle Setup ---
 
 // Ensure log directory exists
-const logDir = path.join(path.dirname(certPath), "logs");
+const logDir = path.join(os.homedir(), ".config", "pi-serve", "logs");
 if (!fs.existsSync(logDir)) {
 	try {
 		fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
@@ -381,12 +372,7 @@ function logAccess(req, res, timestamp) {
 
 scanDirectoryForDependencies(targetDir);
 
-const credentials = {
-	cert: fs.readFileSync(certPath),
-	key: fs.readFileSync(keyPath)
-};
-
-const server = https.createServer(credentials, (req, res) => {
+const server = http.createServer((req, res) => {
 	const requestStartTime = Date.now();
 	
 	// Intercept res.end to ensure we log after status code is definitively set
@@ -399,8 +385,10 @@ const server = https.createServer(credentials, (req, res) => {
 	};
 	const reqUrl = req.url || "/";
 
+	const cleanUrl = reqUrl.split("?")[0];
+
 	// SSE Endpoint
-	if (reqUrl === "/__live-reload") {
+	if (cleanUrl.endsWith("/__live-reload")) {
 		res.writeHead(200, {
 			"Content-Type": "text/event-stream",
 			"Cache-Control": "no-cache",
@@ -487,7 +475,9 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 	if (!filename) return;
 	const fullPath = path.join(targetDir, filename);
 
-	if (filename.startsWith(".") || filename.includes("/.") || filename.includes("node_modules")) {
+	if ((filename.startsWith(".") && filename !== ".serve-acl") || 
+	    (filename.includes("/.") && !filename.endsWith("/.serve-acl")) || 
+	    filename.includes("node_modules")) {
 		return;
 	}
 
@@ -497,15 +487,22 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 		clearTimeout(debounceTimeout);
 	}
 
-	debounceTimeout = setTimeout(() => {
+	debounceTimeout = setTimeout(async () => {
 		const filesToProcess = Array.from(changedFiles);
 		changedFiles.clear();
 
 		let shouldReload = false;
 		const cssChanges = new Set();
+		let aclChanged = false;
 
 		for (const changedPath of filesToProcess) {
 			const ext = path.extname(changedPath).toLowerCase();
+			const base = path.basename(changedPath);
+
+			if (base === ".serve-acl") {
+				aclChanged = true;
+				continue;
+			}
 
 			if (fs.existsSync(changedPath)) {
 				if (ext === ".js" || ext === ".html" || ext === ".mjs") {
@@ -522,6 +519,17 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 				if (isFileConnectedToHtml(changedPath)) {
 					shouldReload = true;
 				}
+			}
+		}
+
+		if (aclChanged && clientSlug) {
+			try {
+				const { parseAclFile, updateNginxAcls, reloadNginx } = await import("./nginx.js");
+				const emails = parseAclFile(targetDir);
+				updateNginxAcls(clientSlug, emails);
+				reloadNginx();
+			} catch (err) {
+				console.error(`⚠️ [Live ACL Error] Failed to update ACL dynamically: ${err.message}`);
 			}
 		}
 

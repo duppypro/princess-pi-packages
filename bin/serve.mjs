@@ -1,31 +1,52 @@
 #!/usr/bin/env node
 
 // bin/serve.ts
-import * as fs from "node:fs";
-import * as path3 from "node:path";
-import * as os from "node:os";
+import * as fs2 from "node:fs";
+import * as path5 from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 // extensions/lib/serve/domain.ts
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 function isInsideRepo(dir, cwd = process.cwd()) {
   const rel = path.relative(cwd, dir);
   return !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+function getClientSlug(targetDir, cwd = process.cwd()) {
+  const absoluteTarget = path.resolve(cwd, targetDir);
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
+      cwd: absoluteTarget,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    const repoName = path.basename(gitRoot);
+    const relToGitRoot = path.relative(gitRoot, absoluteTarget);
+    if (!relToGitRoot) {
+      return repoName;
+    } else {
+      const cleanRel = relToGitRoot.replace(/\\/g, "/");
+      return `${repoName}/${cleanRel}`;
+    }
+  } catch (e) {
+    return path.basename(absoluteTarget);
+  }
 }
 
 // extensions/lib/serve/process.ts
 import * as https from "node:https";
 import * as http from "node:http";
+import * as path2 from "node:path";
 import { exec } from "node:child_process";
 async function resolveIp() {
   return "127.0.0.1";
 }
 function discoverServers() {
-  return new Promise((resolve2) => {
+  return new Promise((resolve4) => {
     exec("ps aux | grep -E 'http-server|run-live-server' | grep -v grep", async (error, stdout) => {
       if (error || !stdout) {
-        resolve2([]);
+        resolve4([]);
         return;
       }
       const servers = [];
@@ -53,33 +74,34 @@ function discoverServers() {
             break;
           }
         }
-        const isSsl = line.includes(" -S") || line.includes(" --ssl");
         const isLive = line.includes("run-live-server");
-        const protocol = isSsl ? "https" : "http";
-        const url = `${protocol}://${ip}:${port}`;
-        let title = isSsl ? "Secure HTTPS Page" : "Index Page";
+        const localUrl = `http://127.0.0.1:${port}`;
+        const absoluteDir = path2.resolve(process.cwd(), dir);
+        const clientSlug = getClientSlug(absoluteDir);
+        const url = `https://princess-pi.dev/preview/${clientSlug}/`;
+        let title = "Index Page";
         try {
-          title = await fetchPageTitle(url);
+          title = await fetchPageTitle(localUrl);
         } catch (e) {
         }
-        servers.push({ port, dir, url, title, isLive });
+        servers.push({ port, dir, url, localUrl, title, isLive, clientSlug });
       }
-      resolve2(servers);
+      resolve4(servers);
     });
   });
 }
 function findPidByPort(port) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve4) => {
     exec(`lsof -t -i :${port}`, (error, stdout) => {
       if (error || !stdout) {
-        resolve2(null);
+        resolve4(null);
         return;
       }
       const pids = stdout.split("\n").map((p) => p.trim()).filter((p) => p.length > 0);
       if (pids.length > 0) {
-        resolve2(parseInt(pids[0], 10));
+        resolve4(parseInt(pids[0], 10));
       } else {
-        resolve2(null);
+        resolve4(null);
       }
     });
   });
@@ -92,7 +114,7 @@ function killProcess(pid) {
   }
 }
 function fetchPageTitle(url) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve4) => {
     const isSsl = url.startsWith("https");
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : void 0;
@@ -104,40 +126,147 @@ function fetchPageTitle(url) {
       res.on("end", () => {
         const match = data.match(/<title>([^<]+)<\/title>/i);
         if (match && match[1]) {
-          resolve2(match[1].trim());
+          resolve4(match[1].trim());
         } else {
-          resolve2(isSsl ? "Secure HTTPS Page" : "Web Page");
+          resolve4(isSsl ? "Secure HTTPS Page" : "Web Page");
         }
       });
     }).on("error", () => {
-      resolve2(isSsl ? "Secure HTTPS Page" : "Web Page");
+      resolve4(isSsl ? "Secure HTTPS Page" : "Web Page");
     });
   });
 }
 function checkServerStatus(url) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve4) => {
     const isSsl = url.startsWith("https");
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : void 0;
     const req = getter(url, { agent, timeout: 400 }, (res) => {
-      resolve2(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
+      resolve4(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
     });
     req.on("error", (err) => {
       if (err.code === "ECONNREFUSED") {
-        resolve2("[-] Offline (Connection Refused)");
+        resolve4("[-] Offline (Connection Refused)");
       } else {
-        resolve2(`[-] Offline (${err.code || err.message})`);
+        resolve4(`[-] Offline (${err.code || err.message})`);
       }
     });
   });
 }
 
+// extensions/lib/serve/nginx.js
+import * as fs from "node:fs";
+import * as path3 from "node:path";
+import { execSync as execSync2 } from "node:child_process";
+var ACL_MAP_PATH = "/etc/nginx/serve-acls.map";
+var PORTS_MAP_PATH = "/etc/nginx/serve-ports.map";
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function parseAclFile(targetDir) {
+  const aclPath = path3.join(targetDir, ".serve-acl");
+  if (!fs.existsSync(aclPath)) {
+    throw new Error(`A local .serve-acl file is required to serve directory "${path3.basename(targetDir)}" securely.`);
+  }
+  const content = fs.readFileSync(aclPath, "utf8");
+  const lines = content.split(/\r?\n/);
+  const emails = [];
+  for (const line of lines) {
+    let cleaned = line;
+    const hashIdx = line.indexOf("#");
+    if (hashIdx !== -1) {
+      cleaned = line.substring(0, hashIdx);
+    }
+    cleaned = cleaned.trim();
+    if (!cleaned) continue;
+    if (cleaned.includes("@") && cleaned.includes(".")) {
+      emails.push(cleaned);
+    } else {
+      throw new Error(`Invalid email address found in .serve-acl: "${cleaned}"`);
+    }
+  }
+  if (emails.length === 0) {
+    throw new Error(`The .serve-acl file must contain at least one valid email address.`);
+  }
+  return emails;
+}
+function updateNginxAcls(clientSlug, emails) {
+  let content = "";
+  if (fs.existsSync(ACL_MAP_PATH)) {
+    try {
+      content = fs.readFileSync(ACL_MAP_PATH, "utf8");
+    } catch (err) {
+      console.warn(`\u26A0\uFE0F Warning: Could not read ${ACL_MAP_PATH}: ${err}`);
+      return;
+    }
+  }
+  const lines = content.split(/\r?\n/);
+  const updatedLines = [];
+  const escapedSlug = escapeRegExp(clientSlug);
+  const slugMatcher = new RegExp(`\\s+['"]?${escapedSlug}['"]?\\s*;\\s*(\\s*#.*)?$`);
+  for (const line of lines) {
+    if (line.trim() && !slugMatcher.test(line)) {
+      updatedLines.push(line);
+    }
+  }
+  if (emails.length > 0) {
+    updatedLines.push(`# --- Previews for ${clientSlug} ---`);
+    for (const email of emails) {
+      updatedLines.push(`"${email}" "${clientSlug}";`);
+    }
+  }
+  try {
+    fs.writeFileSync(ACL_MAP_PATH, updatedLines.join("\n") + "\n", { mode: 436 });
+  } catch (err) {
+    throw new Error(`Failed to write to ${ACL_MAP_PATH}: ${err}. Ensure the file is writable by the princess-pi group.`);
+  }
+}
+function updateNginxPort(clientSlug, port) {
+  let content = "";
+  if (fs.existsSync(PORTS_MAP_PATH)) {
+    try {
+      content = fs.readFileSync(PORTS_MAP_PATH, "utf8");
+    } catch (err) {
+      console.warn(`\u26A0\uFE0F Warning: Could not read ${PORTS_MAP_PATH}: ${err}`);
+      return;
+    }
+  }
+  const lines = content.split(/\r?\n/);
+  const updatedLines = [];
+  const escapedSlug = escapeRegExp(clientSlug);
+  const portMatcher = new RegExp(`^\\s*['"]?${escapedSlug}['"]?\\s+\\d+\\s*;`);
+  for (const line of lines) {
+    if (line.trim() && !portMatcher.test(line)) {
+      updatedLines.push(line);
+    }
+  }
+  if (port !== null) {
+    updatedLines.push(`"${clientSlug}" ${port};`);
+  }
+  try {
+    fs.writeFileSync(PORTS_MAP_PATH, updatedLines.join("\n") + "\n", { mode: 436 });
+  } catch (err) {
+    throw new Error(`Failed to write to ${PORTS_MAP_PATH}: ${err}. Ensure the file is writable by the princess-pi group.`);
+  }
+  if (port === null) {
+    updateNginxAcls(clientSlug, []);
+  }
+}
+function reloadNginx() {
+  try {
+    execSync2("sudo nginx -s reload", { stdio: "ignore" });
+    return null;
+  } catch (err) {
+    return err.message || String(err);
+  }
+}
+
 // extensions/lib/serve/tui.ts
-import * as path2 from "node:path";
+import * as path4 from "node:path";
 function shortenPath(rawPath, cwd = process.cwd()) {
   let rel = rawPath;
-  if (path2.isAbsolute(rawPath)) {
-    rel = path2.relative(cwd, rawPath) || rawPath;
+  if (path4.isAbsolute(rawPath)) {
+    rel = path4.relative(cwd, rawPath) || rawPath;
   }
   if (rel.length > 25) {
     rel = "..." + rel.slice(-22);
@@ -239,24 +368,6 @@ ${borderStyle}\u2514` + "\u2500".repeat(58) + `\u2518\x1B[0m`
 }
 
 // bin/serve.ts
-function getOrCreateCertificates() {
-  const certsDir = path3.join(os.homedir(), ".pi-certs");
-  const certPath = path3.join(certsDir, "cert.pem");
-  const keyPath = path3.join(certsDir, "key.pem");
-  if (!fs.existsSync(certsDir)) {
-    fs.mkdirSync(certsDir, { recursive: true, mode: 448 });
-  }
-  if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
-    console.log("\u{1F511} Generating persistent self-signed SSL certificates in ~/.pi-certs/...");
-    execSync(
-      `openssl req -newkey rsa:2048 -new -nodes -x509 -days 3650 -keyout "${keyPath}" -out "${certPath}" -subj "/CN=localhost"`,
-      { stdio: "ignore" }
-    );
-    fs.chmodSync(keyPath, 384);
-    fs.chmodSync(certPath, 420);
-  }
-  return { cert: certPath, key: keyPath };
-}
 async function handleLog() {
   const activeServers = await discoverServers();
   const repoServers = activeServers.filter((s) => isInsideRepo(s.dir, process.cwd()));
@@ -274,8 +385,8 @@ ${lines.join("\n")}`);
 }
 function handleHelp() {
   try {
-    const manifestPath = path3.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path5.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let helpText = `${manifest.name} - ${manifest.tagline}
 
@@ -314,11 +425,11 @@ async function handleKill(trimmedArgs) {
       return;
     }
     for (const server of targetsToKill) {
-      const statusBefore = await checkServerStatus(server.url);
+      const statusBefore = await checkServerStatus(server.localUrl || server.url);
       const pid = await findPidByPort(server.port);
       if (pid) killProcess(pid);
-      const statusAfter = await checkServerStatus(server.url);
-      killedList.push({ port: server.port, dir: server.dir, url: server.url, title: server.title, statusBefore, statusAfter });
+      const statusAfter = await checkServerStatus(server.localUrl || server.url);
+      killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, clientSlug: server.clientSlug, title: server.title, statusBefore, statusAfter });
     }
   } else {
     for (const target of targets) {
@@ -327,11 +438,11 @@ async function handleKill(trimmedArgs) {
         (s) => isPort ? s.port === parseInt(target, 10) : s.dir.replace(/\/$/, "") === target.replace(/\/$/, "") || shortenPath(s.dir, process.cwd()) === target.replace(/\/$/, "")
       );
       if (matchedServer) {
-        const statusBefore = await checkServerStatus(matchedServer.url);
+        const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
         const pid = await findPidByPort(matchedServer.port);
         if (pid) killProcess(pid);
-        const statusAfter = await checkServerStatus(matchedServer.url);
-        killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, title: matchedServer.title, statusBefore, statusAfter });
+        const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
+        killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, clientSlug: matchedServer.clientSlug, title: matchedServer.title, statusBefore, statusAfter });
       } else {
         console.warn(`\u26A0\uFE0F Could not find any active server matching "${target}".`);
       }
@@ -340,6 +451,23 @@ async function handleKill(trimmedArgs) {
   if (killedList.length === 0) {
     console.warn("No servers were terminated.");
     return;
+  }
+  for (const killed of killedList) {
+    if (killed.clientSlug) {
+      try {
+        updateNginxPort(killed.clientSlug, null);
+      } catch (err) {
+        console.error(`\u26A0\uFE0F Map Cleanup Error for ${killed.clientSlug}: ${err.message}`);
+      }
+    }
+  }
+  if (killedList.length > 0) {
+    const reloadErr = reloadNginx();
+    if (reloadErr) {
+      console.warn(`\u26A0\uFE0F Cleaned maps, but NGINX reload failed. Error: ${reloadErr}`);
+    } else {
+      console.log(`\u2705 Cleaned up routing entries and reloaded NGINX.`);
+    }
   }
   console.log(buildKilledSummary(killedList, process.cwd()));
 }
@@ -351,33 +479,52 @@ async function handleStart(trimmedArgs) {
   if (dirs.length === 0) dirs = ["public", "docs"];
   let startPort = 8080;
   for (const rawDir of dirs) {
-    const targetDir = path3.resolve(process.cwd(), rawDir);
-    if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
+    const targetDir = path5.resolve(process.cwd(), rawDir);
+    if (!fs2.existsSync(targetDir) || !fs2.statSync(targetDir).isDirectory()) {
       console.warn(`\u26A0\uFE0F Warning: Directory "${rawDir}" does not exist. Skipping.`);
       continue;
     }
     const activeServers = await discoverServers();
     const hasMatchingTypeServer = activeServers.some(
-      (s) => path3.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic
+      (s) => path5.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic
     );
     if (hasMatchingTypeServer) {
       console.log(`\u2139\uFE0F Note: Directory "${rawDir}" is already being served ${isStatic ? "statically" : "live-reloading"}. Skipping.`);
       continue;
     }
-    const envPath = path3.join(targetDir, ".env");
-    if (fs.existsSync(envPath) && !force) {
+    const envPath = path5.join(targetDir, ".env");
+    if (fs2.existsSync(envPath) && !force) {
       console.warn(`\u26A0\uFE0F Found .env file in "${rawDir}"! Skipping (pass --force to serve anyway).`);
       continue;
     }
     while (activeServers.some((s) => s.port === startPort)) startPort++;
     const port = startPort++;
-    const { cert, key } = getOrCreateCertificates();
-    const __dirname = path3.dirname(fileURLToPath(import.meta.url));
-    const runnerPath = path3.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
+    let emails;
+    try {
+      emails = parseAclFile(targetDir);
+    } catch (err) {
+      console.error(`\u26A0\uFE0F Failed to start server for "${rawDir}": ${err.message}`);
+      continue;
+    }
+    const clientSlug = getClientSlug(targetDir);
+    const __dirname = path5.dirname(fileURLToPath(import.meta.url));
+    const runnerPath = path5.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
     const spawnCmd = isStatic ? "npx" : "node";
-    const spawnArgs = isStatic ? ["--", "http-server", targetDir, "-S", "-C", cert, "-K", key, "-p", String(port), "-a", "0.0.0.0"] : [runnerPath, targetDir, "-S", "-C", cert, "-K", key, "-p", String(port), "-a", "0.0.0.0"];
+    const spawnArgs = isStatic ? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"] : [runnerPath, targetDir, "--slug", clientSlug, "-p", String(port), "-a", "127.0.0.1"];
     const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
     serverProcess.unref();
+    try {
+      updateNginxAcls(clientSlug, emails);
+      updateNginxPort(clientSlug, port);
+      const reloadErr = reloadNginx();
+      if (reloadErr) {
+        console.warn(`\u26A0\uFE0F Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`);
+      } else {
+        console.log(`\u2705 NGINX reloaded. Routing mapped for https://princess-pi.dev/preview/${clientSlug}/`);
+      }
+    } catch (err) {
+      console.error(`\u26A0\uFE0F Dynamic Map/ACL Error: ${err.message}`);
+    }
   }
   await new Promise((r) => setTimeout(r, 1200));
   const allActiveServers = await discoverServers();

@@ -13,31 +13,12 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
-import { isInsideRepo, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
+import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, findPidByPort, killProcess } from "../extensions/lib/serve/process.js";
+import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "../extensions/lib/serve/nginx.js";
 import { shortenPath, buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
 
-function getOrCreateCertificates(): { cert: string; key: string } {
-	const certsDir = path.join(os.homedir(), ".pi-certs");
-	const certPath = path.join(certsDir, "cert.pem");
-	const keyPath = path.join(certsDir, "key.pem");
-
-	if (!fs.existsSync(certsDir)) {
-		fs.mkdirSync(certsDir, { recursive: true, mode: 0o700 });
-	}
-
-	if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
-		console.log("🔑 Generating persistent self-signed SSL certificates in ~/.pi-certs/...");
-		execSync(
-			`openssl req -newkey rsa:2048 -new -nodes -x509 -days 3650 -keyout "${keyPath}" -out "${certPath}" -subj "/CN=localhost"`,
-			{ stdio: "ignore" }
-		);
-		fs.chmodSync(keyPath, 0o600);
-		fs.chmodSync(certPath, 0o644);
-	}
-
-	return { cert: certPath, key: keyPath };
-}
+// No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
 async function handleLog(): Promise<void> {
 	const activeServers = await discoverServers();
@@ -92,11 +73,11 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 			return;
 		}
 		for (const server of targetsToKill) {
-			const statusBefore = await checkServerStatus(server.url);
+			const statusBefore = await checkServerStatus(server.localUrl || server.url);
 			const pid = await findPidByPort(server.port);
 			if (pid) killProcess(pid);
-			const statusAfter = await checkServerStatus(server.url);
-			killedList.push({ port: server.port, dir: server.dir, url: server.url, title: server.title, statusBefore, statusAfter });
+			const statusAfter = await checkServerStatus(server.localUrl || server.url);
+			killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, clientSlug: server.clientSlug, title: server.title, statusBefore, statusAfter });
 		}
 	} else {
 		for (const target of targets) {
@@ -107,11 +88,11 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 					: s.dir.replace(/\/$/, "") === target.replace(/\/$/, "") || shortenPath(s.dir, process.cwd()) === target.replace(/\/$/, "")
 			);
 			if (matchedServer) {
-				const statusBefore = await checkServerStatus(matchedServer.url);
+				const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
 				const pid = await findPidByPort(matchedServer.port);
 				if (pid) killProcess(pid);
-				const statusAfter = await checkServerStatus(matchedServer.url);
-				killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, title: matchedServer.title, statusBefore, statusAfter });
+				const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
+				killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, clientSlug: matchedServer.clientSlug, title: matchedServer.title, statusBefore, statusAfter });
 			} else {
 				console.warn(`⚠️ Could not find any active server matching "${target}".`);
 			}
@@ -121,6 +102,25 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 	if (killedList.length === 0) {
 		console.warn("No servers were terminated.");
 		return;
+	}
+
+	for (const killed of killedList) {
+		if (killed.clientSlug) {
+			try {
+				updateNginxPort(killed.clientSlug, null);
+			} catch (err: any) {
+				console.error(`⚠️ Map Cleanup Error for ${killed.clientSlug}: ${err.message}`);
+			}
+		}
+	}
+
+	if (killedList.length > 0) {
+		const reloadErr = reloadNginx();
+		if (reloadErr) {
+			console.warn(`⚠️ Cleaned maps, but NGINX reload failed. Error: ${reloadErr}`);
+		} else {
+			console.log(`✅ Cleaned up routing entries and reloaded NGINX.`);
+		}
 	}
 	console.log(buildKilledSummary(killedList, process.cwd()));
 }
@@ -160,18 +160,41 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
-		const { cert, key } = getOrCreateCertificates();
+
+		// Secure Dynamic Gating Validation (.serve-acl file must exist)
+		let emails: string[];
+		try {
+			emails = parseAclFile(targetDir);
+		} catch (err: any) {
+			console.error(`⚠️ Failed to start server for "${rawDir}": ${err.message}`);
+			continue;
+		}
+		const clientSlug = getClientSlug(targetDir);
 
 		const __dirname = path.dirname(fileURLToPath(import.meta.url));
 		const runnerPath = path.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
 
 		const spawnCmd = isStatic ? "npx" : "node";
 		const spawnArgs = isStatic
-			? ["--", "http-server", targetDir, "-S", "-C", cert, "-K", key, "-p", String(port), "-a", "0.0.0.0"]
-			: [runnerPath, targetDir, "-S", "-C", cert, "-K", key, "-p", String(port), "-a", "0.0.0.0"];
+			? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"]
+			: [runnerPath, targetDir, "--slug", clientSlug, "-p", String(port), "-a", "127.0.0.1"];
 
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
+
+		// Write Dynamic Maps and trigger NGINX reload
+		try {
+			updateNginxAcls(clientSlug, emails);
+			updateNginxPort(clientSlug, port);
+			const reloadErr = reloadNginx();
+			if (reloadErr) {
+				console.warn(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`);
+			} else {
+				console.log(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/preview/${clientSlug}/`);
+			}
+		} catch (err: any) {
+			console.error(`⚠️ Dynamic Map/ACL Error: ${err.message}`);
+		}
 	}
 
 	await new Promise((r) => setTimeout(r, 1200));
