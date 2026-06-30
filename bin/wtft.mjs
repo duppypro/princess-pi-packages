@@ -8,7 +8,18 @@ import * as os from "node:os";
 // extensions/lib/wtft-shared.ts
 import * as path from "node:path";
 import { execSync } from "node:child_process";
-function calculateClaudeCost(model, usage) {
+function getDeepSeekPeakMultiplier(timestamp) {
+  const ts = timestamp || Date.now();
+  const d = new Date(ts);
+  const utcHour = d.getUTCHours();
+  const utcMin = d.getUTCMinutes();
+  const utcTime = utcHour * 60 + utcMin;
+  if ((utcTime >= 60 && utcTime < 240) || (utcTime >= 360 && utcTime < 600)) {
+    return 2;
+  }
+  return 1;
+}
+function calculateClaudeCost(model, usage, timestamp) {
   if (!usage) return 0;
   let inputPrice = 3;
   let outputPrice = 15;
@@ -16,12 +27,13 @@ function calculateClaudeCost(model, usage) {
   let cacheReadPrice = 0.3;
   const m = (model || "").toLowerCase();
   if (m.includes("deepseek")) {
+    const peak = getDeepSeekPeakMultiplier(timestamp);
     if (m.includes("v4-pro")) {
-      inputPrice = 0.435;
-      outputPrice = 0.87;
+      inputPrice = 0.435 * peak;
+      outputPrice = 0.87 * peak;
     } else {
-      inputPrice = 0.14;
-      outputPrice = 0.28;
+      inputPrice = 0.14 * peak;
+      outputPrice = 0.28 * peak;
     }
     cacheWritePrice = 0;
     cacheReadPrice = 0;
@@ -82,7 +94,7 @@ function parseEntryToInteraction(entry) {
     if (assistantMsg.usage?.cost?.total !== void 0) {
       cost = assistantMsg.usage.cost.total;
     } else if (assistantMsg.model && assistantMsg.usage) {
-      cost = calculateClaudeCost(assistantMsg.model, assistantMsg.usage);
+      cost = calculateClaudeCost(assistantMsg.model, assistantMsg.usage, timestamp);
     }
     let timestampStr = assistantMsg.timestamp || entry.timestamp;
     let timestamp = 0;
