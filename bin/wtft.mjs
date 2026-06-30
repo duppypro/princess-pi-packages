@@ -15,7 +15,17 @@ function calculateClaudeCost(model, usage) {
   let cacheWritePrice = 3.75;
   let cacheReadPrice = 0.3;
   const m = (model || "").toLowerCase();
-  if (m.includes("haiku")) {
+  if (m.includes("deepseek")) {
+    if (m.includes("v4-pro")) {
+      inputPrice = 0.435;
+      outputPrice = 0.87;
+    } else {
+      inputPrice = 0.14;
+      outputPrice = 0.28;
+    }
+    cacheWritePrice = 0;
+    cacheReadPrice = 0;
+  } else if (m.includes("haiku")) {
     inputPrice = 0.8;
     outputPrice = 4;
     cacheWritePrice = 1;
