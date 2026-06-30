@@ -481,7 +481,7 @@ function getTerminalWidth(isWidget = false, disabledEmoji = false) {
     } catch (e) {
     }
   }
-  return isWidget ? disabledEmoji ? width - 2 : width - 4 : width;
+  return isWidget ? width - 2 : width;
 }
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
@@ -603,7 +603,22 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     if (showTicks2 && i > 0 && bin.dateStr !== displayedBins[i - 1].dateStr) {
       const labelDay = formatMmmDdStr(bin.dateStr);
       const dayChangeText = `\u2500\u2500 ${labelDay} `;
-      const dividerLine = dayChangeText + "\u2500".repeat(Math.max(0, finalWidth - 3 - dayChangeText.length));
+      const dividerLen = Math.max(0, finalWidth - 3 - dayChangeText.length);
+      const dividerChars = Array.from({ length: dividerLen }, () => "\u2500");
+      const tickPositions = [
+        prefixWidth,
+        prefixWidth + Math.floor(maxBarWidth / 4),
+        prefixWidth + Math.floor(maxBarWidth / 2),
+        prefixWidth + Math.floor(maxBarWidth * 3 / 4),
+        prefixWidth + maxBarWidth - 1
+      ];
+      for (const t of tickPositions) {
+        const idx = t - dayChangeText.length;
+        if (idx >= 0 && idx < dividerChars.length) {
+          dividerChars[idx] = "\u253F";
+        }
+      }
+      const dividerLine = dayChangeText + dividerChars.join("");
       widgetLines.push(`\x1B[90m${dividerLine}\x1B[0m`);
     }
     let barStr = "";
