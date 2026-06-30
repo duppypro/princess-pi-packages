@@ -223,27 +223,33 @@ function createIssueAutocompleteProvider(
 		},
 
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-			const currentLine = lines[cursorLine] ?? "";
-			const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
-			const afterCursor = currentLine.slice(cursorCol);
+			// Only intercept completions that are clearly our GitHub issue or repo completions
+			if (prefix.includes("#") && (item.value.endsWith("#") || item.value.includes('"'))) {
+				const currentLine = lines[cursorLine] ?? "";
+				const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+				const afterCursor = currentLine.slice(cursorCol);
 
-			// For Mode A (repo selection): item.value ends with '#'
-			// For Mode B (issue selection): item.value ends with '"'
-			const isRepoSelection = item.value.endsWith("#");
-			
-			// If it's an issue selection, we append a space so the user can keep typing freely.
-			// If it's a repo selection, we DO NOT append a space, so the cursor is right after `#` ready for digits.
-			const suffix = isRepoSelection ? "" : " ";
-			
-			const newLine = beforePrefix + item.value + suffix + afterCursor;
-			const newLines = [...lines];
-			newLines[cursorLine] = newLine;
+				// For Mode A (repo selection): item.value ends with '#'
+				// For Mode B (issue selection): item.value ends with '"'
+				const isRepoSelection = item.value.endsWith("#");
+				
+				// If it's an issue selection, we append a space so the user can keep typing freely.
+				// If it's a repo selection, we DO NOT append a space, so the cursor is right after `#` ready for digits.
+				const suffix = isRepoSelection ? "" : " ";
+				
+				const newLine = beforePrefix + item.value + suffix + afterCursor;
+				const newLines = [...lines];
+				newLines[cursorLine] = newLine;
 
-			return {
-				lines: newLines,
-				cursorLine,
-				cursorCol: beforePrefix.length + item.value.length + suffix.length,
-			};
+				return {
+					lines: newLines,
+					cursorLine,
+					cursorCol: beforePrefix.length + item.value.length + suffix.length,
+				};
+			}
+
+			// Fall back to default behavior for slash commands, files, etc.
+			return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 		},
 
 		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
