@@ -140,14 +140,15 @@ function createIssueAutocompleteProvider(
 			const currentLine = lines[cursorLine] ?? "";
 			const textBeforeCursor = currentLine.slice(0, cursorCol);
 
-			// Extract token matching: optional_repo#optional_digits
-			const match = textBeforeCursor.match(/(?:^|[ \t])([a-zA-Z0-9_-]+)?#([0-9]*)$/);
+			// Extract token matching: optional_repo#optional_search
+			// e.g., "btw#123", "btw#bug", "#123", "#btw"
+			const match = textBeforeCursor.match(/(?:^|[ \t])([a-zA-Z0-9_-]+)?#([a-zA-Z0-9_-]*)$/);
 			if (!match) {
 				return current.getSuggestions(lines, cursorLine, cursorCol, options);
 			}
 
 			const repoName = match[1]; // e.g. "princess-pi-packages" or undefined
-			const digits = match[2];   // e.g. "2" or "" (if just '#' typed)
+			const afterHash = match[2]; // e.g. "2", "b", or ""
 
 			// We only trigger completions if '#' is present before cursor
 			const hasHash = textBeforeCursor.includes("#");
@@ -156,49 +157,93 @@ function createIssueAutocompleteProvider(
 			}
 
 			// ---
-			// MODE A: REPO SELECTION MODE (No digits typed yet)
+			// MODE A: EXPLICIT REPO PREFIX (e.g. `btw#2` or `btw#bug`)
 			// ---
-			if (digits === "") {
-				const items: AutocompleteItem[] = repos.map((r, index) => ({
-					value: `${r.name}#`,
-					label: `${r.name}#`,
-					description: index === 0 ? `[cwd] Current repository` : `[sibling] Sibling repository`
-				}));
+			if (repoName) {
+				const targetRepo = repos.find((r) => r.name === repoName);
+				if (!targetRepo || !targetRepo.githubRepo) {
+					return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				}
 
-				const prefix = repoName ? `${repoName}#` : "#";
+				const issues = await fetchIssuesForRepo(targetRepo);
+				if (options.signal.aborted || !issues || issues.length === 0) {
+					return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				}
+
+				const suggestions = filterIssues(issues, afterHash, targetRepo.name);
+				if (suggestions.length === 0) {
+					return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				}
+
 				return {
-					items,
-					prefix
+					items: suggestions,
+					prefix: `${repoName}#${afterHash}`,
 				};
 			}
 
 			// ---
-			// MODE B: ISSUE SELECTION MODE (Digits typed)
+			// MODE B: ROOT HASH (e.g. `#`, `#2`, `#b`)
 			// ---
-			const targetRepo = repoName ? repos.find(r => r.name === repoName) : repos[0];
-			if (!targetRepo || !targetRepo.githubRepo) {
+			const isNumeric = /^\d+$/.test(afterHash);
+			const items: AutocompleteItem[] = [];
+
+			// 1. Suggest sibling repos if they type letters or nothing (e.g. `#` or `#btw`)
+			if (afterHash === "" || !isNumeric) {
+				const matchingRepos = repos.filter((r) =>
+					r.name.toLowerCase().includes(afterHash.toLowerCase()),
+				);
+				for (let i = 0; i < matchingRepos.length; i++) {
+					const r = matchingRepos[i];
+					items.push({
+						value: `${r.name}#`,
+						label: `${r.name}#`,
+						description: r.name === repos[0]?.name ? `[cwd] Current repository` : `[sibling] Sibling repository`,
+					});
+				}
+			}
+
+			// 2. Suggest issues from CWD repo (always, fuzzy searching titles if they type letters)
+			const cwdRepo = repos[0];
+			if (cwdRepo && cwdRepo.githubRepo) {
+				const issues = await fetchIssuesForRepo(cwdRepo);
+				if (issues && issues.length > 0 && !options.signal.aborted) {
+					const issueSuggestions = filterIssues(issues, afterHash, cwdRepo.name);
+					items.push(...issueSuggestions);
+				}
+			}
+
+			if (items.length === 0) {
 				return current.getSuggestions(lines, cursorLine, cursorCol, options);
 			}
 
-			const issues = await fetchIssuesForRepo(targetRepo);
-			if (options.signal.aborted || !issues || issues.length === 0) {
-				return current.getSuggestions(lines, cursorLine, cursorCol, options);
-			}
-
-			const suggestions = filterIssues(issues, digits, targetRepo.name);
-			if (suggestions.length === 0) {
-				return current.getSuggestions(lines, cursorLine, cursorCol, options);
-			}
-
-			const prefix = repoName ? `${repoName}#${digits}` : `#${digits}`;
 			return {
-				items: suggestions,
-				prefix
+				items,
+				prefix: `#${afterHash}`,
 			};
 		},
 
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-			return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+			const currentLine = lines[cursorLine] ?? "";
+			const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+			const afterCursor = currentLine.slice(cursorCol);
+
+			// For Mode A (repo selection): item.value ends with '#'
+			// For Mode B (issue selection): item.value ends with '"'
+			const isRepoSelection = item.value.endsWith("#");
+			
+			// If it's an issue selection, we append a space so the user can keep typing freely.
+			// If it's a repo selection, we DO NOT append a space, so the cursor is right after `#` ready for digits.
+			const suffix = isRepoSelection ? "" : " ";
+			
+			const newLine = beforePrefix + item.value + suffix + afterCursor;
+			const newLines = [...lines];
+			newLines[cursorLine] = newLine;
+
+			return {
+				lines: newLines,
+				cursorLine,
+				cursorCol: beforePrefix.length + item.value.length + suffix.length,
+			};
 		},
 
 		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
