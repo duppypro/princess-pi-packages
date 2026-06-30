@@ -5,11 +5,11 @@ import { fuzzyFilter } from "@earendil-works/pi-tui";
 
 // Test matching logic directly (simulating the provider regex)
 function parseAutoCompleteToken(textBeforeCursor: string) {
-	const match = textBeforeCursor.match(/(?:^|[ \t])([a-zA-Z0-9_-]+)?#([0-9]*)$/);
+	const match = textBeforeCursor.match(/(?:^|[ \t])([a-zA-Z0-9_-]+)?#([a-zA-Z0-9_-]*)$/);
 	if (!match) return null;
 	return {
 		repoName: match[1],
-		digits: match[2],
+		afterHash: match[2],
 		hasHash: textBeforeCursor.includes("#")
 	};
 }
@@ -18,10 +18,12 @@ console.log("🚀 STARTING AUTOCOMPLETE INTEGRATION TESTS...");
 
 // 1. Verify Regex Matching across all transition states
 const testCases = [
-	{ input: "hello #", expected: { repoName: undefined, digits: "", hasHash: true } },
-	{ input: "hello #2", expected: { repoName: undefined, digits: "2", hasHash: true } },
-	{ input: "hello btw#", expected: { repoName: "btw", digits: "", hasHash: true } },
-	{ input: "hello btw#25", expected: { repoName: "btw", digits: "25", hasHash: true } }
+	{ input: "hello #", expected: { repoName: undefined, afterHash: "", hasHash: true } },
+	{ input: "hello #2", expected: { repoName: undefined, afterHash: "2", hasHash: true } },
+	{ input: "hello #bug", expected: { repoName: undefined, afterHash: "bug", hasHash: true } },
+	{ input: "hello btw#", expected: { repoName: "btw", afterHash: "", hasHash: true } },
+	{ input: "hello btw#25", expected: { repoName: "btw", afterHash: "25", hasHash: true } },
+	{ input: "hello btw#bug", expected: { repoName: "btw", afterHash: "bug", hasHash: true } }
 ];
 
 for (const tc of testCases) {

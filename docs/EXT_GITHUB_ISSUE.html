@@ -18,12 +18,18 @@
         
         <p><strong>2. Two-Stage Autocomplete Modes:</strong></p>
         <ul>
-            <li><strong>Repo Selection Mode (digits not typed):</strong> Typing <code>#</code> triggers a dropdown list of all discovered sibling repositories (e.g. <code>btw#</code>, <code>princess-pi-packages#</code>), with the active CWD repository highlighted first. Arrow navigation dynamically updates the input text.</li>
-            <li><strong>Issue Selection Mode (digits typed):</strong> As soon as the user types a digit after <code>#</code>, the extension parses the targeted repository (falling back to CWD repo if omitted) and triggers a background query to fetch its open issues via <code>gh issue list --repo &lt;owner/repo&gt;</code>. These are cached in-memory.</li>
+            <li><strong>Mode A (Explicit Repo Prefix):</strong> If the user types a repository prefix before the hash (e.g. <code>btw#2</code> or <code>btw#bug</code>), the extension locks into that target repository and fuzzy-searches its open issues by the trailing characters (digits or letters).</li>
+            <li><strong>Mode B (Root Hash):</strong> If the user simply types a hash (e.g. <code>#</code>, <code>#2</code>, <code>#b</code>):
+                <ul>
+                    <li>If the user types letters or leaves it blank (e.g. <code>#b</code>), it displays both sibling repositories matching the letters AND fuzzy-matches CWD issues.</li>
+                    <li>If the user types strictly digits (e.g. <code>#25</code>), it assumes the user wants an issue reference and strictly filters the CWD issues, suppressing the sibling repository list.</li>
+                </ul>
+            </li>
         </ul>
 
         <p><strong>3. Title Expansion & Output:</strong></p>
-        <p>When an issue is selected from the fuzzy-filtered suggestions list, the completed text inserts both the cross-repo issue reference and the double-quoted issue title, ending up with: <code>repo-name#number "Issue Title"</code> (e.g. <code>princess-pi-packages#25 "BUG: TPM Rate Limiter widget..."</code>).</p>
+        <p>When an issue is selected from the fuzzy-filtered suggestions list, the completed text inserts both the cross-repo issue reference and the double-quoted issue title, appending a trailing space so the user can continue typing seamlessly: <code>repo-name#number "Issue Title" </code> (e.g. <code>princess-pi-packages#25 "BUG: TPM Rate Limiter widget..." </code>).</p>
+        <p>If a sibling repository is selected (e.g., <code>btw#</code>) instead of an issue, the completion strictly preserves the <code>#</code> character without appending a trailing space, placing the cursor directly after the hash so the user can immediately type digits for that repo's issues.</p>
     </div>
 </body>
 </html>
