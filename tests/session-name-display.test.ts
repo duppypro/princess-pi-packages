@@ -1,6 +1,9 @@
 #!/usr/bin/env -S node --experimental-strip-types
 /**
  * Unit test for the session-name-display extension.
+ *
+ * Verifies that session names are stored clean (no escape codes/padding),
+ * and that a custom footer is registered for the TUI rendering layer.
  */
 
 import * as assert from "assert";
@@ -10,6 +13,7 @@ console.log("🏃 Running session-name-display extension test...");
 
 // Mock state
 let sessionName: string | null = null;
+let registeredFooter: ((...args: any[]) => any) | undefined = undefined;
 const eventHandlers: { [event: string]: Function[] } = {};
 
 const mockPi: any = {
@@ -22,92 +26,163 @@ const mockPi: any = {
       eventHandlers[event] = [];
     }
     eventHandlers[event].push(handler);
-  }
+  },
 };
 
-// Mock sessionManager
 const mockSessionManager: any = {
-  appendSessionInfo: function (name: string) {
-    sessionName = name;
-  }
+  getBranch: () => [],
+  getCwd: () => "/home/user/project",
+  getSessionName: () => sessionName,
+  getEntries: () => [],
+};
+
+let footerOnBranchChangeCb: (() => void) | undefined;
+
+const mockFooterData: any = {
+  getGitBranch: () => "main",
+  getExtensionStatuses: () => new Map(),
+  getAvailableProviderCount: () => 1,
+  onBranchChange: (cb: () => void) => {
+    footerOnBranchChangeCb = cb;
+    return () => {};
+  },
 };
 
 const mockCtx: any = {
+  sessionManager: mockSessionManager,
+  model: { id: "test-model", contextWindow: 200000 },
+  modelRegistry: { isUsingOAuth: () => false },
+  getContextUsage: () => ({
+    tokens: 5000,
+    contextWindow: 200000,
+    percent: 2.5,
+  }),
   ui: {
+    setFooter: (factory: ((...args: any[]) => any) | undefined) => {
+      registeredFooter = factory;
+    },
+    notify: () => {},
     theme: {
-      fg: (color: string, text: string) => `\x1b[38;5;244m${text}\x1b[39m`
-    }
+      fg: (color: string, text: string) => `\x1b[38;5;244m${text}\x1b[39m`,
+    },
   },
-  sessionManager: mockSessionManager
 };
 
 // Initialize extension
 sessionNameDisplayExtension(mockPi);
 
-// Trigger a mock event
-async function triggerEvent(event: string) {
+async function triggerEvent(event: string, ctx = mockCtx) {
   const handlers = eventHandlers[event] || [];
   for (const handler of handlers) {
-    await handler({ type: event }, mockCtx);
+    await handler({ type: event }, ctx);
   }
 }
 
 async function main() {
-  // Test Case 1: Start unnamed session
+  // -----------------------------------------------------------------------
+  // Test 1: session_start stores clean name (strips escape codes)
+  // -----------------------------------------------------------------------
   try {
-    sessionName = null;
+    sessionName = "\x1b[38;5;244m\x1b[7m Thursday \x1b[27m\x1b[39m";
     await triggerEvent("session_start");
-    
-    // Should default to _ANONYMOUS_ with styling
+
+    // The extension should strip ANSI codes and trim
     assert.ok(sessionName);
-    assert.ok(sessionName.includes("_ANONYMOUS_"));
-    assert.strictEqual(sessionName, "\x1b[38;5;244m\x1b[7m _ANONYMOUS_ \x1b[27m\x1b[39m");
-    console.log("  ✅ Passed [Test 1] Unnamed session default to _ANONYMOUS_");
+    assert.strictEqual(sessionName, "Thursday");
+    console.log("  ✅ Passed [Test 1] session_start strips escape codes from session name");
   } catch (err) {
     console.error("  ❌ Failed [Test 1]:", err);
     process.exit(1);
   }
 
-  // Test Case 2: Style a set session name during turn_start
+  // -----------------------------------------------------------------------
+  // Test 2: session_start with null name defaults to _ANONYMOUS_
+  // -----------------------------------------------------------------------
   try {
-    sessionName = "Thursday";
-    await triggerEvent("turn_start");
-    
-    assert.ok(sessionName);
-    assert.ok(sessionName.includes("Thursday"));
-    assert.strictEqual(sessionName, "\x1b[38;5;244m\x1b[7m Thursday \x1b[27m\x1b[39m");
-    console.log("  ✅ Passed [Test 2] Styled session name on turn_start");
+    sessionName = null;
+    await triggerEvent("session_start");
+
+    assert.strictEqual(sessionName, "_ANONYMOUS_");
+    console.log("  ✅ Passed [Test 2] Unnamed session defaults to _ANONYMOUS_");
   } catch (err) {
     console.error("  ❌ Failed [Test 2]:", err);
     process.exit(1);
   }
 
-  // Test Case 3: Verify the overridden appendSessionInfo intercepts and styles dynamic renames
+  // -----------------------------------------------------------------------
+  // Test 3: Custom footer is registered
+  // -----------------------------------------------------------------------
   try {
-    // Reset wrapper flag if any, but since we are mocking, let's verify mockSessionManager got wrapped
-    assert.ok(mockSessionManager.__isSessionNameDisplayWrapped);
-    
-    // Call appendSessionInfo directly as TUI / `/name` command would
-    mockSessionManager.appendSessionInfo("NewSessionName");
-    
-    // The sessionName should have been automatically intercepted and styled!
-    assert.strictEqual(sessionName, "\x1b[38;5;244m\x1b[7m NewSessionName \x1b[27m\x1b[39m");
-    console.log("  ✅ Passed [Test 3] Overridden appendSessionInfo styles dynamically");
+    assert.ok(registeredFooter, "Expected a footer factory to be registered");
+    console.log("  ✅ Passed [Test 3] Custom footer registered via ctx.ui.setFooter()");
   } catch (err) {
     console.error("  ❌ Failed [Test 3]:", err);
     process.exit(1);
   }
 
-  // Test Case 4: Verify that ANSI escape sequences are stripped and not nested-wrapped
+  // -----------------------------------------------------------------------
+  // Test 4: Custom footer renders inverted session name in pwd line
+  // -----------------------------------------------------------------------
   try {
-    // Call with already-styled name
-    mockSessionManager.appendSessionInfo("\x1b[38;5;244m\x1b[7m Thursday \x1b[27m\x1b[39m");
-    
-    // It should cleanly strip the old formatting and apply fresh formatting
-    assert.strictEqual(sessionName, "\x1b[38;5;244m\x1b[7m Thursday \x1b[27m\x1b[39m");
-    console.log("  ✅ Passed [Test 4] ANSI escape sequences are cleanly stripped and not nested");
+    sessionName = "MySession";
+    const footerComponent = registeredFooter!(
+      { requestRender: () => {} }, // tui mock
+      { fg: (_c: string, t: string) => t }, // pass-through theme
+      mockFooterData,
+    );
+
+    const lines = footerComponent.render(100);
+
+    // The pwd line should contain the session name with inverse escape codes
+    const pwdLine = lines[0];
+    assert.ok(pwdLine, "Expected at least one line");
+    assert.ok(
+      pwdLine.includes("\x1b[7m"),
+      "Expected inverse escape code in pwd line",
+    );
+    assert.ok(
+      pwdLine.includes(" MySession "),
+      "Expected session name with padding in pwd line",
+    );
+    assert.ok(
+      pwdLine.includes("\x1b[27m"),
+      "Expected inverse-off escape code in pwd line",
+    );
+    console.log("  ✅ Passed [Test 4] Custom footer renders session name with inverse + padding");
   } catch (err) {
     console.error("  ❌ Failed [Test 4]:", err);
+    process.exit(1);
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 5: turn_start cleans an escaped name added externally (e.g. /name)
+  // -----------------------------------------------------------------------
+  try {
+    sessionName = "\x1b[7m DirtyName \x1b[27m";
+    await triggerEvent("turn_start");
+
+    assert.strictEqual(sessionName, "DirtyName");
+    console.log("  ✅ Passed [Test 5] turn_start strips escape codes from externally-set name");
+  } catch (err) {
+    console.error("  ❌ Failed [Test 5]:", err);
+    process.exit(1);
+  }
+
+  // -----------------------------------------------------------------------
+  // Test 6: getSessionName() returns clean name (no escape codes)
+  // -----------------------------------------------------------------------
+  try {
+    // Simulate an externally-set clean name
+    sessionName = "Important Work";
+    const retrieved = mockPi.getSessionName();
+
+    assert.strictEqual(retrieved, "Important Work");
+    // Verify NO escape codes
+    assert.ok(!retrieved.includes("\x1b[7m"), "Name should not contain inverse codes");
+    assert.ok(!retrieved.includes("\x1b["), "Name should not contain any ANSI codes");
+    console.log("  ✅ Passed [Test 6] getSessionName() returns clean name");
+  } catch (err) {
+    console.error("  ❌ Failed [Test 6]:", err);
     process.exit(1);
   }
 
