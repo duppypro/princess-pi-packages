@@ -36,6 +36,10 @@ today **Pi Coding Agent** and **Claude Code**, with room for others. Each capabi
 
 ---
 
+## 📖 [Full docs](docs/EXTENSIONS.html)
+
+---
+
 ## 🚀 Installation & Setup
 
 This repository is designed to be installed natively through Pi's built-in package manager. Do not manually copy the files into your local extensions folder.
