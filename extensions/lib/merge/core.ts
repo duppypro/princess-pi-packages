@@ -13,7 +13,7 @@ const STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
 // Post-merge branch cleanup: check cleanliness, prompt to delete, switch to main.
 // Called after a successful merge+push, while still on the feature branch.
 // ---
-async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLogger): Promise<void> {
+async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLogger, autoCleanup = false): Promise<void> {
 	const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
 
 	if (status !== "") {
@@ -36,7 +36,10 @@ async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLo
 		return;
 	}
 
-	const answer = await logger.prompt(`\n🗑️  Delete feature branch '${currentBranch}' (local + remote) and switch to main? [y/N] `);
+	let answer = autoCleanup;
+	if (!autoCleanup) {
+		answer = await logger.prompt(`\n🗑️  Delete feature branch '${currentBranch}' (local + remote) and switch to main? [y/N] `);
+	}
 
 	if (!answer) {
 		logger.info(`\n💡 Branch '${currentBranch}' kept. To clean up later:\n   git checkout main\n   git branch -D ${currentBranch}\n   git push origin --delete ${currentBranch}`);
@@ -66,7 +69,7 @@ async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLo
 	logger.info(`💪 Ready for the next task! You are on branch 'main'.`);
 }
 
-export async function runMerge(argsList: string[], logger: MergeLogger): Promise<void> {
+export async function runMerge(argsList: string[], logger: MergeLogger, autoCleanup = false): Promise<void> {
 	logger.info("🔄 Running merge validation checks...");
 
 	const currentCwd = process.cwd();
@@ -180,7 +183,7 @@ export async function runMerge(argsList: string[], logger: MergeLogger): Promise
 		execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
 		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
 		logger.info(`💪 Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
-		await cleanupBranch(currentBranch, currentCwd, logger);
+		await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
 	} else {
 		logger.info("🪵 No dedicated 'main' worktree found — using in-place single-checkout merge.");
 		try {
@@ -214,6 +217,6 @@ export async function runMerge(argsList: string[], logger: MergeLogger): Promise
 		}
 		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
 		logger.info(`💪 Ready for the next task! You are on branch '${currentBranch}'.`);
-		await cleanupBranch(currentBranch, currentCwd, logger);
+		await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
 	}
 }

@@ -35,7 +35,9 @@ export default function mergeExtension(pi: ExtensionAPI) {
 			}
 
 			try {
-				await runMerge(argsList, {
+				const autoCleanup = argsList.includes("--cleanup");
+				const filteredArgs = argsList.filter(a => a !== "--cleanup");
+				await runMerge(filteredArgs, {
 					info: (msg) => ctx.ui.notify(msg, "info"),
 					error: (msg) => ctx.ui.notify(msg, "error"),
 					prompt: async (question: string): Promise<boolean> => {
@@ -43,7 +45,7 @@ export default function mergeExtension(pi: ExtensionAPI) {
 						ctx.ui.notify(question + "\n(Run this command from the CLI shell for interactive cleanup.)", "info");
 						return false;
 					},
-				});
+				}, autoCleanup);
 			} catch (err: any) {
 				const errMsg = err?.message || String(err);
 				ctx.ui.notify(`❌ Merge Aborted:\n${errMsg}`, "error");

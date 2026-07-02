@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 var STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
-async function cleanupBranch(currentBranch, cwd, logger) {
+async function cleanupBranch(currentBranch, cwd, logger, autoCleanup = false) {
   const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
   if (status !== "") {
     logger.info(`
@@ -35,8 +35,11 @@ ${diffStat}`);
     logger.info(`\u{1F4A1} Verify merge completed, then clean up manually.`);
     return;
   }
-  const answer = await logger.prompt(`
+  let answer = autoCleanup;
+  if (!autoCleanup) {
+    answer = await logger.prompt(`
 \u{1F5D1}\uFE0F  Delete feature branch '${currentBranch}' (local + remote) and switch to main? [y/N] `);
+  }
   if (!answer) {
     logger.info(`
 \u{1F4A1} Branch '${currentBranch}' kept. To clean up later:
@@ -64,7 +67,7 @@ ${diffStat}`);
   }
   logger.info(`\u{1F4AA} Ready for the next task! You are on branch 'main'.`);
 }
-async function runMerge(argsList, logger) {
+async function runMerge(argsList, logger, autoCleanup = false) {
   logger.info("\u{1F504} Running merge validation checks...");
   const currentCwd = process.cwd();
   const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: currentCwd, encoding: "utf8" }).trim();
@@ -166,7 +169,7 @@ ${mainStatus}`);
     execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
     logger.info(`\u{1F389} Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
     logger.info(`\u{1F4AA} Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
-    await cleanupBranch(currentBranch, currentCwd, logger);
+    await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
   } else {
     logger.info("\u{1FAB5} No dedicated 'main' worktree found \u2014 using in-place single-checkout merge.");
     try {
@@ -207,7 +210,7 @@ ${detail}`
     }
     logger.info(`\u{1F389} Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
     logger.info(`\u{1F4AA} Ready for the next task! You are on branch '${currentBranch}'.`);
-    await cleanupBranch(currentBranch, currentCwd, logger);
+    await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
   }
 }
 
@@ -296,8 +299,10 @@ async function run() {
     }
     return;
   }
+  const autoCleanup = argsList.includes("--cleanup");
+  const filteredArgs = argsList.filter(a => a !== "--cleanup");
   try {
-    await runMerge(argsList, {
+    await runMerge(filteredArgs, {
       info: (msg) => console.log(msg),
       error: (msg) => console.error(msg),
       prompt: async (question) => {
@@ -313,7 +318,7 @@ async function run() {
           });
         });
       }
-    });
+    }, autoCleanup);
   } catch (err) {
     const errMsg = err?.message || String(err);
     console.error(`\u274C Merge Aborted:

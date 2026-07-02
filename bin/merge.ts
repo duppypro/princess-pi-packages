@@ -40,8 +40,11 @@ async function run() {
 		return;
 	}
 
+	const autoCleanup = argsList.includes("--cleanup");
+	const filteredArgs = argsList.filter(a => a !== "--cleanup");
+
 	try {
-		await runMerge(argsList, {
+		await runMerge(filteredArgs, {
 			info: (msg) => console.log(msg),
 			error: (msg) => console.error(msg),
 			prompt: async (question: string): Promise<boolean> => {
@@ -58,7 +61,7 @@ async function run() {
 					});
 				});
 			},
-		});
+		}, autoCleanup);
 	} catch (err: any) {
 		const errMsg = err?.message || String(err);
 		console.error(`❌ Merge Aborted:\n${errMsg}`);
