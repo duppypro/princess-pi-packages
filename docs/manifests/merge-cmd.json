@@ -27,6 +27,7 @@
   "usage": [
     { "flags": "[commit-ish]", "desc": "Optional commit hash, branch, or reference to merge (default: HEAD)." },
     { "flags": "-h, --help", "desc": "Display this help information." },
-    { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." }
+    { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." },
+    { "flags": "--cleanup", "desc": "Skip branch-cleanup prompt — auto-delete the feature branch (local + remote) and switch to main after a successful merge, assuming worktree is clean." }
   ]
 }
