@@ -30,6 +30,21 @@ Any command backed by a `docs/manifests/*-cmd.json` file (read by both the Pi ex
 3.  **Full flag enumeration last** (`usage[].flags` + `desc`).
 Manifest `examples`/`usage` entries store only the trailing arguments/flags (`args`/`flags`), never a hardcoded command name — the renderer prepends its own `invokedAs` (e.g. `/merge` for the Pi extension, `./merge` for the CLI), since the same manifest must render correctly under both invocation forms.
 
+### Manifest-Driven `--why` Convention (Standard Practice)
+Every tool (both Pi extension and CLI bin) must support a `--why` flag that answers "Why would I want to run this tool?" using user scenarios from the manifest. The `--why` flag:
+1.  **Renders from the manifest** — the `why` array in each `*-cmd.json` (same manifest-driven strategy as `--help`).
+2.  **Answers the user's question** with concrete scenarios: user problem → exact command(s) → expected result.
+3.  **Enumerates use cases thoroughly** but not exhaustively — enough to convey the tool's scope.
+4.  **Includes at least one anti-use-case** — a scenario where a user might think the tool helps but it does not (or does so poorly). Sets expectations.
+5.  **Closes with a pointer** — `Run <tool> --help for the full flag reference.`
+
+Manifest `why` entries have three fields:
+- `scenario` (string): The user's context/problem.
+- `commands` (string[]): One or more exact tool invocations to address it (omitting the tool name, which the renderer prepends).
+- `result` (string): What the end state looks like after running.
+
+For tools without manifests (e.g. `yada` until ported per #31), `--why` is rendered inline.
+
 ---
 
 ## 🔄 Local Development & Testing Workflow

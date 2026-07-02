@@ -34,6 +34,41 @@ async function handleLog(): Promise<void> {
 	console.log(`🚀 Servers active in this repository:\n\n${lines.join("\n")}`);
 }
 
+function handleWhy(): void {
+	try {
+		const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
+		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+		const invokedAs = "./serve";
+		let text = `${manifest.name} - ${manifest.tagline}
+
+`;
+		text += `${manifest.description}
+
+`;
+		text += `Why run ${invokedAs}?
+
+`;
+		const scenarios = manifest.why || [];
+		for (const s of scenarios) {
+			text += `  ${s.scenario}
+`;
+			for (const cmd of s.commands) {
+				text += `    $ ${invokedAs}${cmd ? " " + cmd : ""}
+`;
+			}
+			text += `    → ${s.result}
+
+`;
+		}
+		text += `Run ${invokedAs} --help for the full flag reference.
+`;
+		console.log(text);
+	} catch (err) {
+		console.error(`⚠️ Failed to load command manifest: ${err}`);
+		process.exitCode = 1;
+	}
+}
+
 function handleHelp(): void {
 	try {
 		const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
@@ -219,6 +254,7 @@ async function run(): Promise<void> {
 
 	if (trimmedArgs === "--log" || trimmedArgs === "-L") return handleLog();
 	if (trimmedArgs === "--help" || trimmedArgs === "-h") return handleHelp();
+	if (trimmedArgs === "--why") return handleWhy();
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
 	return handleStart(trimmedArgs);
 }

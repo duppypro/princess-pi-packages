@@ -20,3 +20,32 @@ export function renderHelp(manifestPath: string, invokedAs: string): string {
 
 	return helpText;
 }
+
+// ---
+// --why renderer: scenario-driven "why would I use this?" output
+// Manifest entries in the "why" array each have: scenario, commands[], result.
+// At least one entry should describe what the tool CAN'T do (anti-use-case).
+// ---
+export function renderWhy(manifestPath: string, invokedAs: string): string {
+	const manifestStr = fs.readFileSync(manifestPath, "utf8");
+	const manifest = JSON.parse(manifestStr);
+
+	let text = `\x1b[1m\x1b[36m${manifest.name}\x1b[0m - ${manifest.tagline}\n\n`;
+	text += `${manifest.description}\n\n`;
+	text += `\x1b[1mWhy run ${invokedAs}?\x1b[0m\n\n`;
+
+	const scenarios = manifest.why || [];
+	for (const s of scenarios) {
+		text += `  ${s.scenario}\n`;
+		for (const cmd of s.commands) {
+			text += `    \x1b[33m$ ${invokedAs}${cmd ? " " + cmd : ""}\x1b[0m\n`;
+		}
+		text += `    \x1b[32m→ ${s.result}\x1b[0m\n\n`;
+	}
+
+	if (manifest.usage) {
+		text += `\x1b[2mRun \x1b[0m${invokedAs} --help\x1b[2m for the full flag reference.\x1b[0m\n`;
+	}
+
+	return text;
+}

@@ -8,7 +8,7 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMerge } from "../extensions/lib/merge/core.js";
-import { renderHelp } from "../extensions/lib/merge/help.js";
+import { renderHelp, renderWhy } from "../extensions/lib/merge/help.js";
 
 function run() {
 	const argsList = process.argv.slice(2).filter(Boolean);
@@ -19,6 +19,19 @@ function run() {
 			const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
 			const helpText = renderHelp(manifestPath, "merge");
 			console.log(helpText);
+		} catch (err) {
+			console.error(`⚠️ Failed to load merge command manifest: ${err}`);
+			process.exitCode = 1;
+		}
+		return;
+	}
+
+	if (argsList.includes("--why")) {
+		try {
+			const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+			const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
+			const whyText = renderWhy(manifestPath, "merge");
+			console.log(whyText);
 		} catch (err) {
 			console.error(`⚠️ Failed to load merge command manifest: ${err}`);
 			process.exitCode = 1;

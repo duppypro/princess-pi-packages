@@ -1,7 +1,7 @@
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import { runMerge } from "./lib/merge/core.js";
-import { renderHelp } from "./lib/merge/help.js";
+import { renderHelp, renderWhy } from "./lib/merge/help.js";
 
 // ---
 // MAIN EXTENSION ENTRY POINT
@@ -17,6 +17,17 @@ export default function mergeExtension(pi: ExtensionAPI) {
 					const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
 					const helpText = renderHelp(manifestPath, "/merge");
 					ctx.ui.notify(helpText, "info");
+				} catch (err) {
+					ctx.ui.notify(`⚠️ Failed to load MERGE command manifest: ${err}`, "error");
+				}
+				return;
+			}
+
+			if (argsList.includes("--why")) {
+				try {
+					const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
+					const whyText = renderWhy(manifestPath, "/merge");
+					ctx.ui.notify(whyText, "info");
 				} catch (err) {
 					ctx.ui.notify(`⚠️ Failed to load MERGE command manifest: ${err}`, "error");
 				}

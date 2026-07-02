@@ -500,6 +500,40 @@ async function handleLog() {
 
 ${lines.join("\n")}`);
 }
+function handleWhy() {
+  try {
+    const manifestPath = path5.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
+    const invokedAs = "./serve";
+    let text = `${manifest.name} - ${manifest.tagline}
+
+`;
+    text += `${manifest.description}
+
+`;
+    text += `Why run ${invokedAs}?
+
+`;
+    const scenarios = manifest.why || [];
+    for (const s of scenarios) {
+      text += `  ${s.scenario}
+`;
+      for (const cmd of s.commands) {
+        text += `    $ ${invokedAs}${cmd ? " " + cmd : ""}
+`;
+      }
+      text += `    \u2192 ${s.result}
+
+`;
+    }
+    text += `Run ${invokedAs} --help for the full flag reference.
+`;
+    console.log(text);
+  } catch (err) {
+    console.error(`\u26A0\uFE0F Failed to load command manifest: ${err}`);
+    process.exitCode = 1;
+  }
+}
 function handleHelp() {
   try {
     const manifestPath = path5.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
@@ -662,6 +696,7 @@ async function run() {
   const trimmedArgs = process.argv.slice(2).join(" ").trim();
   if (trimmedArgs === "--log" || trimmedArgs === "-L") return handleLog();
   if (trimmedArgs === "--help" || trimmedArgs === "-h") return handleHelp();
+  if (trimmedArgs === "--why") return handleWhy();
   if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
   return handleStart(trimmedArgs);
 }

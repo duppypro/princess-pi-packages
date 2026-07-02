@@ -10,6 +10,33 @@
     { "args": "--kill 8080 docs/", "desc": "Kill the server on port 8080 and the server serving docs/." },
     { "args": "--kill all", "desc": "Instantly terminate every active dev server across all worktrees." }
   ],
+  "why": [
+    {
+      "scenario": "You're developing a static site or web app and need HTTPS preview URLs to test locally — without manually configuring SSL certificates.",
+      "commands": [""],
+      "result": "The public/ and docs/ directories are served on auto-assigned HTTPS ports (8080, 8081), with live reload and clickable preview URLs printed in the TUI widget."
+    },
+    {
+      "scenario": "You've got stale dev servers from a previous session and need to clean them all up.",
+      "commands": ["--kill all"],
+      "result": "Every active server across all worktrees is terminated immediately."
+    },
+    {
+      "scenario": "You want to check what directories are currently being served and on which ports.",
+      "commands": ["--log"],
+      "result": "All active servers in the current worktree are listed with their URLs and access log paths."
+    },
+    {
+      "scenario": "You want to serve only static files (no live-reload injection) — for example, testing production builds locally.",
+      "commands": ["--static"],
+      "result": "Directories are served as plain static files without code injection or file-watching overhead."
+    },
+    {
+      "scenario": "You want to deploy a site to production or serve traffic to the public internet.",
+      "commands": ["  # won't help"],
+      "result": "The serve tool is a local development preview server only — not a production web server. Use Railway, Nginx, or another production deployment tool for public-facing services."
+    }
+  ],
   "usage": [
     { "flags": "[dirs...]", "desc": "Serve specified directories (default: public, docs) on HTTPS ports." },
     { "flags": "-s, --static", "desc": "Disable live reloading and serve pure static files without code injection or file watching." },
@@ -20,6 +47,7 @@
     { "flags": "--emoji", "desc": "Enable emoji icons in TUI widgets." },
     { "flags": "-L, --log", "desc": "List all active servers serving directories within this worktree." },
     { "flags": "-k, --kill [port|dir|all...]", "desc": "Kill servers by port, directory, or 'all'. Omit the target to kill every server in this worktree." },
-    { "flags": "-h, --help", "desc": "Display this help information." }
+    { "flags": "-h, --help", "desc": "Display this help information." },
+    { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." }
   ]
 }

@@ -14,7 +14,7 @@ function getDeepSeekPeakMultiplier(timestamp) {
   const utcHour = d.getUTCHours();
   const utcMin = d.getUTCMinutes();
   const utcTime = utcHour * 60 + utcMin;
-  if ((utcTime >= 60 && utcTime < 240) || (utcTime >= 360 && utcTime < 600)) {
+  if (utcTime >= 60 && utcTime < 240 || utcTime >= 360 && utcTime < 600) {
     return 2;
   }
   return 1;
@@ -388,9 +388,6 @@ function buildTickLine(maxCost, barWidth, prefixWidth, labelPrefix) {
     prefixWidth + Math.floor(barWidth * 3 / 4),
     prefixWidth + barWidth - 1
   ];
-  for (const t of ticks) {
-    if (t < chars.length) chars[t] = "\u253F";
-  }
   const labels = [];
   const tickValues = [0, maxCost / 4, maxCost / 2, maxCost * 3 / 4, maxCost];
   for (let i = 0; i < ticks.length; i++) {
@@ -627,7 +624,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       for (const t of tickPositions) {
         const idx = t - dayChangeText.length;
         if (idx >= 0 && idx < dividerChars.length) {
-          dividerChars[idx] = "\u253F";
+          dividerChars[idx] = "\u253C";
         }
       }
       const dividerLine = dayChangeText + dividerChars.join("");
@@ -765,6 +762,39 @@ var targetSessionPath = void 0;
 var timezone = void 0;
 var harnessOption = "auto";
 var showOther = false;
+function printWhy() {
+  try {
+    const manifestPath = path2.join(process.cwd(), "docs", "manifests", "wtft-cmd.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    let text = `${manifest.name} - ${manifest.tagline}
+
+`;
+    text += `${manifest.description}
+
+`;
+    text += `Why run wtft?
+
+`;
+    const scenarios = manifest.why || [];
+    for (const s of scenarios) {
+      text += `  ${s.scenario}
+`;
+      for (const cmd of s.commands) {
+        text += `    $ wtft${cmd ? " " + cmd : ""}
+`;
+      }
+      text += `    \u2192 ${s.result}
+
+`;
+    }
+    text += `Run wtft --help for the full flag reference.
+`;
+    console.log(text);
+  } catch (err) {
+    console.error(`\u26A0\uFE0F Failed to load command manifest: ${err}`);
+    process.exitCode = 1;
+  }
+}
 function printHelp() {
   console.log(`
 Usage: wtft [options]
@@ -797,6 +827,9 @@ for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
     printHelp();
+    process.exit(0);
+  } else if (arg === "--why") {
+    printWhy();
     process.exit(0);
   } else if (arg === "-s" || arg === "--session") {
     targetSessionPath = process.argv[++i];

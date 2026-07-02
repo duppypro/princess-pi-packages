@@ -180,6 +180,36 @@ function renderHelp(manifestPath, invokedAs) {
   }
   return helpText;
 }
+function renderWhy(manifestPath, invokedAs) {
+  const manifestStr = fs2.readFileSync(manifestPath, "utf8");
+  const manifest = JSON.parse(manifestStr);
+  let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
+
+`;
+  text += `${manifest.description}
+
+`;
+  text += `\x1B[1mWhy run ${invokedAs}?\x1B[0m
+
+`;
+  const scenarios = manifest.why || [];
+  for (const s of scenarios) {
+    text += `  ${s.scenario}
+`;
+    for (const cmd of s.commands) {
+      text += `    \x1B[33m$ ${invokedAs}${cmd ? " " + cmd : ""}\x1B[0m
+`;
+    }
+    text += `    \x1B[32m\u2192 ${s.result}\x1B[0m
+
+`;
+  }
+  if (manifest.usage) {
+    text += `\x1B[2mRun \x1B[0m${invokedAs} --help\x1B[2m for the full flag reference.\x1B[0m
+`;
+  }
+  return text;
+}
 
 // bin/merge.ts
 function run() {
@@ -190,6 +220,18 @@ function run() {
       const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
       const helpText = renderHelp(manifestPath, "merge");
       console.log(helpText);
+    } catch (err) {
+      console.error(`\u26A0\uFE0F Failed to load merge command manifest: ${err}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (argsList.includes("--why")) {
+    try {
+      const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+      const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
+      const whyText = renderWhy(manifestPath, "merge");
+      console.log(whyText);
     } catch (err) {
       console.error(`\u26A0\uFE0F Failed to load merge command manifest: ${err}`);
       process.exitCode = 1;

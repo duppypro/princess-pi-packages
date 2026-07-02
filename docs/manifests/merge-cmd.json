@@ -7,8 +7,26 @@
     { "args": "638e9b4", "desc": "Verify, merge, and push the specific stable Step 5 commit 638e9b4 into main." },
     { "args": "--help", "desc": "Show this help text." }
   ],
+  "why": [
+    {
+      "scenario": "You just completed a Step 5 feature branch and need to merge it to main without context-switching to another terminal.",
+      "commands": [""],
+      "result": "The HEAD commit is validated (clean worktree, pushed, Step 5 approved), merged into main, and pushed to origin."
+    },
+    {
+      "scenario": "You want to merge a specific earlier stable checkpoint (not your current HEAD) — for example, the most recent Step 5 commit in a long branch history.",
+      "commands": ["638e9b4"],
+      "result": "That specific commit is validated against the same rules and merged into main."
+    },
+    {
+      "scenario": "You have two feature branches and want to merge them into each other (not into main).",
+      "commands": ["<branch>  # won't work"],
+      "result": "The tool only merges into main. Use standard 'git merge' for inter-branch merges. The merge tool's job is safe Step-5-gated promotion to main — not arbitrary branch merging."
+    }
+  ],
   "usage": [
     { "flags": "[commit-ish]", "desc": "Optional commit hash, branch, or reference to merge (default: HEAD)." },
-    { "flags": "-h, --help", "desc": "Display this help information." }
+    { "flags": "-h, --help", "desc": "Display this help information." },
+    { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." }
   ]
 }

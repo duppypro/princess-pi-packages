@@ -125,6 +125,17 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 	}
 
+	async function handleWhy(ctx: any): Promise<void> {
+		try {
+			const { renderWhy } = await import("./lib/merge/help.js");
+			const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
+			const whyText = renderWhy(manifestPath, "/serve");
+			ctx.ui.notify(whyText, "info");
+		} catch (err) {
+			ctx.ui.notify(`⚠️ Failed to load command manifest: ${err}`, "error");
+		}
+	}
+
 	async function handleHide(ctx: any): Promise<void> {
 		isWidgetVisible = false;
 		pi.appendEntry("serve-visibility", { visible: false });
@@ -380,6 +391,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 	const routes: { test: (args: string) => boolean; handler: (args: string, ctx: any) => Promise<void> }[] = [
 		{ test: (a) => a === "--log" || a === "-L", handler: (_a, ctx) => handleLog(ctx) },
 		{ test: (a) => a === "--help" || a === "-h", handler: (_a, ctx) => handleHelp(ctx) },
+		{ test: (a) => a === "--why", handler: (_a, ctx) => handleWhy(ctx) },
 		{ test: (a) => a === "--hide" || a === "-H", handler: (_a, ctx) => handleHide(ctx) },
 		{ test: (a) => a === "--show" || a === "-S", handler: (_a, ctx) => handleShow(ctx) },
 		{ test: (a) => a === "--no-emojii" || a === "--no-emoji", handler: (_a, ctx) => handleEmojiToggle(false, ctx) },

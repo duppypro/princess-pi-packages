@@ -24,6 +24,66 @@ const options: CLIOptions = {
   maxGap: 10000, // 10 seconds default
 };
 
+function printWhy() {
+  console.log(`
+yada - Dynamic Streaming Log Deduplicator
+
+Why run yada?
+
+` +
+    `  You're watching a noisy log stream (e.g. tail -f access.log) and the same entries
+` +
+    `  repeat hundreds of times, making it hard to spot real changes.
+` +
+    `    $ tail -f access.log | yada
+` +
+    `    → Repeated near-identical lines are collapsed in-place with a count badge, so you
+` +
+    `      see only meaningful changes as they happen.
+
+` +
+    `  You're analyzing a log file and want to quickly identify periodic patterns
+` +
+    `    (e.g. a cron job that fires every 5 minutes).
+` +
+    `    $ cat app.log | yada
+` +
+    `    → Collapsed lines show periodicity annotations like "every ~5m" or "every ~30s",
+` +
+    `      revealing timing patterns at a glance.
+
+` +
+    `  You want strict exact-match deduplication (not fuzzy) for structured logs.
+` +
+    `    $ cat access.log | yada --no-word-match -s 0.99 --no-periodicity
+` +
+    `    → Only exact or nearly-exact duplicates are collapsed; word-level differences
+` +
+    `      (e.g. different IDs, usernames) are treated as distinct lines.
+
+` +
+    `  You want to pipe yada's output into another tool without in-place terminal rewriting.
+` +
+    `    $ tail -f logs.txt | yada --no-collapse | grep ERROR
+` +
+    `    → Each collapsed summary prints once as a full line (no ANSI cursor moves),
+` +
+    `      making it safe to pipe into grep, awk, or file redirection.
+
+` +
+    `  You want to aggregate logs into a database or SIEM system for long-term storage.
+` +
+    `    $ yada  # won't help
+` +
+    `    → Yada is a streaming deduplicator for real-time terminal viewing — it is not
+` +
+    `      a log database or retention tool. Use graylog, ELK, or Loki for log aggregation.
+
+` +
+    `Run yada --help for the full flag reference.
+`);
+}
+
 function printHelp() {
   console.log(`
 Usage: yada [options]
@@ -44,6 +104,9 @@ for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
     printHelp();
+    process.exit(0);
+  } else if (arg === "--why") {
+    printWhy();
     process.exit(0);
   } else if (arg === "-s" || arg === "--similarity") {
     const val = parseFloat(process.argv[++i]);
