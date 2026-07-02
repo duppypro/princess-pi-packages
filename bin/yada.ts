@@ -95,6 +95,7 @@ Options:
   -p, --no-periodicity    Disable advanced periodicity detection
   -g, --max-gap <num>     Max time gap in seconds to keep collapsing consecutive duplicates (default: 10)
   --no-collapse           Disable in-place terminal rewriting (behaves like streaming uniq -c)
+  --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases
   -h, --help              Display this help menu
 `);
 }

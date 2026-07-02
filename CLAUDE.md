@@ -45,6 +45,8 @@ Manifest `why` entries have three fields:
 
 For tools without manifests (e.g. `yada` until ported per #31), `--why` is rendered inline.
 
+**Hard rule — every tool's `--help` must list `--why` as an available flag.** This applies to manifest-driven `--help` (add to `usage[]`), inline `printHelp()` (add a line), and Pi extension-only tools (add to inline help text). When creating any new command, both `--help` and `--why` are mandatory, and `--why` must appear in the `--help` output.
+
 ---
 
 ## 🔄 Local Development & Testing Workflow

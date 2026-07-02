@@ -811,6 +811,7 @@ Options:
   --no-ticks              Disable the proportional cost scale ticks above the bars.
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
   -o, --other             Instead of the visual timeline, print a histogram of commands categorized as 'Other'.
+  --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases.
   -h, --help              Display this help menu.
 `);
 }
