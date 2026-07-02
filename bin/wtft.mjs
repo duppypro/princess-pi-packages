@@ -3,6 +3,7 @@
 // bin/wtft.ts
 import * as fs from "node:fs";
 import * as path2 from "node:path";
+import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 
 // extensions/lib/wtft-shared.ts
@@ -873,7 +874,8 @@ var showOther = false;
 var showWatch = false;
 function printWhy() {
   try {
-    const manifestPath = path2.join(process.cwd(), "docs", "manifests", "wtft-cmd.json");
+    const __dirname = path2.dirname(fileURLToPath(import.meta.url));
+    const manifestPath = path2.join(__dirname, "..", "docs", "manifests", "wtft-cmd.json");
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     let text = `${manifest.name} - ${manifest.tagline}
 

@@ -10,6 +10,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
@@ -36,7 +37,7 @@ async function handleLog(): Promise<void> {
 
 function handleWhy(): void {
 	try {
-		const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
+		const manifestPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
 		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 		const invokedAs = "./serve";
 		let text = `${manifest.name} - ${manifest.tagline}
@@ -71,7 +72,7 @@ function handleWhy(): void {
 
 function handleHelp(): void {
 	try {
-		const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
+		const manifestPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
 		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 		const invokedAs = "./serve"; // CLI entry point; bare `serve` also works once repo root is on $PATH
 
