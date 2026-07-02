@@ -1126,6 +1126,175 @@ async function selectSessionPrompt(candidates) {
     stdin.on("data", onKey);
   });
 }
+async function watchMode(sessionPath, settings) {
+  if (!process.stdout.isTTY) {
+    console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
+    process.exit(1);
+  }
+
+  const sessionName = path2.basename(sessionPath);
+  let totalCost = 0;
+  let interactionCount = 0;
+  let lastSize = 0;
+  let needsRedraw = true;
+
+  process.stdout.write("\x1B[?25l");
+
+  process.on("SIGWINCH", () => {
+    needsRedraw = true;
+  });
+
+  process.on("SIGINT", () => {
+    process.stdout.write("\x1B[2J\x1B[H");
+    process.stdout.write("\x1B[?25h");
+    console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
+    process.exit(0);
+  });
+
+  const parseInteractions = (filePath) => {
+    const interactions = [];
+    let disabledEmoji = false;
+    let sessionInterval;
+    let sessionLimit;
+    let sessionMode;
+    let sessionShowTicks;
+    let sessionTimezone;
+
+    try {
+      const stat = fs.statSync(filePath);
+      const currentSize = stat.size;
+
+      if (currentSize < lastSize) {
+        lastSize = 0;
+      }
+
+      if (currentSize <= lastSize) return { interactions, disabledEmoji, sessionInterval, sessionLimit, sessionMode, sessionShowTicks, sessionTimezone };
+
+      const fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(currentSize - lastSize);
+      fs.readSync(fd, buf, 0, buf.length, lastSize);
+      fs.closeSync(fd);
+      lastSize = currentSize;
+
+      const newContent = buf.toString("utf8");
+      const lines = newContent.split("\n");
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type === "custom" && entry.customType === "emoji-settings") {
+            if (entry.data && typeof entry.data.disabled === "boolean") {
+              disabledEmoji = entry.data.disabled;
+            }
+          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+            if (entry.data) {
+              if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
+              if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
+              if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") sessionMode = entry.data.mode;
+              if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
+              if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
+            }
+          }
+          const interaction = parseEntryToInteraction(entry);
+          if (interaction) {
+            interactions.push(interaction);
+          }
+        } catch {
+        }
+      }
+    } catch {
+    }
+
+    return { interactions, disabledEmoji, sessionInterval, sessionLimit, sessionMode, sessionShowTicks, sessionTimezone };
+  };
+
+  let allInteractions = [];
+  let disabledEmoji = settings.disabledEmoji;
+  let sessionInterval;
+  let sessionLimit;
+  let sessionMode;
+  let sessionShowTicks;
+  let sessionTimezone;
+
+  const render = () => {
+    const width = getTerminalWidth();
+    const finalInterval = sessionInterval ?? settings.interval;
+    const finalLimit = sessionLimit ?? settings.limit;
+    const finalMode = sessionMode ?? settings.mode;
+    const finalShowTicks = sessionShowTicks ?? settings.showTicks;
+    const finalTimezone = sessionTimezone ?? settings.timezone;
+    const finalWidth = Math.min(settings.width, width);
+
+    const defaultSettings = {
+      interval: "1h", limit: 100, width: finalWidth,
+      showTicks: true, mode: "cumulative",
+      timezone: void 0
+    };
+
+    const lines = buildWtftLines(allInteractions, defaultSettings, {
+      interval: finalInterval,
+      limit: finalLimit,
+      width: finalWidth,
+      showTicks: finalShowTicks,
+      mode: finalMode,
+      timezone: finalTimezone,
+      disabledEmoji
+    });
+
+    const buf = [];
+    buf.push("\x1B[2J\x1B[H");
+
+    if (lines && lines.length > 0) {
+      for (const l of lines) buf.push(l);
+    } else {
+      buf.push("\x1B[90mWaiting for session data...\x1B[0m");
+    }
+
+    totalCost = allInteractions.reduce((sum, i) => sum + i.cost, 0);
+    interactionCount = allInteractions.length;
+
+    buf.push("");
+    buf.push(`\x1B[90mWatching ${sessionName} (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 Ctrl+C to exit\x1B[0m`);
+
+    process.stdout.write(buf.join("\n"));
+    needsRedraw = false;
+  };
+
+  render();
+
+  const POLL_MS = 500;
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+
+    if (!fs.existsSync(sessionPath)) {
+      lastSize = 0;
+      needsRedraw = true;
+      render();
+      continue;
+    }
+
+    const { interactions: newInteractions, disabledEmoji: newDisabledEmoji, sessionInterval: newInterval, sessionLimit: newLimit, sessionMode: newMode, sessionShowTicks: newTicks, sessionTimezone: newTz } = parseInteractions(sessionPath);
+
+    if (newDisabledEmoji !== void 0) disabledEmoji = newDisabledEmoji;
+    if (newInterval !== void 0) sessionInterval = newInterval;
+    if (newLimit !== void 0) sessionLimit = newLimit;
+    if (newMode !== void 0) sessionMode = newMode;
+    if (newTicks !== void 0) sessionShowTicks = newTicks;
+    if (newTz !== void 0) sessionTimezone = newTz;
+
+    if (newInteractions.length > 0) {
+      allInteractions.push(...newInteractions);
+      needsRedraw = true;
+    }
+
+    if (needsRedraw) {
+      render();
+    }
+  }
+}
+
+
 async function main() {
   const isIndex = /^\d+$/.test(targetSessionPath || "");
   const candidates = discoverSessions(harnessOption);
