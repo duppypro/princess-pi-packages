@@ -307,7 +307,7 @@ async function run() {
     return;
   }
   const autoCleanup = argsList.includes("--cleanup");
-  const filteredArgs = argsList.filter(a => a !== "--cleanup");
+  const filteredArgs = argsList.filter((a) => a !== "--cleanup");
   try {
     await runMerge(filteredArgs, {
       info: (msg) => console.log(msg),

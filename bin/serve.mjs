@@ -502,8 +502,7 @@ ${lines.join("\n")}`);
 }
 function handleWhy() {
   try {
-    const scriptDir = path5.dirname(fileURLToPath(import.meta.url));
-    const manifestPath = path5.join(scriptDir, "..", "docs", "manifests", "serve-cmd.json");
+    const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
     const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let text = `${manifest.name} - ${manifest.tagline}
@@ -537,8 +536,7 @@ function handleWhy() {
 }
 function handleHelp() {
   try {
-    const scriptDir = path5.dirname(fileURLToPath(import.meta.url));
-    const manifestPath = path5.join(scriptDir, "..", "docs", "manifests", "serve-cmd.json");
+    const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
     const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let helpText = `${manifest.name} - ${manifest.tagline}

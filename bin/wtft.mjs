@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 // bin/wtft.ts
-import * as fs from "node:fs";
+import * as fs2 from "node:fs";
 import * as path2 from "node:path";
-import { fileURLToPath } from "node:url";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 
 // extensions/lib/wtft-shared.ts
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { execSync } from "node:child_process";
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
@@ -712,8 +713,6 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
     }
   }
-
-  // Proactive "Other" bloat warning (#17)
   const totalOtherCost = displayedBins.reduce((sum, b) => sum + (b.costs.other || 0), 0);
   if (totalSessionCost > 0) {
     const otherPct = totalOtherCost / totalSessionCost;
@@ -723,52 +722,45 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       widgetLines.push(`\x1B[1;33m\u26A0\uFE0F  "Other" category: ${pctStr} of session cost (${costStr}). Run wtft --other to drill down.\x1B[0m`);
     }
   }
-
   return widgetLines;
 }
-
-// ---
-// SEMANTIC COMMAND SUB-CLASSIFICATION (#17)
-// ---
-
-const SEMANTIC_GROUPS = {
+var SEMANTIC_GROUPS = {
   build: {
     label: "Build & Bundling",
-    commands: new Set(["npm", "npx", "esbuild", "webpack", "vite", "tsc", "make", "gcc", "cargo", "go", "pnpm", "yarn", "bun", "node", "tsx", "ts-node", "cmake", "ninja", "g++"])
+    commands: /* @__PURE__ */ new Set(["npm", "npx", "esbuild", "webpack", "vite", "tsc", "make", "gcc", "cargo", "go", "pnpm", "yarn", "bun", "node", "tsx", "ts-node", "cmake", "ninja", "g++"])
   },
   deps: {
     label: "Dependency Management",
-    commands: new Set(["pip", "pip3", "gem", "brew", "apt-get", "apt", "dnf", "pacman", "zypper", "apk"])
+    commands: /* @__PURE__ */ new Set(["pip", "pip3", "gem", "brew", "apt-get", "apt", "dnf", "pacman", "zypper", "apk"])
   },
   lint: {
     label: "Linting & Formatting",
-    commands: new Set(["eslint", "prettier", "black", "rustfmt", "shfmt", "biome", "stylelint", "shellcheck", "ruff", "flake8", "pylint", "clippy"])
+    commands: /* @__PURE__ */ new Set(["eslint", "prettier", "black", "rustfmt", "shfmt", "biome", "stylelint", "shellcheck", "ruff", "flake8", "pylint", "clippy"])
   },
   test: {
     label: "Testing",
-    commands: new Set(["jest", "vitest", "pytest", "cypress", "playwright", "mocha", "ava", "tap", "karma"])
+    commands: /* @__PURE__ */ new Set(["jest", "vitest", "pytest", "cypress", "playwright", "mocha", "ava", "tap", "karma"])
   },
   db: {
     label: "Database & Infrastructure",
-    commands: new Set(["sqlite3", "psql", "mysql", "docker", "kubectl", "aws", "terraform", "gh", "fly", "railway", "mongo", "redis-cli", "pg_dump", "pg_restore"])
+    commands: /* @__PURE__ */ new Set(["sqlite3", "psql", "mysql", "docker", "kubectl", "aws", "terraform", "gh", "fly", "railway", "mongo", "redis-cli", "pg_dump", "pg_restore"])
   },
   sys: {
     label: "System & File Utilities",
-    commands: new Set(["ls", "mkdir", "cp", "rm", "mv", "chmod", "chown", "touch", "wc", "du", "df", "which", "echo", "pwd", "cd", "ln", "stat", "file", "realpath", "readlink", "dirname", "basename", "tar", "gzip", "gunzip", "zip", "unzip", "curl", "wget", "ssh", "scp", "rsync"])
+    commands: /* @__PURE__ */ new Set(["ls", "mkdir", "cp", "rm", "mv", "chmod", "chown", "touch", "wc", "du", "df", "which", "echo", "pwd", "cd", "ln", "stat", "file", "realpath", "readlink", "dirname", "basename", "tar", "gzip", "gunzip", "zip", "unzip", "curl", "wget", "ssh", "scp", "rsync"])
   },
   git: {
     label: "Git Operations",
-    commands: new Set(["git"])
+    commands: /* @__PURE__ */ new Set(["git"])
   },
   session: {
     label: "Session & Agent",
-    commands: new Set(["pi", "python", "python3", "bash", "zsh", "clear", "exit", "source", ".", "exec", "env", "export", "alias", "unalias"])
+    commands: /* @__PURE__ */ new Set(["pi", "python", "python3", "bash", "zsh", "clear", "exit", "source", ".", "exec", "env", "export", "alias", "unalias"])
   }
 };
-
 function getSemanticCommandGroup(command) {
   const base = command.split("/").pop() || command;
-  for (const [, group] of Object.entries(SEMANTIC_GROUPS)) {
+  for (const [key, group] of Object.entries(SEMANTIC_GROUPS)) {
     if (group.commands.has(base)) return group.label;
   }
   if (base === "git" || command.startsWith("git ")) return SEMANTIC_GROUPS.git.label;
@@ -779,7 +771,6 @@ function getSemanticCommandGroup(command) {
   if (command.startsWith("pip ") || command.startsWith("pip3 ")) return SEMANTIC_GROUPS.deps.label;
   return null;
 }
-
 function renderOtherHistogram(interactions, maxWidth = 80) {
   const commandMap = /* @__PURE__ */ new Map();
   for (const interaction of interactions) {
@@ -812,8 +803,6 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
   if (commandMap.size === 0) {
     return "No 'Other' commands found in this session.";
   }
-
-  // Group commands by semantic category (#17)
   const groups = /* @__PURE__ */ new Map();
   for (const [cmd, data] of commandMap) {
     const groupName = getSemanticCommandGroup(cmd) || "Unclassified";
@@ -826,8 +815,16 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
     group.cost += data.cost;
     group.commands.set(cmd, data);
   }
-
-  const groupOrder = ["Build & Bundling", "Dependency Management", "Linting & Formatting", "Testing", "Database & Infrastructure", "System & File Utilities", "Git Operations", "Session & Agent"];
+  const groupOrder = [
+    "Build & Bundling",
+    "Dependency Management",
+    "Linting & Formatting",
+    "Testing",
+    "Database & Infrastructure",
+    "System & File Utilities",
+    "Git Operations",
+    "Session & Agent"
+  ];
   const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
     const ai = groupOrder.indexOf(a[0]);
     const bi = groupOrder.indexOf(b[0]);
@@ -836,29 +833,169 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
     if (bi === -1) return -1;
     return ai - bi;
   });
-
   let output = "--- 'Other' Command Histogram ---\n";
-
   let maxCmdLen = 0;
   for (const cmd of commandMap.keys()) maxCmdLen = Math.max(maxCmdLen, cmd.length);
   const countWidth = 7;
   const costWidth = 10;
-
   for (const [groupName, group] of sortedGroups) {
     const groupCostStr = `$${group.cost.toFixed(4)}`;
-    output += `\n[${groupName}]  (${group.count} calls, ${groupCostStr})\n`;
-
+    output += `
+[${groupName}]  (${group.count} calls, ${groupCostStr})
+`;
     const sortedCmds = Array.from(group.commands.entries()).sort((a, b) => b[1].count - a[1].count);
     for (const [cmd, data] of sortedCmds) {
       const countStr = `(${data.count})`.padStart(countWidth);
       const costStr = `$${data.cost.toFixed(4)}`.padStart(costWidth);
       const barWidth = Math.max(5, maxWidth - maxCmdLen - countWidth - costWidth - 10);
       const bar = "#".repeat(Math.min(data.count, barWidth));
-      output += `  ${cmd.padEnd(maxCmdLen)} ${costStr} ${countStr} : ${bar}\n`;
+      output += `  ${cmd.padEnd(maxCmdLen)} ${costStr} ${countStr} : ${bar}
+`;
     }
   }
-
   return output;
+}
+async function watchMode(sessionPath, settings) {
+  if (!process.stdout.isTTY) {
+    console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
+    process.exit(1);
+  }
+  const sessionName = path.basename(sessionPath);
+  let totalCost = 0;
+  let interactionCount = 0;
+  let lastSize = 0;
+  let needsRedraw = true;
+  process.stdout.write("\x1B[?25l");
+  process.on("SIGWINCH", () => {
+    needsRedraw = true;
+  });
+  process.on("SIGINT", () => {
+    process.stdout.write("\x1B[2J\x1B[H");
+    process.stdout.write("\x1B[?25h");
+    console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
+    process.exit(0);
+  });
+  const parseInteractions = (filePath) => {
+    const interactions = [];
+    let disabledEmoji2 = false;
+    let sessionInterval2;
+    let sessionLimit2;
+    let sessionMode2;
+    let sessionShowTicks2;
+    let sessionTimezone2;
+    try {
+      const stat = fs.statSync(filePath);
+      const currentSize = stat.size;
+      if (currentSize < lastSize) {
+        lastSize = 0;
+      }
+      if (currentSize <= lastSize) return { interactions, disabledEmoji: disabledEmoji2, sessionInterval: sessionInterval2, sessionLimit: sessionLimit2, sessionMode: sessionMode2, sessionShowTicks: sessionShowTicks2, sessionTimezone: sessionTimezone2 };
+      const fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(currentSize - lastSize);
+      fs.readSync(fd, buf, 0, buf.length, lastSize);
+      fs.closeSync(fd);
+      lastSize = currentSize;
+      const newContent = buf.toString("utf8");
+      const lines = newContent.split("\n");
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type === "custom" && entry.customType === "emoji-settings") {
+            if (entry.data && typeof entry.data.disabled === "boolean") {
+              disabledEmoji2 = entry.data.disabled;
+            }
+          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+            if (entry.data) {
+              if (typeof entry.data.interval === "string") sessionInterval2 = entry.data.interval;
+              if (typeof entry.data.limit === "number") sessionLimit2 = entry.data.limit;
+              if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") sessionMode2 = entry.data.mode;
+              if (typeof entry.data.showTicks === "boolean") sessionShowTicks2 = entry.data.showTicks;
+              if (typeof entry.data.timezone === "string") sessionTimezone2 = entry.data.timezone;
+            }
+          }
+          const interaction = parseEntryToInteraction(entry);
+          if (interaction) {
+            interactions.push(interaction);
+          }
+        } catch {
+        }
+      }
+    } catch {
+    }
+    return { interactions, disabledEmoji: disabledEmoji2, sessionInterval: sessionInterval2, sessionLimit: sessionLimit2, sessionMode: sessionMode2, sessionShowTicks: sessionShowTicks2, sessionTimezone: sessionTimezone2 };
+  };
+  let allInteractions = [];
+  let disabledEmoji = settings.disabledEmoji;
+  let sessionInterval;
+  let sessionLimit;
+  let sessionMode;
+  let sessionShowTicks;
+  let sessionTimezone;
+  const render = () => {
+    const width = getTerminalWidth();
+    const finalInterval = sessionInterval ?? settings.interval;
+    const finalLimit = sessionLimit ?? settings.limit;
+    const finalMode = sessionMode ?? settings.mode;
+    const finalShowTicks = sessionShowTicks ?? settings.showTicks;
+    const finalTimezone = sessionTimezone ?? settings.timezone;
+    const finalWidth = Math.min(settings.width, width);
+    const defaultSettings = {
+      interval: "1h",
+      limit: 100,
+      width: finalWidth,
+      showTicks: true,
+      mode: "cumulative",
+      timezone: void 0
+    };
+    const lines = buildWtftLines(allInteractions, defaultSettings, {
+      interval: finalInterval,
+      limit: finalLimit,
+      width: finalWidth,
+      showTicks: finalShowTicks,
+      mode: finalMode,
+      timezone: finalTimezone,
+      disabledEmoji
+    });
+    const buf = [];
+    buf.push("\x1B[2J\x1B[H");
+    if (lines && lines.length > 0) {
+      for (const l of lines) buf.push(l);
+    } else {
+      buf.push("\x1B[90mWaiting for session data...\x1B[0m");
+    }
+    totalCost = allInteractions.reduce((sum, i) => sum + i.cost, 0);
+    interactionCount = allInteractions.length;
+    buf.push("");
+    buf.push(`\x1B[90mWatching ${sessionName} (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 Ctrl+C to exit\x1B[0m`);
+    process.stdout.write(buf.join("\n"));
+    needsRedraw = false;
+  };
+  render();
+  const POLL_MS = 500;
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    if (!fs.existsSync(sessionPath)) {
+      lastSize = 0;
+      needsRedraw = true;
+      render();
+      continue;
+    }
+    const { interactions: newInteractions, disabledEmoji: newDisabledEmoji, sessionInterval: newInterval, sessionLimit: newLimit, sessionMode: newMode, sessionShowTicks: newTicks, sessionTimezone: newTz } = parseInteractions(sessionPath);
+    if (newDisabledEmoji !== void 0) disabledEmoji = newDisabledEmoji;
+    if (newInterval !== void 0) sessionInterval = newInterval;
+    if (newLimit !== void 0) sessionLimit = newLimit;
+    if (newMode !== void 0) sessionMode = newMode;
+    if (newTicks !== void 0) sessionShowTicks = newTicks;
+    if (newTz !== void 0) sessionTimezone = newTz;
+    if (newInteractions.length > 0) {
+      allInteractions.push(...newInteractions);
+      needsRedraw = true;
+    }
+    if (needsRedraw) {
+      render();
+    }
+  }
 }
 
 // bin/wtft.ts
@@ -871,12 +1008,10 @@ var targetSessionPath = void 0;
 var timezone = void 0;
 var harnessOption = "auto";
 var showOther = false;
-var showWatch = false;
 function printWhy() {
   try {
-    const __dirname = path2.dirname(fileURLToPath(import.meta.url));
-    const manifestPath = path2.join(__dirname, "..", "docs", "manifests", "wtft-cmd.json");
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path2.join(path2.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+    const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
     let text = `${manifest.name} - ${manifest.tagline}
 
 `;
@@ -943,6 +1078,7 @@ var hasNoTicks = false;
 var hasTicks = false;
 var hasTz = false;
 var hasOther = false;
+var showWatch = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
@@ -980,6 +1116,8 @@ for (let i = 2; i < process.argv.length; i++) {
   } else if (arg === "-o" || arg === "--other") {
     showOther = true;
     hasOther = true;
+  } else if (arg === "-W" || arg === "--watch") {
+    showWatch = true;
   } else if (arg === "--harness") {
     const val = process.argv[++i];
     if (val === "pi" || val === "claude-code" || val === "auto") {
@@ -991,19 +1129,19 @@ function discoverSessions(harness = "auto") {
   const piSessionsDir = path2.join(os.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
   const claudeProjectsDir = path2.join(os.homedir(), ".claude", "projects");
-  if (fs.existsSync(claudeProjectsDir)) {
+  if (fs2.existsSync(claudeProjectsDir)) {
     const cwdSlug = process.cwd().replace(/[/\\\\]/g, "-");
     const possibleDir = path2.join(claudeProjectsDir, cwdSlug, "sessions");
     const alternativeDir = path2.join(claudeProjectsDir, cwdSlug);
-    if (fs.existsSync(possibleDir)) claudeSessionsDirs.push(possibleDir);
-    if (fs.existsSync(alternativeDir)) claudeSessionsDirs.push(alternativeDir);
+    if (fs2.existsSync(possibleDir)) claudeSessionsDirs.push(possibleDir);
+    if (fs2.existsSync(alternativeDir)) claudeSessionsDirs.push(alternativeDir);
   }
   const candidates = [];
   const walk = (dir, type) => {
-    const files = fs.readdirSync(dir);
+    const files = fs2.readdirSync(dir);
     for (const f of files) {
       const fullPath = path2.join(dir, f);
-      const stat = fs.statSync(fullPath);
+      const stat = fs2.statSync(fullPath);
       if (stat.isDirectory()) {
         if (f !== "subagents" && f !== "tool-results" && f !== "memory") {
           walk(fullPath, type);
@@ -1020,11 +1158,11 @@ function discoverSessions(harness = "auto") {
   };
   try {
     if (harness === "auto" || harness === "pi") {
-      if (fs.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
+      if (fs2.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
     }
     if (harness === "auto" || harness === "claude-code") {
       for (const dir of claudeSessionsDirs) {
-        if (fs.existsSync(dir)) walk(dir, "claude-code");
+        if (fs2.existsSync(dir)) walk(dir, "claude-code");
       }
     }
   } catch {
@@ -1035,7 +1173,7 @@ function getSessionSummary(filePath) {
   let turns = 0;
   let cost = 0;
   try {
-    const content = fs.readFileSync(filePath, "utf8");
+    const content = fs2.readFileSync(filePath, "utf8");
     const lines = content.split("\n");
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -1126,175 +1264,6 @@ async function selectSessionPrompt(candidates) {
     stdin.on("data", onKey);
   });
 }
-async function watchMode(sessionPath, settings) {
-  if (!process.stdout.isTTY) {
-    console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
-    process.exit(1);
-  }
-
-  const sessionName = path2.basename(sessionPath);
-  let totalCost = 0;
-  let interactionCount = 0;
-  let lastSize = 0;
-  let needsRedraw = true;
-
-  process.stdout.write("\x1B[?25l");
-
-  process.on("SIGWINCH", () => {
-    needsRedraw = true;
-  });
-
-  process.on("SIGINT", () => {
-    process.stdout.write("\x1B[2J\x1B[H");
-    process.stdout.write("\x1B[?25h");
-    console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
-    process.exit(0);
-  });
-
-  const parseInteractions = (filePath) => {
-    const interactions = [];
-    let disabledEmoji = false;
-    let sessionInterval;
-    let sessionLimit;
-    let sessionMode;
-    let sessionShowTicks;
-    let sessionTimezone;
-
-    try {
-      const stat = fs.statSync(filePath);
-      const currentSize = stat.size;
-
-      if (currentSize < lastSize) {
-        lastSize = 0;
-      }
-
-      if (currentSize <= lastSize) return { interactions, disabledEmoji, sessionInterval, sessionLimit, sessionMode, sessionShowTicks, sessionTimezone };
-
-      const fd = fs.openSync(filePath, "r");
-      const buf = Buffer.alloc(currentSize - lastSize);
-      fs.readSync(fd, buf, 0, buf.length, lastSize);
-      fs.closeSync(fd);
-      lastSize = currentSize;
-
-      const newContent = buf.toString("utf8");
-      const lines = newContent.split("\n");
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry.type === "custom" && entry.customType === "emoji-settings") {
-            if (entry.data && typeof entry.data.disabled === "boolean") {
-              disabledEmoji = entry.data.disabled;
-            }
-          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
-            if (entry.data) {
-              if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
-              if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
-              if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") sessionMode = entry.data.mode;
-              if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
-              if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
-            }
-          }
-          const interaction = parseEntryToInteraction(entry);
-          if (interaction) {
-            interactions.push(interaction);
-          }
-        } catch {
-        }
-      }
-    } catch {
-    }
-
-    return { interactions, disabledEmoji, sessionInterval, sessionLimit, sessionMode, sessionShowTicks, sessionTimezone };
-  };
-
-  let allInteractions = [];
-  let disabledEmoji = settings.disabledEmoji;
-  let sessionInterval;
-  let sessionLimit;
-  let sessionMode;
-  let sessionShowTicks;
-  let sessionTimezone;
-
-  const render = () => {
-    const width = getTerminalWidth();
-    const finalInterval = sessionInterval ?? settings.interval;
-    const finalLimit = sessionLimit ?? settings.limit;
-    const finalMode = sessionMode ?? settings.mode;
-    const finalShowTicks = sessionShowTicks ?? settings.showTicks;
-    const finalTimezone = sessionTimezone ?? settings.timezone;
-    const finalWidth = Math.min(settings.width, width);
-
-    const defaultSettings = {
-      interval: "1h", limit: 100, width: finalWidth,
-      showTicks: true, mode: "cumulative",
-      timezone: void 0
-    };
-
-    const lines = buildWtftLines(allInteractions, defaultSettings, {
-      interval: finalInterval,
-      limit: finalLimit,
-      width: finalWidth,
-      showTicks: finalShowTicks,
-      mode: finalMode,
-      timezone: finalTimezone,
-      disabledEmoji
-    });
-
-    const buf = [];
-    buf.push("\x1B[2J\x1B[H");
-
-    if (lines && lines.length > 0) {
-      for (const l of lines) buf.push(l);
-    } else {
-      buf.push("\x1B[90mWaiting for session data...\x1B[0m");
-    }
-
-    totalCost = allInteractions.reduce((sum, i) => sum + i.cost, 0);
-    interactionCount = allInteractions.length;
-
-    buf.push("");
-    buf.push(`\x1B[90mWatching ${sessionName} (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 Ctrl+C to exit\x1B[0m`);
-
-    process.stdout.write(buf.join("\n"));
-    needsRedraw = false;
-  };
-
-  render();
-
-  const POLL_MS = 500;
-  while (true) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-
-    if (!fs.existsSync(sessionPath)) {
-      lastSize = 0;
-      needsRedraw = true;
-      render();
-      continue;
-    }
-
-    const { interactions: newInteractions, disabledEmoji: newDisabledEmoji, sessionInterval: newInterval, sessionLimit: newLimit, sessionMode: newMode, sessionShowTicks: newTicks, sessionTimezone: newTz } = parseInteractions(sessionPath);
-
-    if (newDisabledEmoji !== void 0) disabledEmoji = newDisabledEmoji;
-    if (newInterval !== void 0) sessionInterval = newInterval;
-    if (newLimit !== void 0) sessionLimit = newLimit;
-    if (newMode !== void 0) sessionMode = newMode;
-    if (newTicks !== void 0) sessionShowTicks = newTicks;
-    if (newTz !== void 0) sessionTimezone = newTz;
-
-    if (newInteractions.length > 0) {
-      allInteractions.push(...newInteractions);
-      needsRedraw = true;
-    }
-
-    if (needsRedraw) {
-      render();
-    }
-  }
-}
-
-
 async function main() {
   const isIndex = /^\d+$/.test(targetSessionPath || "");
   const candidates = discoverSessions(harnessOption);
@@ -1319,18 +1288,17 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !fs.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !fs2.existsSync(finalSessionPath)) {
     console.error("\u274C Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
-
   if (showWatch) {
-    const termColumns = getTerminalWidth();
-    const maxWidth = hasWidth ? maxWidthOption : 240;
+    const termColumns2 = getTerminalWidth();
+    const maxWidth2 = hasWidth ? maxWidthOption : 240;
     await watchMode(finalSessionPath, {
       interval: hasInterval ? intervalStr : "1h",
       limit: hasLimit ? limit : 100,
-      width: Math.min(maxWidth, termColumns),
+      width: Math.min(maxWidth2, termColumns2),
       mode: hasCumulative || hasBucket ? mode : "cumulative",
       showTicks: hasTicks || hasNoTicks ? showTicks : true,
       timezone: hasTz ? timezone : void 0,
@@ -1338,16 +1306,15 @@ async function main() {
     });
     return;
   }
-
   const sessionFiles = [finalSessionPath];
   const extName = path2.extname(finalSessionPath);
   if (extName === ".jsonl") {
     const baseName = path2.basename(finalSessionPath, extName);
     const parentDir = path2.dirname(finalSessionPath);
     const possibleSubagentsDir = path2.join(parentDir, baseName, "subagents");
-    if (fs.existsSync(possibleSubagentsDir)) {
+    if (fs2.existsSync(possibleSubagentsDir)) {
       try {
-        const subFiles = fs.readdirSync(possibleSubagentsDir);
+        const subFiles = fs2.readdirSync(possibleSubagentsDir);
         for (const f of subFiles) {
           if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
             sessionFiles.push(path2.join(possibleSubagentsDir, f));
@@ -1360,7 +1327,7 @@ async function main() {
   const lines = [];
   for (const file of sessionFiles) {
     try {
-      const content = fs.readFileSync(file, "utf8");
+      const content = fs2.readFileSync(file, "utf8");
       lines.push(...content.split("\n"));
     } catch {
     }
