@@ -719,7 +719,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     if (otherPct > 0.2 && totalOtherCost > 6) {
       const pctStr = `${Math.round(otherPct * 100)}%`;
       const costStr = formatCost(totalOtherCost);
-      widgetLines.push(`\x1B[1;33m\u26A0\uFE0F  "Other" category: ${pctStr} of session cost (${costStr}). Run wtft-other to drill down.\x1B[0m`);
+      widgetLines.push(`\x1B[1;33m\u26A0\uFE0F  "Other" category: ${pctStr} of session cost (${costStr}). Run wtft --other to drill down.\x1B[0m`);
     }
   }
 
@@ -892,7 +892,14 @@ function printWhy() {
 `;
       }
       text += `    \u2192 ${s.result}
-
+`;
+      if (s.demo && s.demo.length > 0) {
+        for (const line of s.demo) {
+          text += `    ${line}
+`;
+        }
+      }
+      text += `
 `;
     }
     text += `Run wtft --help for the full flag reference.
@@ -918,7 +925,7 @@ Options:
   --ticks                 Enable the proportional cost scale ticks above the bars (default behavior).
   --no-ticks              Disable the proportional cost scale ticks above the bars.
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
-  -o, --other             Instead of the visual timeline, print a histogram of commands categorized as 'Other'.
+  -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
   --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases.
   -h, --help              Display this help menu.
 `);

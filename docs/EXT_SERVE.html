@@ -222,6 +222,20 @@ $ pi -r
                     html += `<li style="margin-bottom: 5px; list-style-type: none;"><code>${invokedAs} ${u.flags}</code><br><span style="color: #aaa">${u.desc}</span></li>`;
                 });
                 html += `</ul>`;
+
+                if (data.why && data.why.length > 0) {
+                    html += `<h4 style="margin-bottom: 5px; color: var(--accent-yellow)">Why run ${invokedAs}?</h4>`;
+                    data.why.forEach(s => {
+                        html += `<div style="margin-bottom: 12px; padding-left: 12px;">`;
+                        html += `<p style="margin: 0 0 4px 0;">${s.scenario}</p>`;
+                        s.commands.forEach(cmd => {
+                            const fullCmd = cmd ? `${invokedAs} ${cmd}` : invokedAs;
+                            html += `<code style="color: var(--accent-orange);">$ ${fullCmd}</code><br>`;
+                        });
+                        html += `<span style="color: var(--accent-green);">→ ${s.result}</span>`;
+                        html += `</div>`;
+                    });
+                }
                 
                 container.innerHTML = html;
             })

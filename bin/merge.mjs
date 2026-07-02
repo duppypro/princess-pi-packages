@@ -262,7 +262,14 @@ function renderWhy(manifestPath, invokedAs) {
 `;
     }
     text += `    \x1B[32m\u2192 ${s.result}\x1B[0m
-
+`;
+    if (s.demo && s.demo.length > 0) {
+      for (const line of s.demo) {
+        text += `    ${line}
+`;
+      }
+    }
+    text += `
 `;
   }
   if (manifest.usage) {

@@ -40,7 +40,13 @@ export function renderWhy(manifestPath: string, invokedAs: string): string {
 		for (const cmd of s.commands) {
 			text += `    \x1b[33m$ ${invokedAs}${cmd ? " " + cmd : ""}\x1b[0m\n`;
 		}
-		text += `    \x1b[32m→ ${s.result}\x1b[0m\n\n`;
+		text += `    \x1b[32m→ ${s.result}\x1b[0m\n`;
+		if (s.demo && s.demo.length > 0) {
+			for (const line of s.demo) {
+				text += `    ${line}\n`;
+			}
+		}
+		text += `\n`;
 	}
 
 	if (manifest.usage) {
