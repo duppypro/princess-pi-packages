@@ -103,8 +103,16 @@ STOP: show Duppy the final MX + rule list per domain before saving/enabling.
    cancel/delete the duppy@duppy.com and david@interfacearts.com mailboxes.
 STOP: do not do step 3 without an explicit "go ahead and decommission" from Duppy.
 
-When all phases are done, summarize final state for all three domains (MX, SPF, DMARC,
-routing rules, send-as relay) so Duppy can sanity-check against this runbook.
+TARGET END STATE (compare your final result against this table before declaring done):
+| Domain             | MX                      | SPF (apex TXT)                                              | DMARC (_dmarc TXT) | Email Routing        | Send-as relay |
+|---------------------|-------------------------|---------------------------------------------------------------|---------------------|-----------------------|----------------|
+| duppy.com           | Cloudflare routing MX   | v=spf1 include:_spf.google.com include:_spf.mx.cloudflare.net ~all | p=none              | 1 named rule -> Gmail | Gmail          |
+| interfacearts.com   | Cloudflare routing MX   | (same as above)                                                | p=none              | 1 named rule -> Gmail | Gmail          |
+| agentic-arts.ai     | 1 smtp.google.com (unchanged) | v=spf1 include:_spf.google.com ~all                      | p=none              | not enabled           | n/a (Workspace)|
+
+When all phases are done, summarize the final state for all three domains (MX, SPF,
+DMARC, routing rules, send-as relay) and compare it against the table above. Flag any
+mismatch to Duppy explicitly rather than declaring success silently.
 ```
 
 ---
