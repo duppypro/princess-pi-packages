@@ -90,18 +90,27 @@ function parseEntryToInteraction(entry) {
   const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
   if (isPiSchema || isClaudeSchema) {
     const assistantMsg = entry.message;
-    let cost = 0;
-    if (assistantMsg.usage?.cost?.total !== void 0) {
-      cost = assistantMsg.usage.cost.total;
-    } else if (assistantMsg.model && assistantMsg.usage) {
-      cost = calculateClaudeCost(assistantMsg.model, assistantMsg.usage, timestamp);
-    }
     let timestampStr = assistantMsg.timestamp || entry.timestamp;
     let timestamp = 0;
     if (typeof timestampStr === "string") {
       timestamp = new Date(timestampStr).getTime();
     } else if (typeof timestampStr === "number") {
       timestamp = timestampStr;
+    }
+    let cost = 0;
+    const usage = assistantMsg.usage || {};
+    const piCost = usage.cost?.total;
+    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0;
+    if (piCost !== void 0 && piCost !== null && !(piCost === 0 && hasTokens)) {
+      cost = piCost;
+    } else if (assistantMsg.model && hasTokens) {
+      const normalizedUsage = {
+        input_tokens: usage.input_tokens ?? usage.input ?? 0,
+        output_tokens: usage.output_tokens ?? usage.output ?? 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
+        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0
+      };
+      cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
     const files = [];
     const commands = [];
@@ -391,7 +400,7 @@ function buildTickLine(maxCost, barWidth, prefixWidth, labelPrefix) {
   const labels = [];
   const tickValues = [0, maxCost / 4, maxCost / 2, maxCost * 3 / 4, maxCost];
   for (let i = 0; i < ticks.length; i++) {
-    const text = `$${tickValues[i].toFixed(2)}`;
+    const text = formatCost(tickValues[i]);
     const displayStr = ` ${text} `;
     const dotIdx = displayStr.indexOf(".");
     const startIdx = ticks[i] - dotIdx;
@@ -433,7 +442,8 @@ function padString(str, len) {
   return str.length >= len ? str : str + " ".repeat(len - str.length);
 }
 function formatCost(cost) {
-  return `$${cost.toFixed(2)}`;
+  const decimals = cost > 0 && cost < 0.01 ? 4 : 2;
+  return `$${cost.toFixed(decimals)}`;
 }
 function formatMmmDdStr(dateStr) {
   const parts = dateStr.split("-");
@@ -942,7 +952,7 @@ async function selectSessionPrompt(candidates) {
         const stats = getSessionSummary(c.path);
         const shortName = c.name.length > 25 ? `${c.name.substring(0, 10)}...${c.name.substring(c.name.length - 15)}` : c.name;
         const dateStr = new Date(c.timestamp).toLocaleString();
-        console.log(`  [${i + 1}] ${shortName.padEnd(28)} (${dateStr}) - ${stats.turns} turns, $${stats.cost.toFixed(2)} [${c.harness.toUpperCase()}]`);
+        console.log(`  [${i + 1}] ${shortName.padEnd(28)} (${dateStr}) - ${stats.turns} turns, ${formatCost(stats.cost)} [${c.harness.toUpperCase()}]`);
       }
       console.log(`\x1B[90mRun 'wtft -s <number>' to target a specific session index.\x1B[0m
 `);
@@ -970,7 +980,8 @@ async function selectSessionPrompt(candidates) {
         const prefix = isSelected ? `\x1B[36m\x1B[1m > \x1B[0m` : "   ";
         const highlight = isSelected ? `\x1B[1m\x1B[36m` : "";
         const reset = isSelected ? `\x1B[0m` : "";
-        out += `${prefix}${highlight}${shortName.padEnd(28)}${reset} \x1B[90m(${dateStr})\x1B[0m  \x1B[32m$${stats.cost.toFixed(2).padStart(6)}\x1B[0m \x1B[90m(${stats.turns} turns) [${c.harness.toUpperCase()}]\x1B[0m
+        const costStr = `\x1B[32m${formatCost(stats.cost).padStart(7)}\x1B[0m`;
+        out += `${prefix}${highlight}${shortName.padEnd(28)}${reset} \x1B[90m(${dateStr})\x1B[0m  ${costStr} \x1B[90m(${stats.turns} turns) [${c.harness.toUpperCase()}]\x1B[0m
 `;
       }
       process.stdout.write(out);
