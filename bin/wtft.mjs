@@ -711,8 +711,74 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
     }
   }
+
+  // Proactive "Other" bloat warning (#17)
+  const totalOtherCost = displayedBins.reduce((sum, b) => sum + (b.costs.other || 0), 0);
+  if (totalSessionCost > 0) {
+    const otherPct = totalOtherCost / totalSessionCost;
+    if (otherPct > 0.2 && totalOtherCost > 6) {
+      const pctStr = `${Math.round(otherPct * 100)}%`;
+      const costStr = formatCost(totalOtherCost);
+      widgetLines.push(`\x1B[1;33m\u26A0\uFE0F  "Other" category: ${pctStr} of session cost (${costStr}). Run wtft-other to drill down.\x1B[0m`);
+    }
+  }
+
   return widgetLines;
 }
+
+// ---
+// SEMANTIC COMMAND SUB-CLASSIFICATION (#17)
+// ---
+
+const SEMANTIC_GROUPS = {
+  build: {
+    label: "Build & Bundling",
+    commands: new Set(["npm", "npx", "esbuild", "webpack", "vite", "tsc", "make", "gcc", "cargo", "go", "pnpm", "yarn", "bun", "node", "tsx", "ts-node", "cmake", "ninja", "g++"])
+  },
+  deps: {
+    label: "Dependency Management",
+    commands: new Set(["pip", "pip3", "gem", "brew", "apt-get", "apt", "dnf", "pacman", "zypper", "apk"])
+  },
+  lint: {
+    label: "Linting & Formatting",
+    commands: new Set(["eslint", "prettier", "black", "rustfmt", "shfmt", "biome", "stylelint", "shellcheck", "ruff", "flake8", "pylint", "clippy"])
+  },
+  test: {
+    label: "Testing",
+    commands: new Set(["jest", "vitest", "pytest", "cypress", "playwright", "mocha", "ava", "tap", "karma"])
+  },
+  db: {
+    label: "Database & Infrastructure",
+    commands: new Set(["sqlite3", "psql", "mysql", "docker", "kubectl", "aws", "terraform", "gh", "fly", "railway", "mongo", "redis-cli", "pg_dump", "pg_restore"])
+  },
+  sys: {
+    label: "System & File Utilities",
+    commands: new Set(["ls", "mkdir", "cp", "rm", "mv", "chmod", "chown", "touch", "wc", "du", "df", "which", "echo", "pwd", "cd", "ln", "stat", "file", "realpath", "readlink", "dirname", "basename", "tar", "gzip", "gunzip", "zip", "unzip", "curl", "wget", "ssh", "scp", "rsync"])
+  },
+  git: {
+    label: "Git Operations",
+    commands: new Set(["git"])
+  },
+  session: {
+    label: "Session & Agent",
+    commands: new Set(["pi", "python", "python3", "bash", "zsh", "clear", "exit", "source", ".", "exec", "env", "export", "alias", "unalias"])
+  }
+};
+
+function getSemanticCommandGroup(command) {
+  const base = command.split("/").pop() || command;
+  for (const [, group] of Object.entries(SEMANTIC_GROUPS)) {
+    if (group.commands.has(base)) return group.label;
+  }
+  if (base === "git" || command.startsWith("git ")) return SEMANTIC_GROUPS.git.label;
+  if (command.startsWith("npm ")) return SEMANTIC_GROUPS.build.label;
+  if (command.startsWith("yarn ") || command.startsWith("pnpm ") || command.startsWith("bun ")) return SEMANTIC_GROUPS.build.label;
+  if (command.startsWith("go ")) return SEMANTIC_GROUPS.build.label;
+  if (command.startsWith("cargo ")) return SEMANTIC_GROUPS.build.label;
+  if (command.startsWith("pip ") || command.startsWith("pip3 ")) return SEMANTIC_GROUPS.deps.label;
+  return null;
+}
+
 function renderOtherHistogram(interactions, maxWidth = 80) {
   const commandMap = /* @__PURE__ */ new Map();
   for (const interaction of interactions) {
@@ -745,20 +811,52 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
   if (commandMap.size === 0) {
     return "No 'Other' commands found in this session.";
   }
+
+  // Group commands by semantic category (#17)
+  const groups = /* @__PURE__ */ new Map();
+  for (const [cmd, data] of commandMap) {
+    const groupName = getSemanticCommandGroup(cmd) || "Unclassified";
+    let group = groups.get(groupName);
+    if (!group) {
+      group = { count: 0, cost: 0, commands: /* @__PURE__ */ new Map() };
+      groups.set(groupName, group);
+    }
+    group.count += data.count;
+    group.cost += data.cost;
+    group.commands.set(cmd, data);
+  }
+
+  const groupOrder = ["Build & Bundling", "Dependency Management", "Linting & Formatting", "Testing", "Database & Infrastructure", "System & File Utilities", "Git Operations", "Session & Agent"];
+  const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
+    const ai = groupOrder.indexOf(a[0]);
+    const bi = groupOrder.indexOf(b[0]);
+    if (ai === -1 && bi === -1) return a[0].localeCompare(b[0]);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+
   let output = "--- 'Other' Command Histogram ---\n";
-  const sortedEntries = Array.from(commandMap.entries()).sort((a, b) => b[1].count - a[1].count);
+
   let maxCmdLen = 0;
   for (const cmd of commandMap.keys()) maxCmdLen = Math.max(maxCmdLen, cmd.length);
   const countWidth = 7;
   const costWidth = 10;
-  for (const [cmd, data] of sortedEntries) {
-    const countStr = `(${data.count})`.padStart(countWidth);
-    const costStr = `$${data.cost.toFixed(4)}`.padStart(costWidth);
-    const barWidth = Math.max(5, maxWidth - maxCmdLen - countWidth - costWidth - 10);
-    const bar = "#".repeat(Math.min(data.count, barWidth));
-    output += `${cmd.padEnd(maxCmdLen)} ${costStr} ${countStr} : ${bar}
-`;
+
+  for (const [groupName, group] of sortedGroups) {
+    const groupCostStr = `$${group.cost.toFixed(4)}`;
+    output += `\n[${groupName}]  (${group.count} calls, ${groupCostStr})\n`;
+
+    const sortedCmds = Array.from(group.commands.entries()).sort((a, b) => b[1].count - a[1].count);
+    for (const [cmd, data] of sortedCmds) {
+      const countStr = `(${data.count})`.padStart(countWidth);
+      const costStr = `$${data.cost.toFixed(4)}`.padStart(costWidth);
+      const barWidth = Math.max(5, maxWidth - maxCmdLen - countWidth - costWidth - 10);
+      const bar = "#".repeat(Math.min(data.count, barWidth));
+      output += `  ${cmd.padEnd(maxCmdLen)} ${costStr} ${countStr} : ${bar}\n`;
+    }
   }
+
   return output;
 }
 
