@@ -870,6 +870,7 @@ var targetSessionPath = void 0;
 var timezone = void 0;
 var harnessOption = "auto";
 var showOther = false;
+var showWatch = false;
 function printWhy() {
   try {
     const manifestPath = path2.join(process.cwd(), "docs", "manifests", "wtft-cmd.json");
@@ -926,6 +927,7 @@ Options:
   --no-ticks              Disable the proportional cost scale ticks above the bars.
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
   -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
+  -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
   --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases.
   -h, --help              Display this help menu.
 `);
@@ -1150,6 +1152,22 @@ async function main() {
     console.error("\u274C Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
+
+  if (showWatch) {
+    const termColumns = getTerminalWidth();
+    const maxWidth = hasWidth ? maxWidthOption : 240;
+    await watchMode(finalSessionPath, {
+      interval: hasInterval ? intervalStr : "1h",
+      limit: hasLimit ? limit : 100,
+      width: Math.min(maxWidth, termColumns),
+      mode: hasCumulative || hasBucket ? mode : "cumulative",
+      showTicks: hasTicks || hasNoTicks ? showTicks : true,
+      timezone: hasTz ? timezone : void 0,
+      disabledEmoji: false
+    });
+    return;
+  }
+
   const sessionFiles = [finalSessionPath];
   const extName = path2.extname(finalSessionPath);
   if (extName === ".jsonl") {
