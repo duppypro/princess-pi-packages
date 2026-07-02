@@ -4,11 +4,69 @@ import * as fs from "node:fs";
 export interface MergeLogger {
 	info(msg: string): void;
 	error(msg: string): void;
+	prompt(question: string): Promise<boolean>;
 }
 
 const STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
 
-export function runMerge(argsList: string[], logger: MergeLogger): void {
+// ---
+// Post-merge branch cleanup: check cleanliness, prompt to delete, switch to main.
+// Called after a successful merge+push, while still on the feature branch.
+// ---
+async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLogger): Promise<void> {
+	const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
+
+	if (status !== "") {
+		// Branch is dirty — show what's uncommitted and leave the decision to the user
+		logger.info(`\n⚠️  Branch '${currentBranch}' has uncommitted changes. Cannot safely delete.`);
+		try {
+			const diffStat = execSync("git diff --stat", { cwd, encoding: "utf8" }).trim();
+			if (diffStat) logger.info(`\n${diffStat}`);
+		} catch { /* ignore */ }
+		logger.info(`\n💡 To clean up manually after committing/stashing:\n   git checkout main\n   git branch -D ${currentBranch}\n   git push origin --delete ${currentBranch}`);
+		return;
+	}
+
+	// Verify branch is fully merged into origin/main (safety check)
+	try {
+		execSync(`git merge-base --is-ancestor ${currentBranch} origin/main`, { cwd, stdio: "ignore" });
+	} catch {
+		logger.info(`\n⚠️  Branch '${currentBranch}' is not an ancestor of origin/main. Refusing to delete.`);
+		logger.info(`💡 Verify merge completed, then clean up manually.`);
+		return;
+	}
+
+	const answer = await logger.prompt(`\n🗑️  Delete feature branch '${currentBranch}' (local + remote) and switch to main? [y/N] `);
+
+	if (!answer) {
+		logger.info(`\n💡 Branch '${currentBranch}' kept. To clean up later:\n   git checkout main\n   git branch -D ${currentBranch}\n   git push origin --delete ${currentBranch}`);
+		return;
+	}
+
+	// Delete remote branch first, then local
+	logger.info(`📡 Deleting remote branch 'origin/${currentBranch}'...`);
+	try {
+		execSync(`git push origin --delete ${currentBranch}`, { cwd, stdio: "ignore" });
+		logger.info(`✅ Remote branch 'origin/${currentBranch}' deleted.`);
+	} catch (err: any) {
+		const msg = err?.stderr || err?.message || String(err);
+		logger.error(`⚠️  Failed to delete remote branch: ${msg.trim()}`);
+	}
+
+	logger.info(`🔀 Switching to 'main' and deleting local branch '${currentBranch}'...`);
+	execSync("git checkout main", { cwd, stdio: "ignore" });
+	try {
+		execSync(`git branch -D ${currentBranch}`, { cwd, stdio: "ignore" });
+		logger.info(`✅ Local branch '${currentBranch}' deleted.`);
+	} catch (err: any) {
+		const msg = err?.stderr || err?.message || String(err);
+		logger.error(`⚠️  Failed to delete local branch: ${msg.trim()}`);
+	}
+
+	logger.info(`💪 Ready for the next task! You are on branch 'main'.`);
+}
+
+export async function runMerge(argsList: string[], logger: MergeLogger): Promise<void> {
 	logger.info("🔄 Running merge validation checks...");
 
 	const currentCwd = process.cwd();
@@ -122,6 +180,7 @@ export function runMerge(argsList: string[], logger: MergeLogger): void {
 		execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
 		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
 		logger.info(`💪 Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
+		await cleanupBranch(currentBranch, currentCwd, logger);
 	} else {
 		logger.info("🪵 No dedicated 'main' worktree found — using in-place single-checkout merge.");
 		try {
@@ -155,5 +214,6 @@ export function runMerge(argsList: string[], logger: MergeLogger): void {
 		}
 		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
 		logger.info(`💪 Ready for the next task! You are on branch '${currentBranch}'.`);
+		await cleanupBranch(currentBranch, currentCwd, logger);
 	}
 }

@@ -35,9 +35,14 @@ export default function mergeExtension(pi: ExtensionAPI) {
 			}
 
 			try {
-				runMerge(argsList, {
+				await runMerge(argsList, {
 					info: (msg) => ctx.ui.notify(msg, "info"),
 					error: (msg) => ctx.ui.notify(msg, "error"),
+					prompt: async (question: string): Promise<boolean> => {
+						// Pi slash commands can't do interactive prompts — show notification with manual commands
+						ctx.ui.notify(question + "\n(Run this command from the CLI shell for interactive cleanup.)", "info");
+						return false;
+					},
 				});
 			} catch (err: any) {
 				const errMsg = err?.message || String(err);

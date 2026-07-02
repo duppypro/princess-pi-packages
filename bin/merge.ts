@@ -6,11 +6,12 @@
  * Reuses extensions/lib/merge/* directly (no duplicated logic).
  */
 import * as path from "node:path";
+import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { runMerge } from "../extensions/lib/merge/core.js";
 import { renderHelp, renderWhy } from "../extensions/lib/merge/help.js";
 
-function run() {
+async function run() {
 	const argsList = process.argv.slice(2).filter(Boolean);
 
 	if (argsList.includes("-h") || argsList.includes("--help")) {
@@ -40,9 +41,23 @@ function run() {
 	}
 
 	try {
-		runMerge(argsList, {
+		await runMerge(argsList, {
 			info: (msg) => console.log(msg),
 			error: (msg) => console.error(msg),
+			prompt: async (question: string): Promise<boolean> => {
+				// If stdin is not a TTY (piped input), skip interactive prompt
+				if (!process.stdin.isTTY) {
+					console.log(question.replace(/\n/g, " ").trim() + " (skipped — stdin is not a TTY)");
+					return false;
+				}
+				const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+				return new Promise((resolve) => {
+					rl.question(question, (answer) => {
+						rl.close();
+						resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
+					});
+				});
+			},
 		});
 	} catch (err: any) {
 		const errMsg = err?.message || String(err);

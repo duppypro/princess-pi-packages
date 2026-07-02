@@ -2,13 +2,69 @@
 
 // bin/merge.ts
 import * as path from "node:path";
+import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/merge/core.ts
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 var STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
-function runMerge(argsList, logger) {
+async function cleanupBranch(currentBranch, cwd, logger) {
+  const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
+  if (status !== "") {
+    logger.info(`
+\u26A0\uFE0F  Branch '${currentBranch}' has uncommitted changes. Cannot safely delete.`);
+    try {
+      const diffStat = execSync("git diff --stat", { cwd, encoding: "utf8" }).trim();
+      if (diffStat) logger.info(`
+${diffStat}`);
+    } catch {
+    }
+    logger.info(`
+\u{1F4A1} To clean up manually after committing/stashing:
+   git checkout main
+   git branch -D ${currentBranch}
+   git push origin --delete ${currentBranch}`);
+    return;
+  }
+  try {
+    execSync(`git merge-base --is-ancestor ${currentBranch} origin/main`, { cwd, stdio: "ignore" });
+  } catch {
+    logger.info(`
+\u26A0\uFE0F  Branch '${currentBranch}' is not an ancestor of origin/main. Refusing to delete.`);
+    logger.info(`\u{1F4A1} Verify merge completed, then clean up manually.`);
+    return;
+  }
+  const answer = await logger.prompt(`
+\u{1F5D1}\uFE0F  Delete feature branch '${currentBranch}' (local + remote) and switch to main? [y/N] `);
+  if (!answer) {
+    logger.info(`
+\u{1F4A1} Branch '${currentBranch}' kept. To clean up later:
+   git checkout main
+   git branch -D ${currentBranch}
+   git push origin --delete ${currentBranch}`);
+    return;
+  }
+  logger.info(`\u{1F4E1} Deleting remote branch 'origin/${currentBranch}'...`);
+  try {
+    execSync(`git push origin --delete ${currentBranch}`, { cwd, stdio: "ignore" });
+    logger.info(`\u2705 Remote branch 'origin/${currentBranch}' deleted.`);
+  } catch (err) {
+    const msg = err?.stderr || err?.message || String(err);
+    logger.error(`\u26A0\uFE0F  Failed to delete remote branch: ${msg.trim()}`);
+  }
+  logger.info(`\u{1F500} Switching to 'main' and deleting local branch '${currentBranch}'...`);
+  execSync("git checkout main", { cwd, stdio: "ignore" });
+  try {
+    execSync(`git branch -D ${currentBranch}`, { cwd, stdio: "ignore" });
+    logger.info(`\u2705 Local branch '${currentBranch}' deleted.`);
+  } catch (err) {
+    const msg = err?.stderr || err?.message || String(err);
+    logger.error(`\u26A0\uFE0F  Failed to delete local branch: ${msg.trim()}`);
+  }
+  logger.info(`\u{1F4AA} Ready for the next task! You are on branch 'main'.`);
+}
+async function runMerge(argsList, logger) {
   logger.info("\u{1F504} Running merge validation checks...");
   const currentCwd = process.cwd();
   const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: currentCwd, encoding: "utf8" }).trim();
@@ -110,6 +166,7 @@ ${mainStatus}`);
     execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
     logger.info(`\u{1F389} Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
     logger.info(`\u{1F4AA} Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
+    await cleanupBranch(currentBranch, currentCwd, logger);
   } else {
     logger.info("\u{1FAB5} No dedicated 'main' worktree found \u2014 using in-place single-checkout merge.");
     try {
@@ -150,6 +207,7 @@ ${detail}`
     }
     logger.info(`\u{1F389} Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
     logger.info(`\u{1F4AA} Ready for the next task! You are on branch '${currentBranch}'.`);
+    await cleanupBranch(currentBranch, currentCwd, logger);
   }
 }
 
@@ -212,7 +270,7 @@ function renderWhy(manifestPath, invokedAs) {
 }
 
 // bin/merge.ts
-function run() {
+async function run() {
   const argsList = process.argv.slice(2).filter(Boolean);
   if (argsList.includes("-h") || argsList.includes("--help")) {
     try {
@@ -239,9 +297,22 @@ function run() {
     return;
   }
   try {
-    runMerge(argsList, {
+    await runMerge(argsList, {
       info: (msg) => console.log(msg),
-      error: (msg) => console.error(msg)
+      error: (msg) => console.error(msg),
+      prompt: async (question) => {
+        if (!process.stdin.isTTY) {
+          console.log(question.replace(/\n/g, " ").trim() + " (skipped \u2014 stdin is not a TTY)");
+          return false;
+        }
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        return new Promise((resolve) => {
+          rl.question(question, (answer) => {
+            rl.close();
+            resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
+          });
+        });
+      }
     });
   } catch (err) {
     const errMsg = err?.message || String(err);
