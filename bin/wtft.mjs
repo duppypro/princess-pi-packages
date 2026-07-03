@@ -1309,6 +1309,9 @@ async function selectSessionPrompt(candidates) {
     const render = () => {
       let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
 `;
+      const selected = displayCandidates[selectedIndex];
+      out += `  \x1B[90m${selected.path}\x1B[0m
+`;
       for (let i = 0; i < displayCandidates.length; i++) {
         const c = displayCandidates[i];
         const stats = statsList[i];
@@ -1325,7 +1328,7 @@ async function selectSessionPrompt(candidates) {
       process.stdout.write(out);
     };
     const cleanScreen = () => {
-      const linesToClear = displayCandidates.length + 1;
+      const linesToClear = displayCandidates.length + 2;
       process.stdout.write(`\x1B[${linesToClear}A\x1B[J`);
     };
     render();
