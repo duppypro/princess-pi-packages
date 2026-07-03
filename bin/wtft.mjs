@@ -900,7 +900,6 @@ async function watchMode(sessionPath, settings) {
     console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
     process.exit(1);
   }
-  const sessionName = path.basename(sessionPath);
   let totalCost = 0;
   let interactionCount = 0;
   let lastSize = 0;
@@ -998,6 +997,10 @@ async function watchMode(sessionPath, settings) {
     });
     const buf = [];
     buf.push("\x1B[2J\x1B[H");
+    totalCost = allInteractions.reduce((sum, i) => sum + i.cost, 0);
+    interactionCount = allInteractions.length;
+    buf.push(`\x1B[90m${sessionPath}  (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 Ctrl+C to exit\x1B[0m`);
+    buf.push("");
     if (lines && lines.length > 0) {
       const tlHour = getCurrentLocalHour(finalTimezone);
       const tlStr = buildTimelineString(/* @__PURE__ */ new Set(), tlHour, void 0);
@@ -1006,10 +1009,6 @@ async function watchMode(sessionPath, settings) {
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
-    totalCost = allInteractions.reduce((sum, i) => sum + i.cost, 0);
-    interactionCount = allInteractions.length;
-    buf.push("");
-    buf.push(`\x1B[90mWatching ${sessionName} (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 Ctrl+C to exit\x1B[0m`);
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
