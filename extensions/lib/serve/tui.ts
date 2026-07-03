@@ -1,16 +1,5 @@
-import * as path from "node:path";
+import { shortenPath } from "../session-path-shortener.js";
 import { ServerInstance, KilledServerInstance, isInsideRepo } from "./domain.js";
-
-export function shortenPath(rawPath: string, cwd: string = process.cwd()): string {
-	let rel = rawPath;
-	if (path.isAbsolute(rawPath)) {
-		rel = path.relative(cwd, rawPath) || rawPath;
-	}
-	if (rel.length > 25) {
-		rel = "..." + rel.slice(-22);
-	}
-	return rel;
-}
 
 export function stripAnsi(str: string): string {
 	return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");

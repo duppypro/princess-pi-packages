@@ -16,7 +16,8 @@ import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/d
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
 import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "./lib/serve/nginx.js";
 import { getVisibility } from "./lib/serve/store.js";
-import { updateWidget, shortenPath, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
+import { shortenPath } from "./lib/session-path-shortener.js";
+import { updateWidget, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
 
 // Track widget visibility state locally (persisted across reloads via session log)
 let isWidgetVisible = true;
