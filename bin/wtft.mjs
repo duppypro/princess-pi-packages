@@ -504,6 +504,45 @@ function getTerminalWidth(isWidget = false, disabledEmoji = false) {
   }
   return isWidget ? width - 2 : width;
 }
+function getCurrentLocalHour(tz) {
+  const parts = getZonedParts(Date.now(), tz);
+  return parts.hour;
+}
+function buildTimelineString(surgeHours, currentHour, proximityStatus) {
+  const segments = [];
+  let lastColor = null;
+  for (let h = 0; h < 24; h++) {
+    const isSurge = surgeHours.has(h);
+    const isCurrent = h === currentHour;
+    if (h === 12 && !isCurrent) {
+      if (lastColor !== "") {
+        segments.push({ color: "", text: "|" });
+        lastColor = "";
+      } else {
+        segments[segments.length - 1].text += "|";
+      }
+      continue;
+    }
+    const color = isCurrent ? "1;" + (isSurge ? "38;5;208" : "32") : isSurge ? "38;5;208" : "32";
+    const char = isCurrent ? "\u25C6" : "-";
+    if (color !== lastColor) {
+      segments.push({ color, text: char });
+      lastColor = color;
+    } else {
+      segments[segments.length - 1].text += char;
+    }
+  }
+  const timelineBody = segments.map((s) => `\x1B[${s.color}m${s.text}\x1B[0m`).join("");
+  let result = `(${timelineBody})`;
+  if (proximityStatus === "surge") {
+    result += ` \x1B[1;38;5;208m\u26A1 SURGE 2x\x1B[0m`;
+  } else if (proximityStatus === "approaching") {
+    result += ` \x1B[1;5;38;5;208m\u26A1 SURGE APPROACHING\x1B[0m`;
+  } else if (proximityStatus === "ending") {
+    result += ` \x1B[1;5;32m\u26A1 SURGE ENDING\x1B[0m`;
+  }
+  return result;
+}
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
   const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
@@ -588,21 +627,22 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const widgetLines = [];
   const titleLeft = disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
   const legendItems = [
-    `\x1B[38;5;108m\u2588\x1B[0m Spec`,
-    `\x1B[38;5;108;48;5;173m\u2592\x1B[0m Mixed`,
-    `\x1B[38;5;173m\u2588\x1B[0m Code`,
-    `\x1B[38;5;223m\u2588\x1B[0m Tests`,
-    `\x1B[38;5;134m\u2588\x1B[0m Research`,
-    `\x1B[38;5;73m\u2588\x1B[0m Git`,
-    `\x1B[38;5;67m\u2588\x1B[0m Grep`,
-    `\x1B[38;5;168m\u2591\x1B[0m Prompt`,
-    `\x1B[38;5;238m\u2591\x1B[0m Other`
+    `\x1B[38;5;108m\u2588\x1B[0mSpec`,
+    `\x1B[38;5;108;48;5;173m\u2592\x1B[0mMixed`,
+    `\x1B[38;5;173m\u2588\x1B[0mCode`,
+    `\x1B[38;5;223m\u2588\x1B[0mTests`,
+    `\x1B[38;5;134m\u2588\x1B[0mResearch`,
+    `\x1B[38;5;73m\u2588\x1B[0mGit`,
+    `\x1B[38;5;67m\u2588\x1B[0mGrep`,
+    `\x1B[38;5;168m\u2591\x1B[0mPrompt`,
+    `\x1B[38;5;238m\u2591\x1B[0mOther`
   ];
-  const legendStr = legendItems.join("  ");
+  const legendStr = legendItems.join(" ");
   const leftLen = getVisualLength(titleLeft);
   const legendLen = getVisualLength(legendStr);
   const totalNeeded = leftLen + legendLen + 4;
-  if (totalNeeded <= finalWidth - 3) {
+  const forceLegendRow = opts?.forceLegendRow ?? false;
+  if (!forceLegendRow && totalNeeded <= finalWidth - 3) {
     const remainingSpaces = finalWidth - 3 - leftLen - legendLen;
     const titleLine = titleLeft + " ".repeat(remainingSpaces) + legendStr;
     widgetLines.push(titleLine);
@@ -713,7 +753,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
     }
   }
-  const totalOtherCost = displayedBins.reduce((sum, b) => sum + (b.costs.other || 0), 0);
+  const totalOtherCost = interactions.filter((i) => classifyInteraction(i) === "other").reduce((sum, i) => sum + i.cost, 0);
   if (totalSessionCost > 0) {
     const otherPct = totalOtherCost / totalSessionCost;
     if (otherPct > 0.2 && totalOtherCost > 6) {
@@ -865,10 +905,8 @@ async function watchMode(sessionPath, settings) {
   let interactionCount = 0;
   let lastSize = 0;
   let needsRedraw = true;
+  let _lastRenderMin = -1;
   process.stdout.write("\x1B[?25l");
-  process.on("SIGWINCH", () => {
-    needsRedraw = true;
-  });
   process.on("SIGINT", () => {
     process.stdout.write("\x1B[2J\x1B[H");
     process.stdout.write("\x1B[?25h");
@@ -955,11 +993,15 @@ async function watchMode(sessionPath, settings) {
       showTicks: finalShowTicks,
       mode: finalMode,
       timezone: finalTimezone,
-      disabledEmoji
+      disabledEmoji,
+      forceLegendRow: true
     });
     const buf = [];
     buf.push("\x1B[2J\x1B[H");
     if (lines && lines.length > 0) {
+      const tlHour = getCurrentLocalHour(finalTimezone);
+      const tlStr = buildTimelineString(/* @__PURE__ */ new Set(), tlHour, void 0);
+      lines[0] = lines[0] + "  " + tlStr;
       for (const l of lines) buf.push(l);
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
@@ -970,9 +1012,14 @@ async function watchMode(sessionPath, settings) {
     buf.push(`\x1B[90mWatching ${sessionName} (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 Ctrl+C to exit\x1B[0m`);
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
+    _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
   };
   render();
-  const POLL_MS = 500;
+  process.on("SIGWINCH", () => {
+    needsRedraw = true;
+    render();
+  });
+  const POLL_MS = 667;
   while (true) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     if (!fs.existsSync(sessionPath)) {
@@ -990,6 +1037,10 @@ async function watchMode(sessionPath, settings) {
     if (newTz !== void 0) sessionTimezone = newTz;
     if (newInteractions.length > 0) {
       allInteractions.push(...newInteractions);
+      needsRedraw = true;
+    }
+    const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
+    if (_curMin !== _lastRenderMin) {
       needsRedraw = true;
     }
     if (needsRedraw) {
@@ -1125,6 +1176,23 @@ for (let i = 2; i < process.argv.length; i++) {
     }
   }
 }
+function buildDisplayPath(filename, dirSlug, harness) {
+  const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
+  const uuidTail = uuidMatch ? uuidMatch[1] : "";
+  let slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
+  const homeDir = os.homedir();
+  const userName = path2.basename(homeDir);
+  const knownPrefix = `home-${userName}-git-projects`;
+  if (slug.startsWith(knownPrefix + "-")) {
+    const projectName = slug.slice(knownPrefix.length + 1);
+    const datePrefix2 = harness === "pi" ? filename.split("_")[0] || "" : "";
+    const pathStr = `~/g-p/${projectName}`;
+    return uuidTail ? `${pathStr}/${datePrefix2}...${uuidTail}` : datePrefix2 ? `${pathStr}/${datePrefix2}` : pathStr;
+  }
+  const cleanedSlug = slug.replace(/-/g, "/");
+  const datePrefix = harness === "pi" ? filename.split("_")[0] || "" : "";
+  return uuidTail ? `${cleanedSlug}/${datePrefix}...${uuidTail}` : datePrefix ? `${cleanedSlug}/${datePrefix}` : cleanedSlug;
+}
 function discoverSessions(harness = "auto") {
   const piSessionsDir = path2.join(os.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
@@ -1147,11 +1215,19 @@ function discoverSessions(harness = "auto") {
           walk(fullPath, type);
         }
       } else if (f.endsWith(".jsonl")) {
+        let slug;
+        if (type === "pi") {
+          slug = path2.basename(dir);
+        } else {
+          const base = path2.basename(dir);
+          slug = base === "sessions" ? path2.basename(path2.dirname(dir)) : base;
+        }
         candidates.push({
           path: fullPath,
           harness: type,
           timestamp: stat.mtimeMs,
-          name: f
+          name: f,
+          displayPath: buildDisplayPath(f, slug, type)
         });
       }
     }
@@ -1168,6 +1244,20 @@ function discoverSessions(harness = "auto") {
   } catch {
   }
   return candidates.sort((a, b) => b.timestamp - a.timestamp);
+}
+function formatRelativeTime(ts) {
+  const diffMs = Date.now() - ts;
+  const diffSec = Math.floor(diffMs / 1e3);
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 30) return `${diffDay}d ago`;
+  const diffMo = Math.floor(diffDay / 30);
+  if (diffMo < 12) return `${diffMo}mo ago`;
+  return `${Math.floor(diffDay / 365)}y ago`;
 }
 function getSessionSummary(filePath) {
   let turns = 0;
@@ -1194,12 +1284,12 @@ async function selectSessionPrompt(candidates) {
   return new Promise((resolve) => {
     if (!process.stdout.isTTY) {
       console.log(`\x1B[90mNon-interactive environment detected. Defaulting to newest session [1]:\x1B[0m`);
+      const maxPathLen2 = Math.max(...candidates.slice(0, 5).map((c) => c.displayPath.length), 10);
       for (let i = 0; i < Math.min(candidates.length, 5); i++) {
         const c = candidates[i];
         const stats = getSessionSummary(c.path);
-        const shortName = c.name.length > 25 ? `${c.name.substring(0, 10)}...${c.name.substring(c.name.length - 15)}` : c.name;
-        const dateStr = new Date(c.timestamp).toLocaleString();
-        console.log(`  [${i + 1}] ${shortName.padEnd(28)} (${dateStr}) - ${stats.turns} turns, ${formatCost(stats.cost)} [${c.harness.toUpperCase()}]`);
+        const relTime = formatRelativeTime(c.timestamp);
+        console.log(`  [${i + 1}] ${c.displayPath.padEnd(maxPathLen2)}  ${formatCost(stats.cost).padStart(7)}  (${stats.turns}t) [${c.harness === "claude-code" ? "CC" : "PI"}]  \x1B[90m${relTime}\x1B[0m`);
       }
       console.log(`\x1B[90mRun 'wtft -s <number>' to target a specific session index.\x1B[0m
 `);
@@ -1215,20 +1305,21 @@ async function selectSessionPrompt(candidates) {
     stdin.resume();
     stdin.setEncoding("utf8");
     process.stdout.write("\x1B[?25l");
+    const maxPathLen = Math.max(...displayCandidates.map((c) => c.displayPath.length), 10);
     const render = () => {
       let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
 `;
       for (let i = 0; i < displayCandidates.length; i++) {
         const c = displayCandidates[i];
         const stats = statsList[i];
-        const shortName = c.name.length > 25 ? `${c.name.substring(0, 10)}...${c.name.substring(c.name.length - 15)}` : c.name;
-        const dateStr = new Date(c.timestamp).toLocaleString();
+        const relTime = formatRelativeTime(c.timestamp);
         const isSelected = i === selectedIndex;
         const prefix = isSelected ? `\x1B[36m\x1B[1m > \x1B[0m` : "   ";
         const highlight = isSelected ? `\x1B[1m\x1B[36m` : "";
         const reset = isSelected ? `\x1B[0m` : "";
+        const harnessLabel = c.harness === "claude-code" ? "CC" : "PI";
         const costStr = `\x1B[32m${formatCost(stats.cost).padStart(7)}\x1B[0m`;
-        out += `${prefix}${highlight}${shortName.padEnd(28)}${reset} \x1B[90m(${dateStr})\x1B[0m  ${costStr} \x1B[90m(${stats.turns} turns) [${c.harness.toUpperCase()}]\x1B[0m
+        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m
 `;
       }
       process.stdout.write(out);

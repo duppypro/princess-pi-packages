@@ -21,8 +21,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "deploy:local": "npm run build && npm uninstall -g princess-pi-packages && npm cache clean --force && npm link",
-    "install:prod": "npm uninstall -g princess-pi-packages && npm install -g github:duppypro/princess-pi-packages"
+    "deploy:local": "npm run build && npm uninstall -g princess-pi-packages && npm cache clean --force && npm link"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"
