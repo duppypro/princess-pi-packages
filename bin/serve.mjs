@@ -380,7 +380,7 @@ function reloadNginx() {
   }
 }
 
-// extensions/lib/serve/tui.ts
+// extensions/lib/session-path-shortener.ts
 import * as path4 from "node:path";
 function shortenPath(rawPath, cwd = process.cwd()) {
   let rel = rawPath;
@@ -392,6 +392,8 @@ function shortenPath(rawPath, cwd = process.cwd()) {
   }
   return rel;
 }
+
+// extensions/lib/serve/tui.ts
 function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
 // bin/wtft.ts
-import * as fs2 from "node:fs";
-import * as path2 from "node:path";
-import * as os from "node:os";
+import * as fs3 from "node:fs";
+import * as path4 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/wtft-shared.ts
@@ -514,12 +513,21 @@ function buildTimelineString(surgeHours, currentHour, proximityStatus) {
   for (let h = 0; h < 24; h++) {
     const isSurge = surgeHours.has(h);
     const isCurrent = h === currentHour;
-    if (h === 12 && !isCurrent) {
+    if (h === 12) {
       if (lastColor !== "") {
         segments.push({ color: "", text: "|" });
         lastColor = "";
       } else {
         segments[segments.length - 1].text += "|";
+      }
+      if (isCurrent) {
+        const diaColor = "1;" + (isSurge ? "38;5;208" : "32");
+        if (diaColor !== lastColor) {
+          segments.push({ color: diaColor, text: "\u25C6" });
+          lastColor = diaColor;
+        } else {
+          segments[segments.length - 1].text += "\u25C6";
+        }
       }
       continue;
     }
@@ -1048,6 +1056,240 @@ async function watchMode(sessionPath, settings) {
   }
 }
 
+// extensions/lib/session-selector.ts
+import * as fs2 from "node:fs";
+import * as path3 from "node:path";
+import * as os2 from "node:os";
+
+// extensions/lib/session-path-shortener.ts
+import * as path2 from "node:path";
+import * as os from "node:os";
+function buildDisplayPath(filename, dirSlug, harness) {
+  const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
+  const uuidTail = uuidMatch ? uuidMatch[1] : "";
+  const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
+  const homeDir = os.homedir();
+  const userName = path2.basename(homeDir);
+  const knownPrefix = `home-${userName}-git-projects`;
+  const compactPrefix = `home-${userName}-g-p`;
+  if (slug.startsWith(knownPrefix + "-")) {
+    const projectName = slug.slice(knownPrefix.length + 1);
+    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
+    const pathStr = `~/g-p/${projectName}`;
+    return appendTail(pathStr, datePrefix2, uuidTail);
+  }
+  if (slug.startsWith(compactPrefix + "-")) {
+    const projectName = slug.slice(compactPrefix.length + 1);
+    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
+    const pathStr = `~/g-p/${projectName}`;
+    return appendTail(pathStr, datePrefix2, uuidTail);
+  }
+  const cleanedSlug = slug.replace(/-/g, "/");
+  const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
+  return appendTail(cleanedSlug, datePrefix, uuidTail);
+}
+function extractDatePrefix(filename) {
+  const match = filename.match(/^(\d{4}-\d{2}-\d{2}[^_]*)/);
+  return match ? match[1] : "";
+}
+function appendTail(base, datePrefix, uuidTail) {
+  if (datePrefix && uuidTail) {
+    return `${base}/${datePrefix}...${uuidTail}`;
+  }
+  if (datePrefix) {
+    return `${base}/${datePrefix}`;
+  }
+  if (uuidTail) {
+    return `${base}/...${uuidTail}`;
+  }
+  return base;
+}
+function formatRelativeTime(ts) {
+  const diffMs = Date.now() - ts;
+  const diffSec = Math.floor(diffMs / 1e3);
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 30) return `${diffDay}d ago`;
+  const diffMo = Math.floor(diffDay / 30);
+  if (diffMo < 12) return `${diffMo}mo ago`;
+  return `${Math.floor(diffDay / 365)}y ago`;
+}
+
+// extensions/lib/session-selector.ts
+function discoverSessions(harness = "auto") {
+  const piSessionsDir = path3.join(os2.homedir(), ".pi", "agent", "sessions");
+  let claudeSessionsDirs = [];
+  const claudeProjectsDir = path3.join(os2.homedir(), ".claude", "projects");
+  if (fs2.existsSync(claudeProjectsDir)) {
+    const cwdSlug = process.cwd().replace(/[/\\]/g, "-");
+    const sessionsSubdir = path3.join(claudeProjectsDir, cwdSlug, "sessions");
+    const directDir = path3.join(claudeProjectsDir, cwdSlug);
+    if (fs2.existsSync(sessionsSubdir)) claudeSessionsDirs.push(sessionsSubdir);
+    if (fs2.existsSync(directDir)) claudeSessionsDirs.push(directDir);
+  }
+  const candidates = [];
+  const walk = (dir, type) => {
+    const files = fs2.readdirSync(dir);
+    for (const f of files) {
+      const fullPath = path3.join(dir, f);
+      const stat = fs2.statSync(fullPath);
+      if (stat.isDirectory()) {
+        if (f !== "subagents" && f !== "tool-results" && f !== "memory") {
+          walk(fullPath, type);
+        }
+      } else if (f.endsWith(".jsonl")) {
+        let slug;
+        if (type === "pi") {
+          slug = path3.basename(dir);
+        } else {
+          const base = path3.basename(dir);
+          slug = base === "sessions" ? path3.basename(path3.dirname(dir)) : base;
+        }
+        candidates.push({
+          path: fullPath,
+          harness: type,
+          timestamp: stat.mtimeMs,
+          name: f,
+          displayPath: buildDisplayPath(f, slug, type)
+        });
+      }
+    }
+  };
+  try {
+    if (harness === "auto" || harness === "pi") {
+      if (fs2.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
+    }
+    if (harness === "auto" || harness === "claude-code") {
+      for (const dir of claudeSessionsDirs) {
+        if (fs2.existsSync(dir)) walk(dir, "claude-code");
+      }
+    }
+  } catch {
+  }
+  return candidates.sort((a, b) => b.timestamp - a.timestamp);
+}
+function getSessionSummary(filePath) {
+  let turns = 0;
+  let cost = 0;
+  try {
+    const content = fs2.readFileSync(filePath, "utf8");
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === "assistant" || entry.message && entry.message.role === "assistant") {
+          turns++;
+        }
+        const interaction = parseEntryToInteraction(entry);
+        if (interaction) {
+          cost += interaction.cost;
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return { turns, cost };
+}
+function formatCostPadded(cost) {
+  return formatCost(cost).padStart(7);
+}
+async function selectSessionPrompt(candidates) {
+  return new Promise((resolve) => {
+    if (!process.stdout.isTTY) {
+      console.log(
+        `\x1B[90mNon-interactive environment detected. Defaulting to newest session [1]:\x1B[0m`
+      );
+      const maxPathLen2 = Math.max(
+        ...candidates.slice(0, 5).map((c) => c.displayPath.length),
+        10
+      );
+      for (let i = 0; i < Math.min(candidates.length, 5); i++) {
+        const c = candidates[i];
+        const stats = getSessionSummary(c.path);
+        const relTime = formatRelativeTime(c.timestamp);
+        console.log(
+          `  [${i + 1}] ${c.displayPath.padEnd(maxPathLen2)}  ${formatCostPadded(stats.cost)}  (${stats.turns}t) [${c.harness === "claude-code" ? "CC" : "PI"}]  \x1B[90m${relTime}\x1B[0m`
+        );
+      }
+      console.log(
+        `\x1B[90mRun 'wtft -s <number>' to target a specific session index.\x1B[0m
+`
+      );
+      resolve(candidates[0].path);
+      return;
+    }
+    let selectedIndex = 0;
+    const limit2 = 10;
+    const displayCandidates = candidates.slice(0, limit2);
+    const statsList = displayCandidates.map((c) => getSessionSummary(c.path));
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    process.stdout.write("\x1B[?25l");
+    const maxPathLen = Math.max(
+      ...displayCandidates.map((c) => c.displayPath.length),
+      10
+    );
+    const render = () => {
+      const selected = displayCandidates[selectedIndex];
+      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
+`;
+      out += `  \x1B[90m${selected.path}\x1B[0m
+`;
+      for (let i = 0; i < displayCandidates.length; i++) {
+        const c = displayCandidates[i];
+        const stats = statsList[i];
+        const relTime = formatRelativeTime(c.timestamp);
+        const isSelected = i === selectedIndex;
+        const prefix = isSelected ? "\x1B[36m\x1B[1m > \x1B[0m" : "   ";
+        const highlight = isSelected ? "\x1B[1m\x1B[36m" : "";
+        const reset = isSelected ? "\x1B[0m" : "";
+        const harnessLabel = c.harness === "claude-code" ? "CC" : "PI";
+        const costStr = `\x1B[32m${formatCostPadded(stats.cost)}\x1B[0m`;
+        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m
+`;
+      }
+      process.stdout.write(out);
+    };
+    const cleanScreen = () => {
+      const linesToClear = displayCandidates.length + 2;
+      process.stdout.write(`\x1B[${linesToClear}A\x1B[J`);
+    };
+    render();
+    const onKey = (key) => {
+      if (key === "") {
+        cleanup();
+        process.exit(130);
+      } else if (key === "\r" || key === "\n") {
+        cleanup();
+        resolve(displayCandidates[selectedIndex].path);
+      } else if (key === "\x1B[A" || key === "k") {
+        selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
+        cleanScreen();
+        render();
+      } else if (key === "\x1B[B" || key === "j") {
+        selectedIndex = (selectedIndex + 1) % displayCandidates.length;
+        cleanScreen();
+        render();
+      }
+    };
+    const cleanup = () => {
+      stdin.removeListener("data", onKey);
+      stdin.setRawMode(false);
+      stdin.pause();
+      process.stdout.write("\x1B[?25h");
+    };
+    stdin.on("data", onKey);
+  });
+}
+
 // bin/wtft.ts
 var intervalStr = "1h";
 var limit = 100;
@@ -1060,8 +1302,8 @@ var harnessOption = "auto";
 var showOther = false;
 function printWhy() {
   try {
-    const manifestPath = path2.join(path2.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-    const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+    const manifest = JSON.parse(fs3.readFileSync(manifestPath, "utf8"));
     let text = `${manifest.name} - ${manifest.tagline}
 
 `;
@@ -1175,188 +1417,6 @@ for (let i = 2; i < process.argv.length; i++) {
     }
   }
 }
-function buildDisplayPath(filename, dirSlug, harness) {
-  const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
-  const uuidTail = uuidMatch ? uuidMatch[1] : "";
-  let slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
-  const homeDir = os.homedir();
-  const userName = path2.basename(homeDir);
-  const knownPrefix = `home-${userName}-git-projects`;
-  if (slug.startsWith(knownPrefix + "-")) {
-    const projectName = slug.slice(knownPrefix.length + 1);
-    const datePrefix2 = harness === "pi" ? filename.split("_")[0] || "" : "";
-    const pathStr = `~/g-p/${projectName}`;
-    return uuidTail ? `${pathStr}/${datePrefix2}...${uuidTail}` : datePrefix2 ? `${pathStr}/${datePrefix2}` : pathStr;
-  }
-  const cleanedSlug = slug.replace(/-/g, "/");
-  const datePrefix = harness === "pi" ? filename.split("_")[0] || "" : "";
-  return uuidTail ? `${cleanedSlug}/${datePrefix}...${uuidTail}` : datePrefix ? `${cleanedSlug}/${datePrefix}` : cleanedSlug;
-}
-function discoverSessions(harness = "auto") {
-  const piSessionsDir = path2.join(os.homedir(), ".pi", "agent", "sessions");
-  let claudeSessionsDirs = [];
-  const claudeProjectsDir = path2.join(os.homedir(), ".claude", "projects");
-  if (fs2.existsSync(claudeProjectsDir)) {
-    const cwdSlug = process.cwd().replace(/[/\\\\]/g, "-");
-    const possibleDir = path2.join(claudeProjectsDir, cwdSlug, "sessions");
-    const alternativeDir = path2.join(claudeProjectsDir, cwdSlug);
-    if (fs2.existsSync(possibleDir)) claudeSessionsDirs.push(possibleDir);
-    if (fs2.existsSync(alternativeDir)) claudeSessionsDirs.push(alternativeDir);
-  }
-  const candidates = [];
-  const walk = (dir, type) => {
-    const files = fs2.readdirSync(dir);
-    for (const f of files) {
-      const fullPath = path2.join(dir, f);
-      const stat = fs2.statSync(fullPath);
-      if (stat.isDirectory()) {
-        if (f !== "subagents" && f !== "tool-results" && f !== "memory") {
-          walk(fullPath, type);
-        }
-      } else if (f.endsWith(".jsonl")) {
-        let slug;
-        if (type === "pi") {
-          slug = path2.basename(dir);
-        } else {
-          const base = path2.basename(dir);
-          slug = base === "sessions" ? path2.basename(path2.dirname(dir)) : base;
-        }
-        candidates.push({
-          path: fullPath,
-          harness: type,
-          timestamp: stat.mtimeMs,
-          name: f,
-          displayPath: buildDisplayPath(f, slug, type)
-        });
-      }
-    }
-  };
-  try {
-    if (harness === "auto" || harness === "pi") {
-      if (fs2.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
-    }
-    if (harness === "auto" || harness === "claude-code") {
-      for (const dir of claudeSessionsDirs) {
-        if (fs2.existsSync(dir)) walk(dir, "claude-code");
-      }
-    }
-  } catch {
-  }
-  return candidates.sort((a, b) => b.timestamp - a.timestamp);
-}
-function formatRelativeTime(ts) {
-  const diffMs = Date.now() - ts;
-  const diffSec = Math.floor(diffMs / 1e3);
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
-  const diffMo = Math.floor(diffDay / 30);
-  if (diffMo < 12) return `${diffMo}mo ago`;
-  return `${Math.floor(diffDay / 365)}y ago`;
-}
-function getSessionSummary(filePath) {
-  let turns = 0;
-  let cost = 0;
-  try {
-    const content = fs2.readFileSync(filePath, "utf8");
-    const lines = content.split("\n");
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const entry = JSON.parse(line);
-      if (entry.type === "assistant" || entry.message && entry.message.role === "assistant") {
-        turns++;
-      }
-      const i = parseEntryToInteraction(entry);
-      if (i) {
-        cost += i.cost;
-      }
-    }
-  } catch {
-  }
-  return { turns, cost };
-}
-async function selectSessionPrompt(candidates) {
-  return new Promise((resolve) => {
-    if (!process.stdout.isTTY) {
-      console.log(`\x1B[90mNon-interactive environment detected. Defaulting to newest session [1]:\x1B[0m`);
-      const maxPathLen2 = Math.max(...candidates.slice(0, 5).map((c) => c.displayPath.length), 10);
-      for (let i = 0; i < Math.min(candidates.length, 5); i++) {
-        const c = candidates[i];
-        const stats = getSessionSummary(c.path);
-        const relTime = formatRelativeTime(c.timestamp);
-        console.log(`  [${i + 1}] ${c.displayPath.padEnd(maxPathLen2)}  ${formatCost(stats.cost).padStart(7)}  (${stats.turns}t) [${c.harness === "claude-code" ? "CC" : "PI"}]  \x1B[90m${relTime}\x1B[0m`);
-      }
-      console.log(`\x1B[90mRun 'wtft -s <number>' to target a specific session index.\x1B[0m
-`);
-      resolve(candidates[0].path);
-      return;
-    }
-    let selectedIndex = 0;
-    const limit2 = 10;
-    const displayCandidates = candidates.slice(0, limit2);
-    const statsList = displayCandidates.map((c) => getSessionSummary(c.path));
-    const stdin = process.stdin;
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    process.stdout.write("\x1B[?25l");
-    const maxPathLen = Math.max(...displayCandidates.map((c) => c.displayPath.length), 10);
-    const render = () => {
-      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
-`;
-      const selected = displayCandidates[selectedIndex];
-      out += `  \x1B[90m${selected.path}\x1B[0m
-`;
-      for (let i = 0; i < displayCandidates.length; i++) {
-        const c = displayCandidates[i];
-        const stats = statsList[i];
-        const relTime = formatRelativeTime(c.timestamp);
-        const isSelected = i === selectedIndex;
-        const prefix = isSelected ? `\x1B[36m\x1B[1m > \x1B[0m` : "   ";
-        const highlight = isSelected ? `\x1B[1m\x1B[36m` : "";
-        const reset = isSelected ? `\x1B[0m` : "";
-        const harnessLabel = c.harness === "claude-code" ? "CC" : "PI";
-        const costStr = `\x1B[32m${formatCost(stats.cost).padStart(7)}\x1B[0m`;
-        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m
-`;
-      }
-      process.stdout.write(out);
-    };
-    const cleanScreen = () => {
-      const linesToClear = displayCandidates.length + 2;
-      process.stdout.write(`\x1B[${linesToClear}A\x1B[J`);
-    };
-    render();
-    const onKey = (key) => {
-      if (key === "") {
-        cleanup();
-        process.exit(130);
-      } else if (key === "\r" || key === "\n") {
-        cleanup();
-        resolve(displayCandidates[selectedIndex].path);
-      } else if (key === "\x1B[A" || key === "k") {
-        selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        cleanScreen();
-        render();
-      } else if (key === "\x1B[B" || key === "j") {
-        selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        cleanScreen();
-        render();
-      }
-    };
-    const cleanup = () => {
-      stdin.removeListener("data", onKey);
-      stdin.setRawMode(false);
-      stdin.pause();
-      process.stdout.write("\x1B[?25h");
-    };
-    stdin.on("data", onKey);
-  });
-}
 async function main() {
   const isIndex = /^\d+$/.test(targetSessionPath || "");
   const candidates = discoverSessions(harnessOption);
@@ -1381,7 +1441,7 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !fs2.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !fs3.existsSync(finalSessionPath)) {
     console.error("\u274C Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
@@ -1400,17 +1460,17 @@ async function main() {
     return;
   }
   const sessionFiles = [finalSessionPath];
-  const extName = path2.extname(finalSessionPath);
+  const extName = path4.extname(finalSessionPath);
   if (extName === ".jsonl") {
-    const baseName = path2.basename(finalSessionPath, extName);
-    const parentDir = path2.dirname(finalSessionPath);
-    const possibleSubagentsDir = path2.join(parentDir, baseName, "subagents");
-    if (fs2.existsSync(possibleSubagentsDir)) {
+    const baseName = path4.basename(finalSessionPath, extName);
+    const parentDir = path4.dirname(finalSessionPath);
+    const possibleSubagentsDir = path4.join(parentDir, baseName, "subagents");
+    if (fs3.existsSync(possibleSubagentsDir)) {
       try {
-        const subFiles = fs2.readdirSync(possibleSubagentsDir);
+        const subFiles = fs3.readdirSync(possibleSubagentsDir);
         for (const f of subFiles) {
           if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
-            sessionFiles.push(path2.join(possibleSubagentsDir, f));
+            sessionFiles.push(path4.join(possibleSubagentsDir, f));
           }
         }
       } catch {
@@ -1420,7 +1480,7 @@ async function main() {
   const lines = [];
   for (const file of sessionFiles) {
     try {
-      const content = fs2.readFileSync(file, "utf8");
+      const content = fs3.readFileSync(file, "utf8");
       lines.push(...content.split("\n"));
     } catch {
     }

@@ -17,7 +17,8 @@ import { spawn, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "../extensions/lib/serve/nginx.js";
-import { shortenPath, buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
+import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
+import { buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
