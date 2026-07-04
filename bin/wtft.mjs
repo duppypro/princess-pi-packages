@@ -1120,12 +1120,12 @@ function formatRelativeTime(ts) {
 }
 
 // extensions/lib/session-selector.ts
-function discoverSessions(harness = "auto") {
+function discoverSessions(harness = "auto", cwdOverride2) {
   const piSessionsDir = path3.join(os2.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
   const claudeProjectsDir = path3.join(os2.homedir(), ".claude", "projects");
   if (fs2.existsSync(claudeProjectsDir)) {
-    const cwdSlug = process.cwd().replace(/[/\\]/g, "-");
+    const cwdSlug = (cwdOverride2 ?? process.cwd()).replace(/[/\\]/g, "-");
     const sessionsSubdir = path3.join(claudeProjectsDir, cwdSlug, "sessions");
     const directDir = path3.join(claudeProjectsDir, cwdSlug);
     if (fs2.existsSync(sessionsSubdir)) claudeSessionsDirs.push(sessionsSubdir);
@@ -1299,6 +1299,7 @@ var showTicks = true;
 var targetSessionPath = void 0;
 var timezone = void 0;
 var harnessOption = "auto";
+var cwdOverride = void 0;
 var showOther = false;
 function printWhy() {
   try {
@@ -1346,6 +1347,7 @@ Usage: wtft [options]
 
 Options:
   -s, --session <path>    Specify an explicit session .jsonl log file path (defaults to latest active session).
+  --dir, --cwd <path>     Working directory for Claude Code session discovery (default: current directory).
   --harness <type>        Target a specific harness for auto-discovery (pi, claude-code, or auto). Default: auto.
   -i, --interval <val>    Group cost data into binned intervals (e.g., 1m, 7m, 4h, 1d, 2w; default: 1h).
   -l, --limit <number>    Limit the number of interval bars displayed (default: 100).
@@ -1357,7 +1359,6 @@ Options:
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
   -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
-  --version               Display this tool's version.
   --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases.
   -h, --help              Display this help menu.
 `);
@@ -1376,11 +1377,6 @@ for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
     printHelp();
-    process.exit(0);
-  } else if (arg === "--version") {
-    const manifestPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-    const manifest = JSON.parse(fs3.readFileSync(manifestPath, "utf8"));
-    console.log(`${manifest.name} ${manifest.version}`);
     process.exit(0);
   } else if (arg === "--why") {
     printWhy();
@@ -1416,6 +1412,8 @@ for (let i = 2; i < process.argv.length; i++) {
     hasOther = true;
   } else if (arg === "-W" || arg === "--watch") {
     showWatch = true;
+  } else if (arg === "--dir" || arg === "--cwd") {
+    cwdOverride = process.argv[++i];
   } else if (arg === "--harness") {
     const val = process.argv[++i];
     if (val === "pi" || val === "claude-code" || val === "auto") {
@@ -1425,7 +1423,7 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 async function main() {
   const isIndex = /^\d+$/.test(targetSessionPath || "");
-  const candidates = discoverSessions(harnessOption);
+  const candidates = discoverSessions(harnessOption, cwdOverride);
   let finalSessionPath = "";
   if (targetSessionPath && isIndex) {
     const idx = parseInt(targetSessionPath, 10);
