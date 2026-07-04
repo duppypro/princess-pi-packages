@@ -39,15 +39,15 @@ function calculateClaudeCost(model, usage, timestamp) {
     cacheWritePrice = 0;
     cacheReadPrice = 0;
   } else if (m.includes("haiku")) {
-    inputPrice = 0.8;
-    outputPrice = 4;
-    cacheWritePrice = 1;
-    cacheReadPrice = 0.08;
+    inputPrice = 1;
+    outputPrice = 5;
+    cacheWritePrice = 1.25;
+    cacheReadPrice = 0.1;
   } else if (m.includes("opus")) {
-    inputPrice = 15;
-    outputPrice = 75;
-    cacheWritePrice = 18.75;
-    cacheReadPrice = 1.5;
+    inputPrice = 5;
+    outputPrice = 25;
+    cacheWritePrice = 6.25;
+    cacheReadPrice = 0.5;
   }
   const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.cache_creation_input_tokens || 0) * (cacheWritePrice / 1e6) + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
@@ -101,7 +101,7 @@ function parseEntryToInteraction(entry) {
     let cost = 0;
     const usage = assistantMsg.usage || {};
     const piCost = usage.cost?.total;
-    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0;
+    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0;
     if (piCost !== void 0 && piCost !== null && !(piCost === 0 && hasTokens)) {
       cost = piCost;
     } else if (assistantMsg.model && hasTokens) {
