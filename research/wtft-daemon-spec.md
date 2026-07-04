@@ -31,8 +31,8 @@ One JSON object per line. First line is a header with the classifier version.
 
 ```jsonl
 {"_classifier_version":1}
-{"t":1719000000000,"c":0.023,"cat":"code","f":[{"p":"src/main.ts","a":"w"}],"cmd":["npm test"],"txt":["Let me fix that."]}
-{"t":1719000100000,"c":0.001,"cat":"spec","f":[{"p":"docs/spec.md","a":"r"}],"cmd":[],"txt":["Reading the spec..."]}
+{"t":1719000000000,"c":0.023,"cat":"code","f":[{"p":"src/main.ts","a":"w"}],"cmd":["npm test"]}
+{"t":1719000100000,"c":0.001,"cat":"spec","f":[{"p":"docs/spec.md","a":"r"}],"cmd":[]}
 ```
 
 | Field | Key | Type | Description |
@@ -40,12 +40,13 @@ One JSON object per line. First line is a header with the classifier version.
 | Timestamp | `t` | number | Unix ms |
 | Cost | `c` | number | USD |
 | Category | `cat` | string | One of: spec, code, mixed, tests, research, git, grep, prompt, other |
-| Files | `f` | array | `[{"p": "path", "a": "r|w"}]` |
-| Commands | `cmd` | string[] | Shell commands executed |
-| Texts | `txt` | string[] | Text blocks (prompt/thinking content) |
+| Files | `f` | array | `[{"p": "path", "a": "r|w"}]` — for future drill-down |
+| Commands | `cmd` | string[] | Shell commands executed — needed by `--other` histogram |
 
 Keys are intentionally short — this file has as many lines as the source session,
-so every byte counts on large sessions.
+so every byte counts on large sessions. The `txt` (thinking/prompt text) field is
+**not stored** — it's the largest field by far and no current consumer uses it.
+The future LLM pattern detector can read it from the source `session.jsonl`.
 
 ### Version Management
 
@@ -164,6 +165,22 @@ A separate daemon process that:
 
 This is intentionally out of scope for this issue. The `classified.jsonl` format
 is the stable interface that enables it.
+
+---
+
+## Management Commands
+
+Users run `wtft-daemon` directly only for management. Normal operation is transparent
+(auto-spawned by `wtft` CLI commands).
+
+```
+wtft-daemon --list        # Show all running daemons (PID, status, idle, session)
+wtft-daemon --cleanup     # Kill daemons whose source session no longer exists
+wtft-daemon --stop <path> # Stop a specific daemon by session path
+```
+
+Idle time is computed from the classified.jsonl file's modification time.
+Daemon state is stored in PID files at `/tmp/wtft-daemon-<sha256-hash>.pid`.
 
 ---
 

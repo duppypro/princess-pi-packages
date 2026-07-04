@@ -262,10 +262,8 @@ function serializeClassified(interaction) {
     t: interaction.timestamp,
     c: interaction.cost,
     cat: classifyInteraction(interaction),
-    // Keep full files/commands/texts for --other drill-down
     f: interaction.files.map(f => ({ p: f.path, a: f.action })),
     cmd: interaction.commands,
-    txt: interaction.texts,
   };
   return JSON.stringify(line) + "\n";
 }

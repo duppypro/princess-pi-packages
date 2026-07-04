@@ -1461,7 +1461,7 @@ function readClassifiedInteractions(classifiedPath2) {
           cost: obj.c || 0,
           files: (obj.f || []).map(f => ({ path: f.p, action: f.a })),
           commands: obj.cmd || [],
-          texts: obj.txt || []
+          texts: []
         });
       } catch (_) {}
     }
