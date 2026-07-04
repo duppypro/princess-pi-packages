@@ -424,16 +424,34 @@ function initClassified() {
 // ---
 
 function main() {
-  // Parse args
+  // ---
+  // ARG PARSING & MANAGEMENT COMMANDS
+  // ---
+
+  let showList = false;
+  let showCleanup = false;
+  let stopSession = null;
+
   for (let i = 2; i < process.argv.length; i++) {
     const arg = process.argv[i];
     if (arg === "--session" || arg === "-s") {
       sessionPath = process.argv[++i];
+    } else if (arg === "--list" || arg === "-l") {
+      showList = true;
+    } else if (arg === "--cleanup") {
+      showCleanup = true;
+    } else if (arg === "--stop") {
+      stopSession = process.argv[++i];
     } else if (arg === "--help" || arg === "-h") {
       console.log(`wtft-daemon — Classifier daemon for WTFT
 Usage: wtft-daemon --session <path> [--debug]
 
-Options:
+Management:
+  --list, -l            List all running daemons (session, PID, idle time)
+  --cleanup             Kill daemons whose source session no longer exists
+  --stop <session>      Stop daemon for a specific session path
+
+Daemon mode:
   -s, --session <path>  Path to session.jsonl to watch
   --debug               Enable debug logging to stderr
   -h, --help            Show this help`);
@@ -442,6 +460,104 @@ Options:
       process.env.WTFT_DAEMON_DEBUG = "1";
     }
   }
+
+// --- Management commands (no session required) ---
+
+if (showList || showCleanup || stopSession) {
+  const pidDir = os.tmpdir();
+  let pidFiles = [];
+  try {
+    pidFiles = fs.readdirSync(pidDir).filter(f => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
+  } catch (_) {}
+
+  let found = 0;
+  for (const pidFile of pidFiles) {
+    const fullPath = path.join(pidDir, pidFile);
+    let pid = 0;
+    try {
+      pid = parseInt(fs.readFileSync(fullPath, "utf8").trim(), 10);
+    } catch (_) { continue; }
+    if (pid <= 0) continue;
+
+    // Check if process is alive
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch (_) {}
+
+    // Try to find session path from classified file
+    let sessionFound = null;
+    let classifiedMtime = 0;
+    // The PID file name contains a hash — we need to scan for matching classified files
+    // Since the hash is derived from session path, we can't reverse it.
+    // Instead, check /proc/<pid>/cmdline to find the --session argument.
+    try {
+      const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      const args = cmdline.split("\0");
+      const sessIdx = args.indexOf("--session");
+      if (sessIdx >= 0 && sessIdx + 1 < args.length) {
+        sessionFound = args[sessIdx + 1];
+      }
+    } catch (_) {}
+
+    // Get classified file mtime for idle time
+    if (sessionFound) {
+      const cf = sessionFound + ".classified.jsonl";
+      try {
+        classifiedMtime = fs.statSync(cf).mtimeMs;
+      } catch (_) {}
+    }
+
+    if (showCleanup) {
+      if (!alive) {
+        try { fs.unlinkSync(fullPath); } catch (_) {}
+        continue;
+      }
+      if (sessionFound && !fs.existsSync(sessionFound)) {
+        process.kill(pid, "SIGTERM");
+        try { fs.unlinkSync(fullPath); } catch (_) {}
+        console.log(`Cleaned up: PID ${pid} — session gone: ${sessionFound}`);
+        found++;
+        continue;
+      }
+    }
+
+    if (stopSession && sessionFound === stopSession) {
+      if (alive) {
+        process.kill(pid, "SIGTERM");
+      }
+      try { fs.unlinkSync(fullPath); } catch (_) {}
+      console.log(`Stopped: PID ${pid} — ${sessionFound}`);
+      found++;
+      continue;
+    }
+
+    if (showList) {
+      found++;
+      const status = alive ? "RUNNING" : "DEAD (stale pid)";
+      let idleStr = "?";
+      if (classifiedMtime > 0) {
+        const idleSec = Math.floor((Date.now() - classifiedMtime) / 1000);
+        if (idleSec < 60) idleStr = `${idleSec}s`;
+        else if (idleSec < 3600) idleStr = `${Math.floor(idleSec / 60)}m`;
+        else idleStr = `${Math.floor(idleSec / 3600)}h`;
+      }
+      const sessionDisplay = sessionFound || `(hash: ${pidFile.replace(/^wtft-daemon-/, "").replace(/\.pid$/, "")})`;
+      console.log(`PID ${String(pid).padEnd(7)} ${status.padEnd(20)} idle: ${idleStr.padEnd(5)} ${sessionDisplay}`);
+    }
+  }
+
+  if (showCleanup) {
+    console.log(`Cleaned up ${found} daemon(s).`);
+  }
+  if (showList && found === 0) {
+    console.log("No wtft-daemon processes found.");
+  }
+  if (stopSession && found === 0) {
+    console.log(`No daemon found for: ${stopSession}`);
+  }
+  process.exit(0);
+}
+
+// --- Daemon mode (session required) ---
 
   if (!sessionPath) {
     process.stderr.write("wtft-daemon: --session <path> is required\n");
