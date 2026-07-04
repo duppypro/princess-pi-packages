@@ -1238,7 +1238,16 @@ async function selectSessionPrompt(candidates) {
       ...displayCandidates.map((c) => c.displayPath.length),
       10
     );
-    const render = () => {
+    let prevLines = 0;
+    const redraw = () => {
+      if (prevLines > 0) process.stdout.write(`\x1B[${prevLines}A`);
+      const out = buildOutput();
+      const lines = out.split("\n").filter(l => l.length > 0);
+      for (let i = 0; i < lines.length; i++) {
+        process.stdout.write(lines[i] + (i < lines.length - 1 ? "\x1B[K\n" : ""));
+      }
+    };
+    const buildOutput = () => {
       const selected = displayCandidates[selectedIndex];
       let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
 `;
@@ -1257,13 +1266,12 @@ async function selectSessionPrompt(candidates) {
         out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m
 `;
       }
-      process.stdout.write(out);
+      return out;
     };
-    const cleanScreen = () => {
-      // Move cursor up to overwrite selector lines in-place.
-      // Avoids \x1b[J (Erase Display) which pushes content to scrollback
-      // on some terminals, destroying command history.
-      process.stdout.write(`\x1B[${displayCandidates.length + 2}A`);
+    const render = () => {
+      const out = buildOutput();
+      prevLines = out.split("\n").filter(l => l.length > 0).length;
+      process.stdout.write(out);
     };
     render();
     const onKey = (key) => {
@@ -1275,12 +1283,10 @@ async function selectSessionPrompt(candidates) {
         resolve2(displayCandidates[selectedIndex].path);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        cleanScreen();
-        render();
+        redraw();
       } else if (key === "\x1B[B" || key === "j") {
         selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        cleanScreen();
-        render();
+        redraw();
       }
     };
     const cleanup = () => {
