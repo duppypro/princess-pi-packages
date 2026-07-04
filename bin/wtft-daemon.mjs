@@ -667,7 +667,8 @@ if (showList || showCleanup || showRestart || stopSession) {
     process.stderr.write(`wtft-daemon: session file not found: ${sessionPath}\n`);
     process.exit(1);
   }
-  // Guard: refuse to watch a classified.jsonl file (prevents recursive daemon loops)
+  // Guard: refuse to watch a classified.jsonl file (prevents recursive daemon loops).
+  // Must come AFTER existence check — the file must exist to be classified.
   if (sessionPath.endsWith(".classified.jsonl")) {
     process.stderr.write(`wtft-daemon: refusing to watch a classified cache file: ${sessionPath}\n`);
     process.exit(1);
