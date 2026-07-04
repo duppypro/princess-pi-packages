@@ -256,6 +256,7 @@ const CLASSIFIER_VERSION = 1;
 const POLL_MS = 667;          // 90bpm throttle
 const HB_INTERVAL_MS = 30000; // heartbeat every 30s of idle
 const HB_GRACE_MS = 2000;     // consumer: declare crash after 2s without heartbeat
+const IDLE_EXIT_MS = 30 * 60 * 1000; // exit if session.jsonl unchanged for 30 min
 
 function serializeClassified(interaction) {
   const line = {
@@ -648,6 +649,23 @@ if (showList || showCleanup || stopSession) {
       // Reset both timers so next heartbeat fires in 30s, not on next poll
       lastWriteMs = now;
       lastActivityMs = now;
+    }
+
+    // Idle exit: if session.jsonl hasn't been modified in >30 min,
+    // assume the session is finished and shut down cleanly.
+    try {
+      const sessionStat = fs.statSync(sessionPath);
+      if (now - sessionStat.mtimeMs >= IDLE_EXIT_MS) {
+        if (process.env.WTFT_DAEMON_DEBUG) {
+          process.stderr.write(`[wtft-daemon] session idle for ${Math.round((now - sessionStat.mtimeMs)/60000)}m, exiting\n`);
+        }
+        shutdown("idle timeout");
+        return;
+      }
+    } catch (_) {
+      // Session file gone — clean exit
+      shutdown("session removed");
+      return;
     }
 
     setTimeout(loop, POLL_MS);

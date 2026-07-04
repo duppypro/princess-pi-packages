@@ -91,6 +91,14 @@ Consumers can distinguish:
 - **Idle:** heartbeats with timestamps arriving on schedule, no classified
   data lines between them.
 
+### Idle Exit
+
+If `session.jsonl` hasn't been modified for **30 minutes**, the daemon assumes
+the session is finished and shuts down cleanly: writes `_hb:"stop"`, removes PID
+file, exits. The next `wtft` invocation spawns a fresh daemon.
+
+If the session file is deleted while the daemon is running, it also exits cleanly.
+
 ### Consumer Read Protocol
 
 1. Read the entire `classified.jsonl` on startup to build initial state.
