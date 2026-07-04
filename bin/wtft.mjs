@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 // extensions/lib/wtft-shared.ts
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -1427,6 +1427,85 @@ for (let i = 2; i < process.argv.length; i++) {
     }
   }
 }
+// ---
+// CLASSIFIED CACHE READER (#48)
+// ---
+
+function spawnDaemon(sessionPath2) {
+  const daemonScript = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+  try {
+    const child = spawn(process.execPath, [daemonScript, "--session", sessionPath2], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env }
+    });
+    child.unref();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function readClassifiedInteractions(classifiedPath2) {
+  const interactions = [];
+  try {
+    const content = fs3.readFileSync(classifiedPath2, "utf8");
+    const lines2 = content.split("\n");
+    for (const line of lines2) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj._cv !== void 0 || obj._hb !== void 0) continue;
+        interactions.push({
+          timestamp: obj.t || 0,
+          cost: obj.c || 0,
+          files: (obj.f || []).map(f => ({ path: f.p, action: f.a })),
+          commands: obj.cmd || [],
+          texts: obj.txt || []
+        });
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return interactions;
+}
+
+function readSessionSettings(sessionPath2) {
+  let disabledEmoji2 = false;
+  let sessionInterval2;
+  let sessionLimit2;
+  let sessionWidth2;
+  let sessionMode2;
+  let sessionShowTicks2;
+  let sessionTimezone2;
+  try {
+    const content = fs3.readFileSync(sessionPath2, "utf8");
+    const lines2 = content.split("\n");
+    for (const line of lines2) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === "custom" && entry.customType === "emoji-settings") {
+          if (entry.data && typeof entry.data.disabled === "boolean") {
+            disabledEmoji2 = entry.data.disabled;
+          }
+        } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+          if (entry.data) {
+            if (typeof entry.data.interval === "string") sessionInterval2 = entry.data.interval;
+            if (typeof entry.data.limit === "number") sessionLimit2 = entry.data.limit;
+            if (typeof entry.data.width === "number") sessionWidth2 = entry.data.width;
+            if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
+              sessionMode2 = entry.data.mode;
+            }
+            if (typeof entry.data.showTicks === "boolean") sessionShowTicks2 = entry.data.showTicks;
+            if (typeof entry.data.timezone === "string") sessionTimezone2 = entry.data.timezone;
+          }
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { disabledEmoji: disabledEmoji2, sessionInterval: sessionInterval2, sessionLimit: sessionLimit2, sessionWidth: sessionWidth2, sessionMode: sessionMode2, sessionShowTicks: sessionShowTicks2, sessionTimezone: sessionTimezone2 };
+}
+
 async function main() {
   const isIndex = /^\d+$/.test(targetSessionPath || "");
   const candidates = discoverSessions(harnessOption, cwdOverride);
@@ -1469,67 +1548,67 @@ async function main() {
     });
     return;
   }
-  const sessionFiles = [finalSessionPath];
-  const extName = path4.extname(finalSessionPath);
-  if (extName === ".jsonl") {
-    const baseName = path4.basename(finalSessionPath, extName);
-    const parentDir = path4.dirname(finalSessionPath);
-    const possibleSubagentsDir = path4.join(parentDir, baseName, "subagents");
-    if (fs3.existsSync(possibleSubagentsDir)) {
-      try {
-        const subFiles = fs3.readdirSync(possibleSubagentsDir);
-        for (const f of subFiles) {
-          if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
-            sessionFiles.push(path4.join(possibleSubagentsDir, f));
+
+  // Read session settings (lightweight scan — only custom entries)
+  const settings = readSessionSettings(finalSessionPath);
+  let disabledEmoji = settings.disabledEmoji;
+  let sessionInterval = settings.sessionInterval;
+  let sessionLimit = settings.sessionLimit;
+  let sessionWidth = settings.sessionWidth;
+  let sessionMode = settings.sessionMode;
+  let sessionShowTicks = settings.sessionShowTicks;
+  let sessionTimezone = settings.sessionTimezone;
+
+  // Read interactions: prefer classified.jsonl (fast path), fall back to session.jsonl
+  const classifiedPath = finalSessionPath + ".classified.jsonl";
+  let interactions = [];
+  if (fs3.existsSync(classifiedPath)) {
+    interactions = readClassifiedInteractions(classifiedPath);
+  }
+
+  if (interactions.length === 0) {
+    // Fallback: parse session.jsonl directly (slow path)
+    const sessionFiles = [finalSessionPath];
+    const extName = path4.extname(finalSessionPath);
+    if (extName === ".jsonl") {
+      const baseName = path4.basename(finalSessionPath, extName);
+      const parentDir = path4.dirname(finalSessionPath);
+      const possibleSubagentsDir = path4.join(parentDir, baseName, "subagents");
+      if (fs3.existsSync(possibleSubagentsDir)) {
+        try {
+          const subFiles = fs3.readdirSync(possibleSubagentsDir);
+          for (const f of subFiles) {
+            if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
+              sessionFiles.push(path4.join(possibleSubagentsDir, f));
+            }
           }
+        } catch {
+        }
+      }
+    }
+    const lines = [];
+    for (const file of sessionFiles) {
+      try {
+        const content = fs3.readFileSync(file, "utf8");
+        lines.push(...content.split("\n"));
+      } catch {
+      }
+    }
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        const interaction = parseEntryToInteraction(entry);
+        if (interaction) {
+          interactions.push(interaction);
         }
       } catch {
       }
     }
   }
-  const lines = [];
-  for (const file of sessionFiles) {
-    try {
-      const content = fs3.readFileSync(file, "utf8");
-      lines.push(...content.split("\n"));
-    } catch {
-    }
-  }
-  const interactions = [];
-  let disabledEmoji = false;
-  let sessionInterval;
-  let sessionLimit;
-  let sessionWidth;
-  let sessionMode;
-  let sessionShowTicks;
-  let sessionTimezone;
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.type === "custom" && entry.customType === "emoji-settings") {
-        if (entry.data && typeof entry.data.disabled === "boolean") {
-          disabledEmoji = entry.data.disabled;
-        }
-      } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
-        if (entry.data) {
-          if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
-          if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
-          if (typeof entry.data.width === "number") sessionWidth = entry.data.width;
-          if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
-            sessionMode = entry.data.mode;
-          }
-          if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
-          if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
-        }
-      }
-      const interaction = parseEntryToInteraction(entry);
-      if (interaction) {
-        interactions.push(interaction);
-      }
-    } catch {
-    }
-  }
+
+  // Auto-spawn daemon for future runs (fire-and-forget)
+  spawnDaemon(finalSessionPath);
   const termColumns = getTerminalWidth();
   const maxWidth = hasWidth ? maxWidthOption : sessionWidth ?? 240;
   const finalInterval = hasInterval ? intervalStr : sessionInterval ?? "1h";
