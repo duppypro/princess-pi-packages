@@ -502,6 +502,7 @@ function main() {
 
   let showList = false;
   let showCleanup = false;
+  let showRestart = false;
   let stopSession = null;
 
   for (let i = 2; i < process.argv.length; i++) {
@@ -512,6 +513,8 @@ function main() {
       showList = true;
     } else if (arg === "--cleanup") {
       showCleanup = true;
+    } else if (arg === "--restart") {
+      showRestart = true;
     } else if (arg === "--stop") {
       stopSession = process.argv[++i];
     } else if (arg === "--help" || arg === "-h") {
@@ -521,6 +524,7 @@ Usage: wtft-daemon --session <path> [--debug]
 Management:
   --list, -l            List all running daemons (session, PID, idle time)
   --cleanup             Kill daemons whose source session no longer exists
+  --restart             Kill all running daemons (fresh spawn on next wtft)
   --stop <session>      Stop daemon for a specific session path
 
 Daemon mode:
@@ -535,7 +539,7 @@ Daemon mode:
 
 // --- Management commands (no session required) ---
 
-if (showList || showCleanup || stopSession) {
+if (showList || showCleanup || showRestart || stopSession) {
   const pidDir = os.tmpdir();
   let pidFiles = [];
   try {
@@ -578,6 +582,16 @@ if (showList || showCleanup || stopSession) {
       } catch (_) {}
     }
 
+    if (showRestart) {
+      if (alive) {
+        process.kill(pid, "SIGTERM");
+      }
+      try { fs.unlinkSync(fullPath); } catch (_) {}
+      console.log(`Restarted: PID ${pid} — ${sessionFound || "(unknown session)"}`);
+      found++;
+      continue;
+    }
+
     if (showCleanup) {
       if (!alive) {
         try { fs.unlinkSync(fullPath); } catch (_) {}
@@ -617,6 +631,9 @@ if (showList || showCleanup || stopSession) {
     }
   }
 
+  if (showRestart) {
+    console.log(`Restarted ${found} daemon(s). Run wtft to spawn fresh instances.`);
+  }
   if (showCleanup) {
     console.log(`Cleaned up ${found} daemon(s).`);
   }
