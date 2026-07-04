@@ -77,17 +77,18 @@ The daemon writes heartbeat lines with explicit lifecycle signals:
 
 ```jsonl
 {"_hb":"start"}                 # Daemon connected, beginning classification
-{"_hb":1719000300000}            # Alive, no new data (every 30s of idle)
+{"_hb":1719000300000}            # Alive, no new data (every ~667ms when idle)
 {"_hb":"stop"}                  # Intentional disconnect — daemon shutting down
 ```
 
 Consumers can distinguish:
-- **Connected / alive:** recent `_hb` with timestamp or `"start"`.
+- **Connected / alive:** recent `_hb` with timestamp or `"start"`. Heartbeats
+  fire every 30s when the daemon is idle.
 - **Intentional disconnect:** last heartbeat was `"stop"`. Daemon will not return.
 - **Crashed:** no heartbeat for >35s (30s interval + 5s grace), and no `"stop"`
   line present. Consumer may restart the daemon.
 - **Idle:** heartbeats with timestamps arriving on schedule, no classified
-data lines between them.
+  data lines between them.
 
 ### Consumer Read Protocol
 

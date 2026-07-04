@@ -254,8 +254,8 @@ function classifyInteraction(interaction) {
 
 const CLASSIFIER_VERSION = 1;
 const POLL_MS = 667;          // 90bpm throttle
-// Heartbeats fire on the throttle cadence when idle — consumers
-// know the daemon is alive if the file is touched at least every ~700ms.
+const HB_INTERVAL_MS = 30000; // heartbeat every 30s of idle
+const HB_GRACE_MS = 2000;     // consumer: declare crash after 2s without heartbeat
 
 function serializeClassified(interaction) {
   const line = {
@@ -423,12 +423,6 @@ function initClassified() {
 // MAIN LOOP
 // ---
 
-function writePidFile() {
-  try {
-    fs.writeFileSync(pidPath, String(process.pid));
-  } catch (_) {}
-}
-
 function main() {
   // Parse args
   for (let i = 2; i < process.argv.length; i++) {
@@ -467,22 +461,38 @@ Options:
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   pidPath = path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 
-  // Singleton check
+  // Singleton check — atomic exclusive-create prevents TOCTOU race.
+  // If PID file exists, verify the process is alive; clean up stale ones.
+  let fd;
   try {
-    const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
-    if (existingPid > 0) {
-      try {
-        process.kill(existingPid, 0); // Check if process exists
-        process.stderr.write(`wtft-daemon: already running for this session (pid ${existingPid})\n`);
-        process.exit(0); // Not an error — daemon exists, consumer can proceed
-      } catch (_) {
-        // Stale PID file — remove and continue
-        fs.unlinkSync(pidPath);
+    fd = fs.openSync(pidPath, "wx");
+    fs.writeSync(fd, String(process.pid));
+    fs.closeSync(fd);
+  } catch (_) {
+    // PID file exists — check if the process is still alive
+    try {
+      const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+      if (existingPid > 0) {
+        try {
+          process.kill(existingPid, 0);
+          // Process exists — another daemon is running, exit quietly
+          process.exit(0);
+        } catch (_2) {
+          // Stale PID — clean up and retry
+          fs.unlinkSync(pidPath);
+          fd = fs.openSync(pidPath, "wx");
+          fs.writeSync(fd, String(process.pid));
+          fs.closeSync(fd);
+        }
       }
+    } catch (_3) {
+      // Couldn't read PID — clean up and retry
+      try { fs.unlinkSync(pidPath); } catch (_4) {}
+      fd = fs.openSync(pidPath, "wx");
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
     }
-  } catch (_) {}
-
-  writePidFile();
+  }
 
   // Initialize classified.jsonl (version check, header, start heartbeat)
   initClassified();
@@ -512,11 +522,16 @@ Options:
       flushPending();
     }
 
-    // Heartbeat: write on every poll cycle when idle (no new data, no pending writes)
-    if (pendingLines.length === 0 && newInteractions.length === 0) {
+    // Heartbeat: write one every 30s when idle (no new data, no pending writes).
+    // Guard: only fire if it's been at least HB_INTERVAL_MS since last activity
+    // AND we haven't written anything recently (prevents burst on wake).
+    const idleMs = now - lastActivityMs;
+    const sinceLastWrite = now - lastWriteMs;
+    if (pendingLines.length === 0 && idleMs >= HB_INTERVAL_MS && sinceLastWrite >= POLL_MS) {
       try {
         fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: now }) + "\n");
       } catch (_) {}
+      // Reset both timers so next heartbeat fires in 30s, not on next poll
       lastWriteMs = now;
       lastActivityMs = now;
     }
