@@ -594,7 +594,7 @@ if (showList || showCleanup || showRestart || stopSession) {
         process.kill(pid, "SIGTERM");
       }
       try { fs.unlinkSync(fullPath); } catch (_) {}
-      console.log(`Restarted: PID ${pid} — ${sessionFound || "(unknown session)"}`);
+      console.log(`Restarted: PID ${pid} — ${sessionFound || "(unknown)"} (fresh daemon auto-spawns on next wtft)`);
       found++;
       continue;
     }
