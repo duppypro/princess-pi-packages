@@ -1238,6 +1238,7 @@ async function selectSessionPrompt(candidates) {
       10
     );
     const render = () => {
+      process.stdout.write("\x1B[u\x1B[J");
       const selected = displayCandidates[selectedIndex];
       let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
 `;
@@ -1258,10 +1259,7 @@ async function selectSessionPrompt(candidates) {
       }
       process.stdout.write(out);
     };
-    const cleanScreen = () => {
-      const linesToClear = displayCandidates.length + 2;
-      process.stdout.write(`\x1B[${linesToClear}A\x1B[J`);
-    };
+    process.stdout.write("\x1B[s");
     render();
     const onKey = (key) => {
       if (key === "") {
@@ -1272,11 +1270,9 @@ async function selectSessionPrompt(candidates) {
         resolve(displayCandidates[selectedIndex].path);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        cleanScreen();
         render();
       } else if (key === "\x1B[B" || key === "j") {
         selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        cleanScreen();
         render();
       }
     };
