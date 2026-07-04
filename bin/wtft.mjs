@@ -1260,7 +1260,10 @@ async function selectSessionPrompt(candidates) {
       process.stdout.write(out);
     };
     const cleanScreen = () => {
-      process.stdout.write("\x1B[30A\x1B[J");
+      // Move cursor up to overwrite selector lines in-place.
+      // Avoids \x1b[J (Erase Display) which pushes content to scrollback
+      // on some terminals, destroying command history.
+      process.stdout.write(`\x1B[${displayCandidates.length + 2}A`);
     };
     render();
     const onKey = (key) => {
