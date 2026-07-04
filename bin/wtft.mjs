@@ -1125,7 +1125,8 @@ function discoverSessions(harness = "auto", cwdOverride2) {
   let claudeSessionsDirs = [];
   const claudeProjectsDir = path3.join(os2.homedir(), ".claude", "projects");
   if (fs2.existsSync(claudeProjectsDir)) {
-    const cwdSlug = (cwdOverride2 ?? process.cwd()).replace(/[/\\]/g, "-");
+    const resolvedCwd = cwdOverride2 ? path3.resolve(cwdOverride2) : process.cwd();
+    const cwdSlug = resolvedCwd.replace(/[/\\]/g, "-");
     const sessionsSubdir = path3.join(claudeProjectsDir, cwdSlug, "sessions");
     const directDir = path3.join(claudeProjectsDir, cwdSlug);
     if (fs2.existsSync(sessionsSubdir)) claudeSessionsDirs.push(sessionsSubdir);
