@@ -254,8 +254,8 @@ function classifyInteraction(interaction) {
 
 const CLASSIFIER_VERSION = 1;
 const POLL_MS = 667;          // 90bpm throttle
-const HB_INTERVAL_MS = 30000; // heartbeat every 30s idle
-const HB_GRACE_MS = 35000;    // consumer grace period before declaring crash
+// Heartbeats fire on the throttle cadence when idle — consumers
+// know the daemon is alive if the file is touched at least every ~700ms.
 
 function serializeClassified(interaction) {
   const line = {
@@ -512,22 +512,13 @@ Options:
       flushPending();
     }
 
-    // Heartbeat: write every 30s of idle (no new classified lines, no writes)
-    const idleMs = now - lastActivityMs;
-    const sinceLastWrite = now - lastWriteMs;
-    if (idleMs >= HB_INTERVAL_MS && sinceLastWrite >= HB_INTERVAL_MS && pendingLines.length === 0) {
+    // Heartbeat: write on every poll cycle when idle (no new data, no pending writes)
+    if (pendingLines.length === 0 && newInteractions.length === 0) {
       try {
         fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: now }) + "\n");
       } catch (_) {}
       lastWriteMs = now;
-      lastActivityMs = now; // Reset to avoid writing heartbeats back-to-back
-    }
-
-    // Always flush pending on every tick if throttled (ensures eventual consistency)
-    // Note: this runs on a 667ms schedule — if pendingLines accumulates faster than
-    // the flush rate, it catches up in subsequent ticks.
-    if (pendingLines.length > 0 && (now - lastWriteMs) >= POLL_MS) {
-      flushPending();
+      lastActivityMs = now;
     }
 
     setTimeout(loop, POLL_MS);
