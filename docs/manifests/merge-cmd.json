@@ -1,5 +1,6 @@
 {
   "name": "merge",
+  "version": "1.0.0",
   "tagline": "Safe Git→main Merger (worktree or single-checkout)",
   "description": "Automates the integration of a completed Step 5 feature branch or specific stable commit into 'main', and pushes the result to origin — without spending any LLM reasoning turns. Verifies the target is clean, pushed, in-history, and a Step 5 'Code and Spec Approved' commit before merging. If a dedicated 'main' worktree exists it merges there (untouched feature checkout); otherwise it falls back to an in-place single-checkout merge that always returns you to your feature branch (and rolls back on conflict). Available as the /merge command inside Pi Coding Agent, or as the standalone ./merge / the npm-global `merge` CLI from any other shell, including Claude Code's '!' prefix.",
   "examples": [
@@ -27,6 +28,7 @@
   "usage": [
     { "flags": "[commit-ish]", "desc": "Optional commit hash, branch, or reference to merge (default: HEAD)." },
     { "flags": "-h, --help", "desc": "Display this help information." },
+    { "flags": "--version", "desc": "Display this tool's version." },
     { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." },
     { "flags": "--cleanup", "desc": "Skip branch-cleanup prompt — auto-delete the feature branch (local + remote) and switch to main after a successful merge, assuming worktree is clean." }
   ]

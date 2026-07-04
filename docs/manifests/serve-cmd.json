@@ -1,5 +1,6 @@
 {
   "name": "serve",
+  "version": "1.0.0",
   "tagline": "Secure HTTPS Server Utility",
   "description": "Serves local directories securely using SSL/HTTPS certificates in a lightweight background process. Logs HTTP access automatically to ~/.pi-certs/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve (or bare serve, once the repo root is on $PATH) CLI script from any other shell, including Claude Code's '!' prefix.",
   "examples": [
@@ -48,6 +49,7 @@
     { "flags": "-L, --log", "desc": "List all active servers serving directories within this worktree." },
     { "flags": "-k, --kill [port|dir|all...]", "desc": "Kill servers by port, directory, or 'all'. Omit the target to kill every server in this worktree." },
     { "flags": "-h, --help", "desc": "Display this help information." },
+    { "flags": "--version", "desc": "Display this tool's version." },
     { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." }
   ]
 }

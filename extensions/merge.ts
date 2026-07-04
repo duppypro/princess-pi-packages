@@ -1,4 +1,5 @@
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { runMerge } from "./lib/merge/core.js";
 import { renderHelp, renderWhy } from "./lib/merge/help.js";
@@ -12,6 +13,16 @@ export default function mergeExtension(pi: ExtensionAPI) {
 		description: "Multi-Worktree Git Merger",
 		handler: async (args, ctx) => {
 			const argsList = (args || "").trim().split(/\s+/).filter(Boolean);
+			if (argsList.includes("--version")) {
+				try {
+					const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
+					const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+					ctx.ui.notify(`${manifest.name} ${manifest.version}`, "info");
+				} catch (err) {
+					ctx.ui.notify(`\u26A0\uFE0F Failed to load MERGE command manifest: ${err}`, "error");
+				}
+				return;
+			}
 			if (argsList.includes("-h") || argsList.includes("--help")) {
 				try {
 					const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
