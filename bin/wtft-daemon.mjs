@@ -356,6 +356,10 @@ function upsertHeartbeat(now) {
       isHb = obj._hb !== undefined;
     } catch (_) {}
 
+    if (process.env.WTFT_DAEMON_DEBUG) {
+      process.stderr.write(`[wtft-daemon] upsertHeartbeat: isHb=${isHb} lastLine=${lastLine.slice(0,60)}... fileSize=${stat.size}\n`);
+    }
+
     if (isHb) {
       // Overwrite in place — same format guarantees same length
       const newBytes = Buffer.from(hbLine);
@@ -371,8 +375,11 @@ function upsertHeartbeat(now) {
       fs.appendFileSync(classifiedPath, hbLine);
     }
     fs.closeSync(fd);
-  } catch (_) {
+  } catch (err) {
     // Fallback: append if we can't seek/overwrite
+    if (process.env.WTFT_DAEMON_DEBUG) {
+      process.stderr.write(`[wtft-daemon] upsertHeartbeat fallback: ${err.message}\n`);
+    }
     try {
       fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n");
     } catch (_2) {}
