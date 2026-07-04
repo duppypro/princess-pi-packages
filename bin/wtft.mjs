@@ -1171,16 +1171,7 @@ function discoverSessions(harness = "auto", cwdOverride2) {
     }
   } catch {
   }
-  return candidates.sort((a, b) => b.timestamp - a.timestamp).filter((c) => {
-    if (!cwdOverride2 || c.harness !== "pi") return true;
-    const expectedPiSlug = computePiSlug(path3.resolve(cwdOverride2));
-    const candidateSlug = path3.basename(path3.dirname(c.path));
-    return candidateSlug === expectedPiSlug;
-  });
-}
-function computePiSlug(cwd) {
-  const dirSlug = cwd.replace(/[/\\]/g, "-");
-  return `--${dirSlug}--`;
+  return candidates.sort((a, b) => b.timestamp - a.timestamp);
 }
 function getSessionSummary(filePath) {
   let turns = 0;
