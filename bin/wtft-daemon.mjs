@@ -253,10 +253,9 @@ function classifyInteraction(interaction) {
 // ---
 
 const CLASSIFIER_VERSION = 1;
-const POLL_MS = 667;          // 90bpm throttle
-const HB_INTERVAL_MS = 30000; // heartbeat every 30s of idle
-const HB_GRACE_MS = 2000;     // consumer: declare crash after 2s without heartbeat
+const POLL_MS = 667;              // 90bpm throttle
 const IDLE_EXIT_MS = 30 * 60 * 1000; // exit if session.jsonl unchanged for 30 min
+// Consumer crash detection: file unmodified for >2s with no _hb:"stop" = crash.
 
 function serializeClassified(interaction) {
   const line = {
