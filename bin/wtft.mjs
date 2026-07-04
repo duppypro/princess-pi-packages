@@ -1028,7 +1028,7 @@ async function watchMode(sessionPath, settings) {
   });
   const POLL_MS = 667;
   while (true) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    await new Promise((resolve2) => setTimeout(resolve2, POLL_MS));
     if (!fs.existsSync(sessionPath)) {
       lastSize = 0;
       needsRedraw = true;
@@ -1170,7 +1170,16 @@ function discoverSessions(harness = "auto", cwdOverride2) {
     }
   } catch {
   }
-  return candidates.sort((a, b) => b.timestamp - a.timestamp);
+  return candidates.sort((a, b) => b.timestamp - a.timestamp).filter((c) => {
+    if (!cwdOverride2 || c.harness !== "pi") return true;
+    const expectedPiSlug = computePiSlug(path3.resolve(cwdOverride2));
+    const candidateSlug = path3.basename(path3.dirname(c.path));
+    return candidateSlug === expectedPiSlug;
+  });
+}
+function computePiSlug(cwd) {
+  const dirSlug = cwd.replace(/[/\\]/g, "-");
+  return `--${dirSlug}--`;
 }
 function getSessionSummary(filePath) {
   let turns = 0;
@@ -1200,7 +1209,7 @@ function formatCostPadded(cost) {
   return formatCost(cost).padStart(7);
 }
 async function selectSessionPrompt(candidates) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     if (!process.stdout.isTTY) {
       console.log(
         `\x1B[90mNon-interactive environment detected. Defaulting to newest session [1]:\x1B[0m`
@@ -1221,7 +1230,7 @@ async function selectSessionPrompt(candidates) {
         `\x1B[90mRun 'wtft -s <number>' to target a specific session index.\x1B[0m
 `
       );
-      resolve(candidates[0].path);
+      resolve2(candidates[0].path);
       return;
     }
     let selectedIndex = 0;
@@ -1268,7 +1277,7 @@ async function selectSessionPrompt(candidates) {
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
         cleanup();
-        resolve(displayCandidates[selectedIndex].path);
+        resolve2(displayCandidates[selectedIndex].path);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
         cleanScreen();
