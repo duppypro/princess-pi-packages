@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
 // ---
@@ -356,10 +357,6 @@ function upsertHeartbeat(now) {
       isHb = obj._hb !== undefined;
     } catch (_) {}
 
-    if (process.env.WTFT_DAEMON_DEBUG) {
-      process.stderr.write(`[wtft-daemon] upsertHeartbeat: isHb=${isHb} lastLine=${lastLine.slice(0,60)}... fileSize=${stat.size}\n`);
-    }
-
     if (isHb) {
       // Overwrite in place — same format guarantees same length
       const newBytes = Buffer.from(hbLine);
@@ -375,11 +372,8 @@ function upsertHeartbeat(now) {
       fs.appendFileSync(classifiedPath, hbLine);
     }
     fs.closeSync(fd);
-  } catch (err) {
+  } catch (_) {
     // Fallback: append if we can't seek/overwrite
-    if (process.env.WTFT_DAEMON_DEBUG) {
-      process.stderr.write(`[wtft-daemon] upsertHeartbeat fallback: ${err.message}\n`);
-    }
     try {
       fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n");
     } catch (_2) {}
@@ -594,7 +588,17 @@ if (showList || showCleanup || showRestart || stopSession) {
         process.kill(pid, "SIGTERM");
       }
       try { fs.unlinkSync(fullPath); } catch (_) {}
-      console.log(`Restarted: PID ${pid} — ${sessionFound || "(unknown)"} (fresh daemon auto-spawns on next wtft)`);
+      // Re-launch fresh daemon for same session
+      if (sessionFound) {
+        try {
+          const child = spawn(process.execPath, [process.argv[1], "--session", sessionFound], {
+            detached: true,
+            stdio: "ignore"
+          });
+          child.unref();
+        } catch (_2) {}
+      }
+      console.log(`Restarted: PID ${pid} → fresh daemon for ${sessionFound || "(unknown)"}`);
       found++;
       continue;
     }
