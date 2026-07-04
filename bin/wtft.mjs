@@ -1243,16 +1243,26 @@ async function selectSessionPrompt(candidates) {
       if (prevLines > 0) process.stdout.write(`\x1B[${prevLines}A`);
       const out = buildOutput();
       const lines = out.split("\n").filter(l => l.length > 0);
+      // Write each line with \x1B[K (clear to EOL) to erase old longer content
       for (let i = 0; i < lines.length; i++) {
         process.stdout.write(lines[i] + (i < lines.length - 1 ? "\x1B[K\n" : ""));
       }
+      // If new output uses fewer screen lines than old, clear the remainder
+      const newScreenLines = screenLines(out);
+      if (newScreenLines < prevLines) {
+        // Write empty lines to erase leftovers
+        for (let i = newScreenLines; i < prevLines; i++) {
+          process.stdout.write("\x1B[K\n");
+        }
+        // Move back up
+        process.stdout.write(`\x1B[${prevLines - newScreenLines}A`);
+      }
+      prevLines = newScreenLines;
     };
     const buildOutput = () => {
       const selected = displayCandidates[selectedIndex];
-      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):
-`;
-      out += `  \x1B[90m${selected.path}\x1B[0m
-`;
+      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):\n`;
+      out += `  \x1B[90m${selected.path}\x1B[0m\n`;
       for (let i = 0; i < displayCandidates.length; i++) {
         const c = displayCandidates[i];
         const stats = statsList[i];
@@ -1263,14 +1273,26 @@ async function selectSessionPrompt(candidates) {
         const reset = isSelected ? "\x1B[0m" : "";
         const harnessLabel = c.harness === "claude-code" ? "CC" : "PI";
         const costStr = `\x1B[32m${formatCostPadded(stats.cost)}\x1B[0m`;
-        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m
-`;
+        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m\n`;
       }
       return out;
     };
+    // Compute screen lines accounting for terminal width wrapping.
+    // Strips ANSI escapes, then splits by terminal width for each logical line.
+    const screenLines = (text) => {
+      let count = 0;
+      const cols = process.stdout.columns || 80;
+      const lines = text.split("\n");
+      for (const line of lines) {
+        if (line.length === 0) continue;
+        const clean = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+        count += Math.max(1, Math.ceil(clean.length / cols));
+      }
+      return count;
+    };
     const render = () => {
       const out = buildOutput();
-      prevLines = out.split("\n").filter(l => l.length > 0).length;
+      prevLines = screenLines(out);
       process.stdout.write(out);
     };
     render();
@@ -1434,6 +1456,20 @@ for (let i = 2; i < process.argv.length; i++) {
     if (val === "pi" || val === "claude-code" || val === "auto") {
       harnessOption = val;
     }
+  } else if (arg === "--list" || arg === "--restart" || arg === "--cleanup") {
+    // Passthrough to wtft-daemon management commands
+    const daemonScript = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    try {
+      execSync(`"${process.execPath}" "${daemonScript}" ${arg}`, { stdio: "inherit" });
+    } catch (_) {}
+    process.exit(0);
+  } else if (arg === "--stop") {
+    const stopPath = process.argv[++i];
+    const daemonScript = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    try {
+      execSync(`"${process.execPath}" "${daemonScript}" --stop "${stopPath}"`, { stdio: "inherit" });
+    } catch (_) {}
+    process.exit(0);
   }
 }
 // ---
