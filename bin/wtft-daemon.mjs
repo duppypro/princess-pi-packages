@@ -663,6 +663,11 @@ if (showList || showCleanup || showRestart || stopSession) {
     process.stderr.write(`wtft-daemon: session file not found: ${sessionPath}\n`);
     process.exit(1);
   }
+  // Guard: refuse to watch a classified.jsonl file (prevents recursive daemon loops)
+  if (sessionPath.endsWith(".classified.jsonl")) {
+    process.stderr.write(`wtft-daemon: refusing to watch a classified cache file: ${sessionPath}\n`);
+    process.exit(1);
+  }
 
   // Determine classified.jsonl path (alongside session)
   const sessionDir = path.dirname(sessionPath);
