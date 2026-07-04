@@ -280,6 +280,7 @@ let lastSize = 0;            // bytes read from session.jsonl
 let lastWriteMs = 0;         // last time we flushed to classified.jsonl
 let lastActivityMs = Date.now(); // last time we classified a new interaction
 let pendingLines = [];       // classified lines waiting for next flush
+let idleStartMs = 0;         // start of current idle period (for _hb range)
 let running = true;
 
 // ---
@@ -309,12 +310,83 @@ process.on("SIGHUP", () => shutdown("SIGHUP"));
 // FILE I/O HELPERS
 // ---
 
+/**
+ * Overwrite the last line of classified.jsonl if it's a heartbeat.
+ * Updates the _hb range's `last` timestamp in place.
+ * Always uses {"_hb":{"first":<ts>,"last":<ts>}} format for fixed width
+ * so overwrites never change byte length. If the last line isn't a heartbeat
+ * (new data arrived), appends a new heartbeat line.
+ *
+ * Scans backwards from EOF for the last newline to handle arbitrarily long
+ * preceding lines (classified data lines can be large with `cmd` arrays).
+ */
+function upsertHeartbeat(now) {
+  try {
+    const hbLine = JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n";
+    const stat = fs.statSync(classifiedPath);
+    if (stat.size === 0) {
+      fs.appendFileSync(classifiedPath, hbLine);
+      return;
+    }
+
+    // Scan backwards from EOF in chunks to find the last complete line.
+    // A classified data line can be large (e.g. long `cmd` array), so a
+    // fixed-size read window would land mid-line.
+    const fd = fs.openSync(classifiedPath, "r+");
+    const CHUNK = 512;
+    let searchOffset = stat.size;
+    let tail = "";
+    let lastLineStart = -1;
+
+    while (searchOffset > 0 && lastLineStart === -1) {
+      const readSize = Math.min(CHUNK, searchOffset);
+      searchOffset -= readSize;
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, searchOffset);
+      tail = buf.toString("utf8") + tail;
+      lastLineStart = tail.lastIndexOf("\n");
+    }
+    if (lastLineStart === -1) lastLineStart = 0;
+    else lastLineStart += 1;
+
+    const lastLine = tail.slice(lastLineStart).trim();
+
+    let isHb = false;
+    try {
+      const obj = JSON.parse(lastLine);
+      isHb = obj._hb !== undefined;
+    } catch (_) {}
+
+    if (isHb) {
+      // Overwrite in place — same format guarantees same length
+      const newBytes = Buffer.from(hbLine);
+      const oldByteLen = Buffer.from(lastLine + "\n").length;
+      const writeBuf = Buffer.alloc(Math.max(newBytes.length, oldByteLen), 0x20);
+      newBytes.copy(writeBuf, 0, 0, Math.min(newBytes.length, oldByteLen));
+      // offset = file start + (position of lastLineStart within the tail buffer)
+      // tail covers bytes [searchOffset, EOF), so lastLineStart is relative to searchOffset
+      const offset = searchOffset + lastLineStart;
+      fs.writeSync(fd, writeBuf, 0, oldByteLen, offset);
+    } else {
+      // Last line is data — append new heartbeat
+      fs.appendFileSync(classifiedPath, hbLine);
+    }
+    fs.closeSync(fd);
+  } catch (_) {
+    // Fallback: append if we can't seek/overwrite
+    try {
+      fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n");
+    } catch (_2) {}
+  }
+}
+
 function flushPending() {
   if (pendingLines.length === 0) return;
   const batch = pendingLines.join("");
   pendingLines = [];
   try {
     fs.appendFileSync(classifiedPath, batch);
+    idleStartMs = 0; // Data arrived — idle period ended
   } catch (err) {
     // If we can't write, log and continue — don't crash the daemon
     if (process.env.WTFT_DAEMON_DEBUG) {
@@ -414,8 +486,10 @@ function initClassified() {
     fs.appendFileSync(classifiedPath, JSON.stringify({ _cv: CLASSIFIER_VERSION }) + "\n", { flag: "w" });
   }
 
-  // Write start heartbeat
-  fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: "start" }) + "\n");
+  // Write start heartbeat (range format — always includes both first and last)
+  const startNow = Date.now();
+  fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: { first: startNow, last: startNow } }) + "\n");
+  idleStartMs = startNow;
 }
 
 // ---
@@ -637,16 +711,13 @@ if (showList || showCleanup || stopSession) {
       flushPending();
     }
 
-    // Heartbeat: write one every 30s when idle (no new data, no pending writes).
-    // Guard: only fire if it's been at least HB_INTERVAL_MS since last activity
-    // AND we haven't written anything recently (prevents burst on wake).
-    const idleMs = now - lastActivityMs;
-    const sinceLastWrite = now - lastWriteMs;
-    if (pendingLines.length === 0 && idleMs >= HB_INTERVAL_MS && sinceLastWrite >= POLL_MS) {
-      try {
-        fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: now }) + "\n");
-      } catch (_) {}
-      // Reset both timers so next heartbeat fires in 30s, not on next poll
+    // Heartbeat: on every poll cycle when idle, update the _hb range line.
+    // First idle poll appends {"_hb":{"first":<ts>}}. Subsequent idle polls
+    // overwrite the last line in-place with {"_hb":{"first":<ts>,"last":<ts>}}.
+    // When data arrives, the idle period ends — next idle starts a new line.
+    if (pendingLines.length === 0) {
+      if (idleStartMs === 0) idleStartMs = now;
+      upsertHeartbeat(now);
       lastWriteMs = now;
       lastActivityMs = now;
     }

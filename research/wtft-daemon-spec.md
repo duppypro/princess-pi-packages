@@ -77,19 +77,19 @@ as a partial write and drop it.
 The daemon writes heartbeat lines with explicit lifecycle signals:
 
 ```jsonl
-{"_hb":"start"}                 # Daemon connected, beginning classification
-{"_hb":1719000300000}            # Alive, no new data (every ~667ms when idle)
-{"_hb":"stop"}                  # Intentional disconnect — daemon shutting down
+{"_hb":{"first":1719000300000}}                    # Daemon connected / idle period begins
+{"_hb":{"first":1719000300000,"last":1719000600000}}  # Updated in-place every poll, never grows
+{"_hb":"stop"}                                     # Intentional disconnect
 ```
 
+During idle, the **last line is overwritten in place** — heartbeat lines never
+accumulate. When data arrives, the idle period ends. The next idle cycle appends
+a new `_hb` line. This keeps `classified.jsonl` tight even for day-long idle sessions.
+
 Consumers can distinguish:
-- **Connected / alive:** recent `_hb` with timestamp or `"start"`. Heartbeats
-  fire every 30s when the daemon is idle.
-- **Intentional disconnect:** last heartbeat was `"stop"`. Daemon will not return.
-- **Crashed:** no heartbeat for >35s (30s interval + 5s grace), and no `"stop"`
-  line present. Consumer may restart the daemon.
-- **Idle:** heartbeats with timestamps arriving on schedule, no classified
-  data lines between them.
+- **Connected / alive:** last line is an `_hb` range with a recent `last` timestamp.
+- **Intentional disconnect:** `_hb:"stop"` appended after the range.
+- **Crashed:** no file modification for >2s with no `"stop"`.
 
 ### Idle Exit
 
