@@ -914,8 +914,11 @@ async function watchMode(sessionPath, settings) {
   let needsRedraw = true;
   let _lastRenderMin = -1;
   process.stdout.write("\x1B[?25l");
+  // Enter alternate screen buffer — chart updates stay inside,
+  // main scrollback is untouched. Exit on Ctrl+C.
+  process.stdout.write("\x1B[?1049h");
   process.on("SIGINT", () => {
-    process.stdout.write("\x1B[2J\x1B[H");
+    process.stdout.write("\x1B[?1049l"); // exit alternate screen
     process.stdout.write("\x1B[?25h");
     console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
     process.exit(0);
