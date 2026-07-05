@@ -549,16 +549,15 @@ if (showList || showCleanup || showRestart || stopSession) {
       }
     } catch (_) {}
 
-    // Get tag file mtime for idle time (scan for .wtft-tag.v*.jsonl)
+    // Get tag file mtime for idle time (look in wtft-tags/ subdirectory)
     if (sessionFound) {
       try {
-        const sessDir = path.dirname(sessionFound);
+        const tagsDir = path.join(path.dirname(sessionFound), "wtft-tags");
         const sessBase = path.basename(sessionFound);
         const prefix = sessBase + ".wtft-tag.v";
-        for (const f of fs.readdirSync(sessDir)) {
+        for (const f of fs.readdirSync(tagsDir)) {
           if (f.startsWith(prefix)) {
-            const tf = path.join(sessDir, f);
-            tagMtime = fs.statSync(tf).mtimeMs;
+            tagMtime = fs.statSync(path.join(tagsDir, f)).mtimeMs;
             break;
           }
         }
@@ -655,18 +654,21 @@ if (showList || showCleanup || showRestart || stopSession) {
     process.exit(1);
   }
 
-  // Determine wtft-tag path (alongside session, version in filename)
+  // Determine wtft-tag path (wtft-tags/ subdirectory, version in filename).
+  // Subdirectory keeps tag files out of session discovery — no filename filter needed.
   const sessionDir = path.dirname(sessionPath);
   const sessionBase = path.basename(sessionPath);
-  tagPath = path.join(sessionDir, sessionBase + TAG_SUFFIX);
+  const tagsDir = path.join(sessionDir, "wtft-tags");
+  try { fs.mkdirSync(tagsDir, { recursive: true }); } catch (_) {}
+  tagPath = path.join(tagsDir, sessionBase + TAG_SUFFIX);
 
   // Clean up old-version tag files (different version suffix) on startup.
   // Version-in-filename means no _cv header check — just delete stale files.
   try {
     const prefix = sessionBase + ".wtft-tag.v";
-    for (const f of fs.readdirSync(sessionDir)) {
+    for (const f of fs.readdirSync(tagsDir)) {
       if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
-        const stale = path.join(sessionDir, f);
+        const stale = path.join(tagsDir, f);
         try { fs.unlinkSync(stale); } catch (_) {}
         if (process.env.WTFT_DAEMON_DEBUG) {
           process.stderr.write(`[wtft-daemon] removed stale tag file: ${f}\n`);
