@@ -1074,13 +1074,38 @@ async function watchMode(sessionPath, settings) {
   let lastSize = 0;
   let needsRedraw = true;
   let _lastRenderMin = -1;
+  process.stdout.write("\x1B[?1049h");
   process.stdout.write("\x1B[?25l");
-  process.on("SIGINT", () => {
-    process.stdout.write("\x1B[2J\x1B[H");
+  let lastBuffer = [];
+  const exitWatch = () => {
+    process.stdout.write("\x1B[?1049l");
     process.stdout.write("\x1B[?25h");
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+      } catch (_) {
+      }
+      try {
+        process.stdin.pause();
+      } catch (_) {
+      }
+    }
+    if (lastBuffer.length > 0) {
+      for (const l of lastBuffer) console.log(l);
+    }
     console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
     process.exit(0);
-  });
+  };
+  process.on("SIGINT", exitWatch);
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.on("data", (data) => {
+      const key = data.toString();
+      if (key === "q" || key === "Q" || key === "") {
+        exitWatch();
+      }
+    });
+  }
   const parseInteractions = (filePath) => {
     const interactions = [];
     let disabledEmoji2 = false;
@@ -1165,10 +1190,10 @@ async function watchMode(sessionPath, settings) {
       forceLegendRow: true
     });
     const buf = [];
-    buf.push("\x1B[2J\x1B[H");
+    buf.push("\x1B[H");
     totalCost = allInteractions.reduce((sum, i) => sum + i.cost, 0);
     interactionCount = allInteractions.length;
-    buf.push(`\x1B[90m${sessionPath}  (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 Ctrl+C to exit\x1B[0m`);
+    buf.push(`\x1B[90m${sessionPath}  (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 q/Ctrl+C to exit\x1B[0m`);
     buf.push("");
     if (lines && lines.length > 0) {
       const tlHour = getCurrentLocalHour(finalTimezone);
@@ -1178,6 +1203,7 @@ async function watchMode(sessionPath, settings) {
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
+    lastBuffer = [...buf];
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
