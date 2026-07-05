@@ -915,19 +915,36 @@ async function watchMode(sessionPath, settings) {
   let _lastRenderMin = -1;
   process.stdout.write("\x1B[?25l");
   // Enter alternate screen buffer — chart updates stay inside,
-  // main scrollback is untouched. Exit on Ctrl+C.
+  // main scrollback is untouched.
   process.stdout.write("\x1B[?1049h");
   let lastBuffer = []; // saved for exit printout
-  process.on("SIGINT", () => {
+
+  const exitWatch = () => {
     process.stdout.write("\x1B[?1049l"); // exit alternate screen
     process.stdout.write("\x1B[?25h");
-    // Re-print the final chart to main screen so it persists
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+    }
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
     console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
     process.exit(0);
-  });
+  };
+
+  process.on("SIGINT", exitWatch);
+
+  // Listen for 'q' to quit (cleaner than Ctrl+C)
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", (key) => {
+      if (key === "q" || key === "Q" || key === "\x03") {
+        exitWatch();
+      }
+    });
+  }
   const parseInteractions = (filePath) => {
     const interactions = [];
     let disabledEmoji2 = false;
