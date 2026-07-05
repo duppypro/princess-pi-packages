@@ -1261,13 +1261,20 @@ async function selectSessionPrompt(candidates) {
     // This gives a clean canvas that doesn't touch the main screen
     // or scrollback at all — like less/vim/fzf.
     process.stdout.write("\x1B[?1049h");
-    process.stdout.write(buildOutput());
-    const redraw = () => {
-      // Clear screen and redraw from top — simple, reliable.
-      // Alternate buffer: clearing doesn't affect main scrollback.
+    // Position selector at bottom of screen, consistent on every render.
+    // Compute blank padding lines: terminal height minus selector height.
+    const draw = () => {
+      const out = buildOutput();
+      const logicalLines = out.split("\n").filter(l => l.length > 0).length;
+      const rows = process.stdout.rows || 24;
+      const pad = Math.max(0, rows - logicalLines);
       process.stdout.write("\x1B[2J\x1B[H");
-      process.stdout.write(buildOutput());
+      // Pad with empty lines to push content to bottom
+      if (pad > 0) process.stdout.write("\n".repeat(pad));
+      process.stdout.write(out);
     };
+    draw();
+    const redraw = () => draw();
     const onKey = (key) => {
       if (key === "") {
         cleanup();
