@@ -255,7 +255,7 @@ function classifyInteraction(interaction) {
 // CLASSIFIED FORMAT WRITER
 // ---
 
-const CLASSIFIER_VERSION = 1;
+const CLASSIFIER_VERSION = 2;  // bumped for #54 (dedup) + #55 (TTL-split cache pricing)
 const POLL_MS = 667;              // 90bpm throttle
 const IDLE_EXIT_MS = 30 * 60 * 1000; // exit if session.jsonl unchanged for 30 min
 // Consumer crash detection: file unmodified for >2s with no _hb:"stop" = crash.
