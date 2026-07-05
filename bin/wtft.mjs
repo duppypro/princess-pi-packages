@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 // extensions/lib/wtft-shared.ts
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -24,7 +24,6 @@ function calculateClaudeCost(model, usage, timestamp) {
   if (!usage) return 0;
   let inputPrice = 3;
   let outputPrice = 15;
-  let cacheWritePrice = 3.75;
   let cacheReadPrice = 0.3;
   const m = (model || "").toLowerCase();
   if (m.includes("deepseek")) {
@@ -36,20 +35,27 @@ function calculateClaudeCost(model, usage, timestamp) {
       inputPrice = 0.14 * peak;
       outputPrice = 0.28 * peak;
     }
-    cacheWritePrice = 0;
     cacheReadPrice = 0;
   } else if (m.includes("haiku")) {
     inputPrice = 1;
     outputPrice = 5;
-    cacheWritePrice = 1.25;
     cacheReadPrice = 0.1;
   } else if (m.includes("opus")) {
     inputPrice = 5;
     outputPrice = 25;
-    cacheWritePrice = 6.25;
     cacheReadPrice = 0.5;
   }
-  const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.cache_creation_input_tokens || 0) * (cacheWritePrice / 1e6) + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
+  let cacheWriteCost = 0;
+  const cc = usage.cache_creation || {};
+  const cw5m = cc.ephemeral_5m_input_tokens ?? 0;
+  const cw1h = cc.ephemeral_1h_input_tokens ?? 0;
+  const cwFlat = Math.max(0, (usage.cache_creation_input_tokens || 0) - cw5m - cw1h);
+  if (m.includes("deepseek")) {
+    cacheWriteCost = 0;
+  } else {
+    cacheWriteCost = cw5m * (inputPrice * 1.25 / 1e6) + cw1h * (inputPrice * 2 / 1e6) + cwFlat * (inputPrice * 1.25 / 1e6);
+  }
+  const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
 function extractFilesFromBashCommand(command, files) {
@@ -101,15 +107,16 @@ function parseEntryToInteraction(entry) {
     let cost = 0;
     const usage = assistantMsg.usage || {};
     const piCost = usage.cost?.total;
-    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0;
-    if (piCost !== void 0 && piCost !== null && !(piCost === 0 && hasTokens)) {
+    const hasTokens2 = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0;
+    if (piCost !== void 0 && piCost !== null && !(piCost === 0 && hasTokens2)) {
       cost = piCost;
-    } else if (assistantMsg.model && hasTokens) {
+    } else if (assistantMsg.model && hasTokens2) {
       const normalizedUsage = {
         input_tokens: usage.input_tokens ?? usage.input ?? 0,
         output_tokens: usage.output_tokens ?? usage.output ?? 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
-        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0
+        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
+        cache_creation: usage.cache_creation || null
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
@@ -153,9 +160,90 @@ function parseEntryToInteraction(entry) {
         }
       }
     }
-    return { timestamp, cost, files, commands, texts };
+    return {
+      timestamp,
+      cost,
+      messageId: assistantMsg.id,
+      requestId: entry.requestId,
+      model: assistantMsg.model || void 0,
+      inputTokens: usage.input_tokens || usage.input || 0,
+      outputTokens: usage.output_tokens || usage.output || 0,
+      cacheReadTokens: usage.cache_read_input_tokens || usage.cacheRead || 0,
+      cacheWriteTokens: usage.cache_creation_input_tokens || usage.cacheWrite || 0,
+      files,
+      commands,
+      texts
+    };
   }
   return null;
+}
+function parseSessionFile(filePath) {
+  const interactions = [];
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        const interaction = parseEntryToInteraction(entry);
+        if (interaction) interactions.push(interaction);
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return interactions;
+}
+function deduplicateInteractions(interactions) {
+  const byId = /* @__PURE__ */ new Map();
+  const withoutId = [];
+  for (const i of interactions) {
+    if (i.messageId) {
+      const existing = byId.get(i.messageId);
+      if (existing) {
+        existing.push(i);
+      } else {
+        byId.set(i.messageId, [i]);
+      }
+    } else {
+      withoutId.push(i);
+    }
+  }
+  const deduped = [...withoutId];
+  for (const [, group] of byId) {
+    if (group.length === 1) {
+      deduped.push(group[0]);
+    } else {
+      let best = group[0];
+      for (let j = 1; j < group.length; j++) {
+        if (group[j].cost > best.cost) best = group[j];
+      }
+      const merged = {
+        ...best,
+        files: [],
+        commands: [],
+        texts: []
+      };
+      const seenFiles = /* @__PURE__ */ new Set();
+      for (const i of group) {
+        for (const f of i.files) {
+          const key = `${f.path}:${f.action}`;
+          if (!seenFiles.has(key)) {
+            seenFiles.add(key);
+            merged.files.push(f);
+          }
+        }
+        for (const c of i.commands) {
+          if (!merged.commands.includes(c)) merged.commands.push(c);
+        }
+        for (const t of i.texts) {
+          if (!merged.texts.includes(t)) merged.texts.push(t);
+        }
+      }
+      deduped.push(merged);
+    }
+  }
+  return deduped;
 }
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
@@ -563,6 +651,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const mode2 = opts?.mode !== void 0 ? opts.mode : defaultSettings.mode;
   const tz = opts?.timezone !== void 0 ? opts.timezone : defaultSettings.timezone;
   const intervalConfig = parseInterval(intervalStr2);
+  interactions = deduplicateInteractions(interactions);
   const binMap = /* @__PURE__ */ new Map();
   let totalSessionCost = 0;
   for (const interaction of interactions) {
@@ -903,6 +992,78 @@ function renderOtherHistogram(interactions, maxWidth = 80) {
   }
   return output;
 }
+function formatTokenCount(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
+function shortenModel(model) {
+  return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
+}
+function renderTokenSummary(interactions, maxWidth = 80) {
+  const deduped = deduplicateInteractions(interactions);
+  const byModel = /* @__PURE__ */ new Map();
+  let unmatched = 0;
+  for (const i of deduped) {
+    const model = i.model || "(unknown)";
+    if (model === "(unknown)" || model === "<synthetic>") {
+      unmatched++;
+      continue;
+    }
+    const agg = byModel.get(model) || { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cost: 0 };
+    agg.inputTokens += i.inputTokens;
+    agg.outputTokens += i.outputTokens;
+    agg.cacheReadTokens += i.cacheReadTokens;
+    agg.cacheWriteTokens += i.cacheWriteTokens;
+    agg.cost += i.cost;
+    byModel.set(model, agg);
+  }
+  if (byModel.size === 0) {
+    return unmatched > 0 ? `No model-tagged interactions found (${unmatched} untagged).` : "No model-tagged interactions found.";
+  }
+  const sorted = Array.from(byModel.entries()).sort((a, b) => b[1].cost - a[1].cost);
+  const modelColW = Math.max(10, ...sorted.map(([m]) => shortenModel(m).length));
+  const numColW = 10;
+  const sep = "\u2500".repeat(Math.min(maxWidth, modelColW + numColW * 4 + 20));
+  let out = "";
+  out += `
+\u2500\u2500 Token Summary (per model, deduped) \u2500\u2500${unmatched > 0 ? `  (${unmatched} untagged interactions skipped)` : ""}
+`;
+  out += [
+    "Model".padEnd(modelColW),
+    "Input".padStart(numColW),
+    "Output".padStart(numColW),
+    "Cache-Read".padStart(numColW),
+    "Cache-Write".padStart(numColW),
+    "Cost".padStart(numColW)
+  ].join(" ") + "\n";
+  let totalInput = 0, totalOutput = 0, totalCr = 0, totalCw = 0, totalCost = 0;
+  for (const [model, agg] of sorted) {
+    out += [
+      shortenModel(model).padEnd(modelColW),
+      formatTokenCount(agg.inputTokens).padStart(numColW),
+      formatTokenCount(agg.outputTokens).padStart(numColW),
+      formatTokenCount(agg.cacheReadTokens).padStart(numColW),
+      formatTokenCount(agg.cacheWriteTokens).padStart(numColW),
+      formatCost(agg.cost).padStart(numColW)
+    ].join(" ") + "\n";
+    totalInput += agg.inputTokens;
+    totalOutput += agg.outputTokens;
+    totalCr += agg.cacheReadTokens;
+    totalCw += agg.cacheWriteTokens;
+    totalCost += agg.cost;
+  }
+  out += sep + "\n";
+  out += [
+    "TOTAL".padEnd(modelColW),
+    formatTokenCount(totalInput).padStart(numColW),
+    formatTokenCount(totalOutput).padStart(numColW),
+    formatTokenCount(totalCr).padStart(numColW),
+    formatTokenCount(totalCw).padStart(numColW),
+    formatCost(totalCost).padStart(numColW)
+  ].join(" ") + "\n";
+  return out;
+}
 async function watchMode(sessionPath, settings) {
   if (!process.stdout.isTTY) {
     console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
@@ -914,37 +1075,12 @@ async function watchMode(sessionPath, settings) {
   let needsRedraw = true;
   let _lastRenderMin = -1;
   process.stdout.write("\x1B[?25l");
-  // Enter alternate screen buffer — chart updates stay inside,
-  // main scrollback is untouched.
-  process.stdout.write("\x1B[?1049h");
-  let lastBuffer = []; // saved for exit printout
-
-  const exitWatch = () => {
-    process.stdout.write("\x1B[?1049l"); // exit alternate screen
+  process.on("SIGINT", () => {
+    process.stdout.write("\x1B[2J\x1B[H");
     process.stdout.write("\x1B[?25h");
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
-    }
-    if (lastBuffer.length > 0) {
-      for (const l of lastBuffer) console.log(l);
-    }
     console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
     process.exit(0);
-  };
-
-  process.on("SIGINT", exitWatch);
-
-  // Listen for 'q' to quit (cleaner than Ctrl+C)
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on("data", (key) => {
-      if (key === "q" || key === "Q" || key === "\x03") {
-        exitWatch();
-      }
-    });
-  }
+  });
   const parseInteractions = (filePath) => {
     const interactions = [];
     let disabledEmoji2 = false;
@@ -1042,8 +1178,6 @@ async function watchMode(sessionPath, settings) {
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
-    // Save for exit printout (skip clear-screen escape)
-    lastBuffer = buf.slice(1);
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
@@ -1166,7 +1300,7 @@ function discoverSessions(harness = "auto", cwdOverride2) {
       const fullPath = path3.join(dir, f);
       const stat = fs2.statSync(fullPath);
       if (stat.isDirectory()) {
-        if (f !== "subagents" && f !== "tool-results" && f !== "memory") {
+        if (f !== "subagents" && f !== "tool-results" && f !== "memory" && f !== "wtft-tags") {
           walk(fullPath, type);
         }
       } else if (f.endsWith(".jsonl")) {
@@ -1202,11 +1336,10 @@ function discoverSessions(harness = "auto", cwdOverride2) {
 }
 function getSessionSummary(filePath) {
   let turns = 0;
-  let cost = 0;
+  const interactions = [];
   try {
     const content = fs2.readFileSync(filePath, "utf8");
-    const lines = content.split("\n");
-    for (const line of lines) {
+    for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line);
@@ -1214,18 +1347,28 @@ function getSessionSummary(filePath) {
           turns++;
         }
         const interaction = parseEntryToInteraction(entry);
-        if (interaction) {
-          cost += interaction.cost;
-        }
+        if (interaction) interactions.push(interaction);
       } catch {
       }
     }
   } catch {
   }
+  const deduped = deduplicateInteractions(interactions);
+  const cost = deduped.reduce((sum, i) => sum + i.cost, 0);
   return { turns, cost };
 }
 function formatCostPadded(cost) {
   return formatCost(cost).padStart(7);
+}
+function visualLineCount(text, termWidth) {
+  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
+  const lines = text.split("\n");
+  let count = 0;
+  for (const line of lines) {
+    const cleanLen = line.replace(ansiRe, "").length;
+    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
+  }
+  return count;
 }
 async function selectSessionPrompt(candidates) {
   return new Promise((resolve2) => {
@@ -1260,19 +1403,19 @@ async function selectSessionPrompt(candidates) {
     stdin.setRawMode(true);
     stdin.resume();
     stdin.setEncoding("utf8");
+    process.stdout.write("\x1B[?1049h");
     process.stdout.write("\x1B[?25l");
     const maxPathLen = Math.max(
       ...displayCandidates.map((c) => c.displayPath.length),
       10
     );
-    const buildOutput = () => {
+    let lastLineCount = 0;
+    const render = () => {
       const selected = displayCandidates[selectedIndex];
-      const maxCols = (process.stdout.columns || 80) - 2; // -2 for "  " prefix
-      const truncPath = selected.path.length > maxCols
-        ? selected.path.slice(0, maxCols - 3) + "..."
-        : selected.path;
-      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):\n`;
-      out += `  \x1B[90m${truncPath}\x1B[0m\n`;
+      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (j/k or arrows navigate, Enter select, q quit):
+`;
+      out += `  \x1B[90m${selected.path}\x1B[0m
+`;
       for (let i = 0; i < displayCandidates.length; i++) {
         const c = displayCandidates[i];
         const stats = statsList[i];
@@ -1283,56 +1426,42 @@ async function selectSessionPrompt(candidates) {
         const reset = isSelected ? "\x1B[0m" : "";
         const harnessLabel = c.harness === "claude-code" ? "CC" : "PI";
         const costStr = `\x1B[32m${formatCostPadded(stats.cost)}\x1B[0m`;
-        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m\n`;
+        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m
+`;
       }
-      return out;
+      const cols = process.stdout.columns || 80;
+      lastLineCount = visualLineCount(out, cols);
+      process.stdout.write(out);
     };
-    // Draw selector in-place on main screen, preserving scrollback above.
-    // On first draw: outputs directly at cursor position.
-    // On redraw: moves cursor up by selector height to overwrite in place.
-    let selectorRows = 0;
-    const draw = () => {
-      if (selectorRows > 0) process.stdout.write(`\x1B[${selectorRows}A`);
-      const out = buildOutput();
-      const lines = out.split("\n").filter(l => l.length > 0);
-      selectorRows = lines.length;
-      for (let i = 0; i < lines.length; i++) {
-        process.stdout.write(lines[i] + "\x1B[K\n");
+    const cleanScreen = () => {
+      if (lastLineCount > 0) {
+        process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
       }
     };
-    draw();
-    const redraw = () => draw();
-
-    let resizeTimer = null;
-    const onResize = () => {
-      if (resizeTimer) return;
-      resizeTimer = setTimeout(() => { resizeTimer = null; redraw(); }, 100);
-    };
-    process.on("SIGWINCH", onResize);
+    render();
     const onKey = (key) => {
-      if (key === "") {
+      if (key === "" || key === "q" || key === "Q") {
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
-        // Collapse: show title + path, clear candidates, chart starts below
-        const candidateRows = Math.max(0, selectorRows - 2);
-        if (candidateRows > 0) process.stdout.write(`\x1B[${candidateRows}A`);
-        process.stdout.write("\x1B[J");
+        const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
-        resolve2(displayCandidates[selectedIndex].path);
+        resolve2(selectedPath);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        redraw();
+        cleanScreen();
+        render();
       } else if (key === "\x1B[B" || key === "j") {
         selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        redraw();
+        cleanScreen();
+        render();
       }
     };
     const cleanup = () => {
-      process.removeListener("SIGWINCH", onResize);
       stdin.removeListener("data", onKey);
       stdin.setRawMode(false);
       stdin.pause();
+      process.stdout.write("\x1B[?1049l");
       process.stdout.write("\x1B[?25h");
     };
     stdin.on("data", onKey);
@@ -1350,6 +1479,7 @@ var timezone = void 0;
 var harnessOption = "auto";
 var cwdOverride = void 0;
 var showOther = false;
+var showTokens = false;
 function printWhy() {
   try {
     const manifestPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
@@ -1407,6 +1537,7 @@ Options:
   --no-ticks              Disable the proportional cost scale ticks above the bars.
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
   -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
+  -T, --tokens            Print a per-model token summary table (deduped) for cross-referencing with /usage.
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
   --version               Display this tool's version.
   --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases.
@@ -1422,6 +1553,7 @@ var hasNoTicks = false;
 var hasTicks = false;
 var hasTz = false;
 var hasOther = false;
+var hasTokens = false;
 var showWatch = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
@@ -1465,6 +1597,9 @@ for (let i = 2; i < process.argv.length; i++) {
   } else if (arg === "-o" || arg === "--other") {
     showOther = true;
     hasOther = true;
+  } else if (arg === "--tokens" || arg === "-T") {
+    showTokens = true;
+    hasTokens = true;
   } else if (arg === "-W" || arg === "--watch") {
     showWatch = true;
   } else if (arg === "--dir" || arg === "--cwd") {
@@ -1474,101 +1609,8 @@ for (let i = 2; i < process.argv.length; i++) {
     if (val === "pi" || val === "claude-code" || val === "auto") {
       harnessOption = val;
     }
-  } else if (arg === "--list" || arg === "--restart" || arg === "--cleanup") {
-    // Passthrough to wtft-daemon management commands
-    const daemonScript = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
-    try {
-      execSync(`"${process.execPath}" "${daemonScript}" ${arg}`, { stdio: "inherit" });
-    } catch (_) {}
-    process.exit(0);
-  } else if (arg === "--stop") {
-    const stopPath = process.argv[++i];
-    const daemonScript = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
-    try {
-      execSync(`"${process.execPath}" "${daemonScript}" --stop "${stopPath}"`, { stdio: "inherit" });
-    } catch (_) {}
-    process.exit(0);
   }
 }
-// ---
-// CLASSIFIED CACHE READER (#48)
-// ---
-
-function spawnDaemon(sessionPath2) {
-  const daemonScript = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
-  try {
-    const child = spawn(process.execPath, [daemonScript, "--session", sessionPath2], {
-      detached: true,
-      stdio: "ignore",
-      env: { ...process.env }
-    });
-    child.unref();
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function readClassifiedInteractions(classifiedPath2) {
-  const interactions = [];
-  try {
-    const content = fs3.readFileSync(classifiedPath2, "utf8");
-    const lines2 = content.split("\n");
-    for (const line of lines2) {
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj._cv !== void 0 || obj._hb !== void 0) continue;
-        interactions.push({
-          timestamp: obj.t || 0,
-          cost: obj.c || 0,
-          files: (obj.f || []).map(f => ({ path: f.p, action: f.a })),
-          commands: obj.cmd || [],
-          texts: []
-        });
-      } catch (_) {}
-    }
-  } catch (_) {}
-  return interactions;
-}
-
-function readSessionSettings(sessionPath2) {
-  let disabledEmoji2 = false;
-  let sessionInterval2;
-  let sessionLimit2;
-  let sessionWidth2;
-  let sessionMode2;
-  let sessionShowTicks2;
-  let sessionTimezone2;
-  try {
-    const content = fs3.readFileSync(sessionPath2, "utf8");
-    const lines2 = content.split("\n");
-    for (const line of lines2) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type === "custom" && entry.customType === "emoji-settings") {
-          if (entry.data && typeof entry.data.disabled === "boolean") {
-            disabledEmoji2 = entry.data.disabled;
-          }
-        } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
-          if (entry.data) {
-            if (typeof entry.data.interval === "string") sessionInterval2 = entry.data.interval;
-            if (typeof entry.data.limit === "number") sessionLimit2 = entry.data.limit;
-            if (typeof entry.data.width === "number") sessionWidth2 = entry.data.width;
-            if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
-              sessionMode2 = entry.data.mode;
-            }
-            if (typeof entry.data.showTicks === "boolean") sessionShowTicks2 = entry.data.showTicks;
-            if (typeof entry.data.timezone === "string") sessionTimezone2 = entry.data.timezone;
-          }
-        }
-      } catch (_) {}
-    }
-  } catch (_) {}
-  return { disabledEmoji: disabledEmoji2, sessionInterval: sessionInterval2, sessionLimit: sessionLimit2, sessionWidth: sessionWidth2, sessionMode: sessionMode2, sessionShowTicks: sessionShowTicks2, sessionTimezone: sessionTimezone2 };
-}
-
 async function main() {
   const isIndex = /^\d+$/.test(targetSessionPath || "");
   const candidates = discoverSessions(harnessOption, cwdOverride);
@@ -1611,67 +1653,64 @@ async function main() {
     });
     return;
   }
-
-  // Read session settings (lightweight scan — only custom entries)
-  const settings = readSessionSettings(finalSessionPath);
-  let disabledEmoji = settings.disabledEmoji;
-  let sessionInterval = settings.sessionInterval;
-  let sessionLimit = settings.sessionLimit;
-  let sessionWidth = settings.sessionWidth;
-  let sessionMode = settings.sessionMode;
-  let sessionShowTicks = settings.sessionShowTicks;
-  let sessionTimezone = settings.sessionTimezone;
-
-  // Read interactions: prefer classified.jsonl (fast path), fall back to session.jsonl
-  const classifiedPath = finalSessionPath + ".classified.jsonl";
-  let interactions = [];
-  if (fs3.existsSync(classifiedPath)) {
-    interactions = readClassifiedInteractions(classifiedPath);
+  const sessionFiles = [finalSessionPath];
+  const extName = path4.extname(finalSessionPath);
+  if (extName === ".jsonl") {
+    const baseName = path4.basename(finalSessionPath, extName);
+    const parentDir = path4.dirname(finalSessionPath);
+    const possibleSubagentsDir = path4.join(parentDir, baseName, "subagents");
+    if (fs3.existsSync(possibleSubagentsDir)) {
+      try {
+        const subFiles = fs3.readdirSync(possibleSubagentsDir);
+        for (const f of subFiles) {
+          if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
+            sessionFiles.push(path4.join(possibleSubagentsDir, f));
+          }
+        }
+      } catch {
+      }
+    }
   }
-
-  if (interactions.length === 0) {
-    // Fallback: parse session.jsonl directly (slow path)
-    const sessionFiles = [finalSessionPath];
-    const extName = path4.extname(finalSessionPath);
-    if (extName === ".jsonl") {
-      const baseName = path4.basename(finalSessionPath, extName);
-      const parentDir = path4.dirname(finalSessionPath);
-      const possibleSubagentsDir = path4.join(parentDir, baseName, "subagents");
-      if (fs3.existsSync(possibleSubagentsDir)) {
+  const interactions = [];
+  for (const file of sessionFiles) {
+    interactions.push(...parseSessionFile(file));
+  }
+  let disabledEmoji = false;
+  let sessionInterval;
+  let sessionLimit;
+  let sessionWidth;
+  let sessionMode;
+  let sessionShowTicks;
+  let sessionTimezone;
+  if (sessionFiles.length > 0) {
+    try {
+      const content = fs3.readFileSync(sessionFiles[0], "utf8");
+      for (const line of content.split("\n")) {
+        if (!line.trim()) continue;
         try {
-          const subFiles = fs3.readdirSync(possibleSubagentsDir);
-          for (const f of subFiles) {
-            if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
-              sessionFiles.push(path4.join(possibleSubagentsDir, f));
+          const entry = JSON.parse(line);
+          if (entry.type === "custom" && entry.customType === "emoji-settings") {
+            if (entry.data && typeof entry.data.disabled === "boolean") {
+              disabledEmoji = entry.data.disabled;
+            }
+          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+            if (entry.data) {
+              if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
+              if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
+              if (typeof entry.data.width === "number") sessionWidth = entry.data.width;
+              if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
+                sessionMode = entry.data.mode;
+              }
+              if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
+              if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
             }
           }
         } catch {
         }
       }
-    }
-    const lines = [];
-    for (const file of sessionFiles) {
-      try {
-        const content = fs3.readFileSync(file, "utf8");
-        lines.push(...content.split("\n"));
-      } catch {
-      }
-    }
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line);
-        const interaction = parseEntryToInteraction(entry);
-        if (interaction) {
-          interactions.push(interaction);
-        }
-      } catch {
-      }
+    } catch {
     }
   }
-
-  // Auto-spawn daemon for future runs (fire-and-forget)
-  spawnDaemon(finalSessionPath);
   const termColumns = getTerminalWidth();
   const maxWidth = hasWidth ? maxWidthOption : sessionWidth ?? 240;
   const finalInterval = hasInterval ? intervalStr : sessionInterval ?? "1h";
@@ -1705,8 +1744,13 @@ async function main() {
   }
   if (showOther) {
     console.log("");
-    const otherOutput = renderOtherHistogram(interactions, maxWidth);
+    const dedupedInteractions = deduplicateInteractions(interactions);
+    const otherOutput = renderOtherHistogram(dedupedInteractions, maxWidth);
     console.log(otherOutput);
+  }
+  if (showTokens) {
+    const tokenOutput = renderTokenSummary(interactions, maxWidth);
+    console.log(tokenOutput);
   }
 }
 main().catch((err) => {

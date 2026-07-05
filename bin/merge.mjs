@@ -282,18 +282,6 @@ function renderWhy(manifestPath, invokedAs) {
 // bin/merge.ts
 async function run() {
   const argsList = process.argv.slice(2).filter(Boolean);
-  if (argsList.includes("--version")) {
-    try {
-      const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-      const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-      console.log(`${manifest.name} ${manifest.version}`);
-    } catch (err) {
-      console.error(`\u26A0\uFE0F Failed to load merge command manifest: ${err}`);
-      process.exitCode = 1;
-    }
-    return;
-  }
   if (argsList.includes("-h") || argsList.includes("--help")) {
     try {
       const scriptDir = path.dirname(fileURLToPath(import.meta.url));

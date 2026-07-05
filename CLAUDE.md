@@ -10,6 +10,11 @@ This project contains custom extensions, skills, and documentation manifests for
 > **Hard rule — always branch for issues:** when working on a tracked GitHub issue, create a branch
 > named `<issue#>-<slug>` from `main` **before making any code changes**. Never edit `main` directly
 > for issue work. (Branch cleanup after merge is covered in the parent `~/git-projects/CLAUDE.md`.)
+>
+> **Hard rule — `.mjs` bins are build artifacts, never edit manually:** CLI bins (`bin/wtft.mjs`,
+> `bin/serve.mjs`, `bin/merge.mjs`) are generated from their `.ts` counterparts via `npm run build`.
+> Always edit the `.ts` source, then rebuild. Never manually patch `.mjs` — changes will be lost on
+> next build. Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
 
 ---
 

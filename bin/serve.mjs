@@ -697,12 +697,6 @@ async function run() {
   await resolveIp();
   const trimmedArgs = process.argv.slice(2).join(" ").trim();
   if (trimmedArgs === "--log" || trimmedArgs === "-L") return handleLog();
-  if (trimmedArgs === "--version") {
-    const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
-    console.log(`${manifest.name} ${manifest.version}`);
-    return;
-  }
   if (trimmedArgs === "--help" || trimmedArgs === "-h") return handleHelp();
   if (trimmedArgs === "--why") return handleWhy();
   if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
