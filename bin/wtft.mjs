@@ -1388,7 +1388,7 @@ function formatCostPadded(cost) {
 }
 function visualLineCount(text, termWidth) {
   const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
-  const lines = text.split("\n");
+  const lines = text.replace(/\n$/, "").split("\n");
   let count = 0;
   for (const line of lines) {
     const cleanLen = line.replace(ansiRe, "").length;
