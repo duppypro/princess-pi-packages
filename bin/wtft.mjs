@@ -917,9 +917,14 @@ async function watchMode(sessionPath, settings) {
   // Enter alternate screen buffer — chart updates stay inside,
   // main scrollback is untouched. Exit on Ctrl+C.
   process.stdout.write("\x1B[?1049h");
+  let lastBuffer = []; // saved for exit printout
   process.on("SIGINT", () => {
     process.stdout.write("\x1B[?1049l"); // exit alternate screen
     process.stdout.write("\x1B[?25h");
+    // Re-print the final chart to main screen so it persists
+    if (lastBuffer.length > 0) {
+      for (const l of lastBuffer) console.log(l);
+    }
     console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
     process.exit(0);
   });
@@ -1020,6 +1025,8 @@ async function watchMode(sessionPath, settings) {
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
+    // Save for exit printout (skip clear-screen escape)
+    lastBuffer = buf.slice(1);
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
