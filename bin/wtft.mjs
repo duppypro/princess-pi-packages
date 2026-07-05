@@ -1287,6 +1287,10 @@ async function selectSessionPrompt(candidates) {
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
+        // Collapse: show title + path, clear candidates, chart starts below
+        const candidateRows = Math.max(0, selectorRows - 2);
+        if (candidateRows > 0) process.stdout.write(`\x1B[${candidateRows}A`);
+        process.stdout.write("\x1B[J");
         cleanup();
         resolve2(displayCandidates[selectedIndex].path);
       } else if (key === "\x1B[A" || key === "k") {
