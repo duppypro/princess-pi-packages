@@ -1386,16 +1386,6 @@ function getSessionSummary(filePath) {
 function formatCostPadded(cost) {
   return formatCost(cost).padStart(7);
 }
-function visualLineCount(text, termWidth) {
-  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
-  const lines = text.replace(/\n$/, "").split("\n");
-  let count = 0;
-  for (const line of lines) {
-    const cleanLen = line.replace(ansiRe, "").length;
-    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
-  }
-  return count;
-}
 async function selectSessionPrompt(candidates) {
   return new Promise((resolve2) => {
     if (!process.stdout.isTTY) {
@@ -1429,7 +1419,6 @@ async function selectSessionPrompt(candidates) {
     stdin.setRawMode(true);
     stdin.resume();
     stdin.setEncoding("utf8");
-    process.stdout.write("\x1B[?1049h");
     process.stdout.write("\x1B[?25l");
     const maxPathLen = Math.max(
       ...displayCandidates.map((c) => c.displayPath.length),
@@ -1459,7 +1448,7 @@ async function selectSessionPrompt(candidates) {
       lastLineCount = visualLineCount(out, cols);
       process.stdout.write(out);
     };
-    const cleanScreen = () => {
+    const overwritePrevious = () => {
       if (lastLineCount > 0) {
         process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
       }
@@ -1467,19 +1456,21 @@ async function selectSessionPrompt(candidates) {
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
+        overwritePrevious();
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
+        overwritePrevious();
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
         resolve2(selectedPath);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        cleanScreen();
+        overwritePrevious();
         render();
       } else if (key === "\x1B[B" || key === "j") {
         selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        cleanScreen();
+        overwritePrevious();
         render();
       }
     };
@@ -1487,7 +1478,6 @@ async function selectSessionPrompt(candidates) {
       stdin.removeListener("data", onKey);
       stdin.setRawMode(false);
       stdin.pause();
-      process.stdout.write("\x1B[?1049l");
       process.stdout.write("\x1B[?25h");
     };
     stdin.on("data", onKey);
