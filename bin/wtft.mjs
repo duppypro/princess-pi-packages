@@ -1256,13 +1256,16 @@ async function selectSessionPrompt(candidates) {
       }
       return out;
     };
-    // Pin the selector to its starting position with cursor save/restore.
-    // \x1B[s saves position; \x1B[u restores to it on each redraw.
-    // \x1B[0J clears from cursor to end of screen (erases old render).
-    process.stdout.write("\x1B[s");
+    // Use the alternate screen buffer for the selector.
+    // \x1B[?1049h enters; \x1B[?1049l exits on cleanup.
+    // This gives a clean canvas that doesn't touch the main screen
+    // or scrollback at all — like less/vim/fzf.
+    process.stdout.write("\x1B[?1049h");
     process.stdout.write(buildOutput());
     const redraw = () => {
-      process.stdout.write("\x1B[u\x1B[0J");
+      // Clear screen and redraw from top — simple, reliable.
+      // Alternate buffer: clearing doesn't affect main scrollback.
+      process.stdout.write("\x1B[2J\x1B[H");
       process.stdout.write(buildOutput());
     };
     const onKey = (key) => {
@@ -1284,6 +1287,7 @@ async function selectSessionPrompt(candidates) {
       stdin.removeListener("data", onKey);
       stdin.setRawMode(false);
       stdin.pause();
+      process.stdout.write("\x1B[?1049l"); // exit alternate screen
       process.stdout.write("\x1B[?25h");
     };
     stdin.on("data", onKey);
