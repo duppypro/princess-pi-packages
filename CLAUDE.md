@@ -6,6 +6,10 @@ This project contains custom extensions, skills, and documentation manifests for
 > Claude Code** (CLI + Pi extension + optional TUI widget, one shared manifest). See the mission in
 > `README.md`. **To build or port a tool to this bar, follow the recipe in
 > `skills/cross-harness-tool/SKILL.md`.** Reference implementation: `merge` (`bin/merge.mjs`, #8).
+>
+> **Hard rule — always branch for issues:** when working on a tracked GitHub issue, create a branch
+> named `<issue#>-<slug>` from `main` **before making any code changes**. Never edit `main` directly
+> for issue work. (Branch cleanup after merge is covered in the parent `~/git-projects/CLAUDE.md`.)
 
 ---
 
