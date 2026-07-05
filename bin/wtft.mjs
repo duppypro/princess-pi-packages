@@ -1256,25 +1256,52 @@ async function selectSessionPrompt(candidates) {
       }
       return out;
     };
-    // Use the alternate screen buffer for the selector.
-    // \x1B[?1049h enters; \x1B[?1049l exits on cleanup.
-    // This gives a clean canvas that doesn't touch the main screen
-    // or scrollback at all — like less/vim/fzf.
-    process.stdout.write("\x1B[?1049h");
-    // Position selector at bottom of screen, consistent on every render.
-    // Compute blank padding lines: terminal height minus selector height.
-    const draw = () => {
-      const out = buildOutput();
-      const logicalLines = out.split("\n").filter(l => l.length > 0).length;
-      const rows = process.stdout.rows || 24;
-      const pad = Math.max(0, rows - logicalLines);
-      process.stdout.write("\x1B[2J\x1B[H");
-      // Pad with empty lines to push content to bottom
-      if (pad > 0) process.stdout.write("\n".repeat(pad));
-      process.stdout.write(out);
+    // Draw selector in-place on main screen, preserving scrollback above.
+    // Queries cursor position via DSR (\x1B[6n), saves the starting row,
+    // then redraws to that exact row on each arrow press.
+    // Responds to SIGWINCH for terminal resize.
+    let savedRow = 0;
+    const queryCursor = () => {
+      return new Promise((resolveQuery) => {
+        const onDsr = (data) => {
+          const m = data.match(/\x1B\[(\d+);(\d+)R/);
+          if (m) {
+            stdin.removeListener("data", onDsr);
+            resolveQuery({ row: parseInt(m[1], 10), col: parseInt(m[2], 10) });
+          }
+        };
+        stdin.on("data", onDsr);
+        process.stdout.write("\x1B[6n");
+        setTimeout(() => {
+          stdin.removeListener("data", onDsr);
+          resolveQuery({ row: 10, col: 1 });
+        }, 200);
+      });
     };
-    draw();
+
+    const draw = () => {
+      if (savedRow > 0) process.stdout.write(`\x1B[${savedRow};1H`);
+      const out = buildOutput();
+      const lines = out.split("\n").filter(l => l.length > 0);
+      for (let i = 0; i < lines.length; i++) {
+        process.stdout.write(lines[i] + (i < lines.length - 1 ? "\x1B[K\n" : ""));
+      }
+      process.stdout.write("\x1B[J");
+    };
+
+    queryCursor().then((pos) => {
+      savedRow = pos.row;
+      draw();
+    });
+
     const redraw = () => draw();
+
+    let resizeTimer = null;
+    const onResize = () => {
+      if (resizeTimer) return;
+      resizeTimer = setTimeout(() => { resizeTimer = null; redraw(); }, 100);
+    };
+    process.on("SIGWINCH", onResize);
     const onKey = (key) => {
       if (key === "") {
         cleanup();
@@ -1291,10 +1318,10 @@ async function selectSessionPrompt(candidates) {
       }
     };
     const cleanup = () => {
+      process.removeListener("SIGWINCH", onResize);
       stdin.removeListener("data", onKey);
       stdin.setRawMode(false);
       stdin.pause();
-      process.stdout.write("\x1B[?1049l"); // exit alternate screen
       process.stdout.write("\x1B[?25h");
     };
     stdin.on("data", onKey);
