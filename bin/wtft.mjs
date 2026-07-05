@@ -1238,27 +1238,6 @@ async function selectSessionPrompt(candidates) {
       ...displayCandidates.map((c) => c.displayPath.length),
       10
     );
-    let prevLines = 0;
-    const redraw = () => {
-      if (prevLines > 0) process.stdout.write(`\x1B[${prevLines}A`);
-      const out = buildOutput();
-      const lines = out.split("\n").filter(l => l.length > 0);
-      // Write each line with \x1B[K (clear to EOL) to erase old longer content
-      for (let i = 0; i < lines.length; i++) {
-        process.stdout.write(lines[i] + (i < lines.length - 1 ? "\x1B[K\n" : ""));
-      }
-      // If new output uses fewer screen lines than old, clear the remainder
-      const newScreenLines = screenLines(out);
-      if (newScreenLines < prevLines) {
-        // Write empty lines to erase leftovers
-        for (let i = newScreenLines; i < prevLines; i++) {
-          process.stdout.write("\x1B[K\n");
-        }
-        // Move back up
-        process.stdout.write(`\x1B[${prevLines - newScreenLines}A`);
-      }
-      prevLines = newScreenLines;
-    };
     const buildOutput = () => {
       const selected = displayCandidates[selectedIndex];
       let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):\n`;
@@ -1277,25 +1256,15 @@ async function selectSessionPrompt(candidates) {
       }
       return out;
     };
-    // Compute screen lines accounting for terminal width wrapping.
-    // Strips ANSI escapes, then splits by terminal width for each logical line.
-    const screenLines = (text) => {
-      let count = 0;
-      const cols = process.stdout.columns || 80;
-      const lines = text.split("\n");
-      for (const line of lines) {
-        if (line.length === 0) continue;
-        const clean = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-        count += Math.max(1, Math.ceil(clean.length / cols));
-      }
-      return count;
+    // Pin the selector to its starting position with cursor save/restore.
+    // \x1B[s saves position; \x1B[u restores to it on each redraw.
+    // \x1B[0J clears from cursor to end of screen (erases old render).
+    process.stdout.write("\x1B[s");
+    process.stdout.write(buildOutput());
+    const redraw = () => {
+      process.stdout.write("\x1B[u\x1B[0J");
+      process.stdout.write(buildOutput());
     };
-    const render = () => {
-      const out = buildOutput();
-      prevLines = screenLines(out);
-      process.stdout.write(out);
-    };
-    render();
     const onKey = (key) => {
       if (key === "") {
         cleanup();
