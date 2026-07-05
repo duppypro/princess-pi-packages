@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// bin/wtft-daemon.mjs — Classifier daemon: session.jsonl → classified.jsonl
+// bin/wtft-daemon.mjs — Tagger daemon: session.jsonl → session.jsonl.wtft-tag.v{N}.jsonl
 // Pure Unix pipe: one input file, one output file. No network.
 // Throttled writes at 90bpm (667ms). Heartbeat protocol.
 // Auto-spawned by wtft CLI; runs detached.
@@ -255,7 +255,11 @@ function classifyInteraction(interaction) {
 // CLASSIFIED FORMAT WRITER
 // ---
 
-const CLASSIFIER_VERSION = 2;  // bumped for #54 (dedup) + #55 (TTL-split cache pricing)
+// TAGGER VERSION — embedded in output filename so cache invalidation is
+// a filesystem operation (no _cv header needed). Semver: MAJOR.MINOR.PATCH.
+// Bump when classification heuristics or cost model change (#54, #55, etc).
+const TAGGER_VERSION = "2.0.0";
+const TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 const POLL_MS = 667;              // 90bpm throttle
 const IDLE_EXIT_MS = 30 * 60 * 1000; // exit if session.jsonl unchanged for 30 min
 // Consumer crash detection: file unmodified for >2s with no _hb:"stop" = crash.
@@ -276,7 +280,7 @@ function serializeClassified(interaction) {
 // ---
 
 let sessionPath = null;
-let classifiedPath = null;
+let tagPath = null;
 let pidPath = null;
 let lastSize = 0;            // bytes read from session.jsonl
 let lastWriteMs = 0;         // last time we flushed to classified.jsonl
@@ -296,7 +300,7 @@ function shutdown(reason) {
   flushPending();
   // Write stop heartbeat
   try {
-    fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: "stop" }) + "\n");
+    fs.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + "\n");
   } catch (_) {}
   // Remove PID file
   try { fs.unlinkSync(pidPath); } catch (_) {}
@@ -325,16 +329,16 @@ process.on("SIGHUP", () => shutdown("SIGHUP"));
 function upsertHeartbeat(now) {
   try {
     const hbLine = JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n";
-    const stat = fs.statSync(classifiedPath);
+    const stat = fs.statSync(tagPath);
     if (stat.size === 0) {
-      fs.appendFileSync(classifiedPath, hbLine);
+      fs.appendFileSync(tagPath, hbLine);
       return;
     }
 
     // Scan backwards from EOF in chunks to find the last complete line.
     // A classified data line can be large (e.g. long `cmd` array), so a
     // fixed-size read window would land mid-line.
-    const fd = fs.openSync(classifiedPath, "r+");
+    const fd = fs.openSync(tagPath, "r+");
     const CHUNK = 512;
     let searchOffset = stat.size;
     let tail = "";
@@ -371,13 +375,13 @@ function upsertHeartbeat(now) {
       fs.writeSync(fd, writeBuf, 0, oldByteLen, offset);
     } else {
       // Last line is data — append new heartbeat
-      fs.appendFileSync(classifiedPath, hbLine);
+      fs.appendFileSync(tagPath, hbLine);
     }
     fs.closeSync(fd);
   } catch (_) {
     // Fallback: append if we can't seek/overwrite
     try {
-      fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n");
+      fs.appendFileSync(tagPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n");
     } catch (_2) {}
   }
 }
@@ -387,7 +391,7 @@ function flushPending() {
   const batch = pendingLines.join("");
   pendingLines = [];
   try {
-    fs.appendFileSync(classifiedPath, batch);
+    fs.appendFileSync(tagPath, batch);
     idleStartMs = 0; // Data arrived — idle period ended
   } catch (err) {
     // If we can't write, log and continue — don't crash the daemon
@@ -441,56 +445,24 @@ function parseNewLines(filePath) {
 // ---
 
 function initClassified() {
-  // Read existing classified.jsonl to check version
-  let existingVersion = null;
-  let lineCount = 0;
+  // Version is embedded in filename (TAG_SUFFIX), so no _cv header needed.
+  // On startup: if the tag file already exists (same version), resume incrementally.
+  // If not, create fresh (stale files already cleaned up by caller).
   try {
-    const content = fs.readFileSync(classifiedPath, "utf8");
-    const lines = content.split("\n");
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj._cv !== undefined) {
-          existingVersion = obj._cv;
-        } else if (!obj._hb) {
-          lineCount++;
-        }
-      } catch (_) {}
-    }
-  } catch (_) {
-    // No existing file — fresh start
-  }
-
-  if (existingVersion !== CLASSIFIER_VERSION) {
-    // Version mismatch — delete and start fresh
-    if (process.env.WTFT_DAEMON_DEBUG) {
-      process.stderr.write(`[wtft-daemon] classifier version changed (${existingVersion} → ${CLASSIFIER_VERSION}), full reclassify\n`);
-    }
-    try { fs.unlinkSync(classifiedPath); } catch (_) {}
-    // Reset session offset to force full re-parse
-    lastSize = 0;
-  } else {
-    // Version matches — resume incrementally
-    // lastSize stays 0 on first run; session is parsed fully but classified.jsonl is appended
-    // (will produce duplicates if session hasn't changed but classified.jsonl exists).
-    // Instead: set lastSize to session file size so we only pick up new lines.
+    fs.accessSync(tagPath);
+    // Tag file exists with matching version — resume from current session end
     try {
       const stat = fs.statSync(sessionPath);
       lastSize = stat.size;
     } catch (_) {}
-  }
-
-  // Write version header if new file
-  try {
-    fs.accessSync(classifiedPath);
   } catch (_) {
-    fs.appendFileSync(classifiedPath, JSON.stringify({ _cv: CLASSIFIER_VERSION }) + "\n", { flag: "w" });
+    // No tag file for this version — fresh start, full reparse on next poll
+    lastSize = 0;
   }
 
-  // Write start heartbeat (range format — always includes both first and last)
+  // Write start heartbeat
   const startNow = Date.now();
-  fs.appendFileSync(classifiedPath, JSON.stringify({ _hb: { first: startNow, last: startNow } }) + "\n");
+  fs.appendFileSync(tagPath, JSON.stringify({ _hb: { first: startNow, last: startNow } }) + "\n");
   idleStartMs = startNow;
 }
 
@@ -521,7 +493,7 @@ function main() {
     } else if (arg === "--stop") {
       stopSession = process.argv[++i];
     } else if (arg === "--help" || arg === "-h") {
-      console.log(`wtft-daemon — Classifier daemon for WTFT
+      console.log(`wtft-daemon — Tagger daemon for WTFT
 Usage: wtft-daemon --session <path> [--debug]
 
 Management:
@@ -562,9 +534,9 @@ if (showList || showCleanup || showRestart || stopSession) {
     let alive = false;
     try { process.kill(pid, 0); alive = true; } catch (_) {}
 
-    // Try to find session path from classified file
+    // Try to find session path from cmdline
     let sessionFound = null;
-    let classifiedMtime = 0;
+    let tagMtime = 0;
     // The PID file name contains a hash — we need to scan for matching classified files
     // Since the hash is derived from session path, we can't reverse it.
     // Instead, check /proc/<pid>/cmdline to find the --session argument.
@@ -577,11 +549,19 @@ if (showList || showCleanup || showRestart || stopSession) {
       }
     } catch (_) {}
 
-    // Get classified file mtime for idle time
+    // Get tag file mtime for idle time (scan for .wtft-tag.v*.jsonl)
     if (sessionFound) {
-      const cf = sessionFound + ".classified.jsonl";
       try {
-        classifiedMtime = fs.statSync(cf).mtimeMs;
+        const sessDir = path.dirname(sessionFound);
+        const sessBase = path.basename(sessionFound);
+        const prefix = sessBase + ".wtft-tag.v";
+        for (const f of fs.readdirSync(sessDir)) {
+          if (f.startsWith(prefix)) {
+            const tf = path.join(sessDir, f);
+            tagMtime = fs.statSync(tf).mtimeMs;
+            break;
+          }
+        }
       } catch (_) {}
     }
 
@@ -633,8 +613,8 @@ if (showList || showCleanup || showRestart || stopSession) {
       found++;
       const status = alive ? "RUNNING" : "DEAD (stale pid)";
       let idleStr = "?";
-      if (classifiedMtime > 0) {
-        const idleSec = Math.floor((Date.now() - classifiedMtime) / 1000);
+      if (tagMtime > 0) {
+        const idleSec = Math.floor((Date.now() - tagMtime) / 1000);
         if (idleSec < 60) idleStr = `${idleSec}s`;
         else if (idleSec < 3600) idleStr = `${Math.floor(idleSec / 60)}m`;
         else idleStr = `${Math.floor(idleSec / 3600)}h`;
@@ -669,17 +649,31 @@ if (showList || showCleanup || showRestart || stopSession) {
     process.stderr.write(`wtft-daemon: session file not found: ${sessionPath}\n`);
     process.exit(1);
   }
-  // Guard: refuse to watch a classified.jsonl file (prevents recursive daemon loops).
-  // Must come AFTER existence check — the file must exist to be classified.
-  if (sessionPath.endsWith(".classified.jsonl")) {
-    process.stderr.write(`wtft-daemon: refusing to watch a classified cache file: ${sessionPath}\n`);
+  // Guard: refuse to watch a wtft-tag file (prevents recursive daemon loops).
+  if (sessionPath.includes(".wtft-tag.v")) {
+    process.stderr.write(`wtft-daemon: refusing to watch a tag cache file: ${sessionPath}\n`);
     process.exit(1);
   }
 
-  // Determine classified.jsonl path (alongside session)
+  // Determine wtft-tag path (alongside session, version in filename)
   const sessionDir = path.dirname(sessionPath);
   const sessionBase = path.basename(sessionPath);
-  classifiedPath = path.join(sessionDir, sessionBase + ".classified.jsonl");
+  tagPath = path.join(sessionDir, sessionBase + TAG_SUFFIX);
+
+  // Clean up old-version tag files (different version suffix) on startup.
+  // Version-in-filename means no _cv header check — just delete stale files.
+  try {
+    const prefix = sessionBase + ".wtft-tag.v";
+    for (const f of fs.readdirSync(sessionDir)) {
+      if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
+        const stale = path.join(sessionDir, f);
+        try { fs.unlinkSync(stale); } catch (_) {}
+        if (process.env.WTFT_DAEMON_DEBUG) {
+          process.stderr.write(`[wtft-daemon] removed stale tag file: ${f}\n`);
+        }
+      }
+    }
+  } catch (_) {}
 
   // PID file for singleton detection
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
@@ -723,7 +717,7 @@ if (showList || showCleanup || showRestart || stopSession) {
 
   if (process.env.WTFT_DAEMON_DEBUG) {
     process.stderr.write(`[wtft-daemon] started, watching: ${sessionPath}\n`);
-    process.stderr.write(`[wtft-daemon] classified: ${classifiedPath}\n`);
+    process.stderr.write(`[wtft-daemon] classified: ${tagPath}\n`);
     process.stderr.write(`[wtft-daemon] pid: ${process.pid}\n`);
   }
 
