@@ -1240,8 +1240,12 @@ async function selectSessionPrompt(candidates) {
     );
     const buildOutput = () => {
       const selected = displayCandidates[selectedIndex];
+      const maxCols = (process.stdout.columns || 80) - 2; // -2 for "  " prefix
+      const truncPath = selected.path.length > maxCols
+        ? selected.path.slice(0, maxCols - 3) + "..."
+        : selected.path;
       let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (Use \u2191/\u2193 keys, Enter to select, Ctrl+C to cancel):\n`;
-      out += `  \x1B[90m${selected.path}\x1B[0m\n`;
+      out += `  \x1B[90m${truncPath}\x1B[0m\n`;
       for (let i = 0; i < displayCandidates.length; i++) {
         const c = displayCandidates[i];
         const stats = statsList[i];
@@ -1257,43 +1261,19 @@ async function selectSessionPrompt(candidates) {
       return out;
     };
     // Draw selector in-place on main screen, preserving scrollback above.
-    // Queries cursor position via DSR (\x1B[6n), saves the starting row,
-    // then redraws to that exact row on each arrow press.
-    // Responds to SIGWINCH for terminal resize.
-    let savedRow = 0;
-    const queryCursor = () => {
-      return new Promise((resolveQuery) => {
-        const onDsr = (data) => {
-          const m = data.match(/\x1B\[(\d+);(\d+)R/);
-          if (m) {
-            stdin.removeListener("data", onDsr);
-            resolveQuery({ row: parseInt(m[1], 10), col: parseInt(m[2], 10) });
-          }
-        };
-        stdin.on("data", onDsr);
-        process.stdout.write("\x1B[6n");
-        setTimeout(() => {
-          stdin.removeListener("data", onDsr);
-          resolveQuery({ row: 10, col: 1 });
-        }, 200);
-      });
-    };
-
+    // On first draw: outputs directly at cursor position.
+    // On redraw: moves cursor up by selector height to overwrite in place.
+    let selectorRows = 0;
     const draw = () => {
-      if (savedRow > 0) process.stdout.write(`\x1B[${savedRow};1H`);
+      if (selectorRows > 0) process.stdout.write(`\x1B[${selectorRows}A`);
       const out = buildOutput();
       const lines = out.split("\n").filter(l => l.length > 0);
+      selectorRows = lines.length;
       for (let i = 0; i < lines.length; i++) {
-        process.stdout.write(lines[i] + (i < lines.length - 1 ? "\x1B[K\n" : ""));
+        process.stdout.write(lines[i] + "\x1B[K\n");
       }
-      process.stdout.write("\x1B[J");
     };
-
-    queryCursor().then((pos) => {
-      savedRow = pos.row;
-      draw();
-    });
-
+    draw();
     const redraw = () => draw();
 
     let resizeTimer = null;
