@@ -1189,10 +1189,7 @@ async function watchMode(sessionPath, settings) {
     });
     const buf = [];
     buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
-    buf.push("");
     totalCost = deduplicateInteractions(allInteractions).reduce((sum, i) => sum + i.cost, 0);
-    interactionCount = allInteractions.length;
-    buf.push("");
     if (lines && lines.length > 0) {
       const tlHour = getCurrentLocalHour(finalTimezone);
       const tlStr = buildTimelineString(/* @__PURE__ */ new Set(), tlHour, void 0);
