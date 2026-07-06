@@ -30,9 +30,11 @@ function getDeepSeekPeakMultiplier(timestamp) {
 
 function calculateClaudeCost(model, usage, timestamp) {
   if (!usage) return 0;
+  // Default to Claude Sonnet 4.6 pricing ($3/$15 per 1M tokens)
+  // Cache write: 1.25x input (5-min TTL), 2.00x input (1-hour TTL)
+  // Cache read: 0.10x input (Anthropic standard)
   let inputPrice = 3.0;
   let outputPrice = 15.0;
-  let cacheWritePrice = 3.75;
   let cacheReadPrice = 0.3;
   const m = (model || "").toLowerCase();
   if (m.includes("deepseek")) {
@@ -44,23 +46,35 @@ function calculateClaudeCost(model, usage, timestamp) {
       inputPrice = 0.14 * peak;
       outputPrice = 0.28 * peak;
     }
-    cacheWritePrice = 0;
     cacheReadPrice = 0;
   } else if (m.includes("haiku")) {
     inputPrice = 1.0;
     outputPrice = 5.0;
-    cacheWritePrice = 1.25;
     cacheReadPrice = 0.1;
   } else if (m.includes("opus")) {
     inputPrice = 5.0;
     outputPrice = 25.0;
-    cacheWritePrice = 6.25;
     cacheReadPrice = 0.5;
+  }
+  // TTL-split cache-write pricing (#55): 5-min = 1.25x input, 1-hour = 2x input.
+  // Falls back to flat 1.25x when TTL breakdown unavailable.
+  let cacheWriteCost = 0;
+  const cc = usage.cache_creation || {};
+  const cw5m = cc.ephemeral_5m_input_tokens ?? 0;
+  const cw1h = cc.ephemeral_1h_input_tokens ?? 0;
+  const cwFlat = Math.max(0, (usage.cache_creation_input_tokens || 0) - cw5m - cw1h);
+  if (m.includes("deepseek")) {
+    cacheWriteCost = 0;
+  } else {
+    cacheWriteCost =
+      cw5m * (inputPrice * 1.25 / 1e6) +
+      cw1h * (inputPrice * 2.0 / 1e6) +
+      cwFlat * (inputPrice * 1.25 / 1e6);
   }
   const cost =
     (usage.input_tokens || 0) * (inputPrice / 1e6) +
     (usage.output_tokens || 0) * (outputPrice / 1e6) +
-    (usage.cache_creation_input_tokens || 0) * (cacheWritePrice / 1e6) +
+    cacheWriteCost +
     (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
@@ -127,6 +141,7 @@ function parseEntryToInteraction(entry) {
         output_tokens: usage.output_tokens ?? usage.output ?? 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
         cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
+        cache_creation: usage.cache_creation || null,
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
@@ -170,7 +185,7 @@ function parseEntryToInteraction(entry) {
         }
       }
     }
-    return { timestamp, cost, files, commands, texts };
+    return { timestamp, cost, messageId: assistantMsg.id, files, commands, texts };
   }
   return null;
 }
@@ -258,11 +273,66 @@ function classifyInteraction(interaction) {
 // TAGGER VERSION — embedded in output filename so cache invalidation is
 // a filesystem operation (no _cv header needed). Semver: MAJOR.MINOR.PATCH.
 // Bump when classification heuristics or cost model change (#54, #55, etc).
-const TAGGER_VERSION = "2.0.0";
+const TAGGER_VERSION = "2.1.0";
 const TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 const POLL_MS = 667;              // 90bpm throttle
 const IDLE_EXIT_MS = 30 * 60 * 1000; // exit if session.jsonl unchanged for 30 min
 // Consumer crash detection: file unmodified for >2s with no _hb:"stop" = crash.
+
+// ---
+// MESSAGE-ID DEDUPLICATION (#54)
+// Claude Code emits multiple JSONL lines per API response (one per content
+// block + streaming/compaction re-logging), each echoing the same message-level
+// usage. Summing per line inflates costs ~1.8×. Dedup by message.id: keep the
+// max-cost copy, merge content blocks for correct classification.
+// ---
+function deduplicateInteractions(interactions) {
+  const byId = new Map();
+  const withoutId = [];
+  for (const i of interactions) {
+    if (i.messageId) {
+      const existing = byId.get(i.messageId);
+      if (existing) { existing.push(i); }
+      else { byId.set(i.messageId, [i]); }
+    } else {
+      withoutId.push(i);
+    }
+  }
+  const deduped = [...withoutId];
+  for (const [, group] of byId) {
+    if (group.length === 1) {
+      deduped.push(group[0]);
+    } else {
+      let best = group[0];
+      for (let j = 1; j < group.length; j++) {
+        if (group[j].cost > best.cost) best = group[j];
+      }
+      const merged = {
+        timestamp: best.timestamp, cost: best.cost,
+        messageId: best.messageId,
+        files: [], commands: [], texts: []
+      };
+      const seenFiles = new Set();
+      for (const i of group) {
+        for (const f of i.files) {
+          const key = f.path + ":" + f.action;
+          if (!seenFiles.has(key)) {
+            seenFiles.add(key);
+            merged.files.push(f);
+          }
+        }
+        for (const c of i.commands) {
+          if (!merged.commands.includes(c)) merged.commands.push(c);
+        }
+        for (const t of i.texts) {
+          if (!merged.texts.includes(t)) merged.texts.push(t);
+        }
+      }
+      deduped.push(merged);
+    }
+  }
+  return deduped;
+}
 
 function serializeClassified(interaction) {
   const line = {
@@ -727,8 +797,9 @@ if (showList || showCleanup || showRestart || stopSession) {
   const loop = () => {
     if (!running) return;
 
-    // Read new lines from session
-    const newInteractions = parseNewLines(sessionPath);
+    // Read new lines from session, dedup by message.id (#54), then classify.
+    const rawInteractions = parseNewLines(sessionPath);
+    const newInteractions = deduplicateInteractions(rawInteractions);
     if (newInteractions.length > 0) {
       lastActivityMs = Date.now();
       for (const interaction of newInteractions) {

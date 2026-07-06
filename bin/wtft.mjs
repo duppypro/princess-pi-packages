@@ -1894,7 +1894,17 @@ async function main() {
     const sessionDir = path4.dirname(finalSessionPath);
     const sessionBase = path4.basename(finalSessionPath);
     const tagsDir = path4.join(sessionDir, "wtft-tags");
-    const tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.0.0.jsonl");
+    let tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.1.0.jsonl");
+    try {
+      const prefix = sessionBase + ".wtft-tag.v";
+      for (const f of fs3.readdirSync(tagsDir)) {
+        if (f.startsWith(prefix) && f.endsWith(".jsonl")) {
+          tagPath = path4.join(tagsDir, f);
+          break;
+        }
+      }
+    } catch {
+    }
     const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     try {
       const child = spawn(process.execPath, [daemonPath, "--session", finalSessionPath], {
