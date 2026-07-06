@@ -1,10 +1,11 @@
 # Runbook: agentic-arts.ai agent accounts → Cloud Identity Free
 
 > **Lifecycle status: SPEC DRAFT (Step 1 — not approved, not tested).**
-> This runbook has not been reviewed or executed. It was first committed into history by an
-> unrelated commit (`c7dca73`, labeled "Code and Spec Approved") that swept it in as an
-> untracked file — that Step-5 label does **not** apply to this document. Do not treat this
-> as approved until a proper Spec Approved commit exists for it.
+> This runbook has not been executed. It was first committed into history by an unrelated
+> commit (`c7dca73`, labeled "Code and Spec Approved") that swept it in as an untracked
+> file — that Step-5 label does **not** apply to this document. A critical review pass
+> reordered the phases (routing before unassign) and added rollback/DKIM notes; awaiting
+> Duppy's Spec Approved sign-off before execution against the live domain.
 
 Convert three agent-persona accounts (Sadie, Hank, Chief-Agent-Wrangler) in the
 `agentic-arts.ai` Google Workspace from paid **Business Starter** seats to free
@@ -23,13 +24,20 @@ paid seat), even though the three agent users don't have Gmail themselves.
 
 ## Assumptions baked into this runbook (flip these if wrong)
 - **Send-as: YES.** You want to send/reply *as* each agent address from `duppy@`, not just
-  receive. (If receive-only, skip Phase 4 entirely.)
+  receive. (If receive-only, skip the final Send-as phase entirely.)
 - **Data safety: INSPECT FIRST.** We assume the agent mailboxes *might* hold mail/Drive worth
   keeping, so Phase 1 is a STOP to check/export before anything is unassigned. (If you know
   they're empty, you can approve past that STOP immediately.)
 - Collection mailbox = **`duppy@agentic-arts.ai`** (in-domain, DKIM-aligned) — NOT
   `duppypro@gmail.com`. This is independent of the duppy.com/interfacearts.com MTA runbook,
   which keeps forwarding to `duppypro@gmail.com`.
+
+## Ordering rule that matters (why routing comes before unassign)
+Set up and **test the routing rule while the agent mailboxes still exist**, *then* unassign
+licenses. This gives zero bounce window, and — critically — if the routing rule silently
+fails to match (a real risk for a recognized user whose Gmail is disabled), mail falls back
+to the still-live mailbox instead of bouncing. You only remove that safety net once routing
+is proven.
 
 ## How to use this file
 Paste the **"Agent Prompt"** block below into a **fresh Claude Cowork** session (do not add it
@@ -52,6 +60,8 @@ GUARDRAILS
 - Before unassigning any license, changing any routing rule, or adding any send-as, show
   Duppy the exact before/after and wait for explicit "yes, do it" before clicking save.
 - Do the phases in order. Do not start Phase N+1 until Duppy confirms Phase N passed.
+- CRITICAL ORDERING: routing (Phase 3) is set up and tested BEFORE any license is unassigned
+  (Phase 4). Do not unassign a license while its address has no working route.
 - If the Admin console UI doesn't match what's described (Google moves things), stop and
   describe what you see instead of guessing.
 
@@ -66,9 +76,9 @@ For each of the three agent accounts, in Admin console > Directory > Users > (us
 by having Duppy open the account, determine whether it holds any Gmail messages or Drive
 files worth keeping.
 STOP: report per account what you find. If ANY account has data to keep, ask Duppy to run
-Google Takeout / export it FIRST and confirm the export completed before you go on. Do not
-unassign any license until Duppy explicitly says the data is safe (or that there's nothing
-to keep).
+Google Takeout / Admin data export FIRST and confirm the export completed before you go on.
+Do not unassign any license until Duppy explicitly says the data is safe (or that there's
+nothing to keep).
 
 === PHASE 2: Stop future auto-licensing (do this BEFORE unassigning) ===
 Admin console > Billing > Subscriptions (or Billing > License settings) > find the
@@ -77,19 +87,9 @@ license assignment for new users, so newly created agent accounts default to Clo
 Identity Free instead of silently consuming a paid $8.40 seat.
 STOP: show Duppy the setting's before/after state and confirm.
 
-=== PHASE 3: Unassign Workspace licenses (the actual conversion) ===
-For EACH of the three agent accounts (one at a time, verifying after each):
-1. Admin console > Directory > Users > (agent user) > Licenses.
-2. Turn OFF / unassign "Google Workspace Business Starter". The user should fall back to
-   "Cloud Identity Free" automatically. If Cloud Identity Free is not offered, stop and
-   tell Duppy (the org may need Cloud Identity enabled first).
-3. Confirm the user still exists and can still be a login identity (Cloud Identity Free =
-   login yes, Gmail/Drive no).
-STOP after each account: show Duppy the license state before moving to the next.
-NOTE: at this point mail to these three addresses will BOUNCE until Phase 3b routing is in
-place. Keep the gap short — do Phase 3b immediately after.
-
-=== PHASE 3b: Route agent mail into duppy@agentic-arts.ai (Default Routing) ===
+=== PHASE 3: Route agent mail into duppy@ WHILE mailboxes still exist (Default Routing) ===
+Do this BEFORE unassigning any license, so the still-live mailboxes are a fallback if the
+rule doesn't match.
 Admin console > Apps > Google Workspace > Gmail > Routing (Default routing / Recipient
 address map). Add a rule (or recipient-address-map entries) so that mail whose envelope
 recipient is any of:
@@ -99,20 +99,40 @@ recipient is any of:
 is delivered to duppy@agentic-arts.ai (change/redirect envelope recipient to duppy@).
 Do NOT add a catch-all. Only these three named addresses route.
 STOP: show Duppy the rule(s). Then have him send a test message from an outside account TO
-each of the three agent addresses and confirm each lands in the duppy@agentic-arts.ai
-inbox (and does NOT bounce) before continuing.
+each of the three agent addresses and confirm each lands in the duppy@agentic-arts.ai inbox
+(the envelope-rewrite means it should arrive in duppy@, not the agent's own box). If any test
+does NOT land in duppy@, STOP and fix the rule before touching any license — the mailboxes
+are still your safety net at this point.
 
-=== PHASE 4: Send-as for each agent address (in duppy@'s Gmail) ===
+=== PHASE 4: Unassign Workspace licenses (the actual conversion) ===
+Only after Phase 3's routing test passed for all three. For EACH of the three agent accounts
+(one at a time, verifying after each):
+1. Admin console > Directory > Users > (agent user) > Licenses.
+2. Turn OFF / unassign "Google Workspace Business Starter". The user should fall back to
+   "Cloud Identity Free" automatically. If Cloud Identity Free is not offered, stop and
+   tell Duppy (the org may need Cloud Identity enabled first).
+3. Confirm the user still exists and can still be a login identity (Cloud Identity Free =
+   login yes, Gmail/Drive no).
+STOP after each account: show Duppy the license state before moving to the next.
+4. After all three are unassigned, RE-TEST: send a test message to each of the three agent
+   addresses and confirm it STILL lands in duppy@agentic-arts.ai. This proves routing
+   survives the license removal (the key check — the mailbox fallback is now gone).
+ROLLBACK: if anything breaks, re-assigning a Business Starter license to the affected user
+restores its Gmail mailbox (empty — mail during the gap was routed to duppy@, none lost).
+
+=== PHASE 5: Send-as for each agent address (in duppy@'s Gmail) ===
 In Gmail as duppy@agentic-arts.ai > Settings > Accounts > "Send mail as" > Add another
 email address, for each of:
      sadie@agentic-arts.ai
      hank@agentic-arts.ai
      chief-agent-wrangler@agentic-arts.ai
 Use "Send through Gmail" (not an external SMTP). Google emails a confirmation link to each
-address; because Phase 3b routes those addresses to duppy@, the link lands in this same
+address; because Phase 3 routes those addresses to duppy@, the link lands in this same
 inbox — Duppy clicks it to verify.
 STOP: after all three verify, have Duppy send a test FROM each agent address and confirm it
-delivers and is not spam-flagged.
+delivers and is not spam-flagged. (This is expected to pass cleanly: send-as through Gmail
+signs with agentic-arts.ai's own Workspace DKIM, so it DKIM-aligns — unlike a non-Workspace
+domain, which can't.)
 
 TARGET END STATE (compare against this before declaring done):
 | Account                         | License              | Gmail inbox | Inbound mail          | Send-as from duppy@ |
@@ -144,9 +164,10 @@ than declaring success silently.
 ## Notes / roads not taken
 - **Plain aliases** (add `sadie@` as an alias on `duppy@`) — simplest for mail, $0, but the
   address then has *no independent Google login*. Road not taken because you want each agent
-  to authenticate to Google as itself.
+  to authenticate to Google as itself. (A Google **Group** at `sadie@` fails the same test —
+  a group address can't also be a user login.)
 - **Keep paying** — no routing complexity, full Gmail per agent. Road not taken on cost
   ($8.40 × 3 = $25.20/mo for inboxes you consolidate into one anyway).
 - The unassign is **sticky**: once a user drops to Cloud Identity Free, the identity persists
   and the free license can't be cleanly removed later. Acceptable here — these are permanent
-  personas.
+  personas. (Reversible in the other direction: re-assigning a paid license restores Gmail.)
