@@ -1272,6 +1272,218 @@ async function watchMode(sessionPath, settings) {
     }
   }
 }
+function classifiedToInteraction(obj) {
+  if (!obj || typeof obj.t !== "number" || typeof obj.c !== "number") return null;
+  return {
+    timestamp: obj.t,
+    cost: obj.c,
+    files: (obj.f || []).map((f) => ({ path: f.p || "", action: f.a === "w" ? "write" : "read" })),
+    commands: obj.cmd || [],
+    texts: [],
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0
+  };
+}
+function readClassifiedTagFile(tagPath) {
+  const interactions = [];
+  try {
+    const content = fs.readFileSync(tagPath, "utf8");
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj._hb) continue;
+        const interaction = classifiedToInteraction(obj);
+        if (interaction) interactions.push(interaction);
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return interactions;
+}
+async function watchTagFile(sessionPath, tagPath, settings) {
+  if (!process.stdout.isTTY) {
+    console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
+    process.exit(1);
+  }
+  let totalCost = 0;
+  let interactionCount = 0;
+  let needsRedraw = true;
+  let _lastRenderMin = -1;
+  process.stdout.write("\x1B[?1049h");
+  hideCursor();
+  let lastBuffer = [];
+  const exitWatch = () => {
+    if (watcher) watcher.close();
+    process.stdout.write("\x1B[?1049l");
+    showCursor();
+    cleanupStdin();
+    if (lastBuffer.length > 0) {
+      for (const l of lastBuffer) console.log(l);
+    }
+    console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
+    process.exit(0);
+  };
+  process.on("SIGINT", exitWatch);
+  const cleanupStdin = enterRawStdin((key) => {
+    if (key === "q" || key === "Q" || key === "") {
+      exitWatch();
+    }
+  });
+  let allInteractions = readClassifiedTagFile(tagPath);
+  let lastReadOffset = 0;
+  try {
+    lastReadOffset = fs.statSync(tagPath).size;
+  } catch {
+  }
+  let disabledEmoji = settings.disabledEmoji;
+  let sessionInterval;
+  let sessionLimit;
+  let sessionMode;
+  let sessionShowTicks;
+  let sessionTimezone;
+  try {
+    const sessionContent = fs.readFileSync(sessionPath, "utf8");
+    for (const line of sessionContent.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === "custom" && entry.customType === "emoji-settings") {
+          if (entry.data && typeof entry.data.disabled === "boolean") {
+            disabledEmoji = entry.data.disabled;
+          }
+        } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+          if (entry.data) {
+            if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
+            if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
+            if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") sessionMode = entry.data.mode;
+            if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
+            if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
+          }
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  const render = () => {
+    process.stdout.write("\x1B[H\x1B[J");
+    const width = getTerminalWidth();
+    const finalInterval = sessionInterval ?? settings.interval;
+    const finalLimit = sessionLimit ?? settings.limit;
+    const finalMode = sessionMode ?? settings.mode;
+    const finalShowTicks = sessionShowTicks ?? settings.showTicks;
+    const finalTimezone = sessionTimezone ?? settings.timezone;
+    const finalWidth = Math.min(settings.width, width);
+    const defaultSettings = {
+      interval: "1h",
+      limit: 100,
+      width: finalWidth,
+      showTicks: true,
+      mode: "cumulative",
+      timezone: void 0
+    };
+    const deduped = deduplicateInteractions(allInteractions);
+    interactionCount = deduped.length;
+    const lines = buildWtftLines(deduped, defaultSettings, {
+      interval: finalInterval,
+      limit: finalLimit,
+      width: finalWidth,
+      showTicks: finalShowTicks,
+      mode: finalMode,
+      timezone: finalTimezone,
+      disabledEmoji,
+      forceLegendRow: true
+    });
+    const buf = [];
+    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
+    totalCost = deduped.reduce((sum, i) => sum + i.cost, 0);
+    if (lines && lines.length > 0) {
+      const tlHour = getCurrentLocalHour(finalTimezone);
+      const tlStr = buildTimelineString(/* @__PURE__ */ new Set(), tlHour, void 0);
+      lines[0] = lines[0] + "  " + tlStr;
+      for (const l of lines) buf.push(l);
+    } else {
+      buf.push("\x1B[90mWaiting for session data...\x1B[0m");
+    }
+    buf.push(`\x1B[90mq/Ctrl+C to exit\x1B[0m`);
+    lastBuffer = [...buf];
+    process.stdout.write(buf.join("\n"));
+    needsRedraw = false;
+    _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
+  };
+  render();
+  process.on("SIGWINCH", () => {
+    needsRedraw = true;
+    render();
+  });
+  let watcher = null;
+  let watchTimeout = null;
+  try {
+    watcher = fs.watch(tagPath, (eventType) => {
+      if (eventType !== "change") return;
+      if (watchTimeout) clearTimeout(watchTimeout);
+      watchTimeout = setTimeout(() => {
+        try {
+          const stat = fs.statSync(tagPath);
+          if (stat.size <= lastReadOffset) return;
+          const fd = fs.openSync(tagPath, "r");
+          const buf = Buffer.alloc(stat.size - lastReadOffset);
+          fs.readSync(fd, buf, 0, buf.length, lastReadOffset);
+          fs.closeSync(fd);
+          lastReadOffset = stat.size;
+          const newContent = buf.toString("utf8");
+          const lines = newContent.split("\n");
+          let newCount = 0;
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              if (obj._hb) continue;
+              const interaction = classifiedToInteraction(obj);
+              if (interaction) {
+                allInteractions.push(interaction);
+                newCount++;
+              }
+            } catch {
+            }
+          }
+          if (newCount > 0) {
+            needsRedraw = true;
+            render();
+          }
+        } catch {
+          try {
+            lastReadOffset = 0;
+            allInteractions = readClassifiedTagFile(tagPath);
+            lastReadOffset = fs.statSync(tagPath).size;
+            needsRedraw = true;
+            render();
+          } catch {
+          }
+        }
+      }, 100);
+    });
+  } catch {
+    console.error("\u274C Failed to watch tag file. Is the daemon running?");
+    process.exit(1);
+  }
+  const minuteInterval = setInterval(() => {
+    const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
+    if (_curMin !== _lastRenderMin) {
+      needsRedraw = true;
+      render();
+    }
+  }, 6e4);
+  await new Promise(() => {
+  });
+}
+
+// bin/wtft.ts
+import { spawn } from "node:child_process";
 
 // extensions/lib/session-selector.ts
 import * as fs2 from "node:fs";
@@ -1679,7 +1891,32 @@ async function main() {
   if (showWatch) {
     const termColumns2 = getTerminalWidth();
     const maxWidth2 = hasWidth ? maxWidthOption : 240;
-    await watchMode(finalSessionPath, {
+    const sessionDir = path4.dirname(finalSessionPath);
+    const sessionBase = path4.basename(finalSessionPath);
+    const tagsDir = path4.join(sessionDir, "wtft-tags");
+    const tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.0.0.jsonl");
+    const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    try {
+      const child = spawn(process.execPath, [daemonPath, "--session", finalSessionPath], {
+        detached: true,
+        stdio: "ignore"
+      });
+      child.unref();
+    } catch (err) {
+      console.error(`\x1B[33m\u26A0 Daemon spawn failed, falling back to polling mode: ${err}\x1B[0m`);
+      await watchMode(finalSessionPath, {
+        interval: hasInterval ? intervalStr : "1h",
+        limit: hasLimit ? limit : 100,
+        width: Math.min(maxWidth2, termColumns2),
+        mode: hasCumulative || hasBucket ? mode : "cumulative",
+        showTicks: hasTicks || hasNoTicks ? showTicks : true,
+        timezone: hasTz ? timezone : void 0,
+        disabledEmoji: false
+      });
+      return;
+    }
+    await new Promise((resolve2) => setTimeout(resolve2, 500));
+    await watchTagFile(finalSessionPath, tagPath, {
       interval: hasInterval ? intervalStr : "1h",
       limit: hasLimit ? limit : 100,
       width: Math.min(maxWidth2, termColumns2),
