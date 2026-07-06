@@ -1083,14 +1083,8 @@ async function watchMode(sessionPath, settings) {
     }
     process.stdout.write("\x1B[?25h");
     if (process.stdin.isTTY) {
-      try {
-        process.stdin.setRawMode(false);
-      } catch (_) {
-      }
-      try {
-        process.stdin.pause();
-      } catch (_) {
-      }
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
     }
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
