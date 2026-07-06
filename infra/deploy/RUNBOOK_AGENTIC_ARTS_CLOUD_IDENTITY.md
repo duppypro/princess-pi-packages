@@ -1,5 +1,11 @@
 # Runbook: agentic-arts.ai agent accounts → Cloud Identity Free
 
+> **Lifecycle status: SPEC DRAFT (Step 1 — not approved, not tested).**
+> This runbook has not been reviewed or executed. It was first committed into history by an
+> unrelated commit (`c7dca73`, labeled "Code and Spec Approved") that swept it in as an
+> untracked file — that Step-5 label does **not** apply to this document. Do not treat this
+> as approved until a proper Spec Approved commit exists for it.
+
 Convert three agent-persona accounts (Sadie, Hank, Chief-Agent-Wrangler) in the
 `agentic-arts.ai` Google Workspace from paid **Business Starter** seats to free
 **Cloud Identity Free** licenses — dropping the Workspace bill to a single paid seat
