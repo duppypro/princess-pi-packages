@@ -1439,6 +1439,7 @@ async function selectSessionPrompt(candidates) {
       10
     );
     let lastLineCount = 0;
+    let logicalLineCount = 0;
     const render = () => {
       const selected = displayCandidates[selectedIndex];
       let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (j/k or arrows navigate, Enter select, q quit):
@@ -1460,6 +1461,7 @@ async function selectSessionPrompt(candidates) {
       }
       const cols = process.stdout.columns || 80;
       lastLineCount = visualLineCount(out, cols);
+      logicalLineCount = out.replace(/\\n$/, "").split("\\n").length;
       process.stdout.write(out);
     };
     const overwritePrevious = () => {
@@ -1467,15 +1469,15 @@ async function selectSessionPrompt(candidates) {
         process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
       }
     };
-    process.stdout.write("\x1B[s");
+    process.stdout.write("\x1B7");
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
-        process.stdout.write("\x1B[u\x1B[J");
+        process.stdout.write("\x1B8\x1B[J");
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
-        process.stdout.write("\x1B[u\x1B[J");
+        process.stdout.write("\x1B8\x1B[J");
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
         resolve2(selectedPath);
