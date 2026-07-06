@@ -1434,6 +1434,7 @@ async function selectSessionPrompt(candidates) {
     stdin.resume();
     stdin.setEncoding("utf8");
     process.stdout.write("\x1B[?25l");
+    process.stdout.write("\x1B7");
     const maxPathLen = Math.max(
       ...displayCandidates.map((c) => c.displayPath.length),
       10
@@ -1470,11 +1471,11 @@ async function selectSessionPrompt(candidates) {
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
-        overwritePrevious();
+        process.stdout.write("\x1B8\x1B[J");
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
-        overwritePrevious();
+        process.stdout.write("\x1B8\x1B[J");
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
         resolve2(selectedPath);
