@@ -1101,6 +1101,7 @@ async function watchMode(sessionPath, settings) {
   process.on("SIGINT", exitWatch);
   if (process.stdin.isTTY) {
     process.stdin.resume();
+    process.stdin.setEncoding("utf8");
     process.stdin.setRawMode(true);
     process.stdin.on("data", (data) => {
       const key = data.toString();
