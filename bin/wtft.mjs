@@ -1078,9 +1078,7 @@ async function watchMode(sessionPath, settings) {
   let lastBuffer = [];
   let lastLineCount = 0;
   const exitWatch = () => {
-    if (lastLineCount > 0) {
-      process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
-    }
+    process.stdout.write("\x1B8\x1B[J");
     process.stdout.write("\x1B[?25h");
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
@@ -1161,10 +1159,9 @@ async function watchMode(sessionPath, settings) {
   let sessionMode;
   let sessionShowTicks;
   let sessionTimezone;
+  process.stdout.write("\x1B7");
   const render = () => {
-    if (lastLineCount > 0) {
-      process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
-    }
+    process.stdout.write("\x1B8\x1B[J");
     const width = getTerminalWidth();
     const finalInterval = sessionInterval ?? settings.interval;
     const finalLimit = sessionLimit ?? settings.limit;
