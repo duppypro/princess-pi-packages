@@ -1162,6 +1162,9 @@ async function watchMode(sessionPath, settings) {
   let sessionShowTicks;
   let sessionTimezone;
   const render = () => {
+    if (lastLineCount > 0) {
+      process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
+    }
     const width = getTerminalWidth();
     const finalInterval = sessionInterval ?? settings.interval;
     const finalLimit = sessionLimit ?? settings.limit;
