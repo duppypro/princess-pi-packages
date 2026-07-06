@@ -1188,9 +1188,10 @@ async function watchMode(sessionPath, settings) {
       forceLegendRow: true
     });
     const buf = [];
+    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
+    buf.push("");
     totalCost = deduplicateInteractions(allInteractions).reduce((sum, i) => sum + i.cost, 0);
     interactionCount = allInteractions.length;
-    buf.push(`\x1B[90m${sessionPath}  (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 q/Ctrl+C to exit\x1B[0m`);
     buf.push("");
     if (lines && lines.length > 0) {
       const tlHour = getCurrentLocalHour(finalTimezone);
@@ -1200,9 +1201,10 @@ async function watchMode(sessionPath, settings) {
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
+    buf.push(`\x1B[90mq/Ctrl+C to exit\x1B[0m`);
     lastBuffer = [...buf];
     const cols = process.stdout.columns || 80;
-    lastLineCount = buf.join("\n").split("\n").length;
+    lastLineCount = buf.join("\n").split("\n").length + 5;
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
@@ -1764,6 +1766,7 @@ async function main() {
     console.log("No binned data found in session logs.");
     process.exit(0);
   }
+  console.log(`\x1B[90m${finalSessionPath}\x1B[0m`);
   for (const line of outputLines) {
     console.log(line);
   }
