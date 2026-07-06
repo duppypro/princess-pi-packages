@@ -1207,7 +1207,7 @@ async function watchMode(sessionPath, settings) {
     buf.push(`\x1B[90mq/Ctrl+C to exit\x1B[0m`);
     lastBuffer = [...buf];
     const cols = process.stdout.columns || 80;
-    lastLineCount = buf.join("\n").split("\n").length + 5;
+    lastLineCount = buf.join("\n").split("\n").length;
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
