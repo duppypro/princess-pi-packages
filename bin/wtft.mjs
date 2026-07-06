@@ -1193,8 +1193,7 @@ async function watchMode(sessionPath, settings) {
       forceLegendRow: true
     });
     const buf = [];
-    buf.push("\x1B[H");
-    totalCost = allInteractions.reduce((sum, i) => sum + i.cost, 0);
+    totalCost = deduplicateInteractions(allInteractions).reduce((sum, i) => sum + i.cost, 0);
     interactionCount = allInteractions.length;
     buf.push(`\x1B[90m${sessionPath}  (${interactionCount} interactions, $${totalCost.toFixed(4)}) \u2014 q/Ctrl+C to exit\x1B[0m`);
     buf.push("");
@@ -1207,6 +1206,8 @@ async function watchMode(sessionPath, settings) {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
     lastBuffer = [...buf];
+    const cols = process.stdout.columns || 80;
+    lastLineCount = buf.join("\n").split("\n").length;
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
