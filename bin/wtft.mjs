@@ -1464,6 +1464,11 @@ async function selectSessionPrompt(candidates) {
       }
     };
     render();
+    const onResize = () => {
+      overwritePrevious();
+      render();
+    };
+    process.on("SIGWINCH", onResize);
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
         overwritePrevious();
@@ -1485,6 +1490,7 @@ async function selectSessionPrompt(candidates) {
       }
     };
     const cleanup = () => {
+      process.removeListener("SIGWINCH", onResize);
       stdin.removeListener("data", onKey);
       stdin.setRawMode(false);
       stdin.pause();
