@@ -1469,15 +1469,14 @@ async function selectSessionPrompt(candidates) {
         process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
       }
     };
-    process.stdout.write("\x1B7");
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
-        process.stdout.write("\x1B8\x1B[J");
+        overwritePrevious();
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
-        process.stdout.write("\x1B8\x1B[J");
+        overwritePrevious();
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
         resolve2(selectedPath);
