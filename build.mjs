@@ -109,6 +109,21 @@ async function buildAll() {
   mergeCode = "#!/usr/bin/env node\n" + mergeCode;
   fs.writeFileSync("bin/merge.mjs", mergeCode);
   console.log("✅ bin/merge.mjs compiled successfully.");
+
+  // 4. Build wtft-daemon.mjs
+  await build({
+    entryPoints: ["bin/wtft-daemon.ts"],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node18",
+    outfile: "bin/wtft-daemon.mjs"
+  });
+
+  let daemonCode = fs.readFileSync("bin/wtft-daemon.mjs", "utf8");
+  daemonCode = daemonCode.replace(/^#!\/usr\/bin\/env -S node --experimental-strip-types\n/, "#!/usr/bin/env node\n");
+  fs.writeFileSync("bin/wtft-daemon.mjs", daemonCode);
+  console.log("✅ bin/wtft-daemon.mjs compiled successfully.");
 }
 
 buildAll().catch((err) => {
