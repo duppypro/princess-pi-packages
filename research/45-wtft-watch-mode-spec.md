@@ -1,46 +1,63 @@
 # WTFT --watch Live Mode — Spec (#45)
 
 ## Summary
-Add `--watch` flag to WTFT CLI: watches session `.jsonl` for changes and re-renders bar chart in-place in a terminal. Targeted at Claude Code users running WTFT in a companion tmux pane.
+`--watch` flag: watches session `.jsonl` for changes and re-renders bar chart
+in-place. Targeted at Claude Code users running WTFT in a companion tmux pane.
+
+Updated: `54-55-wtft-dedup-ttl-cache` (alt screen, q-to-quit, cost dedup)
 
 ## Design
 
-### Watch mechanism — `fs.watchFile()`
-- Poll every 500ms (reliable for append-only `.jsonl`, unlike `fs.watch` which can miss events on VPS filesystems)
+### Watch mechanism
+- Poll every 667ms (`fs.statSync` + byte-offset incremental read)
 - Track byte offset: only parse new bytes since last read
-- Handle partial writes: if last line is incomplete JSON, skip it and retry next tick
-- Detect file rotation/truncation: if file shrinks, reset offset to 0 and re-parse
+- Handle partial writes: skip incomplete last line
+- Detect truncation: file shrinks → reset offset to 0
 
-### Rendering loop
-1. Read new bytes → split on `\n` → parse each complete line as JSON → `parseEntryToInteraction()`
-2. Accumulate all interactions into array
-3. Call `buildWtftLines()` with accumulated interactions
-4. ANSI clear + reposition: `\x1b[2J\x1b[H`
-5. Print all lines
-6. Print status footer: `Watching <session-filename> (<N> interactions, $<total>) — Ctrl+C to exit`
-7. `process.stdout.write()` the full output (single write = double-buffer-like, avoids flicker)
+### Session Selection
+When no `--session` flag is provided, the interactive session selector runs
+**in-place on the main screen** (no alt screen). Arrow keys/j/k navigate,
+Enter selects, q/Ctrl+C cancels. After selection, watch mode begins.
 
-### Terminal resize
-- Install `SIGWINCH` handler → set a `needsRedraw` flag
-- Next poll cycle picks up the flag and re-renders with updated terminal width
-- `getTerminalWidth()` already handles this dynamically
+### Watch Mode Rendering
+- **Alt screen buffer** (`\x1b[?1049h`): live updates inside alt screen.
+  Main screen (with prompt + scrollback) preserved and restored on exit.
+- **Home + clear** (`\x1b[H\x1b[J`) on every render inside alt screen.
+- **Render loop:**
+  1. Read new bytes → parse → accumulate interactions
+  2. Call `buildWtftLines()` (auto-dedup by message.id via #54)
+  3. Home cursor, clear alt screen
+  4. Print: session path, chart, "Other" warning, `q/Ctrl+C to exit` footer
+  5. SIGWINCH → immediate re-render
 
-### Graceful shutdown
-- `SIGINT` handler: clear screen, print final stats, `process.exit(0)`
-- `process.on('exit', ...)`: restore cursor (`\x1b[?25h`)
+### Exit
+- **q / Q / Ctrl+C**: raw stdin handler catches input → calls `exitWatch()`
+- `exitWatch()`: exits alt screen (`\x1b[?1049l`), restores cursor, prints final
+  chart to main screen (so it persists), logs session stats, exits
+- Status line: `WTFT watch stopped — <N> interactions, $<total> total cost.`
 
-### CLI flag
-- `--watch` / `-W` (uppercase W, distinct from `-w` width flag)
-- All existing WTFT flags support: `--session`, `--interval`, `--mode`, `--limit`, `--no-ticks`, `--tz`
+### Cost Model
+- Deduplicated by `message.id` (#54): Claude Code multi-line-per-message dedup
+- TTL-split cache-write pricing (#55): 5-min @ 1.25×, 1-hour @ 2×
+- Total displayed uses deduped costs
 
-### Implementation location
-- New function: `watchMode()` in `bin/wtft.mjs` (and `bin/wtft.ts`)
-- Reuses existing `parseEntryToInteraction()` and `buildWtftLines()` — no changes to shared lib
-- Manifest `wtft-cmd.json`: add `--watch`/`-W` to usage and examples
+---
 
-## Edge Cases
-- **Empty/missing session file**: wait for first write, don't error
-- **Massive sessions (100k+ lines)**: `buildWtftLines()` already handles this with limit
-- **Incomplete JSON at EOF**: skip last line if `JSON.parse` throws, retry next tick
-- **File deleted mid-watch**: log warning, keep watching for recreation
-- **STDOUT not a TTY**: refuse to start `--watch` mode (needs a real terminal)
+## TUI Layout
+```
+/home/.../session.jsonl
+💸 WTF Tokens?  (timeline)
+█Spec ▒Mixed █Code █Tests █Research █Git █Grep ░Prompt ░Other
+── Jul-05 ────────── $0.00 ── ... ── $65.00
+13:30  +$0.31  $62.65  █████████...
+...
+⚠️  "Other" category: 40% of session cost ($25.01). Run wtft --other to drill down.
+q/Ctrl+C to exit
+```
+
+---
+
+## Non-Watch Mode
+- Selector in-place on main screen
+- After selection: prints session path + chart via `console.log`
+- No alt screen, no live updates

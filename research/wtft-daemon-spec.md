@@ -1,36 +1,39 @@
-# WTFT Classifier Daemon — Spec Draft
+# WTFT Tagger Daemon — Spec
 
 Issue: [#48](https://github.com/duppypro/princess-pi-packages/issues/48)
 Branch: `48-wtft-classified-cache-daemon`
+Updated: `54-55-wtft-dedup-ttl-cache` (cost model v2, tag format rename)
 
 ---
 
 ## Architecture
 
 ```
-session.jsonl ──▶ [wtft-classifier daemon] ──▶ classified.jsonl
-       (harness-specific)                  (harness-agnostic, throttled 90bpm)
+session.jsonl ──▶ [wtft-daemon] ──▶ wtft-tags/session.jsonl.wtft-tag.v2.0.0.jsonl
+       (harness-specific)             (harness-agnostic, throttled 90bpm)
                                                      │
                           ┌──────────────────────────┤
                           │                          │
                     Pi TUI widget              wtft --watch (CLI)
-                          │
-                    wtft --webui daemon ──▶ WebSocket ──▶ WebUI
-                       (future issue)                  ──▶ LLM detector
+                    (in-memory, not disk)
 ```
 
-The classifier daemon is a pure Unix pipe: one input (session.jsonl), one output
-(classified.jsonl). It has no network, no HTTP, no WebSocket. Consumers read
-the classified file off disk.
+The tagger daemon is a pure Unix pipe: one input (session.jsonl), one output
+(tag file in `wtft-tags/` subdirectory). No network, no HTTP, no WebSocket.
+Consumers read the tag file off disk.
 
 ---
 
-## Classified Format (classified.jsonl)
+## Tag Cache Format
 
-One JSON object per line. First line is a header with the classifier version.
+File: `<sessionDir>/wtft-tags/<sessionBase>.wtft-tag.v2.0.0.jsonl`
+
+One JSON object per line. **No version header** — version is embedded in the
+filename (`v2.0.0`). Tag files live in a `wtft-tags/` subdirectory to keep
+them out of session discovery.
 
 ```jsonl
-{"_classifier_version":1}
+{"_hb":{"first":1719000300000}}
 {"t":1719000000000,"c":0.023,"cat":"code","f":[{"p":"src/main.ts","a":"w"}],"cmd":["npm test"]}
 {"t":1719000100000,"c":0.001,"cat":"spec","f":[{"p":"docs/spec.md","a":"r"}],"cmd":[]}
 ```
@@ -38,23 +41,33 @@ One JSON object per line. First line is a header with the classifier version.
 | Field | Key | Type | Description |
 |---|---|---|---|
 | Timestamp | `t` | number | Unix ms |
-| Cost | `c` | number | USD |
-| Category | `cat` | string | One of: spec, code, mixed, tests, research, git, grep, prompt, other |
-| Files | `f` | array | `[{"p": "path", "a": "r|w"}]` — for future drill-down |
-| Commands | `cmd` | string[] | Shell commands executed — needed by `--other` histogram |
+| Cost | `c` | number | USD (computed by current cost model) |
+| Category | `cat` | string | spec, code, mixed, tests, research, git, grep, prompt, other |
+| Files | `f` | array | `[{"p": "path", "a": "r|w"}]` |
+| Commands | `cmd` | string[] | Shell commands — needed by `--other` histogram |
 
-Keys are intentionally short — this file has as many lines as the source session,
-so every byte counts on large sessions. The `txt` (thinking/prompt text) field is
-**not stored** — it's the largest field by far and no current consumer uses it.
-The future LLM pattern detector can read it from the source `session.jsonl`.
+### Cost Model — Tagger Version v2.0.0
 
-### Version Management
+Current pricing logic (TTL-split cache-write, message-ID deduplication):
+- **#54**: Costs deduplicated by `message.id` (Claude Code emits multiple JSONL
+  lines per API response; dedup prevents ~1.8× inflation).
+- **#55**: Cache-write tokens priced by TTL: 5-minute @ 1.25× input, 1-hour @ 2× input.
+  Falls back to flat 1.25× when TTL breakdown unavailable (Pi schema, DeepSeek).
+- DeepSeek: input/output only, peak-valley surge pricing (2× during
+  UTC 01:00–04:00 and 06:00–10:00).
 
-The first line of `classified.jsonl` is always `{"_classifier_version":<N>}`.
-When the classifier logic changes (e.g., new category heuristics, new cost model),
-increment the version number. On startup, the daemon reads the first line:
-- If version matches: incremental append from last known source position.
-- If version differs or file missing: delete, re-parse entire source from scratch.
+### Version Management (Filename-Based)
+
+Version is embedded in filename: `.wtft-tag.v{N}.jsonl` where `{N}` is semver.
+
+On startup, the daemon scans `wtft-tags/` for `<sessionBase>.wtft-tag.v*.jsonl`.
+- If current version file exists: resume incremental append.
+- If old-version files exist (different semver): delete them (stale cost model).
+- If no tag file: create new, full reparse.
+
+**No `_cv` or `_classifier_version` header needed** — cache invalidation is a
+filesystem operation. Bump `TAGGER_VERSION` in `bin/wtft-daemon.mjs` when
+classification heuristics or cost model change.
 
 ---
 
@@ -62,148 +75,87 @@ increment the version number. On startup, the daemon reads the first line:
 
 ### Throttled Writes
 
-The daemon writes to `classified.jsonl` at most once every **667ms** (90bpm).
-During idle (no new source lines), it writes nothing. During a burst of N new
-interactions, all N are written in one atomic write at the next throttle window.
+Writes to tag file at most once every **667ms** (90bpm). Idle writes nothing.
+Burst of N interactions flushed in one atomic write at next throttle window.
 
 ### Atomic Lines
 
-Each line is written as one complete `JSON.stringify(obj) + "\n"` in a single
-`fs.appendFileSync` call. Consumers treat any final line that fails `JSON.parse`
-as a partial write and drop it.
+`JSON.stringify + "\n"` in single `fs.appendFileSync`. Consumers drop final
+line that fails `JSON.parse`.
 
-### Staleness Detection & Heartbeat Protocol
-
-The daemon writes heartbeat lines with explicit lifecycle signals:
+### Heartbeat Protocol
 
 ```jsonl
-{"_hb":{"first":1719000300000}}                    # Daemon connected / idle period begins
-{"_hb":{"first":1719000300000,"last":1719000600000}}  # Updated in-place every poll, never grows
+{"_hb":{"first":1719000300000}}                    # Connected / idle period begins
+{"_hb":{"first":1719000300000,"last":1719000600000}}  # Updated in-place, never grows
 {"_hb":"stop"}                                     # Intentional disconnect
 ```
 
-During idle, the **last line is overwritten in place** — heartbeat lines never
-accumulate. When data arrives, the idle period ends. The next idle cycle appends
-a new `_hb` line. This keeps `classified.jsonl` tight even for day-long idle sessions.
-
-Consumers can distinguish:
-- **Connected / alive:** last line is an `_hb` range with a recent `last` timestamp.
-- **Intentional disconnect:** `_hb:"stop"` appended after the range.
-- **Crashed:** no file modification for >2s with no `"stop"`.
+Last line overwritten in place during idle. Next data arrival ends idle period;
+next idle cycle appends new `_hb`.
 
 ### Idle Exit
 
-If `session.jsonl` hasn't been modified for **30 minutes**, the daemon assumes
-the session is finished and shuts down cleanly: writes `_hb:"stop"`, removes PID
-file, exits. The next `wtft` invocation spawns a fresh daemon.
-
-If the session file is deleted while the daemon is running, it also exits cleanly.
+30 minutes of no `session.jsonl` modification → clean shutdown (`_hb:"stop"`,
+remove PID, exit).
 
 ### Consumer Read Protocol
 
-1. Read the entire `classified.jsonl` on startup to build initial state.
-2. Watch for changes (inotify or poll). On change:
-   - If `_classifier_version` changed: reload from scratch.
-   - Otherwise: read only new lines since last known offset and merge.
+1. Read entire tag file on startup for initial state.
+2. Watch for changes. On change: read new lines since last offset, merge.
+3. No version header to check — filename handles versioning.
 
 ---
 
 ## Daemon Lifecycle
 
-### Startup — Auto-Spawn by CLI
+### Auto-Spawn by CLI
 
-The daemon is auto-spawned by `wtft` CLI commands when they target a session.
-Only sessions selected by CLI consumers get daemons; most sessions don't.
+`wtft --watch` or `wtft` auto-spawns daemon for selected session.
+Daemon outlives CLI consumer. One daemon per session (PID files at
+`/tmp/wtft-daemon-<sha256>.pid`).
 
-When `wtft --watch <session>` or `wtft <session>` runs, it checks if a daemon
-is already running for that session (via PID file or heartbeat detection). If
-not, it spawns one as a child process. The daemon outlives the CLI consumer.
+### Management Commands
 
-When the CLI consumer exits, the daemon continues running (detached). If the
-daemon detects no consumers for a configurable idle timeout, it writes a
-`_hb: "stop"` heartbeat and exits.
+```
+wtft-daemon --list        # Show all running daemons
+wtft-daemon --cleanup     # Kill daemons with deleted source sessions
+wtft-daemon --stop <path> # Stop specific daemon
+```
 
-### One Daemon Per Session
-
-Each daemon instance watches exactly one `session.jsonl` and writes to one
-`classified.jsonl` (placed alongside the source or in a cache directory).
+Idle time from tag file mtime (in `wtft-tags/` subdirectory).
 
 ---
 
-## Consumer Changes Required
+## Consumers
 
-### DRY Constraint: Single Classifier Implementation
-
-Both the daemon (disk-based) and the Pi TUI widget (in-memory) must use the
-**same** `parseEntryToInteraction` and `classifyInteraction` functions. These
-already live in `extensions/lib/wtft-shared.ts`. The daemon imports them from
-there — no duplication.
-
-### Pi TUI Widget (`extensions/wtft.ts`)
-
-Keeps the in-memory path via `ctx.sessionManager.getBranch()`. The Pi harness
-fires notifications (`agent_end`, etc.) faster than 90bpm, and the TUI can
-render at that rate — no throttling needed in the TUI path.
-
-The TUI widget **does not** use the daemon or read `classified.jsonl`. It uses
-the shared classifier functions directly on in-memory entries.
+### Pi TUI Widget
+In-memory path via `ctx.sessionManager.getBranch()`. Does not use daemon or
+tag file. Uses shared classifier functions directly.
 
 ### CLI `wtft --watch`
-
-Currently reads `session.jsonl` directly with incremental parsing. Switch to
-reading `classified.jsonl` — no parsing, no classification, just bin-and-render.
-Auto-spawns daemon if not running.
+Currently reads `session.jsonl` directly. Future: read tag file for fast path.
+Auto-spawns daemon.
 
 ### CLI `wtft` (one-shot)
-
-Currently reads entire `session.jsonl`. Switch to reading `classified.jsonl`
-if available (fast path — already classified, no re-parse). Fall back to
-`session.jsonl` if no cache exists, spawning the daemon for future runs.
+Reads `session.jsonl` directly with `parseSessionFile()`. Dedup applied
+in `buildWtftLines()`. Future: prefer tag file when available.
 
 ---
 
-## Future: wtft --webui
+## Cost Model Version History
 
-A separate daemon process that:
-
-1. Reads `classified.jsonl` (same disk contract as other consumers).
-2. Serves a WebSocket endpoint.
-3. Pushes classified events to connected clients.
-4. Optionally streams events to a companion LLM for pattern detection.
-
-This is intentionally out of scope for this issue. The `classified.jsonl` format
-is the stable interface that enables it.
-
----
-
-## Management Commands
-
-Users run `wtft-daemon` directly only for management. Normal operation is transparent
-(auto-spawned by `wtft` CLI commands).
-
-```
-wtft-daemon --list        # Show all running daemons (PID, status, idle, session)
-wtft-daemon --cleanup     # Kill daemons whose source session no longer exists
-wtft-daemon --stop <path> # Stop a specific daemon by session path
-```
-
-Idle time is computed from the classified.jsonl file's modification time.
-Daemon state is stored in PID files at `/tmp/wtft-daemon-<sha256-hash>.pid`.
+| Version | Changes |
+|---|---|
+| v1.0.0 | Initial classifier (flat 1.25× cache-write, per-line cost) |
+| v2.0.0 | #54 message-ID dedup + #55 TTL-split cache-write pricing |
 
 ---
 
 ## Road Not Taken
 
-- **Inline cache (no daemon):** Serialize Interaction[] directly without
-  separation. Rejected — doesn't create the harness-agnostic format needed
-  for future consumers (WebUI, LLM detector).
-- **SQLite cache:** WAL mode handles concurrent reads natively, supports
-  indexed queries. Rejected — overbuilt for an append-only, always-full-scan
-  workload. JSONL is simpler and `jq`-able.
-- **One daemon for all sessions:** More efficient process count, but adds
-  multi-session state management. Rejected — most sessions won't have daemons,
-  and per-session isolation matches the one-`classified.jsonl`-per-`session.jsonl`
-  model.
-- **TUI widget reads classified.jsonl:** The Pi TUI already has in-memory
-  parsed entries and can update faster than 90bpm. Switching to disk adds I/O
-  with no benefit. TUI stays on in-memory path.
+- **`_classifier_version` header:** Replaced by version-in-filename. Eliminates parsing step.
+- **Cache files alongside sessions:** Moved to `wtft-tags/` subdirectory — session discovery
+  never sees them.
+- **SQLite / inline cache:** Overbuilt for append-only workload. JSONL is simpler.
+- **One daemon for all sessions:** Adds multi-session state. Per-session isolation preferred.
