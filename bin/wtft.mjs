@@ -1421,54 +1421,58 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     render();
   });
   let watcher = null;
-  let watchTimeout = null;
-  try {
+  const startWatching = () => {
     watcher = fs.watch(tagPath, (eventType) => {
       if (eventType !== "change") return;
-      if (watchTimeout) clearTimeout(watchTimeout);
-      watchTimeout = setTimeout(() => {
-        try {
-          const stat = fs.statSync(tagPath);
-          if (stat.size <= lastReadOffset) return;
-          const fd = fs.openSync(tagPath, "r");
-          const buf = Buffer.alloc(stat.size - lastReadOffset);
-          fs.readSync(fd, buf, 0, buf.length, lastReadOffset);
-          fs.closeSync(fd);
-          lastReadOffset = stat.size;
-          const newContent = buf.toString("utf8");
-          const lines = newContent.split("\n");
-          let newCount = 0;
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const obj = JSON.parse(line);
-              if (obj._hb) continue;
-              const interaction = classifiedToInteraction(obj);
-              if (interaction) {
-                allInteractions.push(interaction);
-                newCount++;
-              }
-            } catch {
-            }
-          }
-          if (newCount > 0) {
-            needsRedraw = true;
-            render();
-          }
-        } catch {
+      try {
+        const stat = fs.statSync(tagPath);
+        if (stat.size <= lastReadOffset) return;
+        const fd = fs.openSync(tagPath, "r");
+        const buf = Buffer.alloc(stat.size - lastReadOffset);
+        fs.readSync(fd, buf, 0, buf.length, lastReadOffset);
+        fs.closeSync(fd);
+        lastReadOffset = stat.size;
+        const newContent = buf.toString("utf8");
+        const lines = newContent.split("\n");
+        let newCount = 0;
+        for (const line of lines) {
+          if (!line.trim()) continue;
           try {
-            lastReadOffset = 0;
-            allInteractions = readClassifiedTagFile(tagPath);
-            lastReadOffset = fs.statSync(tagPath).size;
-            needsRedraw = true;
-            render();
+            const obj = JSON.parse(line);
+            if (obj._hb) continue;
+            const interaction = classifiedToInteraction(obj);
+            if (interaction) {
+              allInteractions.push(interaction);
+              newCount++;
+            }
           } catch {
           }
         }
-      }, 100);
+        if (newCount > 0) {
+          needsRedraw = true;
+          render();
+        }
+      } catch {
+        try {
+          lastReadOffset = 0;
+          allInteractions = readClassifiedTagFile(tagPath);
+          lastReadOffset = fs.statSync(tagPath).size;
+          needsRedraw = true;
+          render();
+        } catch {
+        }
+      }
     });
-  } catch {
-    console.error("\u274C Failed to watch tag file. Is the daemon running?");
+  };
+  const fileWaitStart = Date.now();
+  while (!fs.existsSync(tagPath) && Date.now() - fileWaitStart < 5e3) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (fs.existsSync(tagPath)) {
+    startWatching();
+  } else {
+    console.error("\u274C Daemon did not create tag file within 5s. Is wtft-daemon installed?");
+    console.error(`   Expected: ${tagPath}`);
     process.exit(1);
   }
   const minuteInterval = setInterval(() => {
