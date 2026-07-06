@@ -1434,7 +1434,6 @@ async function selectSessionPrompt(candidates) {
     stdin.resume();
     stdin.setEncoding("utf8");
     process.stdout.write("\x1B[?25l");
-    process.stdout.write("\x1B[s");
     const maxPathLen = Math.max(
       ...displayCandidates.map((c) => c.displayPath.length),
       10
@@ -1468,6 +1467,7 @@ async function selectSessionPrompt(candidates) {
         process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
       }
     };
+    process.stdout.write("\x1B[s");
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
