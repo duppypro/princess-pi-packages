@@ -1386,6 +1386,16 @@ function getSessionSummary(filePath) {
 function formatCostPadded(cost) {
   return formatCost(cost).padStart(7);
 }
+function visualLineCount(text, termWidth) {
+  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
+  const lines = text.replace(/\n$/, "").split("\n");
+  let count = 0;
+  for (const line of lines) {
+    const cleanLen = line.replace(ansiRe, "").length;
+    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
+  }
+  return count;
+}
 async function selectSessionPrompt(candidates) {
   return new Promise((resolve2) => {
     if (!process.stdout.isTTY) {
