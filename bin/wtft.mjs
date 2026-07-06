@@ -9,6 +9,46 @@ import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { execSync } from "node:child_process";
+
+// extensions/lib/tty-helpers.ts
+function enterRawStdin(onKey) {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return () => {
+  };
+  stdin.resume();
+  stdin.setEncoding("utf8");
+  stdin.setRawMode(true);
+  const handler = (data) => onKey(data.toString());
+  stdin.on("data", handler);
+  return () => {
+    stdin.removeListener("data", handler);
+    stdin.setRawMode(false);
+    stdin.pause();
+  };
+}
+function showCursor() {
+  process.stdout.write("\x1B[?25h");
+}
+function hideCursor() {
+  process.stdout.write("\x1B[?25l");
+}
+function clearPreviousLines(lineCount) {
+  if (lineCount > 0) {
+    process.stdout.write(`\x1B[${lineCount}A\x1B[J`);
+  }
+}
+function visualLineCount(text, termWidth) {
+  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
+  const lines = text.replace(/\n$/, "").split("\n");
+  let count = 0;
+  for (const line of lines) {
+    const cleanLen = line.replace(ansiRe, "").length;
+    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
+  }
+  return count;
+}
+
+// extensions/lib/wtft-shared.ts
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -1075,16 +1115,13 @@ async function watchMode(sessionPath, settings) {
   let needsRedraw = true;
   let _lastRenderMin = -1;
   process.stdout.write("\x1B[?1049h");
-  process.stdout.write("\x1B[?25l");
+  hideCursor();
   let lastBuffer = [];
   let lastLineCount = 0;
   const exitWatch = () => {
     process.stdout.write("\x1B[?1049l");
-    process.stdout.write("\x1B[?25h");
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
-    }
+    showCursor();
+    cleanupStdin();
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
@@ -1092,17 +1129,11 @@ async function watchMode(sessionPath, settings) {
     process.exit(0);
   };
   process.on("SIGINT", exitWatch);
-  if (process.stdin.isTTY) {
-    process.stdin.resume();
-    process.stdin.setEncoding("utf8");
-    process.stdin.setRawMode(true);
-    process.stdin.on("data", (data) => {
-      const key = data.toString();
-      if (key === "q" || key === "Q" || key === "") {
-        exitWatch();
-      }
-    });
-  }
+  const cleanupStdin = enterRawStdin((key) => {
+    if (key === "q" || key === "Q" || key === "") {
+      exitWatch();
+    }
+  });
   const parseInteractions = (filePath) => {
     const interactions = [];
     let disabledEmoji2 = false;
@@ -1385,16 +1416,6 @@ function getSessionSummary(filePath) {
 function formatCostPadded(cost) {
   return formatCost(cost).padStart(7);
 }
-function visualLineCount(text, termWidth) {
-  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
-  const lines = text.replace(/\n$/, "").split("\n");
-  let count = 0;
-  for (const line of lines) {
-    const cleanLen = line.replace(ansiRe, "").length;
-    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
-  }
-  return count;
-}
 async function selectSessionPrompt(candidates) {
   return new Promise((resolve2) => {
     if (!process.stdout.isTTY) {
@@ -1424,11 +1445,7 @@ async function selectSessionPrompt(candidates) {
     const limit2 = 10;
     const displayCandidates = candidates.slice(0, limit2);
     const statsList = displayCandidates.map((c) => getSessionSummary(c.path));
-    const stdin = process.stdin;
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    process.stdout.write("\x1B[?25l");
+    hideCursor();
     const maxPathLen = Math.max(
       ...displayCandidates.map((c) => c.displayPath.length),
       10
@@ -1459,39 +1476,32 @@ async function selectSessionPrompt(candidates) {
       logicalLineCount = out.replace(/\\n$/, "").split("\\n").length;
       process.stdout.write(out);
     };
-    const overwritePrevious = () => {
-      if (lastLineCount > 0) {
-        process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
-      }
-    };
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
-        overwritePrevious();
+        clearPreviousLines(lastLineCount);
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
-        overwritePrevious();
+        clearPreviousLines(lastLineCount);
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
         resolve2(selectedPath);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        overwritePrevious();
+        clearPreviousLines(lastLineCount);
         render();
       } else if (key === "\x1B[B" || key === "j") {
         selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        overwritePrevious();
+        clearPreviousLines(lastLineCount);
         render();
       }
     };
+    const cleanupStdin = enterRawStdin(onKey);
     const cleanup = () => {
-      stdin.removeListener("data", onKey);
-      stdin.setRawMode(false);
-      stdin.pause();
-      process.stdout.write("\x1B[?25h");
+      cleanupStdin();
+      showCursor();
     };
-    stdin.on("data", onKey);
   });
 }
 
