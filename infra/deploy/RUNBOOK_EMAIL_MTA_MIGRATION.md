@@ -124,3 +124,81 @@ mismatch to Duppy explicitly rather than declaring success silently.
 | `duppy.com` | Cloudflare routing MX | `include:_spf.google.com include:_spf.mx.cloudflare.net` | `p=none` | 1 named rule → Gmail | Gmail |
 | `interfacearts.com` | Cloudflare routing MX | same | `p=none` | 1 named rule → Gmail | Gmail |
 | `agentic-arts.ai` | `1 smtp.google.com` (unchanged) | `include:_spf.google.com` | `p=none` | not enabled | n/a (Workspace native) |
+
+---
+
+## Addendum: agent-account Cloud Identity conversion
+
+**Separate task from the four phases above.** Run it only *after* Phase 4 is verified and
+done — it touches a different domain's mail flow (agentic-arts.ai, in the Google Admin
+console), and juggling two live mail cutovers at once risks lost mail.
+
+**Why:** `duppy@agentic-arts.ai` stays a full paid Business Starter seat. The three
+agent-persona accounts (`sadie@`, `hank@`, `chief-agent-wrangler@`) drop to **free Cloud
+Identity** — keeping their independent Google logins but losing Gmail/Drive/Calendar — so
+the Workspace bill falls to a single paid seat. A Gmail Default Routing rule redirects all
+three agent addresses into `duppy@agentic-arts.ai`, and Gmail "send mail as" lets Duppy
+reply as each agent.
+
+**Road not taken:** plain aliases of `duppy@` would route mail natively with no routing
+rule, but give no separate Google login. The independent-identity requirement is the whole
+reason for the Cloud Identity path; drop that need and aliases are simpler.
+
+**Ordering rule that matters:** set up routing FIRST, remove licenses LAST. Unassigning a
+Gmail license leaves the user with no mailbox while MX still points to Google, so mail to
+that address bounces unless the routing rule is already live and tested.
+
+Paste the block below into Claude Cowork as its own task (not chained to the runbook above):
+
+```
+You are helping Duppy (David Proctor) convert three agent-persona accounts in the
+agentic-arts.ai Google Workspace from paid Business Starter seats to FREE Cloud Identity
+licenses, while keeping their mail flowing into his single mailbox. This is separate from
+the domain-migration runbook and touches the Google Admin console (admin.google.com).
+
+ACCOUNTS: sadie@agentic-arts.ai, hank@agentic-arts.ai, chief-agent-wrangler@agentic-arts.ai
+KEEP PAID: duppy@agentic-arts.ai stays a full Business Starter user — do not touch it.
+MAIL TARGET: all three agent addresses must deliver into duppy@agentic-arts.ai.
+
+GUARDRAILS
+- Never enter or view a password, 2FA, or recovery code. Stop at any login screen and let
+  Duppy authenticate.
+- Before any routing-rule save, license change, or user change, show the exact before/after
+  and wait for explicit "yes, do it".
+- Do the phases in order. Do NOT remove any license until routing is set up AND tested.
+- Never DELETE a user account (that destroys the Google login Duppy is keeping). We only
+  UNASSIGN the paid license, which drops the user to free Cloud Identity.
+- If the Admin console layout differs from what's described, stop and describe what you see.
+
+=== STEP 1: Routing rule (do this FIRST, before any license change) ===
+In Admin console > Apps > Google Workspace > Gmail > Routing (Default routing):
+1. Add a rule for each agent address that matches envelope recipient
+   sadie@agentic-arts.ai / hank@agentic-arts.ai / chief-agent-wrangler@agentic-arts.ai
+   and CHANGES the envelope recipient to duppy@agentic-arts.ai (redirect delivery).
+   (A single rule with all three recipients matched is fine if the UI allows it.)
+STOP: while the three agent accounts STILL have their mailboxes, send a test email from an
+outside account to each of the three addresses and confirm each one lands in
+duppy@agentic-arts.ai. Do not proceed until all three test messages arrive.
+
+=== STEP 2: Send-as, so Duppy can reply as each agent ===
+In Gmail (duppy@agentic-arts.ai) > Settings > Accounts > "Send mail as", add each of the
+three agent addresses, "Send through Gmail" (Google relay, not an external SMTP).
+- Google emails a verification code to each agent address. Because Step 1 routing is live,
+  those codes now land in duppy@agentic-arts.ai. Duppy enters each code himself.
+STOP: confirm all three addresses show "verified" in Send-as before continuing.
+
+=== STEP 3: Drop each agent to Cloud Identity Free (billing change) ===
+In Admin console > Billing (or Users > the user > Licenses):
+1. For sadie@, hank@, chief-agent-wrangler@: UNASSIGN the Google Workspace Business Starter
+   license. If Cloud Identity Free is not auto-assigned, assign it manually.
+2. Confirm duppy@agentic-arts.ai still holds its Business Starter license.
+STOP: show Duppy the billing/subscription summary — it should now show 1 Business Starter
+seat, not 4. Confirm the three agent logins still exist (they keep their Google identity).
+
+=== STEP 4: Post-change verification ===
+1. Re-send a test email to each of the three agent addresses -> confirm it still lands in
+   duppy@agentic-arts.ai (routing survives the license removal — this is the key check).
+2. Send FROM each agent address via Gmail send-as -> confirm delivered, not spam-flagged.
+STOP: report the final state to Duppy — 1 paid seat, 3 free Cloud Identity users, 3 routing
+rules delivering to duppy@, 3 verified send-as addresses. Flag any mismatch explicitly.
+```
