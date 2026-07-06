@@ -1891,23 +1891,23 @@ async function main() {
   if (showWatch) {
     const termColumns2 = getTerminalWidth();
     const maxWidth2 = hasWidth ? maxWidthOption : 240;
-    const sessionDir = path4.dirname(finalSessionPath);
-    const sessionBase = path4.basename(finalSessionPath);
-    const tagsDir = path4.join(sessionDir, "wtft-tags");
-    let tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.1.0.jsonl");
+    const sessionDir2 = path4.dirname(finalSessionPath);
+    const sessionBase2 = path4.basename(finalSessionPath);
+    const tagsDir2 = path4.join(sessionDir2, "wtft-tags");
+    let tagPath2 = path4.join(tagsDir2, sessionBase2 + ".wtft-tag.v2.1.0.jsonl");
     try {
-      const prefix = sessionBase + ".wtft-tag.v";
-      for (const f of fs3.readdirSync(tagsDir)) {
+      const prefix = sessionBase2 + ".wtft-tag.v";
+      for (const f of fs3.readdirSync(tagsDir2)) {
         if (f.startsWith(prefix) && f.endsWith(".jsonl")) {
-          tagPath = path4.join(tagsDir, f);
+          tagPath2 = path4.join(tagsDir2, f);
           break;
         }
       }
     } catch {
     }
-    const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    const daemonPath2 = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     try {
-      const child = spawn(process.execPath, [daemonPath, "--session", finalSessionPath], {
+      const child = spawn(process.execPath, [daemonPath2, "--session", finalSessionPath], {
         detached: true,
         stdio: "ignore"
       });
@@ -1926,7 +1926,7 @@ async function main() {
       return;
     }
     await new Promise((resolve2) => setTimeout(resolve2, 500));
-    await watchTagFile(finalSessionPath, tagPath, {
+    await watchTagFile(finalSessionPath, tagPath2, {
       interval: hasInterval ? intervalStr : "1h",
       limit: hasLimit ? limit : 100,
       width: Math.min(maxWidth2, termColumns2),
@@ -1937,27 +1937,41 @@ async function main() {
     });
     return;
   }
-  const sessionFiles = [finalSessionPath];
-  const extName = path4.extname(finalSessionPath);
-  if (extName === ".jsonl") {
-    const baseName = path4.basename(finalSessionPath, extName);
-    const parentDir = path4.dirname(finalSessionPath);
-    const possibleSubagentsDir = path4.join(parentDir, baseName, "subagents");
-    if (fs3.existsSync(possibleSubagentsDir)) {
-      try {
-        const subFiles = fs3.readdirSync(possibleSubagentsDir);
-        for (const f of subFiles) {
-          if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
-            sessionFiles.push(path4.join(possibleSubagentsDir, f));
-          }
-        }
-      } catch {
+  const sessionDir = path4.dirname(finalSessionPath);
+  const sessionBase = path4.basename(finalSessionPath);
+  const tagsDir = path4.join(sessionDir, "wtft-tags");
+  let tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.1.0.jsonl");
+  try {
+    const prefix = sessionBase + ".wtft-tag.v";
+    for (const f of fs3.readdirSync(tagsDir)) {
+      if (f.startsWith(prefix) && f.endsWith(".jsonl")) {
+        tagPath = path4.join(tagsDir, f);
+        break;
       }
     }
+  } catch {
   }
-  const interactions = [];
-  for (const file of sessionFiles) {
-    interactions.push(...parseSessionFile(file));
+  const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+  try {
+    const child = spawn(process.execPath, [daemonPath, "--session", finalSessionPath], {
+      detached: true,
+      stdio: "ignore"
+    });
+    child.unref();
+  } catch (err) {
+    console.error(`\x1B[33m\u26A0 Daemon spawn failed, falling back to direct parse: ${err}\x1B[0m`);
+  }
+  const waitStart = Date.now();
+  while (Date.now() - waitStart < 3e3) {
+    if (fs3.existsSync(tagPath)) {
+      const content = fs3.readFileSync(tagPath, "utf8");
+      if (content.split("\n").some((l) => l.trim() && !l.includes('"_hb"'))) break;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  const interactions = readClassifiedTagFile(tagPath);
+  if (interactions.length === 0) {
+    interactions.push(...parseSessionFile(finalSessionPath));
   }
   let disabledEmoji = false;
   let sessionInterval;
@@ -1966,34 +1980,32 @@ async function main() {
   let sessionMode;
   let sessionShowTicks;
   let sessionTimezone;
-  if (sessionFiles.length > 0) {
-    try {
-      const content = fs3.readFileSync(sessionFiles[0], "utf8");
-      for (const line of content.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry.type === "custom" && entry.customType === "emoji-settings") {
-            if (entry.data && typeof entry.data.disabled === "boolean") {
-              disabledEmoji = entry.data.disabled;
-            }
-          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
-            if (entry.data) {
-              if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
-              if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
-              if (typeof entry.data.width === "number") sessionWidth = entry.data.width;
-              if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
-                sessionMode = entry.data.mode;
-              }
-              if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
-              if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
-            }
+  try {
+    const content = fs3.readFileSync(finalSessionPath, "utf8");
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === "custom" && entry.customType === "emoji-settings") {
+          if (entry.data && typeof entry.data.disabled === "boolean") {
+            disabledEmoji = entry.data.disabled;
           }
-        } catch {
+        } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+          if (entry.data) {
+            if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
+            if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
+            if (typeof entry.data.width === "number") sessionWidth = entry.data.width;
+            if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
+              sessionMode = entry.data.mode;
+            }
+            if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
+            if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
+          }
         }
+      } catch {
       }
-    } catch {
     }
+  } catch {
   }
   const termColumns = getTerminalWidth();
   const maxWidth = hasWidth ? maxWidthOption : sessionWidth ?? 240;
