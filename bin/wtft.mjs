@@ -1074,11 +1074,12 @@ async function watchMode(sessionPath, settings) {
   let lastSize = 0;
   let needsRedraw = true;
   let _lastRenderMin = -1;
+  process.stdout.write("\x1B[?1049h");
   process.stdout.write("\x1B[?25l");
   let lastBuffer = [];
   let lastLineCount = 0;
   const exitWatch = () => {
-    process.stdout.write("\x1B8\x1B[J");
+    process.stdout.write("\x1B[?1049l");
     process.stdout.write("\x1B[?25h");
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
@@ -1161,7 +1162,7 @@ async function watchMode(sessionPath, settings) {
   let sessionTimezone;
   process.stdout.write("\x1B7");
   const render = () => {
-    process.stdout.write("\x1B8\x1B[J");
+    process.stdout.write("\x1B[H\x1B[J");
     const width = getTerminalWidth();
     const finalInterval = sessionInterval ?? settings.interval;
     const finalLimit = sessionLimit ?? settings.limit;
