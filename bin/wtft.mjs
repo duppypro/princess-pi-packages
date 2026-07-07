@@ -1287,14 +1287,15 @@ function classifiedToInteraction(obj) {
   return {
     timestamp: obj.t,
     cost: obj.c,
+    model: obj.m || void 0,
     files: (obj.f || []).map((f) => ({ path: f.p || "", action: f.a === "w" ? "write" : "read" })),
     commands: obj.cmd || [],
     texts: [],
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    reasoningTokens: 0
+    inputTokens: obj.in || 0,
+    outputTokens: obj.out || 0,
+    cacheReadTokens: obj.cr || 0,
+    cacheWriteTokens: obj.cw || 0,
+    reasoningTokens: obj.rs || 0
   };
 }
 function readClassifiedTagFile(tagPath) {
@@ -1315,7 +1316,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.3.0";
+var WTFT_TAGGER_VERSION = "2.4.0";
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   return path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
