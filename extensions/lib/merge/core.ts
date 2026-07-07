@@ -7,7 +7,7 @@ export interface MergeLogger {
 	prompt(question: string): Promise<boolean>;
 }
 
-const STEP5_SUBJECT = /^Code and Spec Approved(\s*\([^)]*\))?\s*:/;
+const STEP5_SUBJECT = /^(?:[\w-]+(?:\([\w-]+\))?:\s*)?Code and Spec Approved(\s*\([^)]*\))?\s*[:—]/;
 
 // ---
 // Post-merge branch cleanup: check cleanliness, prompt to delete, switch to main.
