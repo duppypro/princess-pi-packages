@@ -2101,17 +2101,7 @@ async function main() {
     const sessionDir2 = path4.dirname(finalSessionPath);
     const sessionBase2 = path4.basename(finalSessionPath);
     const tagsDir2 = path4.join(sessionDir2, "wtft-tags");
-    let tagPath2 = path4.join(tagsDir2, sessionBase2 + ".wtft-tag.v2.3.0.jsonl");
-    try {
-      const prefix = sessionBase2 + ".wtft-tag.v";
-      for (const f of fs3.readdirSync(tagsDir2)) {
-        if (f.startsWith(prefix) && f.endsWith(".jsonl")) {
-          tagPath2 = path4.join(tagsDir2, f);
-          break;
-        }
-      }
-    } catch {
-    }
+    const tagPath2 = path4.join(tagsDir2, sessionBase2 + ".wtft-tag.v2.3.0.jsonl");
     const daemonPath2 = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     try {
       const child = spawn2(process.execPath, [daemonPath2, "--session", finalSessionPath], {
@@ -2148,17 +2138,7 @@ async function main() {
   const sessionDir = path4.dirname(finalSessionPath);
   const sessionBase = path4.basename(finalSessionPath);
   const tagsDir = path4.join(sessionDir, "wtft-tags");
-  let tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.3.0.jsonl");
-  try {
-    const prefix = sessionBase + ".wtft-tag.v";
-    for (const f of fs3.readdirSync(tagsDir)) {
-      if (f.startsWith(prefix) && f.endsWith(".jsonl")) {
-        tagPath = path4.join(tagsDir, f);
-        break;
-      }
-    }
-  } catch {
-  }
+  const tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.3.0.jsonl");
   const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
   try {
     const child = spawn2(process.execPath, [daemonPath, "--session", finalSessionPath], {
