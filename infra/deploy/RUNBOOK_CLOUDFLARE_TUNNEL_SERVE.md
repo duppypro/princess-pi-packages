@@ -1,10 +1,24 @@
 # Runbook: Cloudflare Tunnel + Access for `/serve` previews
 
-> **Lifecycle status: SPEC APPROVED (Step 2 — approved for execution, not yet tested).**
+> **Lifecycle status: CODE APPROVED (Step 4 — Phase 5 verified live on the VPS 2026-07-07).**
 > Replaces the retired nginx `/live/` + oauth2-proxy `:4182` gate (see #32, #38, #59) with
 > `cloudflared` Tunnel → loopback `/serve` servers, fronted by Cloudflare Access. Spec
-> approved by Duppy 2026-07-07; ready to hand to Claude Cowork for execution. Mark Step 4
-> (Code Approved) only after Phase 5 verification passes on the live VPS.
+> approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
+> verified 2026-07-07 (see verification log below). **Phase 6 (retire nginx machinery from
+> `serve`) is NOT yet done** — it is the next step, ordered after this per the runbook.
+>
+> **Phase 5 verification log (2026-07-07 UTC, Claude Cowork + Duppy; origin = bare
+> `python3 -m http.server 8080 --bind 127.0.0.1` to isolate the edge gate):**
+> 1. Gate renders — `GET https://preview.princess-pi.dev` → Cloudflare Access challenge
+>    (not the origin); OTP offered. PASS
+> 2. Positive path — OTP to `duppypro@gmail.com` → origin "gate test ok" at
+>    `https://preview.princess-pi.dev/`. PASS
+> 3. Deny path — non-allow-listed `sadie@agentic-arts.ai` refused a code by policy
+>    `allow-duppy`. PASS
+> 4. Loopback — on the VPS, `curl http://127.0.0.1:8080/` → HTTP 200, no auth
+>    (gate lives only at the Cloudflare edge). PASS
+> Final config: OTP sole IdP; app `preview princess-pi` → `preview.princess-pi.dev`;
+> policy `allow-duppy` = `duppypro@gmail.com`; org label `princess-pi.cloudflareaccess.com`.
 
 ## Goal
 `serve <dir>` on a loopback port, reachable at a **named subdomain** of princess-pi.dev,
