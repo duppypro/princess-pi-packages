@@ -538,6 +538,7 @@ Log parser mode:
         }
       } catch (_) {
       }
+      let taggerVersion = "?";
       if (sessionFound) {
         try {
           const tagsDir2 = path.join(path.dirname(sessionFound), "wtft-tags");
@@ -546,6 +547,7 @@ Log parser mode:
           for (const f of fs.readdirSync(tagsDir2)) {
             if (f.startsWith(prefix)) {
               tagMtime = fs.statSync(path.join(tagsDir2, f)).mtimeMs;
+              taggerVersion = f.slice(prefix.length, f.length - 6);
               break;
             }
           }
@@ -616,7 +618,7 @@ Log parser mode:
           else idleStr = `${Math.floor(idleSec / 3600)}h`;
         }
         const sessionDisplay = sessionFound || `(hash: ${pidFile.replace(/^wtft-daemon-/, "").replace(/\.pid$/, "")})`;
-        console.log(`PID ${String(pid).padEnd(7)} ${status.padEnd(20)} idle: ${idleStr.padEnd(5)} ${sessionDisplay}`);
+        console.log(`PID ${String(pid).padEnd(7)} ${status.padEnd(20)} v${taggerVersion.padEnd(7)} idle: ${idleStr.padEnd(5)} ${sessionDisplay}`);
       }
     }
     if (showRestart) {
