@@ -80,7 +80,10 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				
 				const absoluteDir = path.resolve(process.cwd(), dir);
 				const clientSlug = getClientSlug(absoluteDir);
-				const url = `https://princess-pi.dev/live/${clientSlug}/?token=duppy_live_token_777`;
+				// Why no ?token=: the static bypass token was a committed backdoor (#38 F2 → #59).
+				// Access is via the real gate (Google OAuth now; Cloudflare Access service tokens
+				// post-migration), not a shared secret in the query string.
+				const url = `https://princess-pi.dev/live/${clientSlug}/`;
 
 				let title = "Index Page";
 				try {
