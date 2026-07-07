@@ -1232,7 +1232,7 @@ async function watchMode(sessionPath, settings) {
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
-    buf.push(`\x1B[90mq/Ctrl+C to exit\x1B[0m`);
+    buf.push(`'q' to exit`);
     lastBuffer = [...buf];
     const cols = process.stdout.columns || 80;
     lastLineCount = buf.join("\n").split("\n").length;
@@ -1557,8 +1557,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
-    const restartHint = settings.daemonPath ? daemonDead ? ", \x1B[31mr to restart log parser\x1B[0m" : ", r to restart log parser" : "";
-    buf.push(`\x1B[90mq/Ctrl+C to exit\x1B[0m${restartHint}`);
+    const restartHint = settings.daemonPath ? daemonDead ? `, \x1B[31m'r' to restart parser\x1B[0m` : `, using v${WTFT_TAGGER_VERSION}, 'r' to restart parser` : "";
+    buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
