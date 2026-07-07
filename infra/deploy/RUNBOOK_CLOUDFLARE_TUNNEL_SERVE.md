@@ -192,3 +192,8 @@ This runbook stands up **one** hostname/port to prove the pattern. The target en
   Access. Fine for a throwaway demo, not for gated client previews.
 - **Path-based `/live/<slug>/`** — subdomain-per-slug chosen for hard isolation + root-relative
   assets. (Retires the need for #33/#37.)
+- **Tailscale (Funnel / Serve)** — evaluated and declined for client previews: Funnel gives the
+  outbound tunnel but no email gate and only a `*.ts.net` URL (no vanity domain, ~3 ports/machine
+  → forces path-based routing); Serve gates only tailnet members, not arbitrary external clients.
+  Cloudflare does both jobs (tunnel + external-email allow-list on our own domain) at once. Kept
+  as a possible orthogonal internal-ops layer only. See `docs/research/WHY_NOT_TAILSCALE.md`.
