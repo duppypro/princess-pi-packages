@@ -428,12 +428,19 @@ function parseNewLines(filePath) {
   return interactions;
 }
 function initClassified() {
+  let hasData = false;
   try {
     fs.accessSync(tagPath);
-    try {
-      const stat = fs.statSync(sessionPath);
-      lastSize = stat.size;
-    } catch (_) {
+    const tagContent = fs.readFileSync(tagPath, "utf8");
+    hasData = tagContent.split("\n").some((l) => l.trim() && !l.includes('"_hb"'));
+    if (hasData) {
+      try {
+        const stat = fs.statSync(sessionPath);
+        lastSize = stat.size;
+      } catch (_) {
+      }
+    } else {
+      lastSize = 0;
     }
   } catch (_) {
     lastSize = 0;
