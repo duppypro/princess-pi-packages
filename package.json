@@ -1,6 +1,6 @@
 {
   "name": "princess-pi-packages",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Custom global extensions for Pi Coding Agent, including DuckDuckGo search, serve with HTTPS, WTFT token auditor, and git merging.",
   "keywords": [
     "pi-package"
