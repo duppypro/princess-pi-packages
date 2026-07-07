@@ -71,13 +71,14 @@ function calculateClaudeCost(model, usage, timestamp) {
   if (m.includes("deepseek")) {
     const peak = getDeepSeekPeakMultiplier(timestamp);
     if (m.includes("v4-pro")) {
-      inputPrice = 0.435 * peak;
-      outputPrice = 0.87 * peak;
+      inputPrice = 1.74 * peak;
+      outputPrice = 3.48 * peak;
+      cacheReadPrice = 0.0145 * peak;
     } else {
       inputPrice = 0.14 * peak;
       outputPrice = 0.28 * peak;
+      cacheReadPrice = 28e-4 * peak;
     }
-    cacheReadPrice = 0;
   } else if (m.includes("haiku")) {
     inputPrice = 1;
     outputPrice = 5;
@@ -97,7 +98,7 @@ function calculateClaudeCost(model, usage, timestamp) {
   } else {
     cacheWriteCost = cw5m * (inputPrice * 1.25 / 1e6) + cw1h * (inputPrice * 2 / 1e6) + cwFlat * (inputPrice * 1.25 / 1e6);
   }
-  const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
+  const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.reasoning_tokens || usage.reasoning || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
 function extractFilesFromBashCommand(command, files) {
@@ -149,7 +150,7 @@ function parseEntryToInteraction(entry) {
     let cost = 0;
     const usage = assistantMsg.usage || {};
     const piCost = usage.cost?.total;
-    const hasTokens2 = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0;
+    const hasTokens2 = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0 || (usage.reasoning_tokens || usage.reasoning || 0) > 0;
     if (piCost !== void 0 && piCost !== null && !(piCost === 0 && hasTokens2)) {
       cost = piCost;
     } else if (assistantMsg.model && hasTokens2) {
@@ -158,7 +159,8 @@ function parseEntryToInteraction(entry) {
         output_tokens: usage.output_tokens ?? usage.output ?? 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
         cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
-        cache_creation: usage.cache_creation || null
+        cache_creation: usage.cache_creation || null,
+        reasoning_tokens: usage.reasoning_tokens ?? usage.reasoning ?? 0
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
@@ -212,6 +214,7 @@ function parseEntryToInteraction(entry) {
       outputTokens: usage.output_tokens || usage.output || 0,
       cacheReadTokens: usage.cache_read_input_tokens || usage.cacheRead || 0,
       cacheWriteTokens: usage.cache_creation_input_tokens || usage.cacheWrite || 0,
+      reasoningTokens: usage.reasoning || 0,
       files,
       commands,
       texts
@@ -1052,11 +1055,12 @@ function renderTokenSummary(interactions, maxWidth = 80) {
       unmatched++;
       continue;
     }
-    const agg = byModel.get(model) || { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cost: 0 };
+    const agg = byModel.get(model) || { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, cost: 0 };
     agg.inputTokens += i.inputTokens;
     agg.outputTokens += i.outputTokens;
     agg.cacheReadTokens += i.cacheReadTokens;
     agg.cacheWriteTokens += i.cacheWriteTokens;
+    agg.reasoningTokens += i.reasoningTokens;
     agg.cost += i.cost;
     byModel.set(model, agg);
   }
@@ -1066,7 +1070,7 @@ function renderTokenSummary(interactions, maxWidth = 80) {
   const sorted = Array.from(byModel.entries()).sort((a, b) => b[1].cost - a[1].cost);
   const modelColW = Math.max(10, ...sorted.map(([m]) => shortenModel(m).length));
   const numColW = 10;
-  const sep = "\u2500".repeat(Math.min(maxWidth, modelColW + numColW * 4 + 20));
+  const sep = "\u2500".repeat(Math.min(maxWidth, modelColW + numColW * 5 + 24));
   let out = "";
   out += `
 \u2500\u2500 Token Summary (per model, deduped) \u2500\u2500${unmatched > 0 ? `  (${unmatched} untagged interactions skipped)` : ""}
@@ -1075,16 +1079,18 @@ function renderTokenSummary(interactions, maxWidth = 80) {
     "Model".padEnd(modelColW),
     "Input".padStart(numColW),
     "Output".padStart(numColW),
+    "Reasoning".padStart(numColW),
     "Cache-Read".padStart(numColW),
     "Cache-Write".padStart(numColW),
     "Cost".padStart(numColW)
   ].join(" ") + "\n";
-  let totalInput = 0, totalOutput = 0, totalCr = 0, totalCw = 0, totalCost = 0;
+  let totalInput = 0, totalOutput = 0, totalCr = 0, totalCw = 0, totalReasoning = 0, totalCost = 0;
   for (const [model, agg] of sorted) {
     out += [
       shortenModel(model).padEnd(modelColW),
       formatTokenCount(agg.inputTokens).padStart(numColW),
       formatTokenCount(agg.outputTokens).padStart(numColW),
+      formatTokenCount(agg.reasoningTokens).padStart(numColW),
       formatTokenCount(agg.cacheReadTokens).padStart(numColW),
       formatTokenCount(agg.cacheWriteTokens).padStart(numColW),
       formatCost(agg.cost).padStart(numColW)
@@ -1093,6 +1099,7 @@ function renderTokenSummary(interactions, maxWidth = 80) {
     totalOutput += agg.outputTokens;
     totalCr += agg.cacheReadTokens;
     totalCw += agg.cacheWriteTokens;
+    totalReasoning += agg.reasoningTokens;
     totalCost += agg.cost;
   }
   out += sep + "\n";
@@ -1100,6 +1107,7 @@ function renderTokenSummary(interactions, maxWidth = 80) {
     "TOTAL".padEnd(modelColW),
     formatTokenCount(totalInput).padStart(numColW),
     formatTokenCount(totalOutput).padStart(numColW),
+    formatTokenCount(totalReasoning).padStart(numColW),
     formatTokenCount(totalCr).padStart(numColW),
     formatTokenCount(totalCw).padStart(numColW),
     formatCost(totalCost).padStart(numColW)
@@ -1285,7 +1293,8 @@ function classifiedToInteraction(obj) {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
-    cacheWriteTokens: 0
+    cacheWriteTokens: 0,
+    reasoningTokens: 0
   };
 }
 function readClassifiedTagFile(tagPath) {
@@ -1306,6 +1315,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
+var WTFT_TAGGER_VERSION = "2.3.0";
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   return path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
@@ -2091,7 +2101,7 @@ async function main() {
     const sessionDir2 = path4.dirname(finalSessionPath);
     const sessionBase2 = path4.basename(finalSessionPath);
     const tagsDir2 = path4.join(sessionDir2, "wtft-tags");
-    let tagPath2 = path4.join(tagsDir2, sessionBase2 + ".wtft-tag.v2.2.0.jsonl");
+    let tagPath2 = path4.join(tagsDir2, sessionBase2 + ".wtft-tag.v2.3.0.jsonl");
     try {
       const prefix = sessionBase2 + ".wtft-tag.v";
       for (const f of fs3.readdirSync(tagsDir2)) {
@@ -2138,7 +2148,7 @@ async function main() {
   const sessionDir = path4.dirname(finalSessionPath);
   const sessionBase = path4.basename(finalSessionPath);
   const tagsDir = path4.join(sessionDir, "wtft-tags");
-  let tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.2.0.jsonl");
+  let tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.3.0.jsonl");
   try {
     const prefix = sessionBase + ".wtft-tag.v";
     for (const f of fs3.readdirSync(tagsDir)) {

@@ -26,13 +26,14 @@ function calculateClaudeCost(model, usage, timestamp) {
   if (m.includes("deepseek")) {
     const peak = getDeepSeekPeakMultiplier(timestamp);
     if (m.includes("v4-pro")) {
-      inputPrice = 0.435 * peak;
-      outputPrice = 0.87 * peak;
+      inputPrice = 1.74 * peak;
+      outputPrice = 3.48 * peak;
+      cacheReadPrice = 0.0145 * peak;
     } else {
       inputPrice = 0.14 * peak;
       outputPrice = 0.28 * peak;
+      cacheReadPrice = 28e-4 * peak;
     }
-    cacheReadPrice = 0;
   } else if (m.includes("haiku")) {
     inputPrice = 1;
     outputPrice = 5;
@@ -52,7 +53,7 @@ function calculateClaudeCost(model, usage, timestamp) {
   } else {
     cacheWriteCost = cw5m * (inputPrice * 1.25 / 1e6) + cw1h * (inputPrice * 2 / 1e6) + cwFlat * (inputPrice * 1.25 / 1e6);
   }
-  const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
+  const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.reasoning_tokens || usage.reasoning || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
 function extractFilesFromBashCommand(command, files) {
@@ -104,7 +105,7 @@ function parseEntryToInteraction(entry) {
     let cost = 0;
     const usage = assistantMsg.usage || {};
     const piCost = usage.cost?.total;
-    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0;
+    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0 || (usage.reasoning_tokens || usage.reasoning || 0) > 0;
     if (piCost !== void 0 && piCost !== null && !(piCost === 0 && hasTokens)) {
       cost = piCost;
     } else if (assistantMsg.model && hasTokens) {
@@ -113,7 +114,8 @@ function parseEntryToInteraction(entry) {
         output_tokens: usage.output_tokens ?? usage.output ?? 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
         cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
-        cache_creation: usage.cache_creation || null
+        cache_creation: usage.cache_creation || null,
+        reasoning_tokens: usage.reasoning_tokens ?? usage.reasoning ?? 0
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
@@ -286,7 +288,7 @@ function deduplicateInteractions(interactions) {
   }
   return deduped;
 }
-var TAGGER_VERSION = "2.2.0";
+var TAGGER_VERSION = "2.3.0";
 var TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 var POLL_MS = 667;
 var IDLE_EXIT_MS = 30 * 60 * 1e3;
