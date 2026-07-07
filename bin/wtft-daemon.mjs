@@ -306,6 +306,7 @@ var pidPath = null;
 var lastSize = 0;
 var lastWriteMs = 0;
 var lastActivityMs = Date.now();
+var startupTime = Date.now();
 var pendingLines = [];
 var idleStartMs = 0;
 var running = true;
@@ -383,7 +384,7 @@ function flushPending() {
     idleStartMs = 0;
   } catch (err) {
     if (process.env.WTFT_DAEMON_DEBUG) {
-      process.stderr.write(`[wtft-daemon] write error: ${err.message}
+      process.stderr.write(`[wtft-log-parser] write error: ${err.message}
 `);
     }
   }
@@ -396,7 +397,7 @@ function parseNewLines(filePath) {
     const currentSize = stat.size;
     if (currentSize < lastSize) {
       if (process.env.WTFT_DAEMON_DEBUG) {
-        process.stderr.write(`[wtft-daemon] session truncated, resetting offset
+        process.stderr.write(`[wtft-log-parser] session truncated, resetting offset
 `);
       }
       lastSize = 0;
@@ -457,16 +458,16 @@ function main() {
     } else if (arg === "--stop") {
       stopSession = process.argv[++i];
     } else if (arg === "--help" || arg === "-h") {
-      console.log(`wtft-daemon \u2014 Tagger daemon for WTFT
+      console.log(`wtft-daemon \u2014 Session log parser for WTFT
 Usage: wtft-daemon --session <path> [--debug]
 
 Management:
-  --list, -l            List all running daemons (session, PID, idle time)
-  --cleanup             Kill daemons whose source session no longer exists
-  --restart             Kill all running daemons (fresh spawn on next wtft)
-  --stop <session>      Stop daemon for a specific session path
+  --list, -l            List all running log parsers (session, PID, idle time)
+  --cleanup             Kill log parsers whose source session no longer exists
+  --restart             Kill all running log parsers (fresh spawn on next wtft)
+  --stop <session>      Stop log parser for a specific session path
 
-Daemon mode:
+Log parser mode:
   -s, --session <path>  Path to session.jsonl to watch
   --debug               Enable debug logging to stderr
   -h, --help            Show this help`);
@@ -541,7 +542,7 @@ Daemon mode:
           } catch (_2) {
           }
         }
-        console.log(`Restarted: PID ${pid} \u2192 fresh daemon for ${sessionFound || "(unknown)"}`);
+        console.log(`Restarted: PID ${pid} \u2192 fresh log parser for ${sessionFound || "(unknown)"}`);
         found++;
         continue;
       }
@@ -591,16 +592,16 @@ Daemon mode:
       }
     }
     if (showRestart) {
-      console.log(`Restarted ${found} daemon(s). Run wtft to spawn fresh instances.`);
+      console.log(`Restarted ${found} log parser(s). Run wtft to spawn fresh instances.`);
     }
     if (showCleanup) {
-      console.log(`Cleaned up ${found} daemon(s).`);
+      console.log(`Cleaned up ${found} log parser(s).`);
     }
     if (showList && found === 0) {
-      console.log("No wtft-daemon processes found.");
+      console.log("No log parser processes found.");
     }
     if (stopSession && found === 0) {
-      console.log(`No daemon found for: ${stopSession}`);
+      console.log(`No log parser found for: ${stopSession}`);
     }
     process.exit(0);
   }
@@ -636,7 +637,7 @@ Daemon mode:
         } catch (_) {
         }
         if (process.env.WTFT_DAEMON_DEBUG) {
-          process.stderr.write(`[wtft-daemon] removed stale tag file: ${f}
+          process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}
 `);
         }
       }
@@ -676,11 +677,11 @@ Daemon mode:
   }
   initClassified();
   if (process.env.WTFT_DAEMON_DEBUG) {
-    process.stderr.write(`[wtft-daemon] started, watching: ${sessionPath}
+    process.stderr.write(`[wtft-log-parser] started, watching: ${sessionPath}
 `);
-    process.stderr.write(`[wtft-daemon] classified: ${tagPath}
+    process.stderr.write(`[wtft-log-parser] classified: ${tagPath}
 `);
-    process.stderr.write(`[wtft-daemon] pid: ${process.pid}
+    process.stderr.write(`[wtft-log-parser] pid: ${process.pid}
 `);
   }
   const loop = () => {
@@ -701,19 +702,16 @@ Daemon mode:
       if (idleStartMs === 0) idleStartMs = now;
       upsertHeartbeat(now);
       lastWriteMs = now;
-      lastActivityMs = now;
     }
-    try {
-      const sessionStat = fs.statSync(sessionPath);
-      if (now - sessionStat.mtimeMs >= IDLE_EXIT_MS) {
-        if (process.env.WTFT_DAEMON_DEBUG) {
-          process.stderr.write(`[wtft-daemon] session idle for ${Math.round((now - sessionStat.mtimeMs) / 6e4)}m, exiting
+    if (now - lastActivityMs >= IDLE_EXIT_MS && now - startupTime >= 6e4) {
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] no new data for ${Math.round((now - lastActivityMs) / 6e4)}m, exiting
 `);
-        }
-        shutdown("idle timeout");
-        return;
       }
-    } catch (_) {
+      shutdown("idle timeout");
+      return;
+    }
+    if (!fs.existsSync(sessionPath)) {
       shutdown("session removed");
       return;
     }

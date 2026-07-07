@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 // extensions/lib/wtft-shared.ts
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { execSync } from "node:child_process";
+import * as os from "node:os";
+import { createHash } from "node:crypto";
+import { execSync, spawn } from "node:child_process";
 
 // extensions/lib/tty-helpers.ts
 function enterRawStdin(onKey) {
@@ -1304,6 +1306,84 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
+function getDaemonPidPath(sessionPath) {
+  const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
+  return path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+}
+function checkDaemonHealth(sessionPath, tagPath) {
+  const pidPath = getDaemonPidPath(sessionPath);
+  let pidAlive = false;
+  try {
+    const pid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+    if (pid > 0) {
+      try {
+        process.kill(pid, 0);
+        pidAlive = true;
+      } catch {
+      }
+    }
+  } catch {
+  }
+  if (pidAlive) return { alive: true };
+  let lastHbMs = 0;
+  try {
+    const stat = fs.statSync(tagPath);
+    const readStart = Math.max(0, stat.size - 8192);
+    const fd = fs.openSync(tagPath, "r");
+    const buf = Buffer.alloc(stat.size - readStart);
+    fs.readSync(fd, buf, 0, buf.length, readStart);
+    fs.closeSync(fd);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj._hb && obj._hb.last) {
+          lastHbMs = obj._hb.last;
+          break;
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  if (lastHbMs === 0) {
+    return { alive: false, reason: "log parser not found" };
+  }
+  const d = new Date(lastHbMs);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const timeStr = `${hh}:${mm}`;
+  return { alive: false, reason: "idle timeout", lastHbTime: timeStr };
+}
+function restartDaemon(sessionPath, daemonPath) {
+  const pidPath = getDaemonPidPath(sessionPath);
+  try {
+    const pid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+    if (pid > 0) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+      }
+    }
+    try {
+      fs.unlinkSync(pidPath);
+    } catch {
+    }
+  } catch {
+  }
+  try {
+    const child = spawn(process.execPath, [daemonPath, "--session", sessionPath], {
+      detached: true,
+      stdio: "ignore"
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
 async function watchTagFile(sessionPath, tagPath, settings) {
   if (!process.stdout.isTTY) {
     console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
@@ -1328,9 +1408,59 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     process.exit(0);
   };
   process.on("SIGINT", exitWatch);
+  let daemonDead = false;
+  let daemonStopReason = "";
+  let daemonStopTime = "";
+  let daemonRestarting = false;
+  const updateDaemonHealth = () => {
+    if (daemonRestarting) {
+      const health2 = checkDaemonHealth(sessionPath, tagPath);
+      if (health2.alive) {
+        daemonRestarting = false;
+        daemonDead = false;
+        daemonStopReason = "";
+        daemonStopTime = "";
+      }
+      return;
+    }
+    const health = checkDaemonHealth(sessionPath, tagPath);
+    if (!health.alive) {
+      daemonDead = true;
+      daemonStopReason = health.reason || "unknown";
+      daemonStopTime = health.lastHbTime || "";
+    } else {
+      daemonDead = false;
+      daemonStopReason = "";
+      daemonStopTime = "";
+    }
+  };
   const cleanupStdin = enterRawStdin((key) => {
     if (key === "q" || key === "Q" || key === "") {
       exitWatch();
+    }
+    if (key === "r" || key === "R") {
+      if (settings.daemonPath) {
+        daemonRestarting = true;
+        daemonDead = false;
+        const ok = restartDaemon(sessionPath, settings.daemonPath);
+        if (!ok) {
+          daemonRestarting = false;
+          daemonDead = true;
+          daemonStopReason = "restart failed";
+        }
+        needsRedraw = true;
+        render();
+        let pollCount = 0;
+        const postRestartPoll = setInterval(() => {
+          pollCount++;
+          updateDaemonHealth();
+          if (!daemonRestarting || pollCount >= 5) {
+            clearInterval(postRestartPoll);
+          }
+          needsRedraw = true;
+          render();
+        }, 1e3);
+      }
     }
   });
   let allInteractions = readClassifiedTagFile(tagPath);
@@ -1405,11 +1535,30 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       const tlHour = getCurrentLocalHour(finalTimezone);
       const tlStr = buildTimelineString(/* @__PURE__ */ new Set(), tlHour, void 0);
       lines[0] = lines[0] + "  " + tlStr;
+      let daemonStatusStr = "";
+      if (daemonRestarting) {
+        daemonStatusStr = "  \x1B[33m\u25CF\x1B[0m restarting...";
+      } else if (daemonDead) {
+        const label = daemonStopTime ? `stopped ${daemonStopTime}` : daemonStopReason;
+        daemonStatusStr = `  \x1B[31m\u25CF\x1B[0m ${label}`;
+      } else {
+        daemonStatusStr = "  \x1B[32m\u25CF\x1B[0m live";
+      }
+      if (daemonStatusStr) {
+        const titleVisualLen = getVisualLength(lines[0]);
+        const statusVisualLen = getVisualLength(daemonStatusStr);
+        if (titleVisualLen + statusVisualLen <= finalWidth - 2) {
+          lines[0] = lines[0] + daemonStatusStr;
+        } else {
+          lines.splice(1, 0, daemonStatusStr.trim());
+        }
+      }
       for (const l of lines) buf.push(l);
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
-    buf.push(`\x1B[90mq/Ctrl+C to exit\x1B[0m`);
+    const restartHint = settings.daemonPath ? daemonDead ? ", \x1B[31mr to restart log parser\x1B[0m" : ", r to restart log parser" : "";
+    buf.push(`\x1B[90mq/Ctrl+C to exit\x1B[0m${restartHint}`);
     lastBuffer = [...buf];
     process.stdout.write(buf.join("\n"));
     needsRedraw = false;
@@ -1471,13 +1620,19 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   if (fs.existsSync(tagPath)) {
     startWatching();
   } else {
-    console.error("\u274C Daemon did not create tag file within 5s. Is wtft-daemon installed?");
+    console.error("\u274C Log parser did not create tag file within 5s. Is wtft-daemon installed?");
     console.error(`   Expected: ${tagPath}`);
     process.exit(1);
   }
+  setTimeout(() => {
+    updateDaemonHealth();
+    needsRedraw = true;
+    render();
+  }, 1e4);
   const minuteInterval = setInterval(() => {
     const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
     if (_curMin !== _lastRenderMin) {
+      updateDaemonHealth();
       needsRedraw = true;
       render();
     }
@@ -1487,21 +1642,21 @@ async function watchTagFile(sessionPath, tagPath, settings) {
 }
 
 // bin/wtft.ts
-import { execSync as execSync2, spawn } from "node:child_process";
+import { execSync as execSync2, spawn as spawn2 } from "node:child_process";
 
 // extensions/lib/session-selector.ts
 import * as fs2 from "node:fs";
 import * as path3 from "node:path";
-import * as os2 from "node:os";
+import * as os3 from "node:os";
 
 // extensions/lib/session-path-shortener.ts
 import * as path2 from "node:path";
-import * as os from "node:os";
+import * as os2 from "node:os";
 function buildDisplayPath(filename, dirSlug, harness) {
   const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
   const uuidTail = uuidMatch ? uuidMatch[1] : "";
   const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
-  const homeDir = os.homedir();
+  const homeDir = os2.homedir();
   const userName = path2.basename(homeDir);
   const knownPrefix = `home-${userName}-git-projects`;
   const compactPrefix = `home-${userName}-g-p`;
@@ -1554,9 +1709,9 @@ function formatRelativeTime(ts) {
 
 // extensions/lib/session-selector.ts
 function discoverSessions(harness = "auto", cwdOverride2) {
-  const piSessionsDir = path3.join(os2.homedir(), ".pi", "agent", "sessions");
+  const piSessionsDir = path3.join(os3.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
-  const claudeProjectsDir = path3.join(os2.homedir(), ".claude", "projects");
+  const claudeProjectsDir = path3.join(os3.homedir(), ".claude", "projects");
   if (fs2.existsSync(claudeProjectsDir)) {
     const resolvedCwd = cwdOverride2 ? path3.resolve(cwdOverride2) : process.cwd();
     const cwdSlug = resolvedCwd.replace(/[/\\]/g, "-");
@@ -1670,7 +1825,7 @@ async function selectSessionPrompt(candidates) {
     let logicalLineCount = 0;
     const render = () => {
       const selected = displayCandidates[selectedIndex];
-      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT Session Selector\x1B[0m (j/k or arrows navigate, Enter select, q quit):
+      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT \u2014 select session log\x1B[0m (j/k or arrows navigate, Enter select, q quit):
 `;
       out += `  \x1B[90m${selected.path}\x1B[0m
 `;
@@ -1793,11 +1948,11 @@ Options:
   -T, --tokens            Print a per-model token summary table (deduped) for cross-referencing with /usage.
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
 
-Daemon management:
-  --list                  List all running wtft-tag daemons (session, PID, idle time).
-  --cleanup               Kill daemons whose source session no longer exists.
-  --restart               Kill all running daemons (fresh spawn on next wtft).
-  --stop <session>        Stop daemon for a specific session path.
+Log parser management:
+  --list                  List all running log parsers (session, PID, idle time).
+  --cleanup               Kill log parsers whose source session no longer exists.
+  --restart               Kill all running log parsers (fresh spawn on next wtft).
+  --stop <session>        Stop log parser for a specific session path.
 
   --version               Display this tool's version.
   --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases.
@@ -1949,13 +2104,13 @@ async function main() {
     }
     const daemonPath2 = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     try {
-      const child = spawn(process.execPath, [daemonPath2, "--session", finalSessionPath], {
+      const child = spawn2(process.execPath, [daemonPath2, "--session", finalSessionPath], {
         detached: true,
         stdio: "ignore"
       });
       child.unref();
     } catch (err) {
-      console.error(`\x1B[33m\u26A0 Daemon spawn failed, falling back to polling mode: ${err}\x1B[0m`);
+      console.error(`\x1B[33m\u26A0 Log parser spawn failed, falling back to polling mode: ${err}\x1B[0m`);
       await watchMode(finalSessionPath, {
         interval: hasInterval ? intervalStr : "1h",
         limit: hasLimit ? limit : 100,
@@ -1975,7 +2130,8 @@ async function main() {
       mode: hasCumulative || hasBucket ? mode : "cumulative",
       showTicks: hasTicks || hasNoTicks ? showTicks : true,
       timezone: hasTz ? timezone : void 0,
-      disabledEmoji: false
+      disabledEmoji: false,
+      daemonPath: daemonPath2
     });
     return;
   }
@@ -1995,13 +2151,13 @@ async function main() {
   }
   const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
   try {
-    const child = spawn(process.execPath, [daemonPath, "--session", finalSessionPath], {
+    const child = spawn2(process.execPath, [daemonPath, "--session", finalSessionPath], {
       detached: true,
       stdio: "ignore"
     });
     child.unref();
   } catch (err) {
-    console.error(`\x1B[33m\u26A0 Daemon spawn failed, falling back to direct parse: ${err}\x1B[0m`);
+    console.error(`\x1B[33m\u26A0 Log parser spawn failed, falling back to direct parse: ${err}\x1B[0m`);
   }
   const waitStart = Date.now();
   while (Date.now() - waitStart < 3e3) {
