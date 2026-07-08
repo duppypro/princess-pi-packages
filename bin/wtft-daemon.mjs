@@ -176,6 +176,29 @@ function parseEntryToInteraction(entry) {
   }
   return null;
 }
+function normalizeCommand(cmd) {
+  let normalized = cmd.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const stripped = normalized.replace(/^(?:\w+=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*)+/, "");
+    if (stripped !== normalized) {
+      normalized = stripped.trim();
+      changed = true;
+    }
+    const afterSep = normalized.replace(/^(?:&&|;|\|\|?)\s*/, "");
+    if (afterSep !== normalized) {
+      normalized = afterSep;
+      changed = true;
+    }
+    const afterCd = normalized.replace(/^cd\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*/, "");
+    if (afterCd !== normalized) {
+      normalized = afterCd;
+      changed = true;
+    }
+  }
+  return normalized;
+}
 function classifyInteraction(interaction) {
   const specPaths = /* @__PURE__ */ new Set();
   const codePaths = /* @__PURE__ */ new Set();
@@ -237,7 +260,9 @@ function classifyInteraction(interaction) {
     let isGit = false;
     let isGrep = false;
     for (const cmd of interaction.commands) {
-      const lower = cmd.toLowerCase().trim();
+      const normalized = normalizeCommand(cmd);
+      if (!normalized) continue;
+      const lower = normalized.toLowerCase().trim();
       if (lower === "git" || lower.startsWith("git ")) isGit = true;
       else if (lower === "grep" || lower.startsWith("grep ") || lower === "rg" || lower.startsWith("rg ") || lower === "ripgrep" || lower.startsWith("ripgrep ") || lower === "find" || lower.startsWith("find ")) isGrep = true;
     }
