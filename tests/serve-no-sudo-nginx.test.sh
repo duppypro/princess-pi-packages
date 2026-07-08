@@ -36,15 +36,18 @@ if [ -f "$MARKER" ]; then echo "FAIL: forbidden executable invoked:"; cat "$MARK
 echo "[$(TS)] ✓ PATH shim: no sudo/nginx execution"
 
 if command -v strace >/dev/null 2>&1; then
+  # One traced run covering start AND kill. WHY one run: strace -f stays attached to the
+  # detached run-live-server child; kill-all inside the SAME traced shell reaps it, so
+  # strace exits on its own. timeout is a belt-and-braces backstop only.
   cd "$SITE"
-  timeout 60 strace -f -qq -e trace=execve -o "$WORK/trace" node "$OLDPWD/bin/serve.mjs" . >/dev/null 2>&1 || true
-  sleep 1
-  timeout 60 strace -f -qq -e trace=execve -o "$WORK/trace2" node "$OLDPWD/bin/serve.mjs" --kill all >/dev/null 2>&1 || true
+  timeout 40 strace -f -qq -e trace=execve -o "$WORK/trace" \
+    bash -c "node '$OLDPWD/bin/serve.mjs' . && node '$OLDPWD/bin/serve.mjs' --kill all" \
+    >/dev/null 2>&1 || true
   cd "$OLDPWD"
-  if grep -hE 'execve\("[^"]*(sudo|nginx)' "$WORK/trace" "$WORK/trace2" 2>/dev/null | grep -v ENOENT; then
+  if grep -hE 'execve\("[^"]*(sudo|nginx)' "$WORK/trace" 2>/dev/null | grep -v ENOENT; then
     echo "FAIL: strace saw sudo/nginx execve"; exit 1
   fi
-  echo "[$(TS)] ✓ strace: no execve of sudo/nginx"
+  echo "[$(TS)] ✓ strace: no execve of sudo/nginx (start + kill cycle)"
 else
   echo "[$(TS)] (strace not installed — shim + hash assertions still hold)"
 fi
