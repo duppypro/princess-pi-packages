@@ -1855,10 +1855,6 @@ function readConfig(toolName) {
   }
   return merged;
 }
-function hasConfig(toolName) {
-  const paths = getConfigPaths(toolName);
-  return fs2.existsSync(paths.global) || fs2.existsSync(paths.local);
-}
 
 // extensions/lib/session-selector.ts
 import * as fs3 from "node:fs";
@@ -2372,40 +2368,12 @@ async function main() {
     interactions.push(...parseSessionFile(finalSessionPath));
   }
   const config = readConfig("wtft");
-  let disabledEmoji = typeof config.disabledEmoji === "boolean" ? config.disabledEmoji : false;
-  let sessionInterval = typeof config.interval === "string" ? config.interval : void 0;
-  let sessionLimit = typeof config.limit === "number" ? config.limit : void 0;
-  let sessionMode = config.mode === "cumulative" || config.mode === "bucket" ? config.mode : void 0;
-  let sessionShowTicks = typeof config.showTicks === "boolean" ? config.showTicks : void 0;
-  let sessionTimezone = typeof config.timezone === "string" ? config.timezone : void 0;
-  if (!hasConfig("wtft")) {
-    try {
-      const content = fs4.readFileSync(finalSessionPath, "utf8");
-      for (const line of content.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry.type === "custom" && entry.customType === "emoji-settings") {
-            if (entry.data && typeof entry.data.disabled === "boolean") {
-              disabledEmoji = entry.data.disabled;
-            }
-          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
-            if (entry.data) {
-              if (typeof entry.data.interval === "string" && sessionInterval === void 0) sessionInterval = entry.data.interval;
-              if (typeof entry.data.limit === "number" && sessionLimit === void 0) sessionLimit = entry.data.limit;
-              if ((entry.data.mode === "cumulative" || entry.data.mode === "bucket") && sessionMode === void 0) {
-                sessionMode = entry.data.mode;
-              }
-              if (typeof entry.data.showTicks === "boolean" && sessionShowTicks === void 0) sessionShowTicks = entry.data.showTicks;
-              if (typeof entry.data.timezone === "string" && sessionTimezone === void 0) sessionTimezone = entry.data.timezone;
-            }
-          }
-        } catch {
-        }
-      }
-    } catch {
-    }
-  }
+  const disabledEmoji = typeof config.disabledEmoji === "boolean" ? config.disabledEmoji : false;
+  const sessionInterval = typeof config.interval === "string" ? config.interval : void 0;
+  const sessionLimit = typeof config.limit === "number" ? config.limit : void 0;
+  const sessionMode = config.mode === "cumulative" || config.mode === "bucket" ? config.mode : void 0;
+  const sessionShowTicks = typeof config.showTicks === "boolean" ? config.showTicks : void 0;
+  const sessionTimezone = typeof config.timezone === "string" ? config.timezone : void 0;
   const termColumns = getTerminalWidth();
   const finalInterval = hasInterval ? intervalStr : sessionInterval ?? "1h";
   const finalLimit = hasLimit ? limit : sessionLimit ?? 100;

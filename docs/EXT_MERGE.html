@@ -75,6 +75,11 @@
         <li>On any failure, runs <code>git merge --abort</code> and reports an LLM-actionable error; a <code>finally</code> step always checks the feature branch back out, so you are never stranded on <code>main</code> or mid-merge.</li>
     </ol>
 
+    <h3>Settings Persistence (Cross-Harness Config)</h3>
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <p>Merge uses the shared <code>extensions/lib/config.ts</code> module for harness-agnostic settings persistence. Config files live at <code>~/.config/princess-pi/merge.json</code> (user-global) and <code>./.princess-pi/merge.json</code> (project-local, overrides global). CLI flags take highest precedence. See <code>EXT_WTFT.html</code> for the full config hierarchy documentation.</p>
+    </div>
+
     <script>
         fetch('manifests/merge-cmd.json')
             .then(r => r.json())
