@@ -1817,7 +1817,7 @@ async function selectSessionPrompt(candidates) {
         );
       }
       console.log(
-        `\x1B[90mRun 'wtft -s <number>' to target a specific session index.\x1B[0m
+        `\x1B[90mRun 'wtft -s <substring>' to target a specific session by path or basename filter.\x1B[0m
 `
       );
       resolve2(candidates[0].path);
@@ -1944,7 +1944,7 @@ function printHelp() {
 Usage: wtft [options]
 
 Options:
-  -s, --session <path|filter>  Explicit session .jsonl path, numeric index, or fuzzy substring filter (e.g. 'b04c'). Skips selector on single match.
+  -s, --session <path|filter>  Explicit session .jsonl path, or fuzzy substring filter (e.g. 'b04c'). Skips selector on single match.
   --dir, --cwd <path>     Working directory for Claude Code session discovery (default: current directory).
   --harness <type>        Target a specific harness for auto-discovery (pi, claude-code, or auto). Default: auto.
   -i, --interval <val>    Group cost data into binned intervals (e.g., 1m, 7m, 4h, 1d, 2w; default: 1h).
@@ -2069,28 +2069,9 @@ async function main() {
     }
     return;
   }
-  const isIndex = /^\d+$/.test(targetSessionPath || "");
   const candidates = discoverSessions(harnessOption, cwdOverride);
   let finalSessionPath = "";
-  if (targetSessionPath && isIndex) {
-    const idx = parseInt(targetSessionPath, 10);
-    if (idx > 0 && idx <= candidates.length) {
-      finalSessionPath = candidates[idx - 1].path;
-    } else {
-      const filter = targetSessionPath.toLowerCase();
-      const filtered = candidates.filter(
-        (c) => c.path.toLowerCase().includes(filter) || c.name.toLowerCase().includes(filter)
-      );
-      if (filtered.length === 0) {
-        console.error(`\u274C Error: Session index '${targetSessionPath}' is out of range (discovered ${candidates.length} sessions) and matches no session as a filter.`);
-        process.exit(1);
-      } else if (filtered.length === 1) {
-        finalSessionPath = filtered[0].path;
-      } else {
-        finalSessionPath = await selectSessionPrompt(filtered);
-      }
-    }
-  } else if (targetSessionPath) {
+  if (targetSessionPath) {
     if (fs3.existsSync(targetSessionPath)) {
       finalSessionPath = targetSessionPath;
     } else {
