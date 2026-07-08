@@ -1,5 +1,5 @@
 /**
- * Git Guardrails Extension
+ * Git Guardrails Extension (#70)
  *
  * Blocks dangerous git commands via Pi's bash-spawn-hook before execution.
  * Shares the same pattern list as the Claude Code PreToolUse hook
@@ -18,6 +18,13 @@
  * Usage:
  *   pi -e ./extensions/git-guardrails.ts
  *   # or auto-loaded via princess-pi-packages if registered in package manifest
+ *
+ * Spec: https://github.com/duppypro/princess-pi-packages/issues/70
+ * Status: Code and Spec Approved (Step 5) — spec reconciled to implementation.
+ *   No separate spec doc; the issue body IS the spec. Implementation matches
+ *   exactly: createBashTool with spawnHook, shared DANGEROUS_PATTERNS list,
+ *   BLOCK_MESSAGE returned as tool error. Cross-harness counterpart at
+ *   ~/.claude/hooks/block-dangerous-git.sh uses identical pattern set.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
