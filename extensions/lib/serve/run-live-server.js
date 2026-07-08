@@ -21,8 +21,9 @@ for (let i = 0; i < args.length; i++) {
 let port = 8080;
 let clientSlug = "";
 // Fail-safe default: this server has no auth of its own and is always fronted by the
-// nginx /live/<slug>/ gate, so it must bind loopback. We honor -a for parity with the
-// static (http-server) path, but a non-loopback value is refused below (see #38).
+// Cloudflare Tunnel + Access gate (Phase 6A, #64), so it must bind loopback. We honor -a
+// for parity with the static (http-server) path, but a non-loopback value is refused
+// below (see #38).
 let bind_address = "127.0.0.1";
 
 for (let i = 0; i < args.length; i++) {
@@ -36,7 +37,7 @@ for (let i = 0; i < args.length; i++) {
 	}
 }
 
-// --- Refuse any non-loopback bind (defense-in-depth; nginx is the only public door) ---
+// --- Refuse any non-loopback bind (defense-in-depth; the Cloudflare edge is the only public door) ---
 if (!["127.0.0.1", "::1", "localhost"].includes(bind_address)) {
 	console.warn(`[serve] refusing non-loopback bind address "${bind_address}"; forcing 127.0.0.1 (#38).`);
 	bind_address = "127.0.0.1";
@@ -232,6 +233,18 @@ if (!window.__live_reload_injected) {
 </script>
 `;
 
+// --- #60 F2: HTML-escape untrusted strings (request path, entry names, error text)
+// before reflecting them into the directory index. WHY: a crafted filename or URL is
+// attacker-controlled markup once a reviewer opens the listing.
+function escapeHtml(value) {
+	return String(value)
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
 /**
  * Generates a styled HTML directory listing.
  */
@@ -240,7 +253,7 @@ function generateDirectoryIndex(dirPath, requestPath) {
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
-	<title>Index of ${requestPath}</title>
+	<title>Index of ${escapeHtml(requestPath)}</title>
 	<style>
 		:root {
 			--bg-color: #1e1e1e;
@@ -269,7 +282,7 @@ function generateDirectoryIndex(dirPath, requestPath) {
 	</style>
 </head>
 <body>
-	<h1>Index of ${requestPath}</h1>
+	<h1>Index of ${escapeHtml(requestPath)}</h1>
 	<div class="list">`;
 
 	if (requestPath !== "/" && requestPath !== "") {
@@ -291,13 +304,13 @@ function generateDirectoryIndex(dirPath, requestPath) {
 				continue;
 			}
 			if (entry.isDirectory()) {
-				html += `<a href="${entry.name}/"><span class="icon">📁</span>${entry.name}/</a>`;
+				html += `<a href="${escapeHtml(entry.name)}/"><span class="icon">📁</span>${escapeHtml(entry.name)}/</a>`;
 			} else {
-				html += `<a href="${entry.name}"><span class="icon">📄</span>${entry.name}</a>`;
+				html += `<a href="${escapeHtml(entry.name)}"><span class="icon">📄</span>${escapeHtml(entry.name)}</a>`;
 			}
 		}
 	} catch (err) {
-		html += `<p style="padding: 16px; color: var(--anchor-red)">Error reading directory: ${err.message}</p>`;
+		html += `<p style="padding: 16px; color: var(--anchor-red)">Error reading directory: ${escapeHtml(err.message)}</p>`;
 	}
 
 	html += `</div></body></html>`;
@@ -420,10 +433,30 @@ const server = http.createServer((req, res) => {
 
 	let filePath = path.join(targetDir, safePath);
 
-	if (!filePath.startsWith(targetDir)) {
+	// --- #60 F1: the old bare startsWith(targetDir) let sibling dirs through, because
+	// "/a/bc".startsWith("/a/b") is true. Require the exact root or a path.sep boundary.
+	if (filePath !== targetDir && !filePath.startsWith(targetDir + path.sep)) {
 		res.writeHead(403, { "Content-Type": "text/plain" });
 		res.end("Forbidden");
 		return;
+	}
+
+	// --- #60 F1 hard containment: resolve symlinks; the REAL path must also stay inside
+	// the real root, or a symlink inside the tree can serve anything on the host.
+	if (fs.existsSync(filePath)) {
+		try {
+			const realRoot = fs.realpathSync(targetDir);
+			const realTarget = fs.realpathSync(filePath);
+			if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
+				res.writeHead(403, { "Content-Type": "text/plain" });
+				res.end("Forbidden");
+				return;
+			}
+		} catch (_) {
+			res.writeHead(404, { "Content-Type": "text/plain" });
+			res.end("Not Found");
+			return;
+		}
 	}
 
 	if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
@@ -503,16 +536,12 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 
 		let shouldReload = false;
 		const cssChanges = new Set();
-		let aclChanged = false;
 
+		// --- Phase 6A (#64): the .serve-acl -> nginx live-ACL propagation is removed.
+		// Allow-lists live in Cloudflare Access now. (#66 re-adds the watcher, pointed
+		// at the Access policy API instead of nginx maps.)
 		for (const changedPath of filesToProcess) {
 			const ext = path.extname(changedPath).toLowerCase();
-			const base = path.basename(changedPath);
-
-			if (base === ".serve-acl") {
-				aclChanged = true;
-				continue;
-			}
 
 			if (fs.existsSync(changedPath)) {
 				if (ext === ".js" || ext === ".html" || ext === ".mjs") {
@@ -532,17 +561,6 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 			}
 		}
 
-		if (aclChanged && clientSlug) {
-			try {
-				const { parseAclFile, updateNginxAcls, reloadNginx } = await import("./nginx.js");
-				const emails = parseAclFile(targetDir);
-				updateNginxAcls(clientSlug, emails);
-				reloadNginx();
-			} catch (err) {
-				console.error(`⚠️ [Live ACL Error] Failed to update ACL dynamically: ${err.message}`);
-			}
-		}
-
 		for (const cssPath of cssChanges) {
 			broadcast({ type: "css", path: cssPath });
 		}
@@ -555,13 +573,13 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 
 // Start Server listening
 // ---
-// WHY loopback: these preview servers are meant to be reached ONLY through the nginx
-// `princess-pi.dev/live/<slug>/` vhost, which auth-gates via oauth2-proxy and then proxies
-// to 127.0.0.1:<port>. Binding 0.0.0.0 exposed them directly on the public IP, bypassing the
-// entire auth gate (see issue #38, F1). `bind_address` is honored from -a but clamped to
-// loopback above, so nginx stays the sole authenticated entry point. Defense-in-depth: host
-// firewall still required.
+// WHY loopback: these preview servers are meant to be reached ONLY through the
+// Cloudflare Tunnel, which dials out to the edge where Cloudflare Access auth-gates and
+// then proxies to 127.0.0.1:<port>. Binding 0.0.0.0 exposed them directly on the public
+// IP, bypassing the entire auth gate (see issue #38, F1). `bind_address` is honored from
+// -a but clamped to loopback above, so the Cloudflare edge stays the sole authenticated
+// entry point. Defense-in-depth: host firewall still required.
 // ---
 server.listen(port, bind_address, () => {
-	console.log(`Live dev server active at ${bind_address}:${port} (loopback only; reach via nginx)`);
+	console.log(`Live dev server active at ${bind_address}:${port} (loopback only; reach via the Cloudflare edge)`);
 });

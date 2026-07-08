@@ -16,7 +16,6 @@ import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
-import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "../extensions/lib/serve/nginx.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
 
@@ -147,24 +146,9 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 		return;
 	}
 
-	for (const killed of killedList) {
-		if (killed.clientSlug) {
-			try {
-				updateNginxPort(killed.clientSlug, null);
-			} catch (err: any) {
-				console.error(`⚠️ Map Cleanup Error for ${killed.clientSlug}: ${err.message}`);
-			}
-		}
-	}
-
-	if (killedList.length > 0) {
-		const reloadErr = reloadNginx();
-		if (reloadErr) {
-			console.warn(`⚠️ Cleaned maps, but NGINX reload failed. Error: ${reloadErr}`);
-		} else {
-			console.log(`✅ Cleaned up routing entries and reloaded NGINX.`);
-		}
-	}
+	// --- Phase 6A (#64): nginx map cleanup + reload removed. WHY: the edge gate is
+	// Cloudflare Tunnel + Access now; killing the loopback origin is the whole job.
+	// (#66 re-adds per-slug UNpublishing via the Cloudflare API.)
 	console.log(buildKilledSummary(killedList, process.cwd()));
 }
 
@@ -204,14 +188,9 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
 
-		// Secure Dynamic Gating Validation (.serve-acl file must exist)
-		let emails: string[];
-		try {
-			emails = parseAclFile(targetDir);
-		} catch (err: any) {
-			console.error(`⚠️ Failed to start server for "${rawDir}": ${err.message}`);
-			continue;
-		}
+		// --- Phase 6A (#64): the .serve-acl gate validation is dormant — allow-lists
+		// now live in Cloudflare Access policy, managed outside serve. (#66 re-reads
+		// .serve-acl as the per-slug Access policy source.)
 		const clientSlug = getClientSlug(targetDir);
 
 		const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -225,19 +204,9 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
 
-		// Write Dynamic Maps and trigger NGINX reload
-		try {
-			updateNginxAcls(clientSlug, emails);
-			updateNginxPort(clientSlug, port);
-			const reloadErr = reloadNginx();
-			if (reloadErr) {
-				console.warn(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`);
-			} else {
-				console.log(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`);
-			}
-		} catch (err: any) {
-			console.error(`⚠️ Dynamic Map/ACL Error: ${err.message}`);
-		}
+		// --- Phase 6A (#64): nginx map writes + reload removed. serve spawns a plain
+		// loopback origin; the Cloudflare Tunnel statically routes the MVP hostname to
+		// it, and Cloudflare Access is the sole public gate. (#66: per-slug publishing.)
 	}
 
 	await new Promise((r) => setTimeout(r, 1200));
