@@ -2117,7 +2117,7 @@ async function main() {
     const sessionDir2 = path4.dirname(finalSessionPath);
     const sessionBase2 = path4.basename(finalSessionPath);
     const tagsDir2 = path4.join(sessionDir2, "wtft-tags");
-    const tagPath2 = path4.join(tagsDir2, sessionBase2 + ".wtft-tag.v2.3.0.jsonl");
+    const tagPath2 = path4.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
     const daemonPath2 = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     try {
       const child = spawn2(process.execPath, [daemonPath2, "--session", finalSessionPath], {
@@ -2154,7 +2154,7 @@ async function main() {
   const sessionDir = path4.dirname(finalSessionPath);
   const sessionBase = path4.basename(finalSessionPath);
   const tagsDir = path4.join(sessionDir, "wtft-tags");
-  const tagPath = path4.join(tagsDir, sessionBase + ".wtft-tag.v2.3.0.jsonl");
+  const tagPath = path4.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
   const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
   try {
     const child = spawn2(process.execPath, [daemonPath, "--session", finalSessionPath], {
