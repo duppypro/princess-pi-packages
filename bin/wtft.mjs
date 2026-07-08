@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // bin/wtft.ts
-import * as fs3 from "node:fs";
-import * as path4 from "node:path";
+import * as fs4 from "node:fs";
+import * as path5 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/wtft-shared.ts
@@ -1822,20 +1822,58 @@ async function watchTagFile(sessionPath, tagPath, settings) {
 // bin/wtft.ts
 import { execSync as execSync2, spawn as spawn2 } from "node:child_process";
 
-// extensions/lib/session-selector.ts
+// extensions/lib/config.ts
 import * as fs2 from "node:fs";
-import * as path3 from "node:path";
-import * as os3 from "node:os";
-
-// extensions/lib/session-path-shortener.ts
 import * as path2 from "node:path";
 import * as os2 from "node:os";
+function getConfigPaths(toolName) {
+  const globalDir = path2.join(os2.homedir(), ".config", "princess-pi");
+  const localDir = path2.join(process.cwd(), ".princess-pi");
+  return {
+    global: path2.join(globalDir, `${toolName}.json`),
+    local: path2.join(localDir, `${toolName}.json`)
+  };
+}
+function readConfig(toolName) {
+  const paths = getConfigPaths(toolName);
+  const merged = {};
+  try {
+    const globalRaw = fs2.readFileSync(paths.global, "utf8");
+    const globalData = JSON.parse(globalRaw);
+    if (globalData && typeof globalData === "object" && !Array.isArray(globalData)) {
+      Object.assign(merged, globalData);
+    }
+  } catch {
+  }
+  try {
+    const localRaw = fs2.readFileSync(paths.local, "utf8");
+    const localData = JSON.parse(localRaw);
+    if (localData && typeof localData === "object" && !Array.isArray(localData)) {
+      Object.assign(merged, localData);
+    }
+  } catch {
+  }
+  return merged;
+}
+function hasConfig(toolName) {
+  const paths = getConfigPaths(toolName);
+  return fs2.existsSync(paths.global) || fs2.existsSync(paths.local);
+}
+
+// extensions/lib/session-selector.ts
+import * as fs3 from "node:fs";
+import * as path4 from "node:path";
+import * as os4 from "node:os";
+
+// extensions/lib/session-path-shortener.ts
+import * as path3 from "node:path";
+import * as os3 from "node:os";
 function buildDisplayPath(filename, dirSlug, harness) {
   const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
   const uuidTail = uuidMatch ? uuidMatch[1] : "";
   const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
-  const homeDir = os2.homedir();
-  const userName = path2.basename(homeDir);
+  const homeDir = os3.homedir();
+  const userName = path3.basename(homeDir);
   const knownPrefix = `home-${userName}-git-projects`;
   const compactPrefix = `home-${userName}-g-p`;
   if (slug.startsWith(knownPrefix + "-")) {
@@ -1887,23 +1925,23 @@ function formatRelativeTime(ts) {
 
 // extensions/lib/session-selector.ts
 function discoverSessions(harness = "auto", cwdOverride2) {
-  const piSessionsDir = path3.join(os3.homedir(), ".pi", "agent", "sessions");
+  const piSessionsDir = path4.join(os4.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
-  const claudeProjectsDir = path3.join(os3.homedir(), ".claude", "projects");
-  if (fs2.existsSync(claudeProjectsDir)) {
-    const resolvedCwd = cwdOverride2 ? path3.resolve(cwdOverride2) : process.cwd();
+  const claudeProjectsDir = path4.join(os4.homedir(), ".claude", "projects");
+  if (fs3.existsSync(claudeProjectsDir)) {
+    const resolvedCwd = cwdOverride2 ? path4.resolve(cwdOverride2) : process.cwd();
     const cwdSlug = resolvedCwd.replace(/[/\\]/g, "-");
-    const sessionsSubdir = path3.join(claudeProjectsDir, cwdSlug, "sessions");
-    const directDir = path3.join(claudeProjectsDir, cwdSlug);
-    if (fs2.existsSync(sessionsSubdir)) claudeSessionsDirs.push(sessionsSubdir);
-    if (fs2.existsSync(directDir)) claudeSessionsDirs.push(directDir);
+    const sessionsSubdir = path4.join(claudeProjectsDir, cwdSlug, "sessions");
+    const directDir = path4.join(claudeProjectsDir, cwdSlug);
+    if (fs3.existsSync(sessionsSubdir)) claudeSessionsDirs.push(sessionsSubdir);
+    if (fs3.existsSync(directDir)) claudeSessionsDirs.push(directDir);
   }
   const candidates = [];
   const walk = (dir, type) => {
-    const files = fs2.readdirSync(dir);
+    const files = fs3.readdirSync(dir);
     for (const f of files) {
-      const fullPath = path3.join(dir, f);
-      const stat = fs2.statSync(fullPath);
+      const fullPath = path4.join(dir, f);
+      const stat = fs3.statSync(fullPath);
       if (stat.isDirectory()) {
         if (f !== "subagents" && f !== "tool-results" && f !== "memory" && f !== "wtft-tags") {
           walk(fullPath, type);
@@ -1911,10 +1949,10 @@ function discoverSessions(harness = "auto", cwdOverride2) {
       } else if (f.endsWith(".jsonl")) {
         let slug;
         if (type === "pi") {
-          slug = path3.basename(dir);
+          slug = path4.basename(dir);
         } else {
-          const base = path3.basename(dir);
-          slug = base === "sessions" ? path3.basename(path3.dirname(dir)) : base;
+          const base = path4.basename(dir);
+          slug = base === "sessions" ? path4.basename(path4.dirname(dir)) : base;
         }
         candidates.push({
           path: fullPath,
@@ -1928,11 +1966,11 @@ function discoverSessions(harness = "auto", cwdOverride2) {
   };
   try {
     if (harness === "auto" || harness === "pi") {
-      if (fs2.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
+      if (fs3.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
     }
     if (harness === "auto" || harness === "claude-code") {
       for (const dir of claudeSessionsDirs) {
-        if (fs2.existsSync(dir)) walk(dir, "claude-code");
+        if (fs3.existsSync(dir)) walk(dir, "claude-code");
       }
     }
   } catch {
@@ -1943,7 +1981,7 @@ function getSessionSummary(filePath) {
   let turns = 0;
   const interactions = [];
   try {
-    const content = fs2.readFileSync(filePath, "utf8");
+    const content = fs3.readFileSync(filePath, "utf8");
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
@@ -2067,8 +2105,8 @@ var showOther = false;
 var showTokens = false;
 function printWhy() {
   try {
-    const manifestPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-    const manifest = JSON.parse(fs3.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+    const manifest = JSON.parse(fs4.readFileSync(manifestPath, "utf8"));
     let text = `${manifest.name} - ${manifest.tagline}
 
 `;
@@ -2158,8 +2196,8 @@ for (let i = 2; i < process.argv.length; i++) {
     printWhy();
     process.exit(0);
   } else if (arg === "--version") {
-    const manifestPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-    const manifest = JSON.parse(fs3.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+    const manifest = JSON.parse(fs4.readFileSync(manifestPath, "utf8"));
     console.log(`${manifest.name} ${manifest.version}`);
     process.exit(0);
   } else if (arg === "--list") {
@@ -2212,7 +2250,7 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 async function main() {
   if (daemonList || daemonCleanup || daemonRestart || daemonStop) {
-    const daemonPath2 = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    const daemonPath2 = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     const daemonArgs = [daemonPath2];
     if (daemonList) daemonArgs.push("--list");
     if (daemonCleanup) daemonArgs.push("--cleanup");
@@ -2233,7 +2271,7 @@ async function main() {
   const candidates = discoverSessions(harnessOption, cwdOverride);
   let finalSessionPath = "";
   if (targetSessionPath) {
-    if (fs3.existsSync(targetSessionPath)) {
+    if (fs4.existsSync(targetSessionPath)) {
       finalSessionPath = targetSessionPath;
     } else {
       const filter = targetSessionPath.toLowerCase();
@@ -2259,16 +2297,16 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !fs3.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !fs4.existsSync(finalSessionPath)) {
     console.error("\u274C Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
   if (showWatch) {
-    const sessionDir2 = path4.dirname(finalSessionPath);
-    const sessionBase2 = path4.basename(finalSessionPath);
-    const tagsDir2 = path4.join(sessionDir2, "wtft-tags");
-    const tagPath2 = path4.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-    const daemonPath2 = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    const sessionDir2 = path5.dirname(finalSessionPath);
+    const sessionBase2 = path5.basename(finalSessionPath);
+    const tagsDir2 = path5.join(sessionDir2, "wtft-tags");
+    const tagPath2 = path5.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+    const daemonPath2 = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     try {
       const child = spawn2(process.execPath, [daemonPath2, "--session", finalSessionPath], {
         detached: true,
@@ -2307,11 +2345,11 @@ async function main() {
     });
     return;
   }
-  const sessionDir = path4.dirname(finalSessionPath);
-  const sessionBase = path4.basename(finalSessionPath);
-  const tagsDir = path4.join(sessionDir, "wtft-tags");
-  const tagPath = path4.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-  const daemonPath = path4.join(path4.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+  const sessionDir = path5.dirname(finalSessionPath);
+  const sessionBase = path5.basename(finalSessionPath);
+  const tagsDir = path5.join(sessionDir, "wtft-tags");
+  const tagPath = path5.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  const daemonPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
   try {
     const child = spawn2(process.execPath, [daemonPath, "--session", finalSessionPath], {
       detached: true,
@@ -2323,8 +2361,8 @@ async function main() {
   }
   const waitStart = Date.now();
   while (Date.now() - waitStart < 3e3) {
-    if (fs3.existsSync(tagPath)) {
-      const content = fs3.readFileSync(tagPath, "utf8");
+    if (fs4.existsSync(tagPath)) {
+      const content = fs4.readFileSync(tagPath, "utf8");
       if (content.split("\n").some((l) => l.trim() && !l.includes('"_hb"'))) break;
     }
     await new Promise((r) => setTimeout(r, 250));
@@ -2333,39 +2371,40 @@ async function main() {
   if (interactions.length === 0) {
     interactions.push(...parseSessionFile(finalSessionPath));
   }
-  let disabledEmoji = false;
-  let sessionInterval;
-  let sessionLimit;
-  let sessionWidth;
-  let sessionMode;
-  let sessionShowTicks;
-  let sessionTimezone;
-  try {
-    const content = fs3.readFileSync(finalSessionPath, "utf8");
-    for (const line of content.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type === "custom" && entry.customType === "emoji-settings") {
-          if (entry.data && typeof entry.data.disabled === "boolean") {
-            disabledEmoji = entry.data.disabled;
-          }
-        } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
-          if (entry.data) {
-            if (typeof entry.data.interval === "string") sessionInterval = entry.data.interval;
-            if (typeof entry.data.limit === "number") sessionLimit = entry.data.limit;
-            if (typeof entry.data.width === "number") sessionWidth = entry.data.width;
-            if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") {
-              sessionMode = entry.data.mode;
+  const config = readConfig("wtft");
+  let disabledEmoji = typeof config.disabledEmoji === "boolean" ? config.disabledEmoji : false;
+  let sessionInterval = typeof config.interval === "string" ? config.interval : void 0;
+  let sessionLimit = typeof config.limit === "number" ? config.limit : void 0;
+  let sessionMode = config.mode === "cumulative" || config.mode === "bucket" ? config.mode : void 0;
+  let sessionShowTicks = typeof config.showTicks === "boolean" ? config.showTicks : void 0;
+  let sessionTimezone = typeof config.timezone === "string" ? config.timezone : void 0;
+  if (!hasConfig("wtft")) {
+    try {
+      const content = fs4.readFileSync(finalSessionPath, "utf8");
+      for (const line of content.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type === "custom" && entry.customType === "emoji-settings") {
+            if (entry.data && typeof entry.data.disabled === "boolean") {
+              disabledEmoji = entry.data.disabled;
             }
-            if (typeof entry.data.showTicks === "boolean") sessionShowTicks = entry.data.showTicks;
-            if (typeof entry.data.timezone === "string") sessionTimezone = entry.data.timezone;
+          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
+            if (entry.data) {
+              if (typeof entry.data.interval === "string" && sessionInterval === void 0) sessionInterval = entry.data.interval;
+              if (typeof entry.data.limit === "number" && sessionLimit === void 0) sessionLimit = entry.data.limit;
+              if ((entry.data.mode === "cumulative" || entry.data.mode === "bucket") && sessionMode === void 0) {
+                sessionMode = entry.data.mode;
+              }
+              if (typeof entry.data.showTicks === "boolean" && sessionShowTicks === void 0) sessionShowTicks = entry.data.showTicks;
+              if (typeof entry.data.timezone === "string" && sessionTimezone === void 0) sessionTimezone = entry.data.timezone;
+            }
           }
+        } catch {
         }
-      } catch {
       }
+    } catch {
     }
-  } catch {
   }
   const termColumns = getTerminalWidth();
   const finalInterval = hasInterval ? intervalStr : sessionInterval ?? "1h";
