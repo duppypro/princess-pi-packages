@@ -1406,6 +1406,7 @@ function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   return path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 }
+var IDLE_THRESHOLD_MS = 122e3;
 function checkDaemonHealth(sessionPath, tagPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   let pidAlive = false;
@@ -1420,7 +1421,36 @@ function checkDaemonHealth(sessionPath, tagPath) {
     }
   } catch {
   }
-  if (pidAlive) return { alive: true };
+  if (pidAlive) {
+    try {
+      const stat = fs.statSync(tagPath);
+      if (stat.size > 0) {
+        const fd = fs.openSync(tagPath, "r");
+        const buf = Buffer.alloc(Math.min(stat.size, 4096));
+        fs.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - 4096));
+        fs.closeSync(fd);
+        const lines = buf.toString("utf8").split("\n");
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          try {
+            const obj = JSON.parse(line);
+            if (obj._hb && obj._hb.first) {
+              const idleMs = Date.now() - obj._hb.first;
+              if (idleMs >= IDLE_THRESHOLD_MS) {
+                return { alive: true, idle: true, idleMs };
+              }
+            }
+            break;
+          } catch {
+            continue;
+          }
+        }
+      }
+    } catch {
+    }
+    return { alive: true };
+  }
   let lastHbMs = 0;
   try {
     const stat = fs.statSync(tagPath);
@@ -1508,6 +1538,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let daemonStopReason = "";
   let daemonStopTime = "";
   let daemonRestarting = false;
+  let daemonIdle = false;
+  let daemonIdleMs = 0;
   const updateDaemonHealth = () => {
     if (daemonRestarting) {
       const health2 = checkDaemonHealth(sessionPath, tagPath);
@@ -1516,6 +1548,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         daemonDead = false;
         daemonStopReason = "";
         daemonStopTime = "";
+        daemonIdle = false;
       }
       return;
     }
@@ -1524,10 +1557,18 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       daemonDead = true;
       daemonStopReason = health.reason || "unknown";
       daemonStopTime = health.lastHbTime || "";
+      daemonIdle = false;
+    } else if (health.idle) {
+      daemonDead = false;
+      daemonStopReason = "";
+      daemonStopTime = "";
+      daemonIdle = true;
+      daemonIdleMs = health.idleMs || 0;
     } else {
       daemonDead = false;
       daemonStopReason = "";
       daemonStopTime = "";
+      daemonIdle = false;
     }
   };
   const cleanupStdin = enterRawStdin((key) => {
@@ -1538,6 +1579,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       if (settings.daemonPath) {
         daemonRestarting = true;
         daemonDead = false;
+        daemonIdle = false;
         const ok = restartDaemon(sessionPath, settings.daemonPath);
         if (!ok) {
           daemonRestarting = false;
@@ -1634,6 +1676,12 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       } else if (daemonDead) {
         const label = daemonStopTime ? `stopped ${daemonStopTime}` : daemonStopReason;
         daemonStatusStr = `  \x1B[31m\u25CF\x1B[0m ${label}`;
+      } else if (daemonIdle) {
+        const idleSec = Math.floor(daemonIdleMs / 1e3);
+        const idleMin = Math.floor(idleSec / 60);
+        const idleRem = idleSec % 60;
+        const idleStr = `${idleMin}:${String(idleRem).padStart(2, "0")}`;
+        daemonStatusStr = `  \x1B[33m\u25CF\x1B[0m idle ${idleStr}`;
       } else {
         daemonStatusStr = "  \x1B[32m\u25CF\x1B[0m live";
       }
