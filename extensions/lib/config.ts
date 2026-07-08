@@ -150,8 +150,8 @@ export function writeConfig(
 
 /**
  * Check whether any config file exists for a tool (global or local).
- * Useful for backward-compat fallback logic: if no config file exists,
- * the caller may want to read legacy .jsonl settings.
+ * Used by wtft to auto-show the widget on session_start when the user
+ * has configured the tool at least once.
  */
 export function hasConfig(toolName: string): boolean {
 	const paths = getConfigPaths(toolName);
