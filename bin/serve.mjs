@@ -80,7 +80,7 @@ function discoverServers() {
         const localUrl = `http://127.0.0.1:${port}`;
         const absoluteDir = path2.resolve(process.cwd(), dir);
         const clientSlug = getClientSlug(absoluteDir);
-        const url = `https://princess-pi.dev/live/${clientSlug}/`;
+        const url = port === 8080 ? "https://preview.princess-pi.dev/" : localUrl;
         let title = "Index Page";
         try {
           title = await fetchPageTitle(localUrl);

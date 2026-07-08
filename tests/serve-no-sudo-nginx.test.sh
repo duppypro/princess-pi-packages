@@ -27,9 +27,9 @@ BEFORE=$(etc_hash)
 
 echo "[$(TS)] start/kill cycle under PATH shim..."
 cd "$SITE"
-PATH="$SHIM:$PATH" node "$OLDPWD/bin/serve.mjs" . >/dev/null 2>&1 || { echo "FAIL: serve start errored (must start without .serve-acl)"; exit 1; }
+timeout 60 env PATH="$SHIM:$PATH" node "$OLDPWD/bin/serve.mjs" . >/dev/null 2>&1 || { echo "FAIL: serve start errored/hung (must start without .serve-acl)"; exit 1; }
 sleep 1
-PATH="$SHIM:$PATH" node "$OLDPWD/bin/serve.mjs" --kill all >/dev/null 2>&1 || true
+timeout 60 env PATH="$SHIM:$PATH" node "$OLDPWD/bin/serve.mjs" --kill all >/dev/null 2>&1 || true
 cd "$OLDPWD"
 
 if [ -f "$MARKER" ]; then echo "FAIL: forbidden executable invoked:"; cat "$MARKER"; exit 1; fi
@@ -37,9 +37,9 @@ echo "[$(TS)] ✓ PATH shim: no sudo/nginx execution"
 
 if command -v strace >/dev/null 2>&1; then
   cd "$SITE"
-  strace -f -qq -e trace=execve -o "$WORK/trace" node "$OLDPWD/bin/serve.mjs" . >/dev/null 2>&1 || true
+  timeout 60 strace -f -qq -e trace=execve -o "$WORK/trace" node "$OLDPWD/bin/serve.mjs" . >/dev/null 2>&1 || true
   sleep 1
-  strace -f -qq -e trace=execve -o "$WORK/trace2" node "$OLDPWD/bin/serve.mjs" --kill all >/dev/null 2>&1 || true
+  timeout 60 strace -f -qq -e trace=execve -o "$WORK/trace2" node "$OLDPWD/bin/serve.mjs" --kill all >/dev/null 2>&1 || true
   cd "$OLDPWD"
   if grep -hE 'execve\("[^"]*(sudo|nginx)' "$WORK/trace" "$WORK/trace2" 2>/dev/null | grep -v ENOENT; then
     echo "FAIL: strace saw sudo/nginx execve"; exit 1

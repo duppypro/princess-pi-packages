@@ -14,7 +14,6 @@ import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
-import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "./lib/serve/nginx.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
@@ -247,25 +246,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		for (const killed of killedList) {
-			if (killed.clientSlug) {
-				try {
-					updateNginxPort(killed.clientSlug, null);
-				} catch (err: any) {
-					ctx.ui.notify(`⚠️ Map Cleanup Error for ${killed.clientSlug}: ${err.message}`, "error");
-				}
-			}
-		}
-
-		if (killedList.length > 0) {
-			const reloadErr = reloadNginx();
-			if (reloadErr) {
-				ctx.ui.notify(`⚠️ Cleaned maps, but NGINX reload failed.\nError: ${reloadErr}`, "warning");
-			} else {
-				ctx.ui.notify(`✅ Cleaned up routing entries and reloaded NGINX.`, "info");
-			}
-		}
-
+		// --- Phase 6A (#64): nginx map cleanup + reload removed — the Cloudflare edge
+		// gates now; killing the loopback origin is the whole job. (#66: per-slug unpublish.)
 		const remainingServers = await discoverServers();
 		updateWidget(ctx, remainingServers, isWidgetVisible, process.cwd());
 
@@ -323,14 +305,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const port = startPort++;
 
-			// Secure Dynamic Gating Validation (.serve-acl file must exist)
-			let emails: string[];
-			try {
-				emails = parseAclFile(targetDir);
-			} catch (err: any) {
-				ctx.ui.notify(`⚠️ Failed to start server for "${rawDir}": ${err.message}`, "error");
-				continue;
-			}
+			// --- Phase 6A (#64): .serve-acl gate validation dormant — allow-lists live in
+			// Cloudflare Access policy now. (#66 re-reads .serve-acl as the policy source.)
 			const clientSlug = getClientSlug(targetDir);
 
 			const __filename = fileURLToPath(import.meta.url);
@@ -359,19 +335,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 
-			// Write Dynamic Maps and trigger NGINX reload
-			try {
-				updateNginxAcls(clientSlug, emails);
-				updateNginxPort(clientSlug, port);
-				const reloadErr = reloadNginx();
-				if (reloadErr) {
-					ctx.ui.notify(`⚠️ Maps updated for ${clientSlug}, but NGINX reload failed. Error: ${reloadErr}`, "warning");
-				} else {
-					ctx.ui.notify(`✅ NGINX reloaded. Routing mapped for https://princess-pi.dev/live/${clientSlug}/`, "info");
-				}
-			} catch (err: any) {
-				ctx.ui.notify(`⚠️ Dynamic Map/ACL Error: ${err.message}`, "error");
-			}
+			// --- Phase 6A (#64): nginx map writes + reload removed; serve spawns a plain
+			// loopback origin behind the Cloudflare Tunnel + Access edge. (#66: publishing.)
 		}
 
 		await new Promise(r => setTimeout(r, 1200));

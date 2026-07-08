@@ -81,9 +81,11 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				const absoluteDir = path.resolve(process.cwd(), dir);
 				const clientSlug = getClientSlug(absoluteDir);
 				// Why no ?token=: the static bypass token was a committed backdoor (#38 F2 → #59).
-				// Access is via the real gate (Google OAuth now; Cloudflare Access service tokens
-				// post-migration), not a shared secret in the query string.
-				const url = `https://princess-pi.dev/live/${clientSlug}/`;
+				// Access is via the real gate (Cloudflare Access), not a shared query secret.
+				// --- Phase 6A (#64): the nginx /live/<slug>/ path is retired. The tunnel
+				// statically routes ONE hostname to 127.0.0.1:8080 (the MVP ingress), so only
+				// port 8080 has a public URL until #66 adds per-slug publishing.
+				const url = port === 8080 ? "https://preview.princess-pi.dev/" : localUrl;
 
 				let title = "Index Page";
 				try {
