@@ -254,6 +254,12 @@ is esbuild output, rebuild via `node build.mjs`):**
   `preview.princess-pi.dev` rule carries over.
 - Create wildcard DNS: `*.princess-pi.dev` → `<UUID>.cfargotunnel.com`, **proxied**.
   Confirm explicit records (`www`, `logger`, MX/TXT) still resolve unchanged.
+  **VERIFY FIRST (Duppy flag, 2026-07-07 — answer goes here before 6B Spec Approved):**
+  a *proxied* wildcard record has historically been Enterprise-only on Cloudflare; if the
+  Free plan can't proxy `*`, 6B falls back to **per-slug DNS records** created/deleted by
+  serve — which grows the token scope from DNS:Read to **DNS:Edit** and changes the
+  standing-privilege story above (a leaked token could then also rewrite zone records).
+  Confirm on the live dashboard at 6B.0; record the answer + chosen path here.
 - Create the API token (scopes: Account → Cloudflare Tunnel:Edit, Access: Apps and
   Policies:Edit; Zone → DNS:Read) → `~/.config/princess-pi/cf.env`, 0600.
 
