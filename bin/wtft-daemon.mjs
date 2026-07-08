@@ -329,7 +329,7 @@ function deduplicateInteractions(interactions) {
 var TAGGER_VERSION = "2.3.2";
 var TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 var POLL_MS = 667;
-var IDLE_EXIT_MS = 30 * 60 * 1e3;
+var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 function serializeClassified(interaction) {
   const line = {
     t: interaction.timestamp,
