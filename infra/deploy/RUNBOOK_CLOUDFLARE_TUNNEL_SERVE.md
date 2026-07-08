@@ -6,7 +6,7 @@
 > approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
 > verified 2026-07-07 (see verification log below). **Phase 6 (retire nginx machinery +
 > build per-slug automation) is IN SPEC DRAFT** — scope settled with Duppy 2026-07-07
-> (issue #64): full automation, two sequential arcs (6A teardown, 6B automation).
+> (issue #64): full automation, two sequential arcs — 6A teardown (#64), 6B automation (#66).
 >
 > **Phase 5 verification log (2026-07-07 UTC, Claude Cowork + Duppy; origin = bare
 > `python3 -m http.server 8080 --bind 127.0.0.1` to isolate the edge gate):**
@@ -177,7 +177,7 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 
 ## Phase 6 — Retire the nginx/oauth2-proxy gate + build per-slug automation
 > **Spec status: DRAFT (issue #64).** Scope settled 2026-07-07: full automation now, not
-> teardown-only. Two arcs, landed **in order** as separate commit pairs under one issue.
+> teardown-only. Two arcs, landed **in order** as separate commit pairs — 6A tracked in #64, 6B split to #66.
 > WHY two arcs: each is independently testable, and teardown-first means 6B is built on a
 > serve that no longer touches /etc or sudo — no entanglement of old and new failure modes.
 
@@ -194,6 +194,12 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
   `CF_ACCOUNT_ID`, `CF_ZONE_ID`, `CF_TUNNEL_ID`. serve sources it at start; if absent or
   unreadable it fails the Cloudflare programming step with a clear message (the local
   loopback server still starts). Same convention as the `cf-allowlist` skill.
+- **Standing-privilege trade — stated plainly:** 6A deletes a passwordless-root sudo grant;
+  6B adds a standing account-scoped API token. A `cf.env` leak = control of **all** tunnel
+  ingress + **every** client's Access allow-list. Smaller blast radius than root, revocable
+  in seconds, audit-logged at Cloudflare — but it is **not** "no standing privilege": the
+  credential problem moves and shrinks, it does not vanish. Mitigations: 0600 + owner-only
+  home, minimal scopes, rotate on any suspicion, periodic CF audit-log review.
 - **Sequencing: 6A before 6B; inside 6A, code before infra** — strip nginx calls from serve
   first, then tear down maps/units/sudoers, so serve never fires `sudo nginx -s reload` at a
   deleted grant.
@@ -217,8 +223,12 @@ is esbuild output, rebuild via `node build.mjs`):**
    `preview.princess-pi.dev → 127.0.0.1:8080` throughout 6A.
 
 **6A Code Approved test list (run AFTER the "ready for test" Code Draft commit):**
-- `serve <dir>` starts a loopback origin with **zero** nginx/sudo side-effects (no
-  `/etc/nginx/*.map` writes, no `sudo` invocations; verify by inspection + strace-free run).
+- **Zero-side-effect proof — asserted, not eyeballed** (a negative is not provable by
+  inspection): run start/stop cycles with a PATH-shim dir first in `PATH` whose `sudo` and
+  `nginx` executables write a marker file and exit 97; assert no marker afterwards.
+  Belt-and-braces: `strace -f -e trace=execve` over the same cycle asserts no execve of
+  `sudo`/`nginx`, and a before/after hash of `/etc/nginx` asserts no writes. Automated in
+  `tests/`.
 - #60 acceptance: sibling-dir request (`targetDir` = `/a/b`, request escaping to `/a/bc`)
   → 403; crafted filename `<img src=x onerror=…>.txt` renders escaped in the index.
 - Existing serve tests still pass.
@@ -249,21 +259,38 @@ is esbuild output, rebuild via `node build.mjs`):**
 
 **6B code — on `serve <dir>` start:**
 1. Flatten slug → DNS label: lowercase; `[^a-z0-9-]` → `-`; collapse repeats; trim to 63
-   chars. ERROR (skip dir, keep others) if label is on the **reserved blocklist** (`www`,
-   `mail`, `logger`, `preview`, `api`, `smtp`, `imap`, `ns1`, `ns2`, `autoconfig`,
-   `autodiscover`) or collides with a different **active** slug's label.
+   chars. ERROR (skip dir, keep others) if the label collides with (a) a **live zone record** —
+   serve GETs the zone's DNS records at start (Zone DNS:Read) and refuses any label
+   matching an existing explicit record of any type (`www`, `logger`, MX hosts, `_dmarc`,
+   …) or an Access app it doesn't own; (b) a different **active** slug's label. A minimal
+   hardcoded list (`www`, `mail`, `logger`) remains only as a **fail-closed backstop**: if
+   the zone read fails, refuse to publish (loopback still starts). WHY zone-derived: a
+   hand-maintained denylist drifts; the zone is the source of truth.
 2. Read `.serve-acl` emails (parser returns; validation gate is live again — no file, no
    publish).
-3. API: read-modify-write the tunnel's remote config → upsert ingress rule
-   `<label>.princess-pi.dev → http://127.0.0.1:<port>` (catch-all `http_status:404` stays
-   last). Serialize writes (full-config PUT is last-writer-wins).
+3. API: upsert ingress rule `<label>.princess-pi.dev → http://127.0.0.1:<port>`
+   (catch-all `http_status:404` stays last) under a **cross-process lost-update guard**:
+   the full-config PUT is last-writer-wins, so two independent serve invocations doing
+   read-modify-write would silently drop a rule. All writers live on this one VPS by
+   construction (serve runs where the origin runs), so hold an advisory `flock` on
+   `~/.config/princess-pi/tunnel-config.lock` across the whole GET → mutate → PUT →
+   verify-GET cycle; after PUT, re-GET and assert our rule + the catch-all are present,
+   jittered retry on mismatch. If the configurations endpoint supports ETag/`If-Match`
+   conditional PUT (verify at implementation), layer it on. Cross-host writers: out of
+   scope (single-VPS deployment) — documented limit.
 4. API: upsert Access application `serve <label>` for `<label>.princess-pi.dev` + Allow
    policy with the `.serve-acl` emails. Per-slug app = hard isolation (client A's reviewer
    cannot reach client B).
 5. Live-ACL watcher (reintroduced): `.serve-acl` change → update the Access policy only.
 
-**On `serve --kill`:** remove the ingress rule + the Access app for that label. Orphan
-reaping: `serve --list` (or start) warns when API state has labels with no live process.
+**On `serve --kill`:** remove the ingress rule + the Access app for that label.
+
+**Orphan reaping** — a crash without `--kill` leaves an ingress rule + an Access app with a
+stale email allow-list **live at the edge**: security drift, not clutter. 6B ships
+**reap-on-start**: under the same lock, delete any serve-owned entry (Access apps are named
+`serve <label>`; only those are touched) whose port has no live listener, before publishing
+new state. **KNOWN GAP (named, deferred):** nothing reaps between a crash and the next
+serve run; periodic/TTL GC is a follow-up issue to file at 6B kickoff.
 
 **6B Code Approved test list:**
 - Unit (no network): flattening rules, reserved-list rejection, active-collision rejection,
@@ -272,11 +299,15 @@ reaping: `serve --list` (or start) warns when API state has labels with no live 
   Access, allow-listed email passes, non-listed email denied; `.serve-acl` edit propagates;
   `serve --kill` → hostname 404s and the Access app is gone; `www`/`logger`/mail unchanged.
 
-### 5-step governance (both arcs)
-Spec = this section. Each arc: Spec Approved commit **before** its Code Approved commit;
-Code Draft commit says exactly **"ready for test"** and is committed *before* tests run;
-Code Approved commit lists the exact tests run; only Step 5 commits are merge-eligible.
-#60 closes in the 6A Code Approved commit.
+### 5-step governance + merge-eligibility (unambiguous)
+- Tracking: **6A = #64**, **6B = #66** (split 2026-07-07). #60 closes in the 6A Code
+  Approved commit.
+- Each arc runs its **own full 5-step cycle**: Spec Approved commit before its Code
+  Approved commit; Code Draft commit says exactly **"ready for test"** and lands *before*
+  tests run; Code Approved commit lists the exact tests run; only Step 5 commits merge.
+- **6A is merge-eligible at its own Step 5 while 6B is mid-flight.** The arcs are
+  independently testable and independently mergeable; 6B starts only after 6A Code
+  Approved and builds on merged 6A.
 
 ---
 
