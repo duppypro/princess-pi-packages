@@ -742,34 +742,41 @@ Log parser mode:
   }
   const loop = () => {
     if (!running) return;
-    const rawInteractions = parseNewLines(sessionPath);
-    const newInteractions = deduplicateInteractions(rawInteractions);
-    if (newInteractions.length > 0) {
-      lastActivityMs = Date.now();
-      for (const interaction of newInteractions) {
-        pendingLines.push(serializeClassified(interaction));
+    try {
+      const rawInteractions = parseNewLines(sessionPath);
+      const newInteractions = deduplicateInteractions(rawInteractions);
+      if (newInteractions.length > 0) {
+        lastActivityMs = Date.now();
+        for (const interaction of newInteractions) {
+          pendingLines.push(serializeClassified(interaction));
+        }
       }
-    }
-    const now = Date.now();
-    if (pendingLines.length > 0 && now - lastWriteMs >= POLL_MS) {
-      flushPending();
-    }
-    if (pendingLines.length === 0) {
-      if (idleStartMs === 0) idleStartMs = now;
-      upsertHeartbeat(now);
-      lastWriteMs = now;
-    }
-    if (now - lastActivityMs >= IDLE_EXIT_MS && now - startupTime >= 6e4) {
+      const now = Date.now();
+      if (pendingLines.length > 0 && now - lastWriteMs >= POLL_MS) {
+        flushPending();
+      }
+      if (pendingLines.length === 0) {
+        if (idleStartMs === 0) idleStartMs = now;
+        upsertHeartbeat(now);
+        lastWriteMs = now;
+      }
+      if (now - lastActivityMs >= IDLE_EXIT_MS && now - startupTime >= 6e4) {
+        if (process.env.WTFT_DAEMON_DEBUG) {
+          process.stderr.write(`[wtft-log-parser] no new data for ${Math.round((now - lastActivityMs) / 6e4)}m, exiting
+`);
+        }
+        shutdown("idle timeout");
+        return;
+      }
+      if (!fs.existsSync(sessionPath)) {
+        shutdown("session removed");
+        return;
+      }
+    } catch (err) {
       if (process.env.WTFT_DAEMON_DEBUG) {
-        process.stderr.write(`[wtft-log-parser] no new data for ${Math.round((now - lastActivityMs) / 6e4)}m, exiting
+        process.stderr.write(`[wtft-log-parser] poll error: ${err.message}
 `);
       }
-      shutdown("idle timeout");
-      return;
-    }
-    if (!fs.existsSync(sessionPath)) {
-      shutdown("session removed");
-      return;
     }
     setTimeout(loop, POLL_MS);
   };

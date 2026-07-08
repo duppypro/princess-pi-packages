@@ -1468,6 +1468,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
         fs.closeSync(fd);
         const lines = buf.toString("utf8").split("\n");
         let lastModel;
+        let idleMs;
         for (let i = lines.length - 1; i >= 0; i--) {
           const line = lines[i].trim();
           if (!line) continue;
@@ -1475,16 +1476,19 @@ function checkDaemonHealth(sessionPath, tagPath) {
             const obj = JSON.parse(line);
             if (!lastModel && obj.m) lastModel = obj.m;
             if (obj._hb && obj._hb.first) {
-              const idleMs = Date.now() - obj._hb.first;
-              if (idleMs >= IDLE_THRESHOLD_MS) {
-                const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
-                return { alive: true, idle: true, idleMs, cacheTtlMs };
+              if (idleMs === void 0) {
+                idleMs = Date.now() - obj._hb.first;
               }
+              continue;
             }
             break;
           } catch {
             continue;
           }
+        }
+        if (idleMs !== void 0 && idleMs >= IDLE_THRESHOLD_MS) {
+          const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
+          return { alive: true, idle: true, idleMs, cacheTtlMs };
         }
       }
     } catch {
