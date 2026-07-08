@@ -4,8 +4,9 @@
 > Replaces the retired nginx `/live/` + oauth2-proxy `:4182` gate (see #32, #38, #59) with
 > `cloudflared` Tunnel → loopback `/serve` servers, fronted by Cloudflare Access. Spec
 > approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
-> verified 2026-07-07 (see verification log below). **Phase 6 (retire nginx machinery from
-> `serve`) is NOT yet done** — it is the next step, ordered after this per the runbook.
+> verified 2026-07-07 (see verification log below). **Phase 6 (retire nginx machinery +
+> build per-slug automation) is IN SPEC DRAFT** — scope settled with Duppy 2026-07-07
+> (issue #64): full automation, two sequential arcs (6A teardown, 6B automation).
 >
 > **Phase 5 verification log (2026-07-07 UTC, Claude Cowork + Duppy; origin = bare
 > `python3 -m http.server 8080 --bind 127.0.0.1` to isolate the edge gate):**
@@ -174,32 +175,125 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 
 ---
 
-## Phase 6 — Retire the old nginx/oauth2-proxy gate (AFTER Phase 5 passes)
-Only once the Cloudflare path is proven end-to-end:
-- Remove the nginx `/live/` + `/oauth2/` blocks from `sites-available/princess-pi.dev`
-  (stage + `nginx -t` + reload, per the prod-edit rule).
-- `sudo systemctl disable --now oauth2-proxy-live-serve` (and the `:4180/:4181` instances if
-  unused); remove their units + cfg.
-- Delete `/etc/nginx/serve-acls.map`, `serve-ports.map`.
-- Drop the `PI_NGINX` sudoers grant → the whole `/etc/sudoers.d/princess-pi` file can be
-  deleted (serve no longer reloads nginx).
-- Update `/serve` code: replace `nginx.js` (map writes + `nginx -s reload`) with the Cloudflare
-  Access/DNS programming path; remove `README-live-serve.md` (oauth2-proxy standup, now dead).
+## Phase 6 — Retire the nginx/oauth2-proxy gate + build per-slug automation
+> **Spec status: DRAFT (issue #64).** Scope settled 2026-07-07: full automation now, not
+> teardown-only. Two arcs, landed **in order** as separate commit pairs under one issue.
+> WHY two arcs: each is independently testable, and teardown-first means 6B is built on a
+> serve that no longer touches /etc or sudo — no entanglement of old and new failure modes.
+
+### Settled decisions (grilled 2026-07-07 — not re-litigated here)
+- **Hostnames: `<slug>.princess-pi.dev` (flat, one label).** Universal SSL already covers
+  `*.princess-pi.dev` one label deep — zero cert cost. Explicit records (`www`, `logger`,
+  MX) always beat the wildcard, so infra names are safe; a **reserved-label blocklist**
+  (below) protects them from slug collisions at the serve layer too.
+- **Tunnel ingress via Cloudflare API remotely-managed config.** serve PUTs ingress rules
+  through the API; no local `/etc/cloudflared/config.yml` rewrite, no reload, **no sudo**.
+  WHY: a local-file rewrite would need a root grant — recreating the exact sudoers privilege
+  Phase 6A deletes. One-time migration of the tunnel to remote-managed config required (6B.0).
+- **Token: `~/.config/princess-pi/cf.env`** (mode 0600), holding `CF_API_TOKEN`,
+  `CF_ACCOUNT_ID`, `CF_ZONE_ID`, `CF_TUNNEL_ID`. serve sources it at start; if absent or
+  unreadable it fails the Cloudflare programming step with a clear message (the local
+  loopback server still starts). Same convention as the `cf-allowlist` skill.
+- **Sequencing: 6A before 6B; inside 6A, code before infra** — strip nginx calls from serve
+  first, then tear down maps/units/sudoers, so serve never fires `sudo nginx -s reload` at a
+  deleted grant.
+
+### Phase 6A — Teardown (serve → plain loopback origin)
+**Code (this repo — sources are `bin/serve.ts` + `extensions/lib/serve/*`; `bin/serve.mjs`
+is esbuild output, rebuild via `node build.mjs`):**
+1. `bin/serve.ts`: remove the `parseAclFile → updateNginxAcls → updateNginxPort →
+   reloadNginx` path from start and stop/`--kill`; drop the `nginx.js` import. The
+   `.serve-acl`-must-exist validation goes dormant with it (6B reintroduces `.serve-acl` as
+   the Access allow-list source).
+2. `extensions/lib/serve/run-live-server.js`: remove the live-ACL watcher (~:535-544).
+3. Delete `extensions/lib/serve/nginx.js` (nothing imports it after 1-2). Rebuild.
+4. **Fold in #60 (same files, one pass):**
+   - F1 traversal (`run-live-server.js:423`): `!filePath.startsWith(targetDir)` →
+     `filePath !== targetDir && !filePath.startsWith(targetDir + path.sep)`; harden with
+     `fs.realpathSync` containment for symlink escapes.
+   - F2 XSS (`generateDirectoryIndex()` :243/:272/:294-296/:300): HTML-escape helper applied
+     to `requestPath`, `entry.name`, `err.message`.
+5. serve becomes: spawn loopback origin, done. The tunnel keeps statically routing
+   `preview.princess-pi.dev → 127.0.0.1:8080` throughout 6A.
+
+**6A Code Approved test list (run AFTER the "ready for test" Code Draft commit):**
+- `serve <dir>` starts a loopback origin with **zero** nginx/sudo side-effects (no
+  `/etc/nginx/*.map` writes, no `sudo` invocations; verify by inspection + strace-free run).
+- #60 acceptance: sibling-dir request (`targetDir` = `/a/b`, request escaping to `/a/bc`)
+  → 403; crafted filename `<img src=x onerror=…>.txt` renders escaped in the index.
+- Existing serve tests still pass.
+
+**Infra (VPS — STAGED ONLY, Duppy applies; staged files live in
+`infra/deploy/phase6-teardown/` + an `APPLY_RUNBOOK.md`):**
+1. nginx: remove `/live/` + `/oauth2/` blocks from `sites-available/princess-pi.dev`
+   (staged copy + diff; apply = install, `nginx -t`, reload).
+2. `sudo systemctl disable --now oauth2-proxy-live-serve` (+ `:4180/:4181` instances if
+   unused); remove units + cfg.
+3. Delete `/etc/nginx/serve-acls.map`, `serve-ports.map`.
+4. Drop the `PI_NGINX` sudoers grant → delete `/etc/sudoers.d/princess-pi`. **Highest-value
+   item** (standing passwordless-sudo privilege). Verify: `sudo -l` shows no nginx entry.
+5. Remove `infra/deploy/README-live-serve.md` (dead oauth2-proxy standup) — this one is a
+   repo file, deleted in the 6A commit, not staged.
+6. Post-apply verify: `nginx -t` clean, `journalctl -u nginx -u cloudflared` clean,
+   Cloudflare preview still gates + serves, `curl http://127.0.0.1:8080/` → 200 on-VPS.
+
+### Phase 6B — Per-slug automation (`extensions/lib/serve/cloudflare.js` replaces `nginx.js`)
+**6B.0 One-time migration (Duppy, per prod-edit rule):**
+- Convert tunnel `serve-preview` to **remote-managed configuration** (dashboard: Zero Trust →
+  Networks → Tunnels → migrate; or API PUT of current ingress). Existing static
+  `preview.princess-pi.dev` rule carries over.
+- Create wildcard DNS: `*.princess-pi.dev` → `<UUID>.cfargotunnel.com`, **proxied**.
+  Confirm explicit records (`www`, `logger`, MX/TXT) still resolve unchanged.
+- Create the API token (scopes: Account → Cloudflare Tunnel:Edit, Access: Apps and
+  Policies:Edit; Zone → DNS:Read) → `~/.config/princess-pi/cf.env`, 0600.
+
+**6B code — on `serve <dir>` start:**
+1. Flatten slug → DNS label: lowercase; `[^a-z0-9-]` → `-`; collapse repeats; trim to 63
+   chars. ERROR (skip dir, keep others) if label is on the **reserved blocklist** (`www`,
+   `mail`, `logger`, `preview`, `api`, `smtp`, `imap`, `ns1`, `ns2`, `autoconfig`,
+   `autodiscover`) or collides with a different **active** slug's label.
+2. Read `.serve-acl` emails (parser returns; validation gate is live again — no file, no
+   publish).
+3. API: read-modify-write the tunnel's remote config → upsert ingress rule
+   `<label>.princess-pi.dev → http://127.0.0.1:<port>` (catch-all `http_status:404` stays
+   last). Serialize writes (full-config PUT is last-writer-wins).
+4. API: upsert Access application `serve <label>` for `<label>.princess-pi.dev` + Allow
+   policy with the `.serve-acl` emails. Per-slug app = hard isolation (client A's reviewer
+   cannot reach client B).
+5. Live-ACL watcher (reintroduced): `.serve-acl` change → update the Access policy only.
+
+**On `serve --kill`:** remove the ingress rule + the Access app for that label. Orphan
+reaping: `serve --list` (or start) warns when API state has labels with no live process.
+
+**6B Code Approved test list:**
+- Unit (no network): flattening rules, reserved-list rejection, active-collision rejection,
+  cf.env missing → clear error + loopback server still starts.
+- Live (Duppy, VPS + laptop): `serve <dir>` → `https://<label>.princess-pi.dev` gates via
+  Access, allow-listed email passes, non-listed email denied; `.serve-acl` edit propagates;
+  `serve --kill` → hostname 404s and the Access app is gone; `www`/`logger`/mail unchanged.
+
+### 5-step governance (both arcs)
+Spec = this section. Each arc: Spec Approved commit **before** its Code Approved commit;
+Code Draft commit says exactly **"ready for test"** and is committed *before* tests run;
+Code Approved commit lists the exact tests run; only Step 5 commits are merge-eligible.
+#60 closes in the 6A Code Approved commit.
 
 ---
 
 ## MVP → full (subdomain-per-slug, per-client isolation)
-This runbook stands up **one** hostname/port to prove the pattern. The target end state:
-- **Wildcard DNS** `*.preview.princess-pi.dev` + a tunnel ingress rule per active slug
-  (`<slug>.preview.princess-pi.dev → 127.0.0.1:<that slug's port>`). Because serve assigns
-  **dynamic** ports, the `.serve-acl` cascade resolver rewrites the tunnel ingress (and
-  reloads it) + programs a **per-slug Access application** with that slug's own email
-  allow-list via the Cloudflare API/Terraform. Per-slug apps give **hard isolation**: client
-  A's reviewer cannot reach client B.
-- The resolver replaces both the old `serve-acls.map` (→ Access policies) and the tunnel
-  ingress management. That automation is the next build after this MVP is green.
+This runbook stood up **one** hostname/port to prove the pattern (Phase 5, green
+2026-07-07). The full build is now **specced as Phase 6B above** — with one amendment to
+the original sketch: hostnames are `<slug>.princess-pi.dev` (flat), not
+`<slug>.preview.princess-pi.dev` (two labels — outside Universal SSL; see Roads not taken).
 
 ## Roads not taken
+- **`<slug>.preview.princess-pi.dev` (nested wildcard)** — the original MVP→full sketch.
+  Two labels below the apex → not covered by Universal SSL; requires Advanced Certificate
+  Manager (~$10/mo) or Total TLS. Flat `<slug>.princess-pi.dev` + reserved-label blocklist
+  gets the same isolation at zero cert cost. Revisit only if the flat namespace gets crowded.
+- **Local `/etc/cloudflared/config.yml` rewrite for per-slug ingress** — needs a root grant
+  for edit+reload, recreating the sudoers privilege Phase 6A deletes. API remote-managed
+  config does it with a scoped token and no sudo.
 - **oauth2-proxy / nginx `auth_request`** — the retired hand-built gate (#32/#38). Throwaway
   vs. Cloudflare; kept only until Phase 6 removes it.
 - **TryCloudflare quick tunnels** (`*.trycloudflare.com`) — ephemeral, no named domain, no
