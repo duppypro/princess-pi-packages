@@ -666,6 +666,49 @@ function getCurrentLocalHour(tz) {
   const parts = getZonedParts(Date.now(), tz);
   return parts.hour;
 }
+function getTimezoneOffsetMs(timestamp, tz) {
+  const parts = getZonedParts(timestamp, tz);
+  const utcMs = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return utcMs - timestamp;
+}
+function getSurgeLocalHours(tz) {
+  const result = /* @__PURE__ */ new Set();
+  const now = Date.now();
+  for (let localHour = 0; localHour < 24; localHour++) {
+    let ts;
+    if (tz) {
+      const parts = getZonedParts(now, tz);
+      const offsetMs = getTimezoneOffsetMs(now, tz);
+      ts = Date.UTC(parts.year, parts.month - 1, parts.day, localHour, 0, 0, 0) - offsetMs;
+    } else {
+      const d = /* @__PURE__ */ new Date();
+      d.setHours(localHour, 0, 0, 0);
+      ts = d.getTime();
+    }
+    const utcHour = new Date(ts).getUTCHours();
+    if (utcHour >= 1 && utcHour < 4 || utcHour >= 6 && utcHour < 10) {
+      result.add(localHour);
+    }
+  }
+  return result;
+}
+function checkSurgeProximity() {
+  const now = /* @__PURE__ */ new Date();
+  const currentUtcMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const surgeWindows = [[60, 240], [360, 600]];
+  for (const [start, end] of surgeWindows) {
+    if (currentUtcMinute >= start && currentUtcMinute < end) {
+      return { status: "surge", multiplier: 2 };
+    }
+    if (currentUtcMinute >= start - 20 && currentUtcMinute < start) {
+      return { status: "approaching", multiplier: 2 };
+    }
+    if (currentUtcMinute >= end - 20 && currentUtcMinute < end) {
+      return { status: "ending", multiplier: 2 };
+    }
+  }
+  return { status: void 0, multiplier: 1 };
+}
 function buildTimelineString(surgeHours, currentHour, proximityStatus) {
   const segments = [];
   let lastColor = null;
@@ -921,6 +964,21 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
     }
   }
+  let surgeModel = opts?.model;
+  if (!surgeModel) {
+    for (const i of interactions) {
+      if (i.model) {
+        surgeModel = i.model;
+        break;
+      }
+    }
+  }
+  const isDeepSeek = (surgeModel || "").toLowerCase().includes("deepseek");
+  const surgeHours = isDeepSeek ? getSurgeLocalHours(tz) : /* @__PURE__ */ new Set();
+  const currentHour = getCurrentLocalHour(tz);
+  const proximity = isDeepSeek ? checkSurgeProximity() : { status: void 0, multiplier: 1 };
+  const timelineStr = buildTimelineString(surgeHours, currentHour, proximity.status);
+  widgetLines[0] = widgetLines[0] + "  " + timelineStr;
   const totalOtherCost = interactions.filter((i) => classifyInteraction(i) === "other").reduce((sum, i) => sum + i.cost, 0);
   if (totalSessionCost > 0) {
     const otherPct = totalOtherCost / totalSessionCost;
@@ -1261,9 +1319,6 @@ async function watchMode(sessionPath, settings) {
     buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
     totalCost = deduplicateInteractions(allInteractions).reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
-      const tlHour = getCurrentLocalHour(finalTimezone);
-      const tlStr = buildTimelineString(/* @__PURE__ */ new Set(), tlHour, void 0);
-      lines[0] = lines[0] + "  " + tlStr;
       for (const l of lines) buf.push(l);
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
@@ -1573,9 +1628,6 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
     totalCost = deduped.reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
-      const tlHour = getCurrentLocalHour(finalTimezone);
-      const tlStr = buildTimelineString(/* @__PURE__ */ new Set(), tlHour, void 0);
-      lines[0] = lines[0] + "  " + tlStr;
       let daemonStatusStr = "";
       if (daemonRestarting) {
         daemonStatusStr = "  \x1B[33m\u25CF\x1B[0m restarting...";
