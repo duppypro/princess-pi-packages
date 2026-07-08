@@ -323,6 +323,7 @@ function normalizeCommand(cmd) {
   return normalized;
 }
 function classifyInteraction(interaction) {
+  if (interaction._cat) return interaction._cat;
   const specPaths = /* @__PURE__ */ new Set();
   const codePaths = /* @__PURE__ */ new Set();
   const testsPaths = /* @__PURE__ */ new Set();
@@ -1314,6 +1315,7 @@ function classifiedToInteraction(obj) {
   return {
     timestamp: obj.t,
     cost: obj.c,
+    messageId: obj.id || void 0,
     model: obj.m || void 0,
     files: (obj.f || []).map((f) => ({ path: f.p || "", action: f.a === "w" ? "write" : "read" })),
     commands: obj.cmd || [],
@@ -1322,7 +1324,8 @@ function classifiedToInteraction(obj) {
     outputTokens: obj.out || 0,
     cacheReadTokens: obj.cr || 0,
     cacheWriteTokens: obj.cw || 0,
-    reasoningTokens: obj.rs || 0
+    reasoningTokens: obj.rs || 0,
+    _cat: obj.cat || void 0
   };
 }
 function readClassifiedTagFile(tagPath) {
@@ -1343,7 +1346,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.3.1";
+var WTFT_TAGGER_VERSION = "2.3.2";
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   return path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);

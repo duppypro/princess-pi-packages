@@ -326,7 +326,7 @@ function deduplicateInteractions(interactions) {
   }
   return deduped;
 }
-var TAGGER_VERSION = "2.3.1";
+var TAGGER_VERSION = "2.3.2";
 var TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 var POLL_MS = 667;
 var IDLE_EXIT_MS = 30 * 60 * 1e3;
@@ -338,6 +338,7 @@ function serializeClassified(interaction) {
     f: interaction.files.map((f) => ({ p: f.path, a: f.action })),
     cmd: interaction.commands
   };
+  if (interaction.messageId) line.id = interaction.messageId;
   if (interaction.model) line.m = interaction.model;
   if (interaction.inputTokens > 0) line.in = interaction.inputTokens;
   if (interaction.outputTokens > 0) line.out = interaction.outputTokens;
