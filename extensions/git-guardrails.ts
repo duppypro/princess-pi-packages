@@ -1,16 +1,25 @@
 /**
- * Git Guardrails Extension
+ * Git Guardrails Extension (#70)
  *
  * Blocks dangerous git commands via Pi's bash-spawn-hook, branch-aware:
  *   Always block: checkout ., restore ., clean -f (discard work, any branch)
  *   Block on main/master only: push to main, reset --hard on main, branch -D main
+ *   Allow on feature branches: push, reset --hard, branch -D (feature branches)
  *
+ * Uses execSync('git branch --show-current') to detect current branch.
  * Shares the same logic as the Claude Code PreToolUse hook
  * (~/.claude/hooks/block-dangerous-git.sh).
  *
  * Usage:
  *   pi -e ./extensions/git-guardrails.ts
  *   # or auto-loaded via princess-pi-packages if registered in package manifest
+ *
+ * Spec: https://github.com/duppypro/princess-pi-packages/issues/70
+ * Status: Code and Spec Approved (Step 5) — spec reconciled to implementation.
+ *   Branch-aware logic: ALWAYS_BLOCKED patterns (checkout ., restore ., clean -f)
+ *   fire on any branch. Push, reset --hard, branch -D are gated by currentBranch()
+ *   and only blocked when targeting main/master. Feature branches allow all three.
+ *   Cross-harness counterpart: ~/.claude/hooks/block-dangerous-git.sh.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
