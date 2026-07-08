@@ -77,6 +77,10 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 	// 1. Get current branch name
 	const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: currentCwd, encoding: "utf8" }).trim();
 	if (currentBranch === "main") {
+		if (process.argv.includes("--cleanup")) {
+			logger.info("Already on 'main' — nothing to clean up.");
+			return;
+		}
 		throw new Error("You are already on the 'main' branch/worktree. Cannot merge main into itself.");
 	}
 

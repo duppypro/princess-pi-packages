@@ -2077,8 +2077,18 @@ async function main() {
     if (idx > 0 && idx <= candidates.length) {
       finalSessionPath = candidates[idx - 1].path;
     } else {
-      console.error(`\u274C Error: Session index '${targetSessionPath}' is out of range. Discovered ${candidates.length} sessions.`);
-      process.exit(1);
+      const filter = targetSessionPath.toLowerCase();
+      const filtered = candidates.filter(
+        (c) => c.path.toLowerCase().includes(filter) || c.name.toLowerCase().includes(filter)
+      );
+      if (filtered.length === 0) {
+        console.error(`\u274C Error: Session index '${targetSessionPath}' is out of range (discovered ${candidates.length} sessions) and matches no session as a filter.`);
+        process.exit(1);
+      } else if (filtered.length === 1) {
+        finalSessionPath = filtered[0].path;
+      } else {
+        finalSessionPath = await selectSessionPrompt(filtered);
+      }
     }
   } else if (targetSessionPath) {
     if (fs3.existsSync(targetSessionPath)) {

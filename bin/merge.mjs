@@ -72,6 +72,10 @@ async function runMerge(argsList, logger, autoCleanup = false) {
   const currentCwd = process.cwd();
   const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: currentCwd, encoding: "utf8" }).trim();
   if (currentBranch === "main") {
+    if (process.argv.includes("--cleanup")) {
+      logger.info("Already on 'main' \u2014 nothing to clean up.");
+      return;
+    }
     throw new Error("You are already on the 'main' branch/worktree. Cannot merge main into itself.");
   }
   const currentStatus = execSync("git status --porcelain", { cwd: currentCwd, encoding: "utf8" }).trim();
