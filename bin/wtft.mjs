@@ -1291,11 +1291,11 @@ async function watchMode(sessionPath, settings) {
   const render = () => {
     process.stdout.write("\x1B[H\x1B[J");
     const width = getTerminalWidth();
-    const finalInterval = sessionInterval ?? settings.interval;
-    const finalLimit = sessionLimit ?? settings.limit;
-    const finalMode = sessionMode ?? settings.mode;
-    const finalShowTicks = sessionShowTicks ?? settings.showTicks;
-    const finalTimezone = sessionTimezone ?? settings.timezone;
+    const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
+    const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
+    const finalMode = settings.hasMode ? settings.mode : sessionMode ?? settings.mode;
+    const finalShowTicks = settings.hasTicks ? settings.showTicks : sessionShowTicks ?? settings.showTicks;
+    const finalTimezone = settings.hasTimezone ? settings.timezone : sessionTimezone ?? settings.timezone;
     const finalWidth = Math.min(settings.width, width);
     const defaultSettings = {
       interval: "1h",
@@ -1417,6 +1417,32 @@ function getModelCacheTtlMs(model) {
     return 60 * 60 * 1e3;
   }
   return null;
+}
+function renderDaemonStatus(status, restarting = false) {
+  if (restarting) {
+    return "  \x1B[33m\u25CF\x1B[0m restarting...";
+  }
+  if (!status.alive) {
+    const label = status.lastHbTime ? `stopped ${status.lastHbTime}` : status.reason || "unknown";
+    return `  \x1B[31m\u25CF\x1B[0m ${label}`;
+  }
+  if (status.idle) {
+    const cacheTtlMs = status.cacheTtlMs;
+    if (cacheTtlMs != null && status.idleMs != null) {
+      const remainingMs = Math.max(0, cacheTtlMs - (status.idleMs || 0));
+      const remainingSec = Math.floor(remainingMs / 1e3);
+      if (remainingSec >= 3600) {
+        const h = Math.floor(remainingSec / 3600);
+        const m2 = Math.floor(remainingSec % 3600 / 60);
+        return `  \x1B[33m\u25CF\x1B[0m idle (${h}h${m2}m to expire)`;
+      }
+      const m = Math.floor(remainingSec / 60);
+      const s = remainingSec % 60;
+      return `  \x1B[33m\u25CF\x1B[0m idle (${m}:${String(s).padStart(2, "0")} to expire)`;
+    }
+    return "  \x1B[33m\u25CF\x1B[0m idle";
+  }
+  return "  \x1B[32m\u25CF\x1B[0m live";
 }
 function checkDaemonHealth(sessionPath, tagPath) {
   const pidPath = getDaemonPidPath(sessionPath);
@@ -1656,11 +1682,11 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   const render = () => {
     process.stdout.write("\x1B[H\x1B[J");
     const width = getTerminalWidth();
-    const finalInterval = sessionInterval ?? settings.interval;
-    const finalLimit = sessionLimit ?? settings.limit;
-    const finalMode = sessionMode ?? settings.mode;
-    const finalShowTicks = sessionShowTicks ?? settings.showTicks;
-    const finalTimezone = sessionTimezone ?? settings.timezone;
+    const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
+    const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
+    const finalMode = settings.hasMode ? settings.mode : sessionMode ?? settings.mode;
+    const finalShowTicks = settings.hasTicks ? settings.showTicks : sessionShowTicks ?? settings.showTicks;
+    const finalTimezone = settings.hasTimezone ? settings.timezone : sessionTimezone ?? settings.timezone;
     const finalWidth = Math.min(settings.width, width);
     const defaultSettings = {
       interval: "1h",
@@ -1688,28 +1714,13 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     if (lines && lines.length > 0) {
       let daemonStatusStr = "";
       if (daemonRestarting) {
-        daemonStatusStr = "  \x1B[33m\u25CF\x1B[0m restarting...";
+        daemonStatusStr = renderDaemonStatus({ alive: true }, true);
       } else if (daemonDead) {
-        const label = daemonStopTime ? `stopped ${daemonStopTime}` : daemonStopReason;
-        daemonStatusStr = `  \x1B[31m\u25CF\x1B[0m ${label}`;
+        daemonStatusStr = renderDaemonStatus({ alive: false, reason: daemonStopReason || void 0, lastHbTime: daemonStopTime || void 0 }, false);
       } else if (daemonIdle) {
-        if (daemonCacheTtlMs != null) {
-          const remainingMs = Math.max(0, daemonCacheTtlMs - daemonIdleMs);
-          const remainingSec = Math.floor(remainingMs / 1e3);
-          if (remainingSec >= 3600) {
-            const h = Math.floor(remainingSec / 3600);
-            const m = Math.floor(remainingSec % 3600 / 60);
-            daemonStatusStr = `  \x1B[33m\u25CF\x1B[0m idle (${h}h${m}m to expire)`;
-          } else {
-            const m = Math.floor(remainingSec / 60);
-            const s = remainingSec % 60;
-            daemonStatusStr = `  \x1B[33m\u25CF\x1B[0m idle (${m}:${String(s).padStart(2, "0")} to expire)`;
-          }
-        } else {
-          daemonStatusStr = "  \x1B[33m\u25CF\x1B[0m idle";
-        }
+        daemonStatusStr = renderDaemonStatus({ alive: true, idle: true, idleMs: daemonIdleMs, cacheTtlMs: daemonCacheTtlMs }, false);
       } else {
-        daemonStatusStr = "  \x1B[32m\u25CF\x1B[0m live";
+        daemonStatusStr = renderDaemonStatus({ alive: true }, false);
       }
       if (daemonStatusStr) {
         const titleVisualLen = getVisualLength(lines[0]);
@@ -2281,7 +2292,12 @@ async function main() {
         mode: hasCumulative || hasBucket ? mode : "cumulative",
         showTicks: hasTicks || hasNoTicks ? showTicks : true,
         timezone: hasTz ? timezone : void 0,
-        disabledEmoji: false
+        disabledEmoji: false,
+        hasInterval,
+        hasLimit,
+        hasMode: hasCumulative || hasBucket,
+        hasTicks: hasTicks || hasNoTicks,
+        hasTimezone: hasTz
       });
       return;
     }
@@ -2294,7 +2310,12 @@ async function main() {
       showTicks: hasTicks || hasNoTicks ? showTicks : true,
       timezone: hasTz ? timezone : void 0,
       disabledEmoji: false,
-      daemonPath: daemonPath2
+      daemonPath: daemonPath2,
+      hasInterval,
+      hasLimit,
+      hasMode: hasCumulative || hasBucket,
+      hasTicks: hasTicks || hasNoTicks,
+      hasTimezone: hasTz
     });
     return;
   }
