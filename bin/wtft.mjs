@@ -1168,6 +1168,46 @@ import * as fs2 from "node:fs";
 import * as os from "node:os";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+
+// extensions/lib/tty-helpers.ts
+function enterRawStdin(onKey) {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return () => {
+  };
+  stdin.resume();
+  stdin.setEncoding("utf8");
+  stdin.setRawMode(true);
+  const handler = (data) => onKey(data.toString());
+  stdin.on("data", handler);
+  return () => {
+    stdin.removeListener("data", handler);
+    stdin.setRawMode(false);
+    stdin.pause();
+  };
+}
+function showCursor() {
+  process.stdout.write("\x1B[?25h");
+}
+function hideCursor() {
+  process.stdout.write("\x1B[?25l");
+}
+function clearPreviousLines(lineCount) {
+  if (lineCount > 0) {
+    process.stdout.write(`\x1B[${lineCount}A\x1B[J`);
+  }
+}
+function visualLineCount(text, termWidth) {
+  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
+  const lines = text.replace(/\n$/, "").split("\n");
+  let count = 0;
+  for (const line of lines) {
+    const cleanLen = line.replace(ansiRe, "").length;
+    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
+  }
+  return count;
+}
+
+// extensions/lib/wtft-daemon-lib.ts
 async function watchMode(sessionPath, settings) {
   if (!process.stdout.isTTY) {
     console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
@@ -1899,44 +1939,6 @@ function formatRelativeTime(ts) {
   return `${Math.floor(diffDay / 365)}y ago`;
 }
 
-// extensions/lib/tty-helpers.ts
-function enterRawStdin2(onKey) {
-  const stdin = process.stdin;
-  if (!stdin.isTTY) return () => {
-  };
-  stdin.resume();
-  stdin.setEncoding("utf8");
-  stdin.setRawMode(true);
-  const handler = (data) => onKey(data.toString());
-  stdin.on("data", handler);
-  return () => {
-    stdin.removeListener("data", handler);
-    stdin.setRawMode(false);
-    stdin.pause();
-  };
-}
-function showCursor2() {
-  process.stdout.write("\x1B[?25h");
-}
-function hideCursor2() {
-  process.stdout.write("\x1B[?25l");
-}
-function clearPreviousLines(lineCount) {
-  if (lineCount > 0) {
-    process.stdout.write(`\x1B[${lineCount}A\x1B[J`);
-  }
-}
-function visualLineCount(text, termWidth) {
-  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
-  const lines = text.replace(/\n$/, "").split("\n");
-  let count = 0;
-  for (const line of lines) {
-    const cleanLen = line.replace(ansiRe, "").length;
-    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
-  }
-  return count;
-}
-
 // extensions/lib/session-selector.ts
 function discoverSessions(harness = "auto", cwdOverride2) {
   const piSessionsDir = path5.join(os4.homedir(), ".pi", "agent", "sessions");
@@ -2046,7 +2048,7 @@ async function selectSessionPrompt(candidates) {
     const limit2 = 10;
     const displayCandidates = candidates.slice(0, limit2);
     const statsList = displayCandidates.map((c) => getSessionSummary(c.path));
-    hideCursor2();
+    hideCursor();
     const maxPathLen = Math.max(
       ...displayCandidates.map((c) => c.displayPath.length),
       10
@@ -2098,10 +2100,10 @@ async function selectSessionPrompt(candidates) {
         render();
       }
     };
-    const cleanupStdin = enterRawStdin2(onKey);
+    const cleanupStdin = enterRawStdin(onKey);
     const cleanup = () => {
       cleanupStdin();
-      showCursor2();
+      showCursor();
     };
   });
 }
