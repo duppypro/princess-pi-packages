@@ -2170,6 +2170,7 @@ Options:
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
   --pad <N>               Pad output with N spaces on each side (default: 1, max: floor(term/2)-1).
                           Makes CLI output width match Pi TUI widget in the same terminal.
+  --debug                 Print diagnostic cost totals (tag file vs direct parse + dedup).
 
 Log parser management:
   --list                  List all running log parsers with session path, PID, parser version, and idle time.
@@ -2196,6 +2197,7 @@ var daemonList = false;
 var daemonCleanup = false;
 var daemonRestart = false;
 var daemonStop;
+var debugMode = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
@@ -2254,6 +2256,8 @@ for (let i = 2; i < process.argv.length; i++) {
       pad = val;
       hasPad = true;
     }
+  } else if (arg === "--debug") {
+    debugMode = true;
   } else if (arg === "--dir" || arg === "--cwd") {
     cwdOverride = process.argv[++i];
   } else if (arg === "--harness") {
@@ -2430,6 +2434,15 @@ async function main() {
   console.log(padStr + `\x1B[90m${finalSessionPath}\x1B[0m`);
   for (const line of outputLines) {
     console.log(padStr + line);
+  }
+  if (debugMode) {
+    const tagCost = interactions.reduce((sum, i) => sum + (i.cost || 0), 0);
+    const rawInteractions = parseSessionFile(finalSessionPath);
+    const directCost = deduplicateInteractions(rawInteractions).reduce((sum, i) => sum + i.cost, 0);
+    console.log(padStr + `\x1B[90m\u2500\u2500 debug \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\x1B[0m`);
+    console.log(padStr + `\x1B[90m  tag file (daemon): $${tagCost.toFixed(4)}  (${interactions.length} entries)\x1B[0m`);
+    console.log(padStr + `\x1B[90m  direct parse+dedup: $${directCost.toFixed(4)}  (${deduplicateInteractions(rawInteractions).length} entries)\x1B[0m`);
+    console.log(padStr + `\x1B[90m  raw parse (no dedup): $${rawInteractions.reduce((sum, i) => sum + i.cost, 0).toFixed(4)}  (${rawInteractions.length} entries)\x1B[0m`);
   }
   if (showOther) {
     console.log("");
