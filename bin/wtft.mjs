@@ -467,35 +467,35 @@ function getIsoWeekAndMonday(parts) {
 }
 function getBinInfo(timestamp, config, tz) {
   const parts = getZonedParts(timestamp, tz);
-  const pad = (n) => String(n).padStart(2, "0");
-  const dateStr = `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const dateStr = `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
   const { size, unit } = config;
   if (unit === "m") {
     const totalMins = parts.hour * 60 + parts.minute;
     const binnedMins = Math.floor(totalMins / size) * size;
     return {
-      key: `${dateStr}T${pad(Math.floor(binnedMins / 60))}:${pad(binnedMins % 60)}:00`,
-      label: `${pad(Math.floor(binnedMins / 60))}:${pad(binnedMins % 60)}`,
+      key: `${dateStr}T${pad2(Math.floor(binnedMins / 60))}:${pad2(binnedMins % 60)}:00`,
+      label: `${pad2(Math.floor(binnedMins / 60))}:${pad2(binnedMins % 60)}`,
       dateStr
     };
   } else if (unit === "h") {
     const startHours = Math.floor(parts.hour / size) * size;
     return {
-      key: `${dateStr}T${pad(startHours)}:00:00`,
-      label: `${pad(startHours)}:00`,
+      key: `${dateStr}T${pad2(startHours)}:00:00`,
+      label: `${pad2(startHours)}:00`,
       dateStr
     };
   } else if (unit === "d") {
     const binnedDays = Math.floor((parts.day - 1) / size) * size;
-    const label = `${parts.year}-${pad(parts.month)}-${pad(binnedDays + 1)}`;
+    const label = `${parts.year}-${pad2(parts.month)}-${pad2(binnedDays + 1)}`;
     return { key: `${label}T00:00:00`, label, dateStr: label };
   } else {
     const info = getIsoWeekAndMonday(parts);
-    const label = `W${pad(info.weekNum)} ${pad(info.mondayMonth)}-${pad(info.mondayDay)}`;
+    const label = `W${pad2(info.weekNum)} ${pad2(info.mondayMonth)}-${pad2(info.mondayDay)}`;
     return {
-      key: `${info.mondayYear}-${pad(info.mondayMonth)}-${pad(info.mondayDay)}T00:00:00`,
+      key: `${info.mondayYear}-${pad2(info.mondayMonth)}-${pad2(info.mondayDay)}T00:00:00`,
       label,
-      dateStr: `${info.mondayYear}-${pad(info.mondayMonth)}-${pad(info.mondayDay)}`
+      dateStr: `${info.mondayYear}-${pad2(info.mondayMonth)}-${pad2(info.mondayDay)}`
     };
   }
 }
@@ -611,9 +611,9 @@ function formatMmmDdStr(dateStr) {
     const monthIdx = parseInt(parts[1], 10) - 1;
     const day = parseInt(parts[2], 10);
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const pad = (n) => String(n).padStart(2, "0");
+    const pad2 = (n) => String(n).padStart(2, "0");
     if (monthIdx >= 0 && monthIdx < 12) {
-      return `${months[monthIdx]}-${pad(day)}`;
+      return `${months[monthIdx]}-${pad2(day)}`;
     }
   }
   return dateStr;
@@ -832,8 +832,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   } else {
     const nowParts = getZonedParts(Date.now(), tz);
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const pad = (n) => String(n).padStart(2, "0");
-    titleDateStr = `${months[nowParts.month - 1]}-${pad(nowParts.day)}`;
+    const pad2 = (n) => String(n).padStart(2, "0");
+    titleDateStr = `${months[nowParts.month - 1]}-${pad2(nowParts.day)}`;
   }
   const widgetLines = [];
   const titleLeft = disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
@@ -1686,12 +1686,17 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   const render = () => {
     process.stdout.write("\x1B[H\x1B[J");
     const width = getTerminalWidth();
+    const pad2 = settings.pad || 0;
+    const maxPad = Math.max(0, Math.floor(width / 2) - 1);
+    const actualPad = Math.min(pad2, maxPad);
+    const padStr = " ".repeat(actualPad);
+    const paddedWidth = width - 2 * actualPad;
     const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
     const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
     const finalMode = settings.hasMode ? settings.mode : sessionMode ?? settings.mode;
     const finalShowTicks = settings.hasTicks ? settings.showTicks : sessionShowTicks ?? settings.showTicks;
     const finalTimezone = settings.hasTimezone ? settings.timezone : sessionTimezone ?? settings.timezone;
-    const finalWidth = Math.min(width, 1023);
+    const finalWidth = Math.min(paddedWidth, 1023);
     const defaultSettings = {
       interval: "1h",
       limit: 100,
@@ -1742,7 +1747,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const restartHint = settings.daemonPath ? daemonDead ? `, \x1B[31m'r' to restart parser\x1B[0m` : `, using v${WTFT_TAGGER_VERSION}, 'r' to restart parser` : "";
     buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
-    process.stdout.write(buf.join("\n"));
+    process.stdout.write(buf.map((l) => padStr + l).join("\n"));
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
   };
@@ -2103,6 +2108,8 @@ var harnessOption = "auto";
 var cwdOverride = void 0;
 var showOther = false;
 var showTokens = false;
+var pad = 1;
+var hasPad = false;
 function printWhy() {
   try {
     const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
@@ -2161,6 +2168,8 @@ Options:
   -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
   -T, --tokens            Print a per-model token summary table (deduped) for cross-referencing with /usage.
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
+  --pad <N>               Pad output with N spaces on each side (default: 1, max: floor(term/2)-1).
+                          Makes CLI output width match Pi TUI widget in the same terminal.
 
 Log parser management:
   --list                  List all running log parsers with session path, PID, parser version, and idle time.
@@ -2239,6 +2248,12 @@ for (let i = 2; i < process.argv.length; i++) {
     hasTokens = true;
   } else if (arg === "-W" || arg === "--watch") {
     showWatch = true;
+  } else if (arg === "--pad") {
+    const val = parseInt(process.argv[++i], 10);
+    if (!isNaN(val) && val >= 0) {
+      pad = val;
+      hasPad = true;
+    }
   } else if (arg === "--dir" || arg === "--cwd") {
     cwdOverride = process.argv[++i];
   } else if (arg === "--harness") {
@@ -2321,6 +2336,7 @@ async function main() {
         mode: hasCumulative || hasBucket ? mode : "cumulative",
         showTicks: hasTicks || hasNoTicks ? showTicks : true,
         timezone: hasTz ? timezone : void 0,
+        pad,
         hasInterval,
         hasLimit,
         hasMode: hasCumulative || hasBucket,
@@ -2337,6 +2353,7 @@ async function main() {
       showTicks: hasTicks || hasNoTicks ? showTicks : true,
       timezone: hasTz ? timezone : void 0,
       daemonPath: daemonPath2,
+      pad,
       hasInterval,
       hasLimit,
       hasMode: hasCumulative || hasBucket,
@@ -2379,6 +2396,11 @@ async function main() {
   const sessionShowTicks = typeof config.showTicks === "boolean" ? config.showTicks : void 0;
   const sessionTimezone = typeof config.timezone === "string" ? config.timezone : void 0;
   const termColumns = getTerminalWidth();
+  if (!hasPad) pad = 1;
+  const maxPad = Math.max(0, Math.floor(termColumns / 2) - 1);
+  pad = Math.min(pad, maxPad);
+  const padStr = " ".repeat(pad);
+  const paddedWidth = termColumns - 2 * pad;
   const finalInterval = hasInterval ? intervalStr : sessionInterval ?? "1h";
   const finalLimit = hasLimit ? limit : sessionLimit ?? 100;
   const finalMode = hasCumulative || hasBucket ? mode : sessionMode ?? "cumulative";
@@ -2387,7 +2409,7 @@ async function main() {
   const defaultSettings = {
     interval: "1h",
     limit: 100,
-    width: Math.min(getTerminalWidth(), 1023),
+    width: Math.min(paddedWidth, 1023),
     showTicks: true,
     mode: "cumulative",
     timezone: void 0
@@ -2395,29 +2417,33 @@ async function main() {
   const outputLines = buildWtftLines(interactions, defaultSettings, {
     interval: finalInterval,
     limit: finalLimit,
-    width: Math.min(getTerminalWidth(), 1023),
+    width: Math.min(paddedWidth, 1023),
     showTicks: finalShowTicks,
     mode: finalMode,
     timezone: finalTimezone,
     disabledEmoji
   });
   if (!outputLines) {
-    console.log("No binned data found in session logs.");
+    console.log(padStr + "No binned data found in session logs.");
     process.exit(0);
   }
-  console.log(`\x1B[90m${finalSessionPath}\x1B[0m`);
+  console.log(padStr + `\x1B[90m${finalSessionPath}\x1B[0m`);
   for (const line of outputLines) {
-    console.log(line);
+    console.log(padStr + line);
   }
   if (showOther) {
     console.log("");
     const dedupedInteractions = deduplicateInteractions(interactions);
-    const otherOutput = renderOtherHistogram(dedupedInteractions, Math.min(getTerminalWidth(), 1023));
-    console.log(otherOutput);
+    const otherOutput = renderOtherHistogram(dedupedInteractions, Math.min(paddedWidth, 1023));
+    for (const line of otherOutput.split("\n")) {
+      console.log(padStr + line);
+    }
   }
   if (showTokens) {
-    const tokenOutput = renderTokenSummary(interactions, Math.min(getTerminalWidth(), 1023));
-    console.log(tokenOutput);
+    const tokenOutput = renderTokenSummary(interactions, Math.min(paddedWidth, 1023));
+    for (const line of tokenOutput.split("\n")) {
+      console.log(padStr + line);
+    }
   }
 }
 main().catch((err) => {
