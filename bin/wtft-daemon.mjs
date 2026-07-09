@@ -326,7 +326,7 @@ function deduplicateInteractions(interactions) {
   }
   return deduped;
 }
-var TAGGER_VERSION = "2.3.4";
+var TAGGER_VERSION = "2.3.5";
 var TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 var POLL_MS = 667;
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
