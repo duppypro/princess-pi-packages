@@ -374,6 +374,21 @@ function shutdown(reason) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGHUP", () => shutdown("SIGHUP"));
+process.on("SIGUSR1", () => {
+  if (!running || !sessionPath) return;
+  try {
+    const rawInteractions = parseNewLines(sessionPath);
+    const newInteractions = deduplicateInteractions(rawInteractions);
+    if (newInteractions.length > 0) {
+      lastActivityMs = Date.now();
+      for (const interaction of newInteractions) {
+        pendingLines.push(serializeClassified(interaction));
+      }
+      flushPending();
+    }
+  } catch {
+  }
+});
 function upsertHeartbeat(now) {
   try {
     const hbLine = JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n";
