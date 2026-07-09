@@ -1,56 +1,11 @@
 #!/usr/bin/env node
 
 // bin/wtft.ts
-import * as fs4 from "node:fs";
-import * as path5 from "node:path";
+import * as fs5 from "node:fs";
+import * as path6 from "node:path";
 import { fileURLToPath } from "node:url";
 
-// extensions/lib/wtft-shared.ts
-import * as path from "node:path";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import { createHash } from "node:crypto";
-import { execSync, spawn } from "node:child_process";
-
-// extensions/lib/tty-helpers.ts
-function enterRawStdin(onKey) {
-  const stdin = process.stdin;
-  if (!stdin.isTTY) return () => {
-  };
-  stdin.resume();
-  stdin.setEncoding("utf8");
-  stdin.setRawMode(true);
-  const handler = (data) => onKey(data.toString());
-  stdin.on("data", handler);
-  return () => {
-    stdin.removeListener("data", handler);
-    stdin.setRawMode(false);
-    stdin.pause();
-  };
-}
-function showCursor() {
-  process.stdout.write("\x1B[?25h");
-}
-function hideCursor() {
-  process.stdout.write("\x1B[?25l");
-}
-function clearPreviousLines(lineCount) {
-  if (lineCount > 0) {
-    process.stdout.write(`\x1B[${lineCount}A\x1B[J`);
-  }
-}
-function visualLineCount(text, termWidth) {
-  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
-  const lines = text.replace(/\n$/, "").split("\n");
-  let count = 0;
-  for (const line of lines) {
-    const cleanLen = line.replace(ansiRe, "").length;
-    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
-  }
-  return count;
-}
-
-// extensions/lib/wtft-shared.ts
+// extensions/lib/wtft-cost.ts
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -101,6 +56,10 @@ function calculateClaudeCost(model, usage, timestamp) {
   const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.reasoning_tokens || usage.reasoning || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
+
+// extensions/lib/wtft-parser.ts
+import * as path from "node:path";
+import * as fs from "node:fs";
 function extractFilesFromBashCommand(command, files) {
   const cmdLines = command.split("\n");
   for (const line of cmdLines) {
@@ -290,15 +249,6 @@ function deduplicateInteractions(interactions) {
   }
   return deduped;
 }
-function parseInterval(val) {
-  const match = /^(\d+)([mhdw])$/.exec(val);
-  if (match) {
-    const size = parseInt(match[1], 10);
-    const unit = match[2];
-    if (size > 0) return { size, unit };
-  }
-  return { size: 1, unit: "h" };
-}
 function normalizeCommand(cmd) {
   let normalized = cmd.trim();
   let changed = true;
@@ -399,6 +349,17 @@ function classifyInteraction(interaction) {
   }
   if (interaction.texts.length > 0) return "prompt";
   return "other";
+}
+
+// extensions/lib/wtft-renderer.ts
+function parseInterval(val) {
+  const match = /^(\d+)([mhdw])$/.exec(val);
+  if (match) {
+    const size = parseInt(match[1], 10);
+    const unit = match[2];
+    if (size > 0) return { size, unit };
+  }
+  return { size: 1, unit: "h" };
 }
 function getZonedParts(timestamp, tz) {
   const d = new Date(timestamp);
@@ -1200,6 +1161,13 @@ function renderTokenSummary(interactions, maxWidth = 80) {
   ].join(" ") + "\n";
   return out;
 }
+
+// extensions/lib/wtft-daemon-lib.ts
+import * as path2 from "node:path";
+import * as fs2 from "node:fs";
+import * as os from "node:os";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 async function watchMode(sessionPath, settings) {
   if (!process.stdout.isTTY) {
     console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
@@ -1239,16 +1207,16 @@ async function watchMode(sessionPath, settings) {
     let sessionShowTicks2;
     let sessionTimezone2;
     try {
-      const stat = fs.statSync(filePath);
+      const stat = fs2.statSync(filePath);
       const currentSize = stat.size;
       if (currentSize < lastSize) {
         lastSize = 0;
       }
       if (currentSize <= lastSize) return { interactions, disabledEmoji: disabledEmoji2, sessionInterval: sessionInterval2, sessionLimit: sessionLimit2, sessionMode: sessionMode2, sessionShowTicks: sessionShowTicks2, sessionTimezone: sessionTimezone2 };
-      const fd = fs.openSync(filePath, "r");
+      const fd = fs2.openSync(filePath, "r");
       const buf = Buffer.alloc(currentSize - lastSize);
-      fs.readSync(fd, buf, 0, buf.length, lastSize);
-      fs.closeSync(fd);
+      fs2.readSync(fd, buf, 0, buf.length, lastSize);
+      fs2.closeSync(fd);
       lastSize = currentSize;
       const newContent = buf.toString("utf8");
       const lines = newContent.split("\n");
@@ -1339,7 +1307,7 @@ async function watchMode(sessionPath, settings) {
   const POLL_MS = 667;
   while (true) {
     await new Promise((resolve2) => setTimeout(resolve2, POLL_MS));
-    if (!fs.existsSync(sessionPath)) {
+    if (!fs2.existsSync(sessionPath)) {
       lastSize = 0;
       needsRedraw = true;
       render();
@@ -1386,7 +1354,7 @@ function classifiedToInteraction(obj) {
 function readClassifiedTagFile(tagPath) {
   const interactions = [];
   try {
-    const content = fs.readFileSync(tagPath, "utf8");
+    const content = fs2.readFileSync(tagPath, "utf8");
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
@@ -1404,7 +1372,7 @@ function readClassifiedTagFile(tagPath) {
 var WTFT_TAGGER_VERSION = "2.3.5";
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
-  return path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  return path2.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 }
 var IDLE_THRESHOLD_MS = 122e3;
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
@@ -1440,6 +1408,9 @@ function renderDaemonStatus(status, restarting = false) {
       const s = remainingSec % 60;
       return `  \x1B[33m\u25CF\x1B[0m idle (${m}:${String(s).padStart(2, "0")} to expire)`;
     }
+    if (cacheTtlMs === null) {
+      return "  \x1B[32m\u25CF\x1B[0m No Cache (local)";
+    }
     return "  \x1B[33m\u25CF\x1B[0m idle";
   }
   return "  \x1B[32m\u25CF\x1B[0m live";
@@ -1448,7 +1419,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   let pidAlive = false;
   try {
-    const pid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+    const pid = parseInt(fs2.readFileSync(pidPath, "utf8").trim(), 10);
     if (pid > 0) {
       try {
         process.kill(pid, 0);
@@ -1460,12 +1431,12 @@ function checkDaemonHealth(sessionPath, tagPath) {
   }
   if (pidAlive) {
     try {
-      const stat = fs.statSync(tagPath);
+      const stat = fs2.statSync(tagPath);
       if (stat.size > 0) {
-        const fd = fs.openSync(tagPath, "r");
+        const fd = fs2.openSync(tagPath, "r");
         const buf = Buffer.alloc(Math.min(stat.size, 8192));
-        fs.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - 8192));
-        fs.closeSync(fd);
+        fs2.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - 8192));
+        fs2.closeSync(fd);
         const lines = buf.toString("utf8").split("\n");
         let lastModel;
         let idleMs;
@@ -1497,12 +1468,12 @@ function checkDaemonHealth(sessionPath, tagPath) {
   }
   let lastHbMs = 0;
   try {
-    const stat = fs.statSync(tagPath);
+    const stat = fs2.statSync(tagPath);
     const readStart = Math.max(0, stat.size - 8192);
-    const fd = fs.openSync(tagPath, "r");
+    const fd = fs2.openSync(tagPath, "r");
     const buf = Buffer.alloc(stat.size - readStart);
-    fs.readSync(fd, buf, 0, buf.length, readStart);
-    fs.closeSync(fd);
+    fs2.readSync(fd, buf, 0, buf.length, readStart);
+    fs2.closeSync(fd);
     const lines = buf.toString("utf8").split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
@@ -1530,7 +1501,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
 function restartDaemon(sessionPath, daemonPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   try {
-    const pid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+    const pid = parseInt(fs2.readFileSync(pidPath, "utf8").trim(), 10);
     if (pid > 0) {
       try {
         process.kill(pid, "SIGTERM");
@@ -1538,7 +1509,7 @@ function restartDaemon(sessionPath, daemonPath) {
       }
     }
     try {
-      fs.unlinkSync(pidPath);
+      fs2.unlinkSync(pidPath);
     } catch {
     }
   } catch {
@@ -1651,7 +1622,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let allInteractions = readClassifiedTagFile(tagPath);
   let lastReadOffset = 0;
   try {
-    lastReadOffset = fs.statSync(tagPath).size;
+    lastReadOffset = fs2.statSync(tagPath).size;
   } catch {
   }
   let sessionInterval;
@@ -1660,7 +1631,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let sessionShowTicks;
   let sessionTimezone;
   try {
-    const sessionContent = fs.readFileSync(sessionPath, "utf8");
+    const sessionContent = fs2.readFileSync(sessionPath, "utf8");
     for (const line of sessionContent.split("\n")) {
       if (!line.trim()) continue;
       try {
@@ -1758,15 +1729,15 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   });
   let watcher = null;
   const startWatching = () => {
-    watcher = fs.watch(tagPath, (eventType) => {
+    watcher = fs2.watch(tagPath, (eventType) => {
       if (eventType !== "change") return;
       try {
-        const stat = fs.statSync(tagPath);
+        const stat = fs2.statSync(tagPath);
         if (stat.size <= lastReadOffset) return;
-        const fd = fs.openSync(tagPath, "r");
+        const fd = fs2.openSync(tagPath, "r");
         const buf = Buffer.alloc(stat.size - lastReadOffset);
-        fs.readSync(fd, buf, 0, buf.length, lastReadOffset);
-        fs.closeSync(fd);
+        fs2.readSync(fd, buf, 0, buf.length, lastReadOffset);
+        fs2.closeSync(fd);
         lastReadOffset = stat.size;
         const newContent = buf.toString("utf8");
         const lines = newContent.split("\n");
@@ -1792,7 +1763,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         try {
           lastReadOffset = 0;
           allInteractions = readClassifiedTagFile(tagPath);
-          lastReadOffset = fs.statSync(tagPath).size;
+          lastReadOffset = fs2.statSync(tagPath).size;
           needsRedraw = true;
           render();
         } catch {
@@ -1801,10 +1772,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     });
   };
   const fileWaitStart = Date.now();
-  while (!fs.existsSync(tagPath) && Date.now() - fileWaitStart < 5e3) {
+  while (!fs2.existsSync(tagPath) && Date.now() - fileWaitStart < 5e3) {
     await new Promise((r) => setTimeout(r, 250));
   }
-  if (fs.existsSync(tagPath)) {
+  if (fs2.existsSync(tagPath)) {
     startWatching();
   } else {
     console.error("\u274C Log parser did not create tag file within 5s. Is wtft-daemon installed?");
@@ -1829,25 +1800,25 @@ async function watchTagFile(sessionPath, tagPath, settings) {
 }
 
 // bin/wtft.ts
-import { execSync as execSync2, spawn as spawn2 } from "node:child_process";
+import { execSync as execSync3, spawn as spawn2 } from "node:child_process";
 
 // extensions/lib/config.ts
-import * as fs2 from "node:fs";
-import * as path2 from "node:path";
+import * as fs3 from "node:fs";
+import * as path3 from "node:path";
 import * as os2 from "node:os";
 function getConfigPaths(toolName) {
-  const globalDir = path2.join(os2.homedir(), ".config", "princess-pi");
-  const localDir = path2.join(process.cwd(), ".princess-pi");
+  const globalDir = path3.join(os2.homedir(), ".config", "princess-pi");
+  const localDir = path3.join(process.cwd(), ".princess-pi");
   return {
-    global: path2.join(globalDir, `${toolName}.json`),
-    local: path2.join(localDir, `${toolName}.json`)
+    global: path3.join(globalDir, `${toolName}.json`),
+    local: path3.join(localDir, `${toolName}.json`)
   };
 }
 function readConfig(toolName) {
   const paths = getConfigPaths(toolName);
   const merged = {};
   try {
-    const globalRaw = fs2.readFileSync(paths.global, "utf8");
+    const globalRaw = fs3.readFileSync(paths.global, "utf8");
     const globalData = JSON.parse(globalRaw);
     if (globalData && typeof globalData === "object" && !Array.isArray(globalData)) {
       Object.assign(merged, globalData);
@@ -1855,7 +1826,7 @@ function readConfig(toolName) {
   } catch {
   }
   try {
-    const localRaw = fs2.readFileSync(paths.local, "utf8");
+    const localRaw = fs3.readFileSync(paths.local, "utf8");
     const localData = JSON.parse(localRaw);
     if (localData && typeof localData === "object" && !Array.isArray(localData)) {
       Object.assign(merged, localData);
@@ -1866,19 +1837,19 @@ function readConfig(toolName) {
 }
 
 // extensions/lib/session-selector.ts
-import * as fs3 from "node:fs";
-import * as path4 from "node:path";
+import * as fs4 from "node:fs";
+import * as path5 from "node:path";
 import * as os4 from "node:os";
 
 // extensions/lib/session-path-shortener.ts
-import * as path3 from "node:path";
+import * as path4 from "node:path";
 import * as os3 from "node:os";
 function buildDisplayPath(filename, dirSlug, harness) {
   const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
   const uuidTail = uuidMatch ? uuidMatch[1] : "";
   const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
   const homeDir = os3.homedir();
-  const userName = path3.basename(homeDir);
+  const userName = path4.basename(homeDir);
   const knownPrefix = `home-${userName}-git-projects`;
   const compactPrefix = `home-${userName}-g-p`;
   if (slug.startsWith(knownPrefix + "-")) {
@@ -1928,25 +1899,63 @@ function formatRelativeTime(ts) {
   return `${Math.floor(diffDay / 365)}y ago`;
 }
 
+// extensions/lib/tty-helpers.ts
+function enterRawStdin2(onKey) {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return () => {
+  };
+  stdin.resume();
+  stdin.setEncoding("utf8");
+  stdin.setRawMode(true);
+  const handler = (data) => onKey(data.toString());
+  stdin.on("data", handler);
+  return () => {
+    stdin.removeListener("data", handler);
+    stdin.setRawMode(false);
+    stdin.pause();
+  };
+}
+function showCursor2() {
+  process.stdout.write("\x1B[?25h");
+}
+function hideCursor2() {
+  process.stdout.write("\x1B[?25l");
+}
+function clearPreviousLines(lineCount) {
+  if (lineCount > 0) {
+    process.stdout.write(`\x1B[${lineCount}A\x1B[J`);
+  }
+}
+function visualLineCount(text, termWidth) {
+  const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
+  const lines = text.replace(/\n$/, "").split("\n");
+  let count = 0;
+  for (const line of lines) {
+    const cleanLen = line.replace(ansiRe, "").length;
+    count += cleanLen === 0 ? 1 : Math.ceil(cleanLen / Math.max(termWidth, 1));
+  }
+  return count;
+}
+
 // extensions/lib/session-selector.ts
 function discoverSessions(harness = "auto", cwdOverride2) {
-  const piSessionsDir = path4.join(os4.homedir(), ".pi", "agent", "sessions");
+  const piSessionsDir = path5.join(os4.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
-  const claudeProjectsDir = path4.join(os4.homedir(), ".claude", "projects");
-  if (fs3.existsSync(claudeProjectsDir)) {
-    const resolvedCwd = cwdOverride2 ? path4.resolve(cwdOverride2) : process.cwd();
+  const claudeProjectsDir = path5.join(os4.homedir(), ".claude", "projects");
+  if (fs4.existsSync(claudeProjectsDir)) {
+    const resolvedCwd = cwdOverride2 ? path5.resolve(cwdOverride2) : process.cwd();
     const cwdSlug = resolvedCwd.replace(/[/\\]/g, "-");
-    const sessionsSubdir = path4.join(claudeProjectsDir, cwdSlug, "sessions");
-    const directDir = path4.join(claudeProjectsDir, cwdSlug);
-    if (fs3.existsSync(sessionsSubdir)) claudeSessionsDirs.push(sessionsSubdir);
-    if (fs3.existsSync(directDir)) claudeSessionsDirs.push(directDir);
+    const sessionsSubdir = path5.join(claudeProjectsDir, cwdSlug, "sessions");
+    const directDir = path5.join(claudeProjectsDir, cwdSlug);
+    if (fs4.existsSync(sessionsSubdir)) claudeSessionsDirs.push(sessionsSubdir);
+    if (fs4.existsSync(directDir)) claudeSessionsDirs.push(directDir);
   }
   const candidates = [];
   const walk = (dir, type) => {
-    const files = fs3.readdirSync(dir);
+    const files = fs4.readdirSync(dir);
     for (const f of files) {
-      const fullPath = path4.join(dir, f);
-      const stat = fs3.statSync(fullPath);
+      const fullPath = path5.join(dir, f);
+      const stat = fs4.statSync(fullPath);
       if (stat.isDirectory()) {
         if (f !== "subagents" && f !== "tool-results" && f !== "memory" && f !== "wtft-tags") {
           walk(fullPath, type);
@@ -1954,10 +1963,10 @@ function discoverSessions(harness = "auto", cwdOverride2) {
       } else if (f.endsWith(".jsonl")) {
         let slug;
         if (type === "pi") {
-          slug = path4.basename(dir);
+          slug = path5.basename(dir);
         } else {
-          const base = path4.basename(dir);
-          slug = base === "sessions" ? path4.basename(path4.dirname(dir)) : base;
+          const base = path5.basename(dir);
+          slug = base === "sessions" ? path5.basename(path5.dirname(dir)) : base;
         }
         candidates.push({
           path: fullPath,
@@ -1971,11 +1980,11 @@ function discoverSessions(harness = "auto", cwdOverride2) {
   };
   try {
     if (harness === "auto" || harness === "pi") {
-      if (fs3.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
+      if (fs4.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
     }
     if (harness === "auto" || harness === "claude-code") {
       for (const dir of claudeSessionsDirs) {
-        if (fs3.existsSync(dir)) walk(dir, "claude-code");
+        if (fs4.existsSync(dir)) walk(dir, "claude-code");
       }
     }
   } catch {
@@ -1986,7 +1995,7 @@ function getSessionSummary(filePath) {
   let turns = 0;
   const interactions = [];
   try {
-    const content = fs3.readFileSync(filePath, "utf8");
+    const content = fs4.readFileSync(filePath, "utf8");
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
@@ -2037,7 +2046,7 @@ async function selectSessionPrompt(candidates) {
     const limit2 = 10;
     const displayCandidates = candidates.slice(0, limit2);
     const statsList = displayCandidates.map((c) => getSessionSummary(c.path));
-    hideCursor();
+    hideCursor2();
     const maxPathLen = Math.max(
       ...displayCandidates.map((c) => c.displayPath.length),
       10
@@ -2089,10 +2098,10 @@ async function selectSessionPrompt(candidates) {
         render();
       }
     };
-    const cleanupStdin = enterRawStdin(onKey);
+    const cleanupStdin = enterRawStdin2(onKey);
     const cleanup = () => {
       cleanupStdin();
-      showCursor();
+      showCursor2();
     };
   });
 }
@@ -2112,8 +2121,8 @@ var pad = 1;
 var hasPad = false;
 function printWhy() {
   try {
-    const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-    const manifest = JSON.parse(fs4.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+    const manifest = JSON.parse(fs5.readFileSync(manifestPath, "utf8"));
     let text = `${manifest.name} - ${manifest.tagline}
 
 `;
@@ -2207,8 +2216,8 @@ for (let i = 2; i < process.argv.length; i++) {
     printWhy();
     process.exit(0);
   } else if (arg === "--version") {
-    const manifestPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-    const manifest = JSON.parse(fs4.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+    const manifest = JSON.parse(fs5.readFileSync(manifestPath, "utf8"));
     console.log(`${manifest.name} ${manifest.version}`);
     process.exit(0);
   } else if (arg === "--list") {
@@ -2269,14 +2278,14 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 async function main() {
   if (daemonList || daemonCleanup || daemonRestart || daemonStop) {
-    const daemonPath2 = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    const daemonPath2 = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     const daemonArgs = [daemonPath2];
     if (daemonList) daemonArgs.push("--list");
     if (daemonCleanup) daemonArgs.push("--cleanup");
     if (daemonRestart) daemonArgs.push("--restart");
     if (daemonStop) daemonArgs.push("--stop", daemonStop);
     try {
-      const result = execSync2(`${process.execPath} ${daemonArgs.join(" ")}`, {
+      const result = execSync3(`${process.execPath} ${daemonArgs.join(" ")}`, {
         encoding: "utf8",
         timeout: 1e4
       });
@@ -2290,7 +2299,7 @@ async function main() {
   const candidates = discoverSessions(harnessOption, cwdOverride);
   let finalSessionPath = "";
   if (targetSessionPath) {
-    if (fs4.existsSync(targetSessionPath)) {
+    if (fs5.existsSync(targetSessionPath)) {
       finalSessionPath = targetSessionPath;
     } else {
       const filter = targetSessionPath.toLowerCase();
@@ -2316,16 +2325,16 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !fs4.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !fs5.existsSync(finalSessionPath)) {
     console.error("\u274C Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
   if (showWatch) {
-    const sessionDir2 = path5.dirname(finalSessionPath);
-    const sessionBase2 = path5.basename(finalSessionPath);
-    const tagsDir2 = path5.join(sessionDir2, "wtft-tags");
-    const tagPath2 = path5.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-    const daemonPath2 = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+    const sessionDir2 = path6.dirname(finalSessionPath);
+    const sessionBase2 = path6.basename(finalSessionPath);
+    const tagsDir2 = path6.join(sessionDir2, "wtft-tags");
+    const tagPath2 = path6.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+    const daemonPath2 = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
     try {
       const child = spawn2(process.execPath, [daemonPath2, "--session", finalSessionPath], {
         detached: true,
@@ -2366,11 +2375,11 @@ async function main() {
     });
     return;
   }
-  const sessionDir = path5.dirname(finalSessionPath);
-  const sessionBase = path5.basename(finalSessionPath);
-  const tagsDir = path5.join(sessionDir, "wtft-tags");
-  const tagPath = path5.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-  const daemonPath = path5.join(path5.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
+  const sessionDir = path6.dirname(finalSessionPath);
+  const sessionBase = path6.basename(finalSessionPath);
+  const tagsDir = path6.join(sessionDir, "wtft-tags");
+  const tagPath = path6.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  const daemonPath = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "wtft-daemon.mjs");
   try {
     const child = spawn2(process.execPath, [daemonPath, "--session", finalSessionPath], {
       detached: true,
@@ -2383,7 +2392,7 @@ async function main() {
   const waitStart = Date.now();
   let tagInteractions = [];
   while (Date.now() - waitStart < 3e4) {
-    if (fs4.existsSync(tagPath)) {
+    if (fs5.existsSync(tagPath)) {
       tagInteractions = readClassifiedTagFile(tagPath);
       if (tagInteractions.length > 0) {
         const directInteractions = deduplicateInteractions(parseSessionFile(finalSessionPath));

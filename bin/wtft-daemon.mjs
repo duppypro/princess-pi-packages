@@ -7,8 +7,7 @@ import * as os from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
-// extensions/lib/wtft-shared.ts
-import * as path from "node:path";
+// extensions/lib/wtft-cost.ts
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -59,6 +58,9 @@ function calculateClaudeCost(model, usage, timestamp) {
   const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.reasoning_tokens || usage.reasoning || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
+
+// extensions/lib/wtft-parser.ts
+import * as path from "node:path";
 function extractFilesFromBashCommand(command, files) {
   const cmdLines = command.split("\n");
   for (const line of cmdLines) {
@@ -332,6 +334,8 @@ function classifyInteraction(interaction) {
   if (interaction.texts.length > 0) return "prompt";
   return "other";
 }
+
+// extensions/lib/wtft-daemon-lib.ts
 var WTFT_TAGGER_VERSION = "2.3.5";
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 
