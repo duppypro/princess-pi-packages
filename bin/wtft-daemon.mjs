@@ -570,11 +570,11 @@ Log parser mode:
         try {
           const tagsDir2 = path.join(path.dirname(sessionFound), "wtft-tags");
           const sessBase = path.basename(sessionFound);
-          const prefix = sessBase + ".wtft-tag.v";
+          const prefix2 = sessBase + ".wtft-tag.v";
           for (const f of fs.readdirSync(tagsDir2)) {
-            if (f.startsWith(prefix)) {
+            if (f.startsWith(prefix2)) {
               tagMtime = fs.statSync(path.join(tagsDir2, f)).mtimeMs;
-              taggerVersion = f.slice(prefix.length, f.length - 6);
+              taggerVersion = f.slice(prefix2.length, f.length - 6);
               break;
             }
           }
@@ -684,36 +684,15 @@ Log parser mode:
   } catch (_) {
   }
   tagPath = path.join(tagsDir, sessionBase + TAG_SUFFIX);
-  try {
-    const prefix = sessionBase + ".wtft-tag.v";
-    for (const f of fs.readdirSync(tagsDir)) {
-      if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
-        const stale = path.join(tagsDir, f);
-        try {
-          fs.unlinkSync(stale);
-        } catch (_) {
-        }
-        if (process.env.WTFT_DAEMON_DEBUG) {
-          process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}
-`);
-        }
-      }
-    }
-  } catch (_) {
-  }
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   pidPath = path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  const prefix = sessionBase + ".wtft-tag.v";
   try {
-    const prefix = sessionBase + ".wtft-tag.v";
     for (const f of fs.readdirSync(tagsDir)) {
-      if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
+      if (f.indexOf(prefix) === 0 && f !== sessionBase + TAG_SUFFIX) {
         try {
           const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
           if (existingPid > 0) {
-            if (process.env.WTFT_DAEMON_DEBUG) {
-              process.stderr.write(`[wtft-log-parser] replacing old daemon (tag: ${f}) with v${TAGGER_VERSION}
-`);
-            }
             try {
               process.kill(existingPid, "SIGTERM");
             } catch {
@@ -728,7 +707,25 @@ Log parser mode:
         break;
       }
     }
-  } catch {
+  } catch (e) {
+    process.stderr.write(`[wtft-log-parser] auto-upgrade scan error: ${e.message}
+`);
+  }
+  try {
+    for (const f of fs.readdirSync(tagsDir)) {
+      if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
+        const stale = path.join(tagsDir, f);
+        try {
+          fs.unlinkSync(stale);
+        } catch (_) {
+        }
+        if (process.env.WTFT_DAEMON_DEBUG) {
+          process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}
+`);
+        }
+      }
+    }
+  } catch (_) {
   }
   let fd;
   try {
