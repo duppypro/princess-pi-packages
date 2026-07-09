@@ -2,10 +2,13 @@
 
 // bin/wtft-daemon.ts
 import * as fs from "node:fs";
-import * as path from "node:path";
+import * as path2 from "node:path";
 import * as os from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+
+// extensions/lib/wtft-shared.ts
+import * as path from "node:path";
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -163,18 +166,70 @@ function parseEntryToInteraction(entry) {
       timestamp,
       cost,
       messageId: assistantMsg.id,
+      requestId: entry.requestId,
       model: assistantMsg.model || void 0,
-      inputTokens: usage.input_tokens ?? usage.input ?? 0,
-      outputTokens: usage.output_tokens ?? usage.output ?? 0,
-      cacheReadTokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
-      cacheWriteTokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
-      reasoningTokens: usage.reasoning_tokens ?? usage.reasoning ?? 0,
+      inputTokens: usage.input_tokens || usage.input || 0,
+      outputTokens: usage.output_tokens || usage.output || 0,
+      cacheReadTokens: usage.cache_read_input_tokens || usage.cacheRead || 0,
+      cacheWriteTokens: usage.cache_creation_input_tokens || usage.cacheWrite || 0,
+      reasoningTokens: usage.reasoning || 0,
       files,
       commands,
       texts
     };
   }
   return null;
+}
+function deduplicateInteractions(interactions) {
+  const byId = /* @__PURE__ */ new Map();
+  const withoutId = [];
+  for (const i of interactions) {
+    if (i.messageId) {
+      const existing = byId.get(i.messageId);
+      if (existing) {
+        existing.push(i);
+      } else {
+        byId.set(i.messageId, [i]);
+      }
+    } else {
+      withoutId.push(i);
+    }
+  }
+  const deduped = [...withoutId];
+  for (const [, group] of byId) {
+    if (group.length === 1) {
+      deduped.push(group[0]);
+    } else {
+      let best = group[0];
+      for (let j = 1; j < group.length; j++) {
+        if (group[j].cost > best.cost) best = group[j];
+      }
+      const merged = {
+        ...best,
+        files: [],
+        commands: [],
+        texts: []
+      };
+      const seenFiles = /* @__PURE__ */ new Set();
+      for (const i of group) {
+        for (const f of i.files) {
+          const key = `${f.path}:${f.action}`;
+          if (!seenFiles.has(key)) {
+            seenFiles.add(key);
+            merged.files.push(f);
+          }
+        }
+        for (const c of i.commands) {
+          if (!merged.commands.includes(c)) merged.commands.push(c);
+        }
+        for (const t of i.texts) {
+          if (!merged.texts.includes(t)) merged.texts.push(t);
+        }
+      }
+      deduped.push(merged);
+    }
+  }
+  return deduped;
 }
 function normalizeCommand(cmd) {
   let normalized = cmd.trim();
@@ -200,6 +255,7 @@ function normalizeCommand(cmd) {
   return normalized;
 }
 function classifyInteraction(interaction) {
+  if (interaction._cat) return interaction._cat;
   const specPaths = /* @__PURE__ */ new Set();
   const codePaths = /* @__PURE__ */ new Set();
   const testsPaths = /* @__PURE__ */ new Set();
@@ -263,8 +319,11 @@ function classifyInteraction(interaction) {
       const normalized = normalizeCommand(cmd);
       if (!normalized) continue;
       const lower = normalized.toLowerCase().trim();
-      if (lower === "git" || lower.startsWith("git ")) isGit = true;
-      else if (lower === "grep" || lower.startsWith("grep ") || lower === "rg" || lower.startsWith("rg ") || lower === "ripgrep" || lower.startsWith("ripgrep ") || lower === "find" || lower.startsWith("find ")) isGrep = true;
+      if (lower === "git" || lower.startsWith("git ")) {
+        isGit = true;
+      } else if (lower === "grep" || lower.startsWith("grep ") || lower === "rg" || lower.startsWith("rg ") || lower === "ripgrep" || lower.startsWith("ripgrep ") || lower === "find" || lower.startsWith("find ")) {
+        isGrep = true;
+      }
     }
     if (isGit) return "git";
     if (isGrep) return "grep";
@@ -273,63 +332,13 @@ function classifyInteraction(interaction) {
   if (interaction.texts.length > 0) return "prompt";
   return "other";
 }
-function deduplicateInteractions(interactions) {
-  const byId = /* @__PURE__ */ new Map();
-  const withoutId = [];
-  for (const i of interactions) {
-    if (i.messageId) {
-      const existing = byId.get(i.messageId);
-      if (existing) {
-        existing.push(i);
-      } else {
-        byId.set(i.messageId, [i]);
-      }
-    } else {
-      withoutId.push(i);
-    }
-  }
-  const deduped = [...withoutId];
-  for (const [, group] of byId) {
-    if (group.length === 1) {
-      deduped.push(group[0]);
-    } else {
-      let best = group[0];
-      for (let j = 1; j < group.length; j++) {
-        if (group[j].cost > best.cost) best = group[j];
-      }
-      const merged = {
-        timestamp: best.timestamp,
-        cost: best.cost,
-        messageId: best.messageId,
-        files: [],
-        commands: [],
-        texts: []
-      };
-      const seenFiles = /* @__PURE__ */ new Set();
-      for (const i of group) {
-        for (const f of i.files) {
-          const key = f.path + ":" + f.action;
-          if (!seenFiles.has(key)) {
-            seenFiles.add(key);
-            merged.files.push(f);
-          }
-        }
-        for (const c of i.commands) {
-          if (!merged.commands.includes(c)) merged.commands.push(c);
-        }
-        for (const t of i.texts) {
-          if (!merged.texts.includes(t)) merged.texts.push(t);
-        }
-      }
-      deduped.push(merged);
-    }
-  }
-  return deduped;
-}
-var TAGGER_VERSION = "2.3.5";
-var TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
-var POLL_MS = 667;
+var WTFT_TAGGER_VERSION = "2.3.5";
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
+
+// bin/wtft-daemon.ts
+var TAG_SUFFIX = `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
+var POLL_MS = 667;
+var IDLE_EXIT_MS2 = 24 * 60 * 60 * 1e3;
 function serializeClassified(interaction) {
   const cost = Number(interaction.cost.toFixed(6));
   const line = {
@@ -540,7 +549,7 @@ Log parser mode:
     }
     let found = 0;
     for (const pidFile of pidFiles) {
-      const fullPath = path.join(pidDir, pidFile);
+      const fullPath = path2.join(pidDir, pidFile);
       let pid = 0;
       try {
         pid = parseInt(fs.readFileSync(fullPath, "utf8").trim(), 10);
@@ -568,12 +577,12 @@ Log parser mode:
       let taggerVersion = "?";
       if (sessionFound) {
         try {
-          const tagsDir2 = path.join(path.dirname(sessionFound), "wtft-tags");
-          const sessBase = path.basename(sessionFound);
+          const tagsDir2 = path2.join(path2.dirname(sessionFound), "wtft-tags");
+          const sessBase = path2.basename(sessionFound);
           const prefix2 = sessBase + ".wtft-tag.v";
           for (const f of fs.readdirSync(tagsDir2)) {
             if (f.startsWith(prefix2)) {
-              tagMtime = fs.statSync(path.join(tagsDir2, f)).mtimeMs;
+              tagMtime = fs.statSync(path2.join(tagsDir2, f)).mtimeMs;
               taggerVersion = f.slice(prefix2.length, f.length - 6);
               break;
             }
@@ -676,16 +685,16 @@ Log parser mode:
 `);
     process.exit(1);
   }
-  const sessionDir = path.dirname(sessionPath);
-  const sessionBase = path.basename(sessionPath);
-  const tagsDir = path.join(sessionDir, "wtft-tags");
+  const sessionDir = path2.dirname(sessionPath);
+  const sessionBase = path2.basename(sessionPath);
+  const tagsDir = path2.join(sessionDir, "wtft-tags");
   try {
     fs.mkdirSync(tagsDir, { recursive: true });
   } catch (_) {
   }
-  tagPath = path.join(tagsDir, sessionBase + TAG_SUFFIX);
+  tagPath = path2.join(tagsDir, sessionBase + TAG_SUFFIX);
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
-  pidPath = path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  pidPath = path2.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
   const prefix = sessionBase + ".wtft-tag.v";
   try {
     for (const f of fs.readdirSync(tagsDir)) {
@@ -714,7 +723,7 @@ Log parser mode:
   try {
     for (const f of fs.readdirSync(tagsDir)) {
       if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
-        const stale = path.join(tagsDir, f);
+        const stale = path2.join(tagsDir, f);
         try {
           fs.unlinkSync(stale);
         } catch (_) {
@@ -785,7 +794,7 @@ Log parser mode:
         upsertHeartbeat(now);
         lastWriteMs = now;
       }
-      if (now - lastActivityMs >= IDLE_EXIT_MS && now - startupTime >= 6e4) {
+      if (now - lastActivityMs >= IDLE_EXIT_MS2 && now - startupTime >= 6e4) {
         if (process.env.WTFT_DAEMON_DEBUG) {
           process.stderr.write(`[wtft-log-parser] no new data for ${Math.round((now - lastActivityMs) / 6e4)}m, exiting
 `);
