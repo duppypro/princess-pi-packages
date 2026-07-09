@@ -326,14 +326,15 @@ function deduplicateInteractions(interactions) {
   }
   return deduped;
 }
-var TAGGER_VERSION = "2.3.3";
+var TAGGER_VERSION = "2.3.4";
 var TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 var POLL_MS = 667;
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 function serializeClassified(interaction) {
+  const cost = Number(interaction.cost.toFixed(6));
   const line = {
     t: interaction.timestamp,
-    c: interaction.cost,
+    c: cost,
     cat: classifyInteraction(interaction),
     f: interaction.files.map((f) => ({ p: f.path, a: f.action })),
     cmd: interaction.commands
