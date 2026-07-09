@@ -2381,12 +2381,22 @@ async function main() {
     console.error(`\x1B[33m\u26A0 Log parser spawn failed, falling back to direct parse: ${err}\x1B[0m`);
   }
   const waitStart = Date.now();
-  while (Date.now() - waitStart < 3e3) {
-    if (fs4.existsSync(tagPath)) {
-      const content = fs4.readFileSync(tagPath, "utf8");
-      if (content.split("\n").some((l) => l.trim() && !l.includes('"_hb"'))) break;
+  let lastTagSize = 0;
+  let stablePolls = 0;
+  while (Date.now() - waitStart < 3e4) {
+    let size = 0;
+    try {
+      size = fs4.statSync(tagPath).size;
+    } catch {
     }
-    await new Promise((r) => setTimeout(r, 250));
+    if (size > 0 && size === lastTagSize) {
+      stablePolls++;
+      if (stablePolls >= 2) break;
+    } else {
+      stablePolls = 0;
+    }
+    lastTagSize = size;
+    await new Promise((r) => setTimeout(r, 667));
   }
   const interactions = readClassifiedTagFile(tagPath);
   if (interactions.length === 0) {
