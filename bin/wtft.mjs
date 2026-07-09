@@ -2381,24 +2381,18 @@ async function main() {
     console.error(`\x1B[33m\u26A0 Log parser spawn failed, falling back to direct parse: ${err}\x1B[0m`);
   }
   const waitStart = Date.now();
-  let lastTagSize = 0;
-  let stablePolls = 0;
+  let tagInteractions = [];
   while (Date.now() - waitStart < 3e4) {
-    let size = 0;
-    try {
-      size = fs4.statSync(tagPath).size;
-    } catch {
+    if (fs4.existsSync(tagPath)) {
+      tagInteractions = readClassifiedTagFile(tagPath);
+      if (tagInteractions.length > 0) {
+        const directInteractions = deduplicateInteractions(parseSessionFile(finalSessionPath));
+        if (tagInteractions.length >= directInteractions.length) break;
+      }
     }
-    if (size > 0 && size === lastTagSize) {
-      stablePolls++;
-      if (stablePolls >= 2) break;
-    } else {
-      stablePolls = 0;
-    }
-    lastTagSize = size;
     await new Promise((r) => setTimeout(r, 667));
   }
-  const interactions = readClassifiedTagFile(tagPath);
+  const interactions = tagInteractions.length > 0 ? tagInteractions : [];
   if (interactions.length === 0) {
     interactions.push(...parseSessionFile(finalSessionPath));
   }
