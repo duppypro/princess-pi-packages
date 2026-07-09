@@ -703,46 +703,49 @@ Log parser mode:
   }
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   pidPath = path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
-  const pidPayload = `${process.pid} ${TAGGER_VERSION}`;
-  let fd;
   try {
-    fd = fs.openSync(pidPath, "wx");
-    fs.writeSync(fd, pidPayload);
-    fs.closeSync(fd);
-  } catch (_) {
-    try {
-      const existing = fs.readFileSync(pidPath, "utf8").trim().split(/\s+/);
-      const existingPid = parseInt(existing[0], 10);
-      const existingVer = existing[1] || "";
-      if (existingPid > 0) {
+    const prefix = sessionBase + ".wtft-tag.v";
+    for (const f of fs.readdirSync(tagsDir)) {
+      if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
         try {
-          process.kill(existingPid, 0);
-          if (existingVer !== TAGGER_VERSION) {
+          const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+          if (existingPid > 0) {
             if (process.env.WTFT_DAEMON_DEBUG) {
-              process.stderr.write(`[wtft-log-parser] replacing v${existingVer} daemon (pid ${existingPid}) with v${TAGGER_VERSION}
+              process.stderr.write(`[wtft-log-parser] replacing old daemon (tag: ${f}) with v${TAGGER_VERSION}
 `);
             }
             try {
               process.kill(existingPid, "SIGTERM");
             } catch {
             }
-            try {
-              fs.unlinkSync(pidPath);
-            } catch {
-            }
-            fd = fs.openSync(pidPath, "wx");
-            fs.writeSync(fd, pidPayload);
-            fs.closeSync(fd);
-          } else {
-            process.exit(0);
           }
+        } catch {
+        }
+        try {
+          fs.unlinkSync(pidPath);
+        } catch {
+        }
+        break;
+      }
+    }
+  } catch {
+  }
+  let fd;
+  try {
+    fd = fs.openSync(pidPath, "wx");
+    fs.writeSync(fd, String(process.pid));
+    fs.closeSync(fd);
+  } catch (_) {
+    try {
+      const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+      if (existingPid > 0) {
+        try {
+          process.kill(existingPid, 0);
+          process.exit(0);
         } catch (_2) {
-          try {
-            fs.unlinkSync(pidPath);
-          } catch {
-          }
+          fs.unlinkSync(pidPath);
           fd = fs.openSync(pidPath, "wx");
-          fs.writeSync(fd, pidPayload);
+          fs.writeSync(fd, String(process.pid));
           fs.closeSync(fd);
         }
       }
@@ -752,7 +755,7 @@ Log parser mode:
       } catch (_4) {
       }
       fd = fs.openSync(pidPath, "wx");
-      fs.writeSync(fd, pidPayload);
+      fs.writeSync(fd, String(process.pid));
       fs.closeSync(fd);
     }
   }
