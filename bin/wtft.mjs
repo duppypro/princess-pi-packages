@@ -6,6 +6,15 @@ import * as path6 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/wtft-cost.ts
+var WEB_SEARCH_PRICE = 0.03;
+var WEB_FETCH_PRICE = 0.03;
+function calculateServerToolCost(model, webSearchRequests, webFetchRequests) {
+  const m = (model || "").toLowerCase();
+  if (!m.includes("claude") && !/\b(haiku|sonnet|opus)\b/.test(m)) {
+    return 0;
+  }
+  return webSearchRequests * WEB_SEARCH_PRICE + webFetchRequests * WEB_FETCH_PRICE;
+}
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -123,6 +132,12 @@ function parseEntryToInteraction(entry) {
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
+    const serverToolRequests = usage.server_tool_use || {};
+    const serverToolCost = calculateServerToolCost(
+      assistantMsg.model || "",
+      serverToolRequests.web_search_requests || 0,
+      serverToolRequests.web_fetch_requests || 0
+    );
     const files = [];
     const commands = [];
     const texts = [];
@@ -174,6 +189,9 @@ function parseEntryToInteraction(entry) {
       cacheReadTokens: usage.cache_read_input_tokens || usage.cacheRead || 0,
       cacheWriteTokens: usage.cache_creation_input_tokens || usage.cacheWrite || 0,
       reasoningTokens: usage.reasoning || 0,
+      webSearchRequests: serverToolRequests.web_search_requests || 0,
+      webFetchRequests: serverToolRequests.web_fetch_requests || 0,
+      serverToolCost,
       files,
       commands,
       texts
@@ -729,6 +747,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   interactions = deduplicateInteractions(interactions);
   const binMap = /* @__PURE__ */ new Map();
   let totalSessionCost = 0;
+  const ALL_CATEGORIES = ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "prompt", "other"];
   for (const interaction of interactions) {
     const classification = classifyInteraction(interaction);
     const { key, label, dateStr } = getBinInfo(interaction.timestamp, intervalConfig, tz);
@@ -736,7 +755,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     let bin = binMap.get(key);
     if (!bin) {
       const costs = {};
-      for (const cat of ["spec", "code", "mixed", "tests", "research", "git", "grep", "prompt", "other"]) {
+      for (const cat of ALL_CATEGORIES) {
         costs[cat] = 0;
       }
       bin = { label, dateStr, costs, total_cost: 0 };
@@ -744,11 +763,16 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     }
     bin.costs[classification] += interaction.cost;
     bin.total_cost += interaction.cost;
+    if (interaction.serverToolCost) {
+      bin.costs["web"] += interaction.serverToolCost;
+      bin.total_cost += interaction.serverToolCost;
+      totalSessionCost += interaction.serverToolCost;
+    }
   }
   const sortedBins = Array.from(binMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map((entry) => entry[1]);
   if (mode2 === "cumulative") {
     const runningCosts = {};
-    for (const cat of ["spec", "code", "mixed", "tests", "research", "git", "grep", "prompt", "other"]) {
+    for (const cat of ALL_CATEGORIES) {
       runningCosts[cat] = 0;
     }
     let running_total = 0;
@@ -806,6 +830,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     `\x1B[38;5;134m\u2588\x1B[0mResearch`,
     `\x1B[38;5;73m\u2588\x1B[0mGit`,
     `\x1B[38;5;67m\u2588\x1B[0mGrep`,
+    `\x1B[38;5;209m\u2593\x1B[0mWeb`,
     `\x1B[38;5;168m\u2591\x1B[0mPrompt`,
     `\x1B[38;5;238m\u2591\x1B[0mOther`
   ];
@@ -879,6 +904,9 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       if (chars.grep > 0) {
         barStr += `\x1B[38;5;67m${"\u2588".repeat(chars.grep)}\x1B[0m`;
       }
+      if (chars.web > 0) {
+        barStr += `\x1B[38;5;209m${"\u2593".repeat(chars.web)}\x1B[0m`;
+      }
       if (chars.prompt > 0) {
         barStr += `\x1B[38;5;168m${"\u2591".repeat(chars.prompt)}\x1B[0m`;
       }
@@ -891,6 +919,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
         { cat: "other", color: "\x1B[38;5;238m", char: "\u2591" },
         { cat: "prompt", color: "\x1B[38;5;168m", char: "\u2591" },
         { cat: "grep", color: "\x1B[38;5;67m", char: "\u2588" },
+        { cat: "web", color: "\x1B[38;5;209m", char: "\u2593" },
         { cat: "git", color: "\x1B[38;5;73m", char: "\u2588" },
         { cat: "research", color: "\x1B[38;5;134m", char: "\u2588" },
         { cat: "tests", color: "\x1B[38;5;223m", char: "\u2588" },
@@ -1388,6 +1417,9 @@ function classifiedToInteraction(obj) {
     cacheReadTokens: obj.cr || 0,
     cacheWriteTokens: obj.cw || 0,
     reasoningTokens: obj.rs || 0,
+    webSearchRequests: obj.ws || 0,
+    webFetchRequests: obj.wf || 0,
+    serverToolCost: obj.sc || 0,
     _cat: obj.cat || void 0
   };
 }

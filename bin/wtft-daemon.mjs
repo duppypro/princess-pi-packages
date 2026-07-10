@@ -8,6 +8,15 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
 // extensions/lib/wtft-cost.ts
+var WEB_SEARCH_PRICE = 0.03;
+var WEB_FETCH_PRICE = 0.03;
+function calculateServerToolCost(model, webSearchRequests, webFetchRequests) {
+  const m = (model || "").toLowerCase();
+  if (!m.includes("claude") && !/\b(haiku|sonnet|opus)\b/.test(m)) {
+    return 0;
+  }
+  return webSearchRequests * WEB_SEARCH_PRICE + webFetchRequests * WEB_FETCH_PRICE;
+}
 function getDeepSeekPeakMultiplier(timestamp) {
   const ts = timestamp || Date.now();
   const d = new Date(ts);
@@ -124,6 +133,12 @@ function parseEntryToInteraction(entry) {
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
+    const serverToolRequests = usage.server_tool_use || {};
+    const serverToolCost = calculateServerToolCost(
+      assistantMsg.model || "",
+      serverToolRequests.web_search_requests || 0,
+      serverToolRequests.web_fetch_requests || 0
+    );
     const files = [];
     const commands = [];
     const texts = [];
@@ -175,6 +190,9 @@ function parseEntryToInteraction(entry) {
       cacheReadTokens: usage.cache_read_input_tokens || usage.cacheRead || 0,
       cacheWriteTokens: usage.cache_creation_input_tokens || usage.cacheWrite || 0,
       reasoningTokens: usage.reasoning || 0,
+      webSearchRequests: serverToolRequests.web_search_requests || 0,
+      webFetchRequests: serverToolRequests.web_fetch_requests || 0,
+      serverToolCost,
       files,
       commands,
       texts
@@ -359,6 +377,9 @@ function serializeClassified(interaction) {
   if (interaction.cacheReadTokens > 0) line.cr = interaction.cacheReadTokens;
   if (interaction.cacheWriteTokens > 0) line.cw = interaction.cacheWriteTokens;
   if (interaction.reasoningTokens > 0) line.rs = interaction.reasoningTokens;
+  if (interaction.serverToolCost) line.sc = Number(interaction.serverToolCost.toFixed(6));
+  if (interaction.webSearchRequests > 0) line.ws = interaction.webSearchRequests;
+  if (interaction.webFetchRequests > 0) line.wf = interaction.webFetchRequests;
   return JSON.stringify(line) + "\n";
 }
 var sessionPath = null;
