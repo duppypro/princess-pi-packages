@@ -1251,7 +1251,6 @@ async function watchMode(sessionPath, settings) {
   let lastBuffer = [];
   let lastLineCount = 0;
   process.stdout.write("\n");
-  lastLineCount = 1;
   const exitWatch = () => {
     clearPreviousLines(lastLineCount);
     showCursor();
@@ -1625,7 +1624,6 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let lastLineCount = 0;
   hideCursor();
   process.stdout.write("\n");
-  lastLineCount = 1;
   let lastBuffer = [];
   const exitWatch = () => {
     if (watcher) watcher.close();
