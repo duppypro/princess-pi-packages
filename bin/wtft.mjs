@@ -1495,11 +1495,39 @@ function renderDaemonStatus(status, restarting = false) {
       return `  \x1B[33m\u25CF\x1B[0m idle (${m}:${String(s).padStart(2, "0")} to expire)`;
     }
     if (cacheTtlMs === null) {
-      return "  \x1B[32m\u25CF\x1B[0m No Cache (local)";
+      return "  \x1B[33m\u25CF\x1B[0m idle (local model)";
     }
     return "  \x1B[33m\u25CF\x1B[0m idle";
   }
   return "  \x1B[32m\u25CF\x1B[0m live";
+}
+function getModelFromSessionFile(sessionPath) {
+  try {
+    const stat = fs2.statSync(sessionPath);
+    const readStart = Math.max(0, stat.size - 8192);
+    const fd = fs2.openSync(sessionPath, "r");
+    const buf = Buffer.alloc(stat.size - readStart);
+    fs2.readSync(fd, buf, 0, buf.length, readStart);
+    fs2.closeSync(fd);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === "message" && entry.message?.role === "assistant" && entry.message?.model) {
+          return entry.message.model;
+        }
+        if (entry.type === "assistant" && entry.message?.role === "assistant" && entry.message?.model) {
+          return entry.message.model;
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+  }
+  return void 0;
 }
 function checkDaemonHealth(sessionPath, tagPath) {
   const pidPath = getDaemonPidPath(sessionPath);
@@ -1544,6 +1572,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
           }
         }
         if (idleMs !== void 0 && idleMs >= IDLE_THRESHOLD_MS) {
+          if (!lastModel) lastModel = getModelFromSessionFile(sessionPath);
           const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
           return { alive: true, idle: true, idleMs, cacheTtlMs };
         }
