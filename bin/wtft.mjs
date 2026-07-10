@@ -1247,12 +1247,11 @@ async function watchMode(sessionPath, settings) {
   let lastSize = 0;
   let needsRedraw = true;
   let _lastRenderMin = -1;
-  process.stdout.write("\x1B7");
   hideCursor();
   let lastBuffer = [];
   let lastLineCount = 0;
   const exitWatch = () => {
-    process.stdout.write("\x1B8\x1B[J");
+    clearPreviousLines(lastLineCount);
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -1326,7 +1325,7 @@ async function watchMode(sessionPath, settings) {
   let sessionTimezone;
   process.stdout.write("\x1B7");
   const render = () => {
-    process.stdout.write("\x1B8\x1B[J");
+    clearPreviousLines(lastLineCount);
     const width = getTerminalWidth();
     const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
     const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
@@ -1362,9 +1361,9 @@ async function watchMode(sessionPath, settings) {
     }
     buf.push(`'q' to exit`);
     lastBuffer = [...buf];
-    const cols = process.stdout.columns || 80;
-    lastLineCount = buf.join("\n").split("\n").length;
-    process.stdout.write(buf.join("\n"));
+    const output = buf.join("\n");
+    process.stdout.write(output);
+    lastLineCount = visualLineCount(output, width);
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
   };
@@ -1621,12 +1620,12 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let interactionCount = 0;
   let needsRedraw = true;
   let _lastRenderMin = -1;
-  process.stdout.write("\x1B7");
+  let lastLineCount = 0;
   hideCursor();
   let lastBuffer = [];
   const exitWatch = () => {
     if (watcher) watcher.close();
-    process.stdout.write("\x1B8\x1B[J");
+    clearPreviousLines(lastLineCount);
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -1742,7 +1741,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   } catch {
   }
   const render = () => {
-    process.stdout.write("\x1B8\x1B[J");
+    clearPreviousLines(lastLineCount);
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
@@ -1805,7 +1804,9 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const restartHint = settings.daemonPath ? daemonDead ? `, \x1B[31m'r' to restart parser\x1B[0m` : `, using v${WTFT_TAGGER_VERSION}, 'r' to restart parser` : "";
     buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
-    process.stdout.write(buf.map((l) => padStr + l).join("\n"));
+    const output = buf.map((l) => padStr + l).join("\n");
+    process.stdout.write(output);
+    lastLineCount = visualLineCount(output, width);
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
   };
