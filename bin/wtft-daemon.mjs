@@ -354,20 +354,13 @@ function classifyInteraction(interaction) {
 }
 
 // extensions/lib/wtft-daemon-lib.ts
-var WTFT_TAGGER_VERSION = "2.3.6";
-var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
-
-// bin/wtft-daemon.ts
-var TAG_SUFFIX = `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
-var POLL_MS = 667;
-var IDLE_EXIT_MS2 = 24 * 60 * 60 * 1e3;
 function serializeClassified(interaction) {
   const cost = Number(interaction.cost.toFixed(6));
   const line = {
     t: interaction.timestamp,
     c: cost,
     cat: classifyInteraction(interaction),
-    f: interaction.files.map((f) => ({ p: f.path, a: f.action })),
+    f: interaction.files.map((f) => ({ p: f.path, a: f.action === "write" ? "w" : "r" })),
     cmd: interaction.commands
   };
   if (interaction.messageId) line.id = interaction.messageId;
@@ -382,6 +375,13 @@ function serializeClassified(interaction) {
   if (interaction.webFetchRequests > 0) line.wf = interaction.webFetchRequests;
   return JSON.stringify(line) + "\n";
 }
+var WTFT_TAGGER_VERSION = "2.3.6";
+var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
+
+// bin/wtft-daemon.ts
+var TAG_SUFFIX = `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
+var POLL_MS = 667;
+var IDLE_EXIT_MS2 = 24 * 60 * 60 * 1e3;
 var sessionPath = null;
 var tagPath = null;
 var pidPath = null;
