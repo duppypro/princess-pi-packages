@@ -26,13 +26,102 @@ function getDeepSeekPeakMultiplier(timestamp) {
   }
   return 1;
 }
+var MODEL_PRICING = {
+  // DeepSeek — no tiers, surge pricing handled by getDeepSeekPeakMultiplier
+  "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 28e-4, cacheWrite: 0 },
+  "deepseek-v4-pro": { input: 1.74, output: 3.48, cacheRead: 0.0145, cacheWrite: 0 },
+  // GPT-5.x — tiered pricing (short-context ≤272K, long-context >272K total input)
+  // Source: pi-ai openai.models.js (v0.80.6)
+  "gpt-5.4": {
+    input: 2.5,
+    output: 15,
+    cacheRead: 0.25,
+    cacheWrite: 0,
+    tiers: [{ inputTokensAbove: 272e3, input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 0 }]
+  },
+  "gpt-5.5": {
+    input: 5,
+    output: 30,
+    cacheRead: 0.5,
+    cacheWrite: 0,
+    tiers: [{ inputTokensAbove: 272e3, input: 10, output: 45, cacheRead: 1, cacheWrite: 0 }]
+  },
+  "gpt-5.6-sol": {
+    input: 5,
+    output: 30,
+    cacheRead: 0.5,
+    cacheWrite: 6.25,
+    tiers: [{ inputTokensAbove: 272e3, input: 10, output: 45, cacheRead: 1, cacheWrite: 12.5 }]
+  },
+  "gpt-5.6-terra": {
+    input: 2.5,
+    output: 15,
+    cacheRead: 0.25,
+    cacheWrite: 3.13,
+    tiers: [{ inputTokensAbove: 272e3, input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 6.25 }]
+  },
+  "gpt-5.6-luna": {
+    input: 1.25,
+    output: 7.5,
+    cacheRead: 0.125,
+    cacheWrite: 1.56,
+    tiers: [{ inputTokensAbove: 272e3, input: 2.5, output: 11.25, cacheRead: 0.25, cacheWrite: 3.13 }]
+  }
+};
+function resolveTieredRates(pricing, usage) {
+  const totalInput = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+  let rates = {
+    input: pricing.input,
+    output: pricing.output,
+    cacheRead: pricing.cacheRead,
+    cacheWrite: pricing.cacheWrite
+  };
+  if (pricing.tiers) {
+    const sorted = [...pricing.tiers].sort((a, b) => b.inputTokensAbove - a.inputTokensAbove);
+    for (const tier of sorted) {
+      if (totalInput > tier.inputTokensAbove) {
+        rates = {
+          input: tier.input,
+          output: tier.output,
+          cacheRead: tier.cacheRead,
+          cacheWrite: tier.cacheWrite
+        };
+        break;
+      }
+    }
+  }
+  return rates;
+}
+function lookupModelPricing(model) {
+  if (!model) return null;
+  const m = model.toLowerCase().trim();
+  if (MODEL_PRICING[m]) return MODEL_PRICING[m];
+  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+    if (m.includes(key)) return pricing;
+  }
+  return null;
+}
 function calculateClaudeCost(model, usage, timestamp) {
   if (!usage) return 0;
   let inputPrice = 3;
   let outputPrice = 15;
   let cacheReadPrice = 0.3;
+  let cacheWritePrice = 3.75;
   const m = (model || "").toLowerCase();
-  if (m.includes("deepseek")) {
+  const registryPricing = lookupModelPricing(model);
+  if (registryPricing) {
+    const rates = resolveTieredRates(registryPricing, usage);
+    if (m.includes("deepseek")) {
+      const peak = getDeepSeekPeakMultiplier(timestamp);
+      rates.input *= peak;
+      rates.output *= peak;
+      rates.cacheRead *= peak;
+    }
+    inputPrice = rates.input;
+    outputPrice = rates.output;
+    cacheReadPrice = rates.cacheRead;
+    cacheWritePrice = rates.cacheWrite;
+  } else if (m.includes("deepseek")) {
     const peak = getDeepSeekPeakMultiplier(timestamp);
     if (m.includes("v4-pro")) {
       inputPrice = 1.74 * peak;
@@ -43,21 +132,26 @@ function calculateClaudeCost(model, usage, timestamp) {
       outputPrice = 0.28 * peak;
       cacheReadPrice = 28e-4 * peak;
     }
+    cacheWritePrice = 0;
   } else if (m.includes("haiku")) {
     inputPrice = 1;
     outputPrice = 5;
     cacheReadPrice = 0.1;
+    cacheWritePrice = 1.25;
   } else if (m.includes("opus")) {
     inputPrice = 5;
     outputPrice = 25;
     cacheReadPrice = 0.5;
+    cacheWritePrice = 6.25;
   }
   let cacheWriteCost = 0;
   const cc = usage.cache_creation || {};
   const cw5m = cc.ephemeral_5m_input_tokens ?? 0;
   const cw1h = cc.ephemeral_1h_input_tokens ?? 0;
   const cwFlat = Math.max(0, (usage.cache_creation_input_tokens || 0) - cw5m - cw1h);
-  if (m.includes("deepseek")) {
+  if (registryPricing) {
+    cacheWriteCost = cw5m * (cacheWritePrice / 1e6) + cw1h * (cacheWritePrice * 2 / 1e6) + cwFlat * (cacheWritePrice / 1e6);
+  } else if (m.includes("deepseek")) {
     cacheWriteCost = 0;
   } else {
     cacheWriteCost = cw5m * (inputPrice * 1.25 / 1e6) + cw1h * (inputPrice * 2 / 1e6) + cwFlat * (inputPrice * 1.25 / 1e6);
@@ -1479,7 +1573,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.3.6";
+var WTFT_TAGGER_VERSION = "2.3.7";
 function getTagPath(sessionPath) {
   const sessionDir = path2.dirname(sessionPath);
   const sessionBase = path2.basename(sessionPath);
@@ -2134,7 +2228,7 @@ function formatRelativeTime(ts) {
 }
 
 // extensions/lib/session-selector.ts
-var TAGGER_VERSION = "2.3.6";
+var TAGGER_VERSION = "2.3.7";
 function discoverSessions(harness = "auto", cwdOverride2) {
   const piSessionsDir = path4.join(os3.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
