@@ -1747,6 +1747,11 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     }
     const health = checkDaemonHealth(sessionPath, tagPath);
     if (!health.alive) {
+      try {
+        const tagStat = fs2.statSync(tagPath);
+        if (Date.now() - tagStat.mtimeMs < 2e3 && tagStat.size > 0) return;
+      } catch {
+      }
       daemonDead = true;
       daemonStopReason = health.reason || "unknown";
       daemonStopTime = health.lastHbTime || "";
