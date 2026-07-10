@@ -1933,6 +1933,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
           }
         }
         if (newCount > 0) {
+          updateDaemonHealth();
           needsRedraw = true;
           render();
         }
@@ -1963,7 +1964,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     updateDaemonHealth();
     needsRedraw = true;
     render();
-  }, 1e4);
+  }, 500);
   const minuteInterval = setInterval(() => {
     const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
     if (_curMin !== _lastRenderMin) {
