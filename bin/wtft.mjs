@@ -738,6 +738,18 @@ function buildTimelineString(surgeHours, currentHour, proximityStatus) {
   }
   return result;
 }
+function computeCacheMetrics(interactions) {
+  let cr = 0, cw = 0, input = 0;
+  for (const i of interactions) {
+    cr += i.cacheReadTokens;
+    cw += i.cacheWriteTokens;
+    input += i.inputTokens;
+  }
+  const total = cr + cw + input;
+  if (total === 0) return void 0;
+  const hitRate = (cr / total * 100).toFixed(0);
+  return { hitRate, readTokens: formatTokenCount(cr), totalOps: formatTokenCount(total) };
+}
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
   const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
@@ -984,6 +996,10 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       widgetLines.push(`\x1B[1;33m\u26A0\uFE0F  "Other" category: ${pctStr} of session cost (${costStr}). Run wtft --other to drill down.\x1B[0m`);
     }
   }
+  const cacheMetrics = computeCacheMetrics(interactions);
+  if (cacheMetrics) {
+    widgetLines.push(`\x1B[90m  CH: ${cacheMetrics.hitRate}% cache hit (${cacheMetrics.readTokens} read / ${cacheMetrics.totalOps} total ops)\x1B[0m`);
+  }
   return widgetLines;
 }
 var SEMANTIC_GROUPS = {
@@ -1127,7 +1143,7 @@ function formatTokenCount(n) {
 function shortenModel(model) {
   return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
-function renderTokenSummary(interactions, maxWidth = 80) {
+function renderTokenSummary(interactions, maxWidth = 80, thinkingBudget2) {
   const deduped = deduplicateInteractions(interactions);
   const byModel = /* @__PURE__ */ new Map();
   let unmatched = 0;
@@ -1177,6 +1193,22 @@ function renderTokenSummary(interactions, maxWidth = 80) {
       formatTokenCount(agg.cacheWriteTokens).padStart(numColW),
       formatCost(agg.cost).padStart(numColW)
     ].join(" ") + "\n";
+    const cacheTotal = agg.cacheReadTokens + agg.cacheWriteTokens + agg.inputTokens;
+    if (cacheTotal > 0) {
+      const hitRate = (agg.cacheReadTokens / cacheTotal * 100).toFixed(0);
+      out += `  Cache: ${hitRate}% hit (${formatTokenCount(agg.cacheReadTokens)} read / ${formatTokenCount(cacheTotal)} total ops)
+`;
+    }
+    if (agg.reasoningTokens > 0) {
+      if (thinkingBudget2 && thinkingBudget2 > 0) {
+        const utilized = (agg.reasoningTokens / thinkingBudget2 * 100).toFixed(0);
+        out += `  Think: ${formatTokenCount(agg.reasoningTokens)} tokens (budget: ${formatTokenCount(thinkingBudget2)} \u2014 ${utilized}% utilized)
+`;
+      } else {
+        out += `  Think: ${formatTokenCount(agg.reasoningTokens)} tokens
+`;
+      }
+    }
     totalInput += agg.inputTokens;
     totalOutput += agg.outputTokens;
     totalCr += agg.cacheReadTokens;
@@ -2280,6 +2312,7 @@ Options:
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
   -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
   -T, --tokens            Print a per-model token summary table (deduped) for cross-referencing with /usage.
+  --thinking-budget <n>   Thinking token budget for utilization display in --tokens (default: no budget shown).
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
   -F, --force             Kill the log parser, delete tag files, and force a full session re-parse.
   --pad <N>               Pad output with N spaces on each side (default: 1, max: floor(term/2)-1).
@@ -2313,6 +2346,7 @@ var daemonRestart = false;
 var daemonStop;
 var debugMode = false;
 var forceReparse = false;
+var thinkingBudget = void 0;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
@@ -2375,6 +2409,11 @@ for (let i = 2; i < process.argv.length; i++) {
     debugMode = true;
   } else if (arg === "--force" || arg === "-F") {
     forceReparse = true;
+  } else if (arg === "--thinking-budget") {
+    const val = parseInt(process.argv[++i], 10);
+    if (!isNaN(val) && val > 0) {
+      thinkingBudget = val;
+    }
   } else if (arg === "--dir" || arg === "--cwd") {
     cwdOverride = process.argv[++i];
   } else if (arg === "--harness") {
@@ -2603,7 +2642,7 @@ async function main() {
     }
   }
   if (showTokens) {
-    const tokenOutput = renderTokenSummary(interactions, Math.min(paddedWidth, 1023));
+    const tokenOutput = renderTokenSummary(interactions, Math.min(paddedWidth, 1023), thinkingBudget);
     for (const line of tokenOutput.split("\n")) {
       console.log(padStr + line);
     }
