@@ -374,6 +374,7 @@ function serializeClassified(interaction) {
   if (interaction.serverToolCost) line.sc = Number(interaction.serverToolCost.toFixed(6));
   if (interaction.webSearchRequests > 0) line.ws = interaction.webSearchRequests;
   if (interaction.webFetchRequests > 0) line.wf = interaction.webFetchRequests;
+  if (interaction.thinkingLevel) line.tl = interaction.thinkingLevel;
   return JSON.stringify(line) + "\n";
 }
 var WTFT_TAGGER_VERSION = "2.3.6";
