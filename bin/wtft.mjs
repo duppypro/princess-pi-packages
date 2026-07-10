@@ -1498,8 +1498,9 @@ function renderDaemonStatus(status, restarting = false) {
   }
   if (status.idle) {
     const cacheTtlMs = status.cacheTtlMs;
-    if (cacheTtlMs != null && status.idleMs != null) {
-      const remainingMs = Math.max(0, cacheTtlMs - (status.idleMs || 0));
+    const elapsedMs = status.idleSinceMs != null ? Date.now() - status.idleSinceMs : status.idleMs || 0;
+    if (cacheTtlMs != null && elapsedMs > 0) {
+      const remainingMs = Math.max(0, cacheTtlMs - elapsedMs);
       const remainingSec = Math.floor(remainingMs / 1e3);
       if (remainingSec >= 3600) {
         const h = Math.floor(remainingSec / 3600);
@@ -1519,13 +1520,8 @@ function renderDaemonStatus(status, restarting = false) {
 }
 function getModelFromSessionFile(sessionPath) {
   try {
-    const stat = fs2.statSync(sessionPath);
-    const readStart = Math.max(0, stat.size - 8192);
-    const fd = fs2.openSync(sessionPath, "r");
-    const buf = Buffer.alloc(stat.size - readStart);
-    fs2.readSync(fd, buf, 0, buf.length, readStart);
-    fs2.closeSync(fd);
-    const lines = buf.toString("utf8").split("\n");
+    const content = fs2.readFileSync(sessionPath, "utf8");
+    const lines = content.split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -1570,6 +1566,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
         const lines = buf.toString("utf8").split("\n");
         let lastModel;
         let idleMs;
+        let idleSinceMs;
         for (let i = lines.length - 1; i >= 0; i--) {
           const line = lines[i].trim();
           if (!line) continue;
@@ -1578,6 +1575,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
             if (!lastModel && obj.m) lastModel = obj.m;
             if (obj._hb) {
               if (typeof obj._hb === "object" && obj._hb.first && idleMs === void 0) {
+                idleSinceMs = obj._hb.first;
                 idleMs = Date.now() - obj._hb.first;
               }
               continue;
@@ -1590,7 +1588,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
         if (idleMs !== void 0 && idleMs >= IDLE_THRESHOLD_MS) {
           if (!lastModel) lastModel = getModelFromSessionFile(sessionPath);
           const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
-          return { alive: true, idle: true, idleMs, cacheTtlMs };
+          return { alive: true, idle: true, idleMs, idleSinceMs, cacheTtlMs };
         }
       }
     } catch {
@@ -1920,14 +1918,14 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     needsRedraw = true;
     render();
   }, 1e4);
-  const minuteInterval = setInterval(() => {
+  const refreshTimer = setInterval(() => {
     const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
-    if (_curMin !== _lastRenderMin) {
+    if (_curMin !== _lastRenderMin || daemonIdle) {
       updateDaemonHealth();
       needsRedraw = true;
       render();
     }
-  }, 6e4);
+  }, 1e3);
   await new Promise(() => {
   });
 }
