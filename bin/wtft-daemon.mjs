@@ -103,7 +103,7 @@ function extractFilesFromBashCommand(command, files) {
     }
   }
 }
-function parseEntryToInteraction(entry, thinkingLevel) {
+function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
   if (!entry) return null;
   const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
   const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
@@ -194,6 +194,7 @@ function parseEntryToInteraction(entry, thinkingLevel) {
       webFetchRequests: serverToolRequests.web_fetch_requests || 0,
       serverToolCost,
       thinkingLevel,
+      compactionTokensBefore,
       files,
       commands,
       texts
@@ -375,9 +376,10 @@ function serializeClassified(interaction) {
   if (interaction.webSearchRequests > 0) line.ws = interaction.webSearchRequests;
   if (interaction.webFetchRequests > 0) line.wf = interaction.webFetchRequests;
   if (interaction.thinkingLevel) line.tl = interaction.thinkingLevel;
+  if (interaction.compactionTokensBefore) line.cb = interaction.compactionTokensBefore;
   return JSON.stringify(line) + "\n";
 }
-var WTFT_TAGGER_VERSION = "2.3.6";
+var WTFT_TAGGER_VERSION = "2.3.8";
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 
 // bin/wtft-daemon.ts
@@ -394,6 +396,7 @@ var startupTime = Date.now();
 var pendingLines = [];
 var idleStartMs = 0;
 var currentThinkingLevel;
+var lastCompactionTokensBefore;
 var running = true;
 function shutdown(reason) {
   if (!running) return;
@@ -503,9 +506,14 @@ function parseNewLines(filePath) {
           currentThinkingLevel = entry.thinkingLevel;
           continue;
         }
-        const interaction = parseEntryToInteraction(entry, currentThinkingLevel);
+        if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
+          lastCompactionTokensBefore = entry.tokensBefore;
+          continue;
+        }
+        const interaction = parseEntryToInteraction(entry, currentThinkingLevel, lastCompactionTokensBefore);
         if (interaction) {
           interactions.push(interaction);
+          lastCompactionTokensBefore = void 0;
         }
       } catch (_) {
       }
@@ -527,6 +535,10 @@ function initClassified() {
       } catch (_) {
       }
     } else {
+      try {
+        fs.truncateSync(tagPath, 0);
+      } catch {
+      }
       lastSize = 0;
     }
   } catch (_) {

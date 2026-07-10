@@ -102,7 +102,7 @@ function extractFilesFromBashCommand(command, files) {
     }
   }
 }
-function parseEntryToInteraction(entry, thinkingLevel) {
+function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
   if (!entry) return null;
   const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
   const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
@@ -193,6 +193,7 @@ function parseEntryToInteraction(entry, thinkingLevel) {
       webFetchRequests: serverToolRequests.web_fetch_requests || 0,
       serverToolCost,
       thinkingLevel,
+      compactionTokensBefore,
       files,
       commands,
       texts
@@ -203,6 +204,7 @@ function parseEntryToInteraction(entry, thinkingLevel) {
 function parseSessionFile(filePath) {
   const interactions = [];
   let currentThinkingLevel;
+  let lastCompactionTokensBefore;
   try {
     const content = fs.readFileSync(filePath, "utf8");
     for (const line of content.split("\n")) {
@@ -213,8 +215,15 @@ function parseSessionFile(filePath) {
           currentThinkingLevel = entry.thinkingLevel;
           continue;
         }
-        const interaction = parseEntryToInteraction(entry, currentThinkingLevel);
-        if (interaction) interactions.push(interaction);
+        if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
+          lastCompactionTokensBefore = entry.tokensBefore;
+          continue;
+        }
+        const interaction = parseEntryToInteraction(entry, currentThinkingLevel, lastCompactionTokensBefore);
+        if (interaction) {
+          interactions.push(interaction);
+          lastCompactionTokensBefore = void 0;
+        }
       } catch {
       }
     }
@@ -1226,6 +1235,19 @@ function renderTokenSummary(interactions, maxWidth = 80, thinkingBudget2) {
     formatTokenCount(totalCw).padStart(numColW),
     formatCost(totalCost).padStart(numColW)
   ].join(" ") + "\n";
+  let totalCompacted = 0;
+  let compactionCount = 0;
+  for (const i of deduped) {
+    if (i.compactionTokensBefore) {
+      totalCompacted += i.compactionTokensBefore;
+      compactionCount++;
+    }
+  }
+  if (compactionCount > 0) {
+    out += `
+Compaction: ${compactionCount} event(s), ${formatTokenCount(totalCompacted)} total tokens freed
+`;
+  }
   return out;
 }
 
@@ -1458,6 +1480,7 @@ function classifiedToInteraction(obj) {
     webFetchRequests: obj.wf || 0,
     serverToolCost: obj.sc || 0,
     thinkingLevel: obj.tl || void 0,
+    compactionTokensBefore: obj.cb || void 0,
     _cat: obj.cat || void 0
   };
 }
@@ -1479,7 +1502,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.3.6";
+var WTFT_TAGGER_VERSION = "2.3.8";
 function getTagPath(sessionPath) {
   const sessionDir = path2.dirname(sessionPath);
   const sessionBase = path2.basename(sessionPath);
@@ -2134,7 +2157,7 @@ function formatRelativeTime(ts) {
 }
 
 // extensions/lib/session-selector.ts
-var TAGGER_VERSION = "2.3.6";
+var TAGGER_VERSION = "2.3.8";
 function discoverSessions(harness = "auto", cwdOverride2) {
   const piSessionsDir = path4.join(os3.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
