@@ -2032,9 +2032,21 @@ function discoverSessions(harness = "auto", cwdOverride2) {
       }
     }
   };
+  const piCwdSlug = cwdOverride2 ? path5.resolve(cwdOverride2).replace(/[/\\]/g, "-") : null;
   try {
     if (harness === "auto" || harness === "pi") {
-      if (fs4.existsSync(piSessionsDir)) walk(piSessionsDir, "pi");
+      if (fs4.existsSync(piSessionsDir)) {
+        if (piCwdSlug) {
+          const entries = fs4.readdirSync(piSessionsDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory() && entry.name.includes(piCwdSlug)) {
+              walk(path5.join(piSessionsDir, entry.name), "pi");
+            }
+          }
+        } else {
+          walk(piSessionsDir, "pi");
+        }
+      }
     }
     if (harness === "auto" || harness === "claude-code") {
       for (const dir of claudeSessionsDirs) {
