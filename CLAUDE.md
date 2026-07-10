@@ -2,14 +2,23 @@
 
 This project contains custom extensions, skills, and documentation manifests for the Princess-Pi Coding Agent.
 
+## 🚨 BEFORE ANY CODE CHANGE
+
+> **HARD GATE: `git branch --show-current` must return `<issue#>-<slug>`, never `main`.**
+>
+> If on `main`: create the branch NOW (`git checkout -b <issue#>-<slug>`) before editing any file.
+> If the commit you need is on `main` (e.g. after a merge cleanup): `git checkout -b <issue#>-<slug>`
+> and then `git branch -f main <commit>` to rewind main (you may need to be on a non-main branch first).
+>
+> This applies to: bug fixes, features, spec updates, docs reconciliation — everything.
+> Naming: `<issue#>-<slug>` (e.g. `73-server-tool-use-cost`). Slugs are kebab-case, descriptive, short.
+
+## 📐 Repo conventions
+
 > **Repo goal — cross-harness tooling:** one implementation of each tool that works in **both Pi and
 > Claude Code** (CLI + Pi extension + optional TUI widget, one shared manifest). See the mission in
 > `README.md`. **To build or port a tool to this bar, follow the recipe in
 > `skills/cross-harness-tool/SKILL.md`.** Reference implementation: `merge` (`bin/merge.mjs`, #8).
->
-> **Hard rule — always branch for issues:** when working on a tracked GitHub issue, create a branch
-> named `<issue#>-<slug>` from `main` **before making any code changes**. Never edit `main` directly
-> for issue work. (Branch cleanup after merge is covered in the parent `~/git-projects/CLAUDE.md`.)
 >
 > **Hard rule — `.mjs` bins are build artifacts, never edit manually:** CLI bins (`bin/wtft.mjs`,
 > `bin/serve.mjs`, `bin/merge.mjs`) are generated from their `.ts` counterparts via `npm run build`.
