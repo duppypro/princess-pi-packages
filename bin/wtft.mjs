@@ -1361,7 +1361,7 @@ async function watchMode(sessionPath, settings) {
     }
     buf.push(`'q' to exit`);
     lastBuffer = [...buf];
-    const output = buf.join("\n");
+    const output = buf.join("\n") + "\n";
     process.stdout.write(output);
     lastLineCount = visualLineCount(output, width);
     needsRedraw = false;
@@ -1804,7 +1804,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const restartHint = settings.daemonPath ? `, using v${WTFT_TAGGER_VERSION}, ` + (daemonDead ? `\x1B[31m'r' to restart\x1B[0m` : `'r' to restart`) : "";
     buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
-    const output = buf.map((l) => padStr + l).join("\n");
+    const output = buf.map((l) => padStr + l).join("\n") + "\n";
     process.stdout.write(output);
     lastLineCount = visualLineCount(output, width);
     needsRedraw = false;
