@@ -1441,6 +1441,22 @@ function readClassifiedTagFile(tagPath) {
   return interactions;
 }
 var WTFT_TAGGER_VERSION = "2.3.6";
+function getTagPath(sessionPath) {
+  const sessionDir = path2.dirname(sessionPath);
+  const sessionBase = path2.basename(sessionPath);
+  const tagsDir = path2.join(sessionDir, "wtft-tags");
+  const defaultPath = path2.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  try {
+    const prefix = sessionBase + ".wtft-tag.v";
+    for (const f of fs2.readdirSync(tagsDir)) {
+      if (f.startsWith(prefix) && f.endsWith(".jsonl")) {
+        return path2.join(tagsDir, f);
+      }
+    }
+  } catch {
+  }
+  return defaultPath;
+}
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   return path2.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
@@ -2268,6 +2284,7 @@ Options:
   -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
   -T, --tokens            Print a per-model token summary table (deduped) for cross-referencing with /usage.
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
+  -F, --force             Kill the log parser, delete tag files, and force a full session re-parse.
   --pad <N>               Pad output with N spaces on each side (default: 1, max: floor(term/2)-1).
                           Makes CLI output width match Pi TUI widget in the same terminal.
   --debug                 Print diagnostic cost totals (tag file vs direct parse + dedup).
@@ -2298,6 +2315,7 @@ var daemonCleanup = false;
 var daemonRestart = false;
 var daemonStop;
 var debugMode = false;
+var forceReparse = false;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
@@ -2358,6 +2376,8 @@ for (let i = 2; i < process.argv.length; i++) {
     }
   } else if (arg === "--debug") {
     debugMode = true;
+  } else if (arg === "--force" || arg === "-F") {
+    forceReparse = true;
   } else if (arg === "--dir" || arg === "--cwd") {
     cwdOverride = process.argv[++i];
   } else if (arg === "--harness") {
@@ -2419,6 +2439,35 @@ async function main() {
   if (!finalSessionPath || !fs5.existsSync(finalSessionPath)) {
     console.error("\u274C Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
+  }
+  if (forceReparse) {
+    const forceTagPath = getTagPath(finalSessionPath);
+    const forcePidPath = getDaemonPidPath(finalSessionPath);
+    try {
+      const pid = parseInt(fs5.readFileSync(forcePidPath, "utf8").trim(), 10);
+      if (pid > 0) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+        }
+      }
+      try {
+        fs5.unlinkSync(forcePidPath);
+      } catch {
+      }
+    } catch {
+    }
+    const forceTagsDir = path6.dirname(forceTagPath);
+    const forceSessionBase = path6.basename(finalSessionPath);
+    try {
+      for (const f of fs5.readdirSync(forceTagsDir)) {
+        if (f.startsWith(forceSessionBase + ".wtft-tag.v") && f.endsWith(".jsonl")) {
+          fs5.unlinkSync(path6.join(forceTagsDir, f));
+        }
+      }
+    } catch {
+    }
+    console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path6.basename(finalSessionPath)}\x1B[0m`);
   }
   if (showWatch) {
     const sessionDir2 = path6.dirname(finalSessionPath);
