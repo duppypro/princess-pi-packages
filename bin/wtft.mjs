@@ -1500,16 +1500,8 @@ function renderDaemonStatus(status, restarting = false) {
     const cacheTtlMs = status.cacheTtlMs;
     const elapsedMs = status.idleSinceMs != null ? Date.now() - status.idleSinceMs : status.idleMs || 0;
     if (cacheTtlMs != null && elapsedMs > 0) {
-      const remainingMs = Math.max(0, cacheTtlMs - elapsedMs);
-      const remainingSec = Math.floor(remainingMs / 1e3);
-      if (remainingSec >= 3600) {
-        const h = Math.floor(remainingSec / 3600);
-        const m2 = Math.floor(remainingSec % 3600 / 60);
-        return `  \x1B[33m\u25CF\x1B[0m idle (${h}h${m2}m to expire)`;
-      }
-      const m = Math.floor(remainingSec / 60);
-      const s = remainingSec % 60;
-      return `  \x1B[33m\u25CF\x1B[0m idle (${m}:${String(s).padStart(2, "0")} to expire)`;
+      const remainingMin = Math.ceil(Math.max(0, cacheTtlMs - elapsedMs) / 6e4);
+      return `  \x1B[33m\u25CF\x1B[0m idle (${remainingMin}min to expire)`;
     }
     if (cacheTtlMs === null) {
       return "  \x1B[33m\u25CF\x1B[0m idle (local model)";
@@ -1918,14 +1910,14 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     needsRedraw = true;
     render();
   }, 1e4);
-  const refreshTimer = setInterval(() => {
+  const minuteInterval = setInterval(() => {
     const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
-    if (_curMin !== _lastRenderMin || daemonIdle) {
+    if (_curMin !== _lastRenderMin) {
       updateDaemonHealth();
       needsRedraw = true;
       render();
     }
-  }, 1e3);
+  }, 6e4);
   await new Promise(() => {
   });
 }
