@@ -354,7 +354,7 @@ function classifyInteraction(interaction) {
 }
 
 // extensions/lib/wtft-daemon-lib.ts
-var WTFT_TAGGER_VERSION = "2.3.5";
+var WTFT_TAGGER_VERSION = "2.3.6";
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 
 // bin/wtft-daemon.ts

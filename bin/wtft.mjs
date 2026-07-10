@@ -1440,7 +1440,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.3.5";
+var WTFT_TAGGER_VERSION = "2.3.6";
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   return path2.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
