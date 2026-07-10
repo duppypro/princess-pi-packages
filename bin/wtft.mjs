@@ -1624,6 +1624,18 @@ function checkDaemonHealth(sessionPath, tagPath) {
           const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
           return { alive: true, idle: true, idleMs, idleSinceMs, cacheTtlMs };
         }
+        if (idleMs === void 0) {
+          try {
+            const sessionStat = fs2.statSync(sessionPath);
+            const sessionIdleMs = Date.now() - sessionStat.mtimeMs;
+            if (sessionIdleMs >= IDLE_THRESHOLD_MS) {
+              if (!lastModel) lastModel = getModelFromSessionFile(sessionPath);
+              const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
+              return { alive: true, idle: true, idleMs: sessionIdleMs, idleSinceMs: sessionStat.mtimeMs, cacheTtlMs };
+            }
+          } catch {
+          }
+        }
       }
     } catch {
     }
