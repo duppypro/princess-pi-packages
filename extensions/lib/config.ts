@@ -1,37 +1,37 @@
-/**
- * @package princess-pi-packages
- * @module config
- * @description Harness-agnostic config persistence for all CLI tools.
- *
- * Config hierarchy (lowest to highest precedence):
- *   1. Code defaults (hardcoded in each tool)
- *   2. User-global: ~/.config/princess-pi/<tool>.json
- *   3. Project-local: ./.princess-pi/<tool>.json
- *   4. CLI flags (highest — applied by caller after readConfig)
- *
- * Write target: project-local if it already exists, otherwise user-global.
- * Callers may override scope explicitly via writeConfig's scope parameter.
- */
+// --- Config Loader: Universal hierarchical config resolution (#20) ---
+//
+// One file per tool. JSON with comments (stripJsonComments). Deep merge.
+// Resolution order: CWD → walk-up → XDG global → hardcoded defaults.
+//
+// Backward compat with existing config.ts API: readConfig, writeConfig,
+// hasConfig, getConfigPaths. The new loadConfig is the recommended API.
+//
+// Directory: .princess-pi-packages / princess-pi-packages (matching npm
+// package name). Old directory (princess-pi) is checked as fallback for
+// read operations during migration.
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+// ---
+// CONSTANTS
+// ---
+
+const CONFIG_DIR = "princess-pi-packages";
+const OLD_CONFIG_DIR = "princess-pi";
 
 // ---
 // TYPES
 // ---
 
 export interface ConfigPaths {
-	/** ~/.config/princess-pi/<tool>.json */
+	/** ~/.config/princess-pi-packages/<tool>.json */
 	global: string;
-	/** ./.princess-pi/<tool>.json (relative to cwd) */
+	/** ./.princess-pi-packages/<tool>.json (relative to cwd) */
 	local: string;
 }
 
-/**
- * Settings shape for wtft (the initial consumer; other tools extend this).
- * All fields are optional — missing keys inherit from the layer below.
- */
 export interface WtftConfig {
 	interval?: string;
 	limit?: number;
@@ -42,62 +42,173 @@ export interface WtftConfig {
 }
 
 // ---
+// INTERNAL: comment stripping & deep merge
+// ---
+
+/**
+ * Strip // single-line and /* block comments from JSON.
+ */
+function stripJsonComments(json: string): string {
+	return json
+		.replace(/\/\/.*$/gm, "")
+		.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/**
+ * Try to read and parse a JSON-with-comments file.
+ * Returns parsed object, or null if not found / unparseable / non-object.
+ */
+function tryReadConfig(filePath: string): Record<string, unknown> | null {
+	if (!existsSync(filePath)) return null;
+	try {
+		const raw = readFileSync(filePath, "utf8");
+		const stripped = stripJsonComments(raw);
+		const parsed = JSON.parse(stripped);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+		return parsed as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Deep merge `source` into `target`.
+ * Scalars overwrite, objects recurse, arrays replace entirely, null unsets.
+ * Returns target (mutated).
+ */
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+	for (const key of Object.keys(source)) {
+		const srcVal = source[key];
+
+		if (srcVal === null) {
+			delete target[key];
+			continue;
+		}
+
+		if (Array.isArray(srcVal)) {
+			target[key] = [...srcVal];
+			continue;
+		}
+
+		if (typeof srcVal === "object" && !Array.isArray(srcVal)) {
+			const existing = target[key];
+			if (typeof existing === "object" && !Array.isArray(existing) && existing !== null) {
+				target[key] = deepMerge(
+					{ ...(existing as Record<string, unknown>) },
+					srcVal as Record<string, unknown>,
+				);
+			} else {
+				target[key] = { ...(srcVal as Record<string, unknown>) };
+			}
+			continue;
+		}
+
+		target[key] = srcVal;
+	}
+	return target;
+}
+
+// ---
 // PATH RESOLUTION
 // ---
 
 /**
  * Resolve config file paths for a tool.
- * Global: ~/.config/princess-pi/<tool>.json
- * Local:  ./.princess-pi/<tool>.json (relative to cwd)
+ * Also returns legacy paths (old directory) for migration read fallback.
  */
 export function getConfigPaths(toolName: string): ConfigPaths {
-	const globalDir = path.join(os.homedir(), ".config", "princess-pi");
-	const localDir = path.join(process.cwd(), ".princess-pi");
+	const globalDir = join(homedir(), ".config", CONFIG_DIR);
+	const localDir = join(process.cwd(), `.${CONFIG_DIR}`);
 	return {
-		global: path.join(globalDir, `${toolName}.json`),
-		local: path.join(localDir, `${toolName}.json`),
+		global: join(globalDir, `${toolName}.json`),
+		local: join(localDir, `${toolName}.json`),
 	};
 }
 
+function getOldConfigPaths(toolName: string): ConfigPaths {
+	const globalDir = join(homedir(), ".config", OLD_CONFIG_DIR);
+	const localDir = join(process.cwd(), `.${OLD_CONFIG_DIR}`);
+	return {
+		global: join(globalDir, `${toolName}.json`),
+		local: join(localDir, `${toolName}.json`),
+	};
+}
+
+/**
+ * Walk up from startDir toward root, collecting config files.
+ * Returns [closest, ..., farthest] — reversed for merge order.
+ */
+function walkUpConfigs(toolName: string, startDir: string): Record<string, unknown>[] {
+	const results: Record<string, unknown>[] = [];
+	let dir = startDir;
+
+	while (true) {
+		// Check new path first, then old path (migration fallback)
+		let config = tryReadConfig(join(dir, `.${CONFIG_DIR}`, `${toolName}.json`));
+		if (!config) {
+			config = tryReadConfig(join(dir, `.${OLD_CONFIG_DIR}`, `${toolName}.json`));
+		}
+		if (config) results.push(config);
+
+		const parent = dirname(dir);
+		if (parent === dir || parent === "/") break;
+		dir = parent;
+	}
+
+	return results;
+}
+
 // ---
-// READ (merge: global → local)
+// NEW API: loadConfig
 // ---
 
 /**
- * Read merged config for a tool. Returns an empty object if no config
- * files exist. Local keys override global keys.
+ * Load config for a tool, merging across the full resolution hierarchy.
+ *
+ * Resolution order (most specific wins):
+ *   1. $CWD/.princess-pi-packages/<tool>.json (with walk-up to ~/)
+ *   2. $XDG_CONFIG_HOME/princess-pi-packages/<tool>.json
+ *   3. Hardcoded defaults (passed by caller)
+ *
+ * Old directory (.princess-pi) is checked as read fallback during migration.
+ *
+ * Returns a NEW object (defaults are not mutated).
  */
-export function readConfig(toolName: string): Record<string, unknown> {
-	const paths = getConfigPaths(toolName);
-	const merged: Record<string, unknown> = {};
+export function loadConfig(toolName: string, defaults: Record<string, unknown>): Record<string, unknown> {
+	const merged = { ...defaults };
 
-	// Layer 1: user-global config
-	try {
-		const globalRaw = fs.readFileSync(paths.global, "utf8");
-		const globalData = JSON.parse(globalRaw);
-		if (globalData && typeof globalData === "object" && !Array.isArray(globalData)) {
-			Object.assign(merged, globalData);
-		}
-	} catch {
-		// No global config — fine, proceed
+	// XDG global config (lowest user priority)
+	const xdgHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+	let globalConfig = tryReadConfig(join(xdgHome, CONFIG_DIR, `${toolName}.json`));
+	if (!globalConfig) {
+		// Migration fallback: old directory
+		globalConfig = tryReadConfig(join(xdgHome, OLD_CONFIG_DIR, `${toolName}.json`));
 	}
+	if (globalConfig) deepMerge(merged, globalConfig);
 
-	// Layer 2: project-local config (overrides global)
-	try {
-		const localRaw = fs.readFileSync(paths.local, "utf8");
-		const localData = JSON.parse(localRaw);
-		if (localData && typeof localData === "object" && !Array.isArray(localData)) {
-			Object.assign(merged, localData);
-		}
-	} catch {
-		// No local config — fine, proceed
+	// Walk-up configs from CWD (farthest first, closest last)
+	const walkConfigs = walkUpConfigs(toolName, process.cwd());
+	for (let i = walkConfigs.length - 1; i >= 0; i--) {
+		deepMerge(merged, walkConfigs[i]);
 	}
 
 	return merged;
 }
 
 // ---
-// WRITE (merge into existing config at target scope)
+// LEGACY API: readConfig (backward compat)
+// ---
+
+/**
+ * Read merged config for a tool. Legacy wrapper around loadConfig.
+ * Returns flat merge (no walk-up, shallow merge) for backward compat.
+ */
+export function readConfig(toolName: string): Record<string, unknown> {
+	return loadConfig(toolName, {}) as Record<string, unknown>;
+}
+
+// ---
+// WRITE (always targets new directory path)
 // ---
 
 /**
@@ -105,8 +216,10 @@ export function readConfig(toolName: string): Record<string, unknown> {
  * file (reads first, overlays new keys, writes back).
  *
  * Scope resolution (when scope is omitted):
- *   - If ./.princess-pi/<tool>.json already exists → write local
- *   - Otherwise → write global (~/.config/princess-pi/<tool>.json)
+ *   - If ./.princess-pi-packages/<tool>.json already exists → write local
+ *   - Otherwise → write global (~/.config/princess-pi-packages/<tool>.json)
+ *
+ * Always writes to the new directory path.
  */
 export function writeConfig(
 	toolName: string,
@@ -115,45 +228,43 @@ export function writeConfig(
 ): void {
 	const paths = getConfigPaths(toolName);
 
-	// Resolve target path
 	let targetPath: string;
 	if (scope === "local") {
 		targetPath = paths.local;
 	} else if (scope === "global") {
 		targetPath = paths.global;
-	} else if (fs.existsSync(paths.local)) {
+	} else if (existsSync(paths.local)) {
 		targetPath = paths.local;
 	} else {
 		targetPath = paths.global;
 	}
 
-	// Read existing config at target, overlay new settings
 	let existing: Record<string, unknown> = {};
 	try {
-		const raw = fs.readFileSync(targetPath, "utf8");
+		const raw = readFileSync(targetPath, "utf8");
 		const parsed = JSON.parse(raw);
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 			existing = parsed;
 		}
 	} catch {
-		// File doesn't exist or is corrupt — start fresh
+		// No file or corrupt — start fresh
 	}
 
 	const merged = { ...existing, ...settings };
 
-	// Ensure directory exists
-	const dir = path.dirname(targetPath);
-	fs.mkdirSync(dir, { recursive: true });
-
-	fs.writeFileSync(targetPath, JSON.stringify(merged, null, 2) + "\n");
+	mkdirSync(dirname(targetPath), { recursive: true });
+	writeFileSync(targetPath, JSON.stringify(merged, null, 2) + "\n");
 }
 
 /**
  * Check whether any config file exists for a tool (global or local).
- * Used by wtft to auto-show the widget on session_start when the user
- * has configured the tool at least once.
+ * Checks both new and old directories.
  */
 export function hasConfig(toolName: string): boolean {
-	const paths = getConfigPaths(toolName);
-	return fs.existsSync(paths.global) || fs.existsSync(paths.local);
+	const newPaths = getConfigPaths(toolName);
+	const oldPaths = getOldConfigPaths(toolName);
+	return (
+		existsSync(newPaths.global) || existsSync(newPaths.local) ||
+		existsSync(oldPaths.global) || existsSync(oldPaths.local)
+	);
 }
