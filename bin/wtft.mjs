@@ -1418,13 +1418,28 @@ var IDLE_THRESHOLD_MS = 122e3;
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 function getModelCacheTtlMs(model) {
   const m = model.toLowerCase();
-  if (m.includes("claude") || m.includes("haiku") || m.includes("sonnet") || m.includes("opus")) {
-    return 5 * 60 * 1e3;
-  }
   if (m.includes("deepseek")) {
     return 60 * 60 * 1e3;
   }
-  return null;
+  if (m.includes("claude")) {
+    return 5 * 60 * 1e3;
+  }
+  if (m.includes("gemini")) {
+    return 60 * 60 * 1e3;
+  }
+  if (m.includes("gpt") || m.includes("o1") || m.includes("o3")) {
+    return 30 * 60 * 1e3;
+  }
+  if (m.includes("together") || m.includes("fireworks") || m.includes("openrouter")) {
+    return 30 * 60 * 1e3;
+  }
+  if (/\b(haiku|sonnet|opus)\b/.test(m)) {
+    return 5 * 60 * 1e3;
+  }
+  if (m.includes("ollama") || m.includes("llama") || m.includes("lmstudio") || m.includes("local")) {
+    return null;
+  }
+  return 5 * 60 * 1e3;
 }
 function renderDaemonStatus(status, restarting = false) {
   if (restarting) {
