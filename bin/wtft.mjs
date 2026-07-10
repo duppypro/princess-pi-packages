@@ -1731,7 +1731,9 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let daemonIdle = false;
   let daemonIdleMs = 0;
   let daemonCacheTtlMs = void 0;
+  let daemonChecked = false;
   const updateDaemonHealth = () => {
+    daemonChecked = true;
     if (daemonRestarting) {
       const health2 = checkDaemonHealth(sessionPath, tagPath);
       if (health2.alive) {
@@ -1868,7 +1870,9 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     totalCost = deduped.reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
       let daemonStatusStr = "";
-      if (daemonRestarting) {
+      if (!daemonChecked) {
+        daemonStatusStr = "  \x1B[90m\u25CF\x1B[0m reading...";
+      } else if (daemonRestarting) {
         daemonStatusStr = renderDaemonStatus({ alive: true }, true);
       } else if (daemonDead) {
         daemonStatusStr = renderDaemonStatus({ alive: false, reason: daemonStopReason || void 0, lastHbTime: daemonStopTime || void 0 }, false);
