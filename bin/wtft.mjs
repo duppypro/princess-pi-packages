@@ -1624,7 +1624,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
           const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
           return { alive: true, idle: true, idleMs, idleSinceMs, cacheTtlMs };
         }
-        if (idleMs === void 0) {
+        {
           try {
             const sessionStat = fs2.statSync(sessionPath);
             const sessionIdleMs = Date.now() - sessionStat.mtimeMs;
