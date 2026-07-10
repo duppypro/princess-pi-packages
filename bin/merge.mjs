@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 // extensions/lib/merge/core.ts
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
-var STEP5_SUBJECT = /^(?:[\w-]+(?:\([\w-]+\))?:\s*)?Code and Spec Approved(\s*\([^)]*\))?\s*[:—]/;
+var STEP5_SUBJECT = /^(?:[\w-]+(?:\([^)]+\))?:\s*)?Code and Spec Approved(\s*\([^)]*\))?\s*[:—]/;
 async function cleanupBranch(currentBranch, cwd, logger, autoCleanup = false) {
   const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
   if (status !== "") {
