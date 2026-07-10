@@ -2134,6 +2134,7 @@ function formatRelativeTime(ts) {
 }
 
 // extensions/lib/session-selector.ts
+var TAGGER_VERSION = "2.3.6";
 function discoverSessions(harness = "auto", cwdOverride2) {
   const piSessionsDir = path4.join(os3.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
@@ -2199,28 +2200,29 @@ function discoverSessions(harness = "auto", cwdOverride2) {
   }
   return candidates.sort((a, b) => b.timestamp - a.timestamp);
 }
-function getSessionSummary(filePath) {
-  let turns = 0;
-  const interactions = [];
+function getSessionSummary(sessionPath) {
+  const sessionDir = path4.dirname(sessionPath);
+  const sessionBase = path4.basename(sessionPath);
+  const tagPath = path4.join(sessionDir, "wtft-tags", sessionBase + `.wtft-tag.v${TAGGER_VERSION}.jsonl`);
   try {
-    const content = fs3.readFileSync(filePath, "utf8");
-    for (const line of content.split("\n")) {
+    const content = fs3.readFileSync(tagPath, "utf8");
+    const lines = content.split("\n");
+    let cost = 0;
+    let turns = 0;
+    for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const entry = JSON.parse(line);
-        if (entry.type === "assistant" || entry.message && entry.message.role === "assistant") {
-          turns++;
-        }
-        const interaction = parseEntryToInteraction(entry);
-        if (interaction) interactions.push(interaction);
+        const obj = JSON.parse(line);
+        if (obj._hb) continue;
+        if (typeof obj.c === "number") cost += obj.c;
+        turns++;
       } catch {
       }
     }
+    return { turns, cost };
   } catch {
+    return { turns: 0, cost: 0 };
   }
-  const deduped = deduplicateInteractions(interactions);
-  const cost = deduped.reduce((sum, i) => sum + i.cost, 0);
-  return { turns, cost };
 }
 function formatCostPadded(cost) {
   return formatCost(cost).padStart(7);
