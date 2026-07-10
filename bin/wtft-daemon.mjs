@@ -103,7 +103,7 @@ function extractFilesFromBashCommand(command, files) {
     }
   }
 }
-function parseEntryToInteraction(entry) {
+function parseEntryToInteraction(entry, thinkingLevel) {
   if (!entry) return null;
   const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
   const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
@@ -193,6 +193,7 @@ function parseEntryToInteraction(entry) {
       webSearchRequests: serverToolRequests.web_search_requests || 0,
       webFetchRequests: serverToolRequests.web_fetch_requests || 0,
       serverToolCost,
+      thinkingLevel,
       files,
       commands,
       texts
@@ -391,6 +392,7 @@ var lastActivityMs = Date.now();
 var startupTime = Date.now();
 var pendingLines = [];
 var idleStartMs = 0;
+var currentThinkingLevel;
 var running = true;
 function shutdown(reason) {
   if (!running) return;
@@ -496,7 +498,11 @@ function parseNewLines(filePath) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line);
-        const interaction = parseEntryToInteraction(entry);
+        if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
+          currentThinkingLevel = entry.thinkingLevel;
+          continue;
+        }
+        const interaction = parseEntryToInteraction(entry, currentThinkingLevel);
         if (interaction) {
           interactions.push(interaction);
         }

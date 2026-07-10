@@ -30,8 +30,8 @@ export class BurstAccumulator {
 	 * happens immediately via parseEntryToInteraction — no deferred
 	 * branch scan needed.
 	 */
-	accumulateFromEntry(entry: any): void {
-		const interaction = parseEntryToInteraction(entry);
+	accumulateFromEntry(entry: any, thinkingLevel?: string): void {
+		const interaction = parseEntryToInteraction(entry, thinkingLevel);
 		if (interaction) {
 			this._interactions.push(interaction);
 		}

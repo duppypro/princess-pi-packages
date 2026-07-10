@@ -102,7 +102,7 @@ function extractFilesFromBashCommand(command, files) {
     }
   }
 }
-function parseEntryToInteraction(entry) {
+function parseEntryToInteraction(entry, thinkingLevel) {
   if (!entry) return null;
   const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
   const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
@@ -192,6 +192,7 @@ function parseEntryToInteraction(entry) {
       webSearchRequests: serverToolRequests.web_search_requests || 0,
       webFetchRequests: serverToolRequests.web_fetch_requests || 0,
       serverToolCost,
+      thinkingLevel,
       files,
       commands,
       texts
@@ -201,13 +202,18 @@ function parseEntryToInteraction(entry) {
 }
 function parseSessionFile(filePath) {
   const interactions = [];
+  let currentThinkingLevel;
   try {
     const content = fs.readFileSync(filePath, "utf8");
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line);
-        const interaction = parseEntryToInteraction(entry);
+        if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
+          currentThinkingLevel = entry.thinkingLevel;
+          continue;
+        }
+        const interaction = parseEntryToInteraction(entry, currentThinkingLevel);
         if (interaction) interactions.push(interaction);
       } catch {
       }
@@ -1419,6 +1425,7 @@ function classifiedToInteraction(obj) {
     webSearchRequests: obj.ws || 0,
     webFetchRequests: obj.wf || 0,
     serverToolCost: obj.sc || 0,
+    thinkingLevel: obj.tl || void 0,
     _cat: obj.cat || void 0
   };
 }
