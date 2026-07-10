@@ -1247,12 +1247,12 @@ async function watchMode(sessionPath, settings) {
   let lastSize = 0;
   let needsRedraw = true;
   let _lastRenderMin = -1;
-  process.stdout.write("\x1B[?1049h");
+  process.stdout.write("\x1B7");
   hideCursor();
   let lastBuffer = [];
   let lastLineCount = 0;
   const exitWatch = () => {
-    process.stdout.write("\x1B[?1049l");
+    process.stdout.write("\x1B8\x1B[J");
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -1326,7 +1326,7 @@ async function watchMode(sessionPath, settings) {
   let sessionTimezone;
   process.stdout.write("\x1B7");
   const render = () => {
-    process.stdout.write("\x1B[H\x1B[J");
+    process.stdout.write("\x1B8\x1B[J");
     const width = getTerminalWidth();
     const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
     const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
@@ -1533,8 +1533,8 @@ function checkDaemonHealth(sessionPath, tagPath) {
           try {
             const obj = JSON.parse(line);
             if (!lastModel && obj.m) lastModel = obj.m;
-            if (obj._hb && obj._hb.first) {
-              if (idleMs === void 0) {
+            if (obj._hb) {
+              if (typeof obj._hb === "object" && obj._hb.first && idleMs === void 0) {
                 idleMs = Date.now() - obj._hb.first;
               }
               continue;
@@ -1621,12 +1621,12 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let interactionCount = 0;
   let needsRedraw = true;
   let _lastRenderMin = -1;
-  process.stdout.write("\x1B[?1049h");
+  process.stdout.write("\x1B7");
   hideCursor();
   let lastBuffer = [];
   const exitWatch = () => {
     if (watcher) watcher.close();
-    process.stdout.write("\x1B[?1049l");
+    process.stdout.write("\x1B8\x1B[J");
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -1742,7 +1742,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   } catch {
   }
   const render = () => {
-    process.stdout.write("\x1B[H\x1B[J");
+    process.stdout.write("\x1B8\x1B[J");
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
