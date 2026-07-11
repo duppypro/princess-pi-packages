@@ -16,6 +16,7 @@ import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/d
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
 import { parseAclFile, updateNginxAcls, updateNginxPort, reloadNginx } from "./lib/serve/nginx.js";
 import { getVisibility } from "./lib/serve/store.js";
+import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
 
@@ -149,14 +150,14 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 	async function handleHide(ctx: any): Promise<void> {
 		isWidgetVisible = false;
-		pi.appendEntry("serve-visibility", { visible: false });
+		writeConfig("serve", { visible: false });
 		updateWidget(ctx, [], isWidgetVisible, process.cwd());
 		ctx.ui.notify("Active server list widget hidden.", "info");
 	}
 
 	async function handleShow(ctx: any): Promise<void> {
 		isWidgetVisible = true;
-		pi.appendEntry("serve-visibility", { visible: true });
+		writeConfig("serve", { visible: true });
 		const servers = await discoverServers();
 		updateWidget(ctx, servers, isWidgetVisible, process.cwd());
 
@@ -390,7 +391,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 	}
 
 	async function handleEmojiToggle(enabled: boolean, ctx: any): Promise<void> {
-		pi.appendEntry("emoji-settings", { disabled: !enabled });
+		writeConfig("serve", { emojiDisabled: !enabled });
 		const servers = await discoverServers();
 		updateWidget(ctx, servers, isWidgetVisible, process.cwd());
 		const statusText = enabled ? "enabled" : "disabled";
