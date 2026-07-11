@@ -2317,32 +2317,76 @@ function discoverSessions(harness = "auto", cwdOverride2) {
   }
   return candidates.sort((a, b) => b.timestamp - a.timestamp);
 }
+function compareVersions(a, b) {
+  const ap = a.split(".").map(Number);
+  const bp = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(ap.length, bp.length); i++) {
+    const d = (ap[i] || 0) - (bp[i] || 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
 function getSessionSummary(sessionPath) {
   const sessionDir = path4.dirname(sessionPath);
   const sessionBase = path4.basename(sessionPath);
-  const tagPath = path4.join(sessionDir, "wtft-tags", sessionBase + `.wtft-tag.v${TAGGER_VERSION}.jsonl`);
-  try {
-    const content = fs3.readFileSync(tagPath, "utf8");
-    const lines = content.split("\n");
-    let cost = 0;
-    let turns = 0;
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj._hb) continue;
-        if (typeof obj.c === "number") cost += obj.c;
-        turns++;
-      } catch {
+  const tagsDir = path4.join(sessionDir, "wtft-tags");
+  let tagPath = path4.join(tagsDir, sessionBase + `.wtft-tag.v${TAGGER_VERSION}.jsonl`);
+  let tagVersion = TAGGER_VERSION;
+  if (!fs3.existsSync(tagPath)) {
+    try {
+      const files = fs3.readdirSync(tagsDir);
+      const prefix = sessionBase + ".wtft-tag.v";
+      const matches = files.filter((f) => f.startsWith(prefix) && f.endsWith(".jsonl")).map((f) => {
+        const v = f.slice(prefix.length, -".jsonl".length);
+        return { path: path4.join(tagsDir, f), version: v };
+      }).sort((a, b) => compareVersions(b.version, a.version));
+      if (matches.length > 0) {
+        tagPath = matches[0].path;
+        tagVersion = matches[0].version;
       }
+    } catch {
     }
-    return { turns, cost };
-  } catch {
-    return { turns: 0, cost: 0 };
   }
+  if (fs3.existsSync(tagPath)) {
+    try {
+      const content = fs3.readFileSync(tagPath, "utf8");
+      const lines = content.split("\n");
+      let cost = 0;
+      let turns = 0;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj._hb) continue;
+          if (typeof obj.c === "number") cost += obj.c;
+          turns++;
+        } catch {
+        }
+      }
+      return { turns, cost, tagVersion, rawLines: null };
+    } catch {
+    }
+  }
+  let rawLines = null;
+  try {
+    const raw = fs3.readFileSync(sessionPath, "utf8");
+    rawLines = raw.split("\n").filter((l) => l.trim()).length;
+  } catch {
+  }
+  return { turns: 0, cost: 0, tagVersion: null, rawLines };
 }
-function formatCostPadded(cost) {
-  return formatCost(cost).padStart(7);
+function formatCostOrUnknown(stats) {
+  if (stats.tagVersion === null) return "unknown".padEnd(7);
+  return `\x1B[32m${formatCost(stats.cost).padStart(7)}\x1B[0m`;
+}
+function formatTurnsOrLines(stats) {
+  if (stats.tagVersion !== null) return `(${stats.turns}t)`.padEnd(10);
+  return `${stats.rawLines ?? "?"} lines`.padEnd(10);
+}
+function formatTagSuffix(stats) {
+  if (stats.tagVersion === null) return "\x1B[90munparsed\x1B[0m";
+  if (stats.tagVersion === TAGGER_VERSION) return "";
+  return `\x1B[90mv${stats.tagVersion}\x1B[0m`;
 }
 async function selectSessionPrompt(candidates) {
   return new Promise((resolve2) => {
@@ -2358,8 +2402,12 @@ async function selectSessionPrompt(candidates) {
         const c = candidates[i];
         const stats = getSessionSummary(c.path);
         const relTime = formatRelativeTime(c.timestamp);
+        const harnessLabel = c.harness === "claude-code" ? "Claude" : "Pi";
+        const costStr = formatCostOrUnknown(stats).replace(/\x1b\[[0-9;]*m/g, "");
+        const turnStr = formatTurnsOrLines(stats);
+        const tagStr = formatTagSuffix(stats).replace(/\x1b\[[0-9;]*m/g, "");
         console.log(
-          `  [${i + 1}] ${c.displayPath.padEnd(maxPathLen2)}  ${formatCostPadded(stats.cost)}  (${stats.turns}t) [${c.harness === "claude-code" ? "CC" : "PI"}]  \x1B[90m${relTime}\x1B[0m`
+          `  [${i + 1}] ${c.displayPath.padEnd(maxPathLen2)}  ${costStr}  ${turnStr}  [${harnessLabel.padEnd(6)}]  ${relTime.padEnd(6)}  ${tagStr}`
         );
       }
       console.log(
@@ -2382,7 +2430,8 @@ async function selectSessionPrompt(candidates) {
     let logicalLineCount = 0;
     const render = () => {
       const selected = displayCandidates[selectedIndex];
-      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT \u2014 select session log\x1B[0m (j/k or arrows navigate, Enter select, q quit):
+      const shortName = selected.name.replace(".jsonl", "").slice(-4);
+      let out = `\x1B[1m\x1B[36m\u{1F4B8} WTFT \u2014 select session log\x1B[0m \x1B[90m...${shortName}\x1B[0m (j/k or arrows navigate, Enter select, q quit):
 `;
       out += `  \x1B[90m${selected.path}\x1B[0m
 `;
@@ -2394,9 +2443,11 @@ async function selectSessionPrompt(candidates) {
         const prefix = isSelected ? "\x1B[36m\x1B[1m > \x1B[0m" : "   ";
         const highlight = isSelected ? "\x1B[1m\x1B[36m" : "";
         const reset = isSelected ? "\x1B[0m" : "";
-        const harnessLabel = c.harness === "claude-code" ? "CC" : "PI";
-        const costStr = `\x1B[32m${formatCostPadded(stats.cost)}\x1B[0m`;
-        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  (${stats.turns}t) [${harnessLabel}]  \x1B[90m${relTime}\x1B[0m
+        const harnessLabel = c.harness === "claude-code" ? "Claude" : "Pi";
+        const costStr = formatCostOrUnknown(stats);
+        const turnStr = formatTurnsOrLines(stats);
+        const tagStr = formatTagSuffix(stats);
+        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  ${turnStr}  [${harnessLabel.padEnd(6)}]  \x1B[90m${relTime.padEnd(6)}\x1B[0m  ${tagStr}
 `;
       }
       const cols = process.stdout.columns || 80;
