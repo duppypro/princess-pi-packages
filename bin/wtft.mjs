@@ -943,6 +943,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   }
   const widgetLines = [];
   const titleLeft = disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
+  const sessionSuffix = opts?.sessionNameSuffix ? ` \x1B[90m...${opts.sessionNameSuffix.replace(/.jsonl$/, "").slice(-4)}\x1B[0m` : "";
+  const titleLeftFinal = titleLeft + sessionSuffix;
   const legendItems = [
     `\x1B[38;5;108m\u2588\x1B[0mSpec`,
     `\x1B[38;5;108;48;5;173m\u2592\x1B[0mMixed`,
@@ -956,16 +958,16 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     `\x1B[38;5;238m\u2591\x1B[0mOther`
   ];
   const legendStr = legendItems.join(" ");
-  const leftLen = getVisualLength(titleLeft);
+  const leftLen = getVisualLength(titleLeftFinal);
   const legendLen = getVisualLength(legendStr);
   const totalNeeded = leftLen + legendLen + 4;
   const forceLegendRow = opts?.forceLegendRow ?? false;
   if (!forceLegendRow && totalNeeded <= finalWidth - 3) {
     const remainingSpaces = finalWidth - 3 - leftLen - legendLen;
-    const titleLine = titleLeft + " ".repeat(remainingSpaces) + legendStr;
+    const titleLine = titleLeftFinal + " ".repeat(remainingSpaces) + legendStr;
     widgetLines.push(titleLine);
   } else {
-    widgetLines.push(titleLeft);
+    widgetLines.push(titleLeftFinal);
     widgetLines.push(legendStr);
   }
   if (showTicks2 && scaleMax > 0) {
@@ -2862,7 +2864,8 @@ async function main() {
     showTicks: finalShowTicks,
     mode: finalMode,
     timezone: finalTimezone,
-    disabledEmoji
+    disabledEmoji,
+    sessionNameSuffix: path5.basename(finalSessionPath)
   });
   if (!outputLines) {
     console.log(padStr + "No binned data found in session logs.");
