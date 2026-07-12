@@ -1725,7 +1725,8 @@ async function watchMode(sessionPath, settings) {
   };
   render();
   process.on("SIGWINCH", () => {
-    needsRedraw = true;
+    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
+    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A\x1B[J`);
     render();
   });
   const POLL_MS = 667;
@@ -2274,7 +2275,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
-    needsRedraw = true;
+    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
+    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A\x1B[J`);
     render();
     resetWatchdog();
   });
