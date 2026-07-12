@@ -1601,7 +1601,7 @@ async function watchMode(sessionPath, settings) {
   let lastBuffer = [];
   let lastLineCount = 0;
   const exitWatch = () => {
-    clearPreviousLines(lastLineCount);
+    if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -1673,9 +1673,10 @@ async function watchMode(sessionPath, settings) {
   let sessionMode;
   let sessionShowTicks;
   let sessionTimezone;
-  process.stdout.write("\x1B7");
   const render = () => {
-    clearPreviousLines(lastLineCount);
+    if (lastLineCount > 0) {
+      process.stdout.write(`\x1B[${lastLineCount}A`);
+    }
     const width = getTerminalWidth();
     const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
     const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
@@ -1710,9 +1711,14 @@ async function watchMode(sessionPath, settings) {
     }
     buf.push(`'q' to exit`);
     lastBuffer = [...buf];
-    const output = buf.join("\n") + "\n";
-    process.stdout.write(output);
-    lastLineCount = visualLineCount(output, width);
+    const allLines = [...buf];
+    for (let i = 0; i < allLines.length; i++) {
+      const visLen = getVisualLength(allLines[i]);
+      const padNeeded = Math.max(0, width - visLen - 1);
+      process.stdout.write(allLines[i] + " ".repeat(padNeeded) + "\x1B[K\n");
+    }
+    process.stdout.write("\x1B[J");
+    lastLineCount = allLines.length;
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
   };
