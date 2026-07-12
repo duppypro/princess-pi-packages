@@ -1761,6 +1761,29 @@ async function watchMode(sessionPath, settings) {
     }
   }
 }
+function serializeClassified(interaction) {
+  const cost = Number(interaction.cost.toFixed(6));
+  const line = {
+    t: interaction.timestamp,
+    c: cost,
+    cat: classifyInteraction(interaction),
+    f: interaction.files.map((f) => ({ p: f.path, a: f.action === "write" ? "w" : "r" })),
+    cmd: interaction.commands
+  };
+  if (interaction.messageId) line.id = interaction.messageId;
+  if (interaction.model) line.m = interaction.model;
+  if (interaction.inputTokens > 0) line.in = interaction.inputTokens;
+  if (interaction.outputTokens > 0) line.out = interaction.outputTokens;
+  if (interaction.cacheReadTokens > 0) line.cr = interaction.cacheReadTokens;
+  if (interaction.cacheWriteTokens > 0) line.cw = interaction.cacheWriteTokens;
+  if (interaction.reasoningTokens > 0) line.rs = interaction.reasoningTokens;
+  if (interaction.serverToolCost) line.sc = Number(interaction.serverToolCost.toFixed(6));
+  if (interaction.webSearchRequests > 0) line.ws = interaction.webSearchRequests;
+  if (interaction.webFetchRequests > 0) line.wf = interaction.webFetchRequests;
+  if (interaction.thinkingLevel) line.tl = interaction.thinkingLevel;
+  if (interaction.compactionTokensBefore) line.cb = interaction.compactionTokensBefore;
+  return JSON.stringify(line) + "\n";
+}
 function classifiedToInteraction(obj) {
   if (!obj || typeof obj.t !== "number" || typeof obj.c !== "number") return null;
   return {
@@ -3110,3 +3133,20 @@ main().catch((err) => {
   console.error(`\u274C System Error: ${err.message}`);
   process.exit(1);
 });
+export {
+  MODEL_PRICING,
+  WTFT_TAGGER_VERSION,
+  buildWtftLines,
+  calculateClaudeCost,
+  calculateServerToolCost,
+  classifiedToInteraction,
+  classifyInteraction,
+  deduplicateInteractions,
+  getTerminalWidth,
+  lookupModelPricing,
+  parseEntryToInteraction,
+  parseSessionFile,
+  readClassifiedTagFile,
+  resolveTieredRates,
+  serializeClassified
+};
