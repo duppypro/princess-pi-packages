@@ -1674,9 +1674,8 @@ async function watchMode(sessionPath, settings) {
   let sessionShowTicks;
   let sessionTimezone;
   const render = () => {
-    if (lastLineCount > 0) {
-      process.stdout.write(`\x1B[${lastLineCount}A`);
-    }
+    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
+    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
     const width = getTerminalWidth();
     const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
     const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
@@ -2193,9 +2192,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   } catch {
   }
   const render = () => {
-    if (lastLineCount > 0) {
-      process.stdout.write(`\x1B[${lastLineCount}A`);
-    }
+    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
+    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
