@@ -1293,7 +1293,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     }
   }
   if (unit2 === "tokens") {
-    widgetLines.push(`\x1B[90m  cheap $/tok  \x1B[38;5;22m\u2591\x1B[0m\x1B[38;5;22m\u2591\x1B[0m \x1B[38;5;94m\u2592\x1B[0m\x1B[38;5;94m\u2592\x1B[0m \x1B[38;5;130m\u2593\x1B[0m\x1B[38;5;130m\u2593\x1B[0m \x1B[38;5;88m\u2588\x1B[0m\x1B[38;5;88m\u2588\x1B[0m  expensive $/tok  \x1B[90m\u25C6 = cost-only (web tools)\x1B[0m`);
+    widgetLines.push(`\x1B[90m  cheap $/tok  \x1B[37m\u2591\x1B[0m\x1B[37m\u2591\x1B[0m \x1B[37m\u2592\x1B[0m\x1B[37m\u2592\x1B[0m \x1B[37m\u2593\x1B[0m\x1B[37m\u2593\x1B[0m \x1B[37m\u2588\x1B[0m\x1B[37m\u2588\x1B[0m  expensive $/tok  \x1B[90m\u25C6 = cost-only (web tools)\x1B[0m`);
     const summary = tokenFooterSummary(interactions);
     if (summary) {
       widgetLines.push(`\x1B[37m  ${summary}\x1B[0m`);
