@@ -2043,12 +2043,25 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let totalCost = 0;
   let interactionCount = 0;
   let needsRedraw = true;
-  let _lastRenderMin = -1;
+  let daemonWatchdog = null;
+  const HEALTHY_BEAT_MS = 1334;
+  const resetWatchdog = () => {
+    if (daemonWatchdog) clearTimeout(daemonWatchdog);
+    if (!daemonDead) {
+      daemonWatchdog = setTimeout(() => {
+        updateDaemonHealth();
+        needsRedraw = true;
+        render();
+        if (!daemonDead) resetWatchdog();
+      }, HEALTHY_BEAT_MS);
+    }
+  };
   let lastLineCount = 0;
   hideCursor();
   let lastBuffer = [];
   const exitWatch = () => {
     if (watcher) watcher.close();
+    if (daemonWatchdog) clearTimeout(daemonWatchdog);
     clearPreviousLines(lastLineCount);
     showCursor();
     cleanupStdin();
@@ -2240,12 +2253,13 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     process.stdout.write(output);
     lastLineCount = visualLineCount(output, width);
     needsRedraw = false;
-    _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
   };
   render();
+  resetWatchdog();
   process.on("SIGWINCH", () => {
     needsRedraw = true;
     render();
+    resetWatchdog();
   });
   let watcher = null;
   const startWatching = () => {
@@ -2279,12 +2293,14 @@ async function watchTagFile(sessionPath, tagPath, settings) {
             updateDaemonHealth();
             needsRedraw = true;
             render();
+            resetWatchdog();
             return;
           }
         }
         updateDaemonHealth();
         needsRedraw = true;
         render();
+        resetWatchdog();
       } catch {
         try {
           lastReadOffset = 0;
@@ -2292,6 +2308,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
           lastReadOffset = fs2.statSync(tagPath).size;
           needsRedraw = true;
           render();
+          resetWatchdog();
         } catch {
         }
       }
@@ -2312,15 +2329,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     updateDaemonHealth();
     needsRedraw = true;
     render();
+    resetWatchdog();
   }, 500);
-  const minuteInterval = setInterval(() => {
-    const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
-    if (_curMin !== _lastRenderMin) {
-      updateDaemonHealth();
-      needsRedraw = true;
-      render();
-    }
-  }, 6e4);
   await new Promise(() => {
   });
 }
