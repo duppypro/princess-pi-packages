@@ -1101,6 +1101,21 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const titleLeft = unit2 === "tokens" ? disabledEmoji ? "[#] WTF Tokens?" : "\u{1F522} WTF Tokens?" : disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
   const sessionSuffix = opts?.sessionNameSuffix ? ` \x1B[90m...${opts.sessionNameSuffix.replace(/.jsonl$/, "").slice(-4)}\x1B[0m` : "";
   const titleLeftFinal = titleLeft + sessionSuffix;
+  let surgeModel = opts?.model;
+  if (!surgeModel) {
+    for (const i of interactions) {
+      if (i.model) {
+        surgeModel = i.model;
+        break;
+      }
+    }
+  }
+  const isDeepSeek = (surgeModel || "").toLowerCase().includes("deepseek");
+  const surgeHours = isDeepSeek ? getSurgeLocalHours(tz) : /* @__PURE__ */ new Set();
+  const currentHour = getCurrentLocalHour(tz);
+  const proximity = isDeepSeek ? checkSurgeProximity() : { status: void 0, multiplier: 1 };
+  const timelineStr = buildTimelineString(surgeHours, currentHour, proximity.status);
+  const timelineLen = getVisualLength(timelineStr);
   const legendItems = [
     `\x1B[38;5;108m\u2588\x1B[0mSpec`,
     `\x1B[38;5;108;48;5;173m\u2592\x1B[0mMixed`,
@@ -1116,14 +1131,14 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const legendStr = legendItems.join(" ");
   const leftLen = getVisualLength(titleLeftFinal);
   const legendLen = getVisualLength(legendStr);
-  const totalNeeded = leftLen + legendLen + 4;
+  const totalNeeded = leftLen + legendLen + timelineLen + 6;
   const forceLegendRow = opts?.forceLegendRow ?? false;
   if (!forceLegendRow && totalNeeded <= finalWidth - 3) {
-    const remainingSpaces = finalWidth - 3 - leftLen - legendLen;
-    const titleLine = titleLeftFinal + " ".repeat(remainingSpaces) + legendStr;
+    const remainingSpaces = finalWidth - 3 - leftLen - legendLen - timelineLen - 2;
+    const titleLine = titleLeftFinal + " ".repeat(remainingSpaces) + legendStr + "  " + timelineStr;
     widgetLines.push(titleLine);
   } else {
-    widgetLines.push(titleLeftFinal);
+    widgetLines.push(titleLeftFinal + "  " + timelineStr);
     widgetLines.push(legendStr);
   }
   if (showTicks2 && scaleMax > 0) {
@@ -1265,27 +1280,6 @@ function buildWtftLines(interactions, defaultSettings, opts) {
         widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
       }
     }
-  }
-  let surgeModel = opts?.model;
-  if (!surgeModel) {
-    for (const i of interactions) {
-      if (i.model) {
-        surgeModel = i.model;
-        break;
-      }
-    }
-  }
-  const isDeepSeek = (surgeModel || "").toLowerCase().includes("deepseek");
-  const surgeHours = isDeepSeek ? getSurgeLocalHours(tz) : /* @__PURE__ */ new Set();
-  const currentHour = getCurrentLocalHour(tz);
-  const proximity = isDeepSeek ? checkSurgeProximity() : { status: void 0, multiplier: 1 };
-  const timelineStr = buildTimelineString(surgeHours, currentHour, proximity.status);
-  const timelineLen = getVisualLength(timelineStr);
-  const titleLen = getVisualLength(widgetLines[0]);
-  if (titleLen + 2 + timelineLen <= finalWidth - 2) {
-    widgetLines[0] = widgetLines[0] + "  " + timelineStr;
-  } else {
-    widgetLines.splice(1, 0, " ".repeat(Math.max(0, finalWidth - timelineLen - 2)) + timelineStr);
   }
   if (unit2 === "cost") {
     const totalOtherCost = interactions.filter((i) => classifyInteraction(i) === "other").reduce((sum, i) => sum + i.cost, 0);
