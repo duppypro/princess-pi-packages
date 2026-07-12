@@ -2253,33 +2253,38 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       if (eventType !== "change") return;
       try {
         const stat = fs2.statSync(tagPath);
-        if (stat.size <= lastReadOffset) return;
-        const fd = fs2.openSync(tagPath, "r");
-        const buf = Buffer.alloc(stat.size - lastReadOffset);
-        fs2.readSync(fd, buf, 0, buf.length, lastReadOffset);
-        fs2.closeSync(fd);
-        lastReadOffset = stat.size;
-        const newContent = buf.toString("utf8");
-        const lines = newContent.split("\n");
-        let newCount = 0;
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const obj = JSON.parse(line);
-            if (obj._hb) continue;
-            const interaction = classifiedToInteraction(obj);
-            if (interaction) {
-              allInteractions.push(interaction);
-              newCount++;
+        if (stat.size > lastReadOffset) {
+          const fd = fs2.openSync(tagPath, "r");
+          const buf = Buffer.alloc(stat.size - lastReadOffset);
+          fs2.readSync(fd, buf, 0, buf.length, lastReadOffset);
+          fs2.closeSync(fd);
+          lastReadOffset = stat.size;
+          const newContent = buf.toString("utf8");
+          const lines = newContent.split("\n");
+          let newCount = 0;
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              if (obj._hb) continue;
+              const interaction = classifiedToInteraction(obj);
+              if (interaction) {
+                allInteractions.push(interaction);
+                newCount++;
+              }
+            } catch {
             }
-          } catch {
+          }
+          if (newCount > 0) {
+            updateDaemonHealth();
+            needsRedraw = true;
+            render();
+            return;
           }
         }
-        if (newCount > 0) {
-          updateDaemonHealth();
-          needsRedraw = true;
-          render();
-        }
+        updateDaemonHealth();
+        needsRedraw = true;
+        render();
       } catch {
         try {
           lastReadOffset = 0;
