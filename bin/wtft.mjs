@@ -3015,28 +3015,13 @@ async function main() {
     });
     child.unref();
   } catch (err) {
-    console.error(`\x1B[33m\u26A0 Log parser spawn failed, falling back to direct parse: ${err}\x1B[0m`);
   }
-  const waitStart = Date.now();
-  let tagInteractions = [];
-  let directCost = 0;
-  while (Date.now() - waitStart < 3e4) {
-    if (fs4.existsSync(tagPath)) {
-      tagInteractions = readClassifiedTagFile(tagPath);
-      if (tagInteractions.length > 0) {
-        if (directCost === 0) {
-          const directInteractions = deduplicateInteractions(parseSessionFile(finalSessionPath));
-          directCost = directInteractions.reduce((sum, i) => sum + i.cost, 0);
-        }
-        const tagCost = tagInteractions.reduce((sum, i) => sum + i.cost, 0);
-        if (tagCost >= directCost - 1e-3) break;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 667));
+  let interactions = [];
+  if (fs4.existsSync(tagPath)) {
+    interactions = readClassifiedTagFile(tagPath);
   }
-  const interactions = tagInteractions.length > 0 ? tagInteractions : [];
   if (interactions.length === 0) {
-    interactions.push(...parseSessionFile(finalSessionPath));
+    interactions = parseSessionFile(finalSessionPath);
   }
   const config = readConfig("wtft");
   const disabledEmoji = typeof config.disabledEmoji === "boolean" ? config.disabledEmoji : false;
@@ -3086,10 +3071,10 @@ async function main() {
   if (debugMode) {
     const tagCost = interactions.reduce((sum, i) => sum + (i.cost || 0), 0);
     const rawInteractions = parseSessionFile(finalSessionPath);
-    const directCost2 = deduplicateInteractions(rawInteractions).reduce((sum, i) => sum + i.cost, 0);
+    const directCost = deduplicateInteractions(rawInteractions).reduce((sum, i) => sum + i.cost, 0);
     console.log(padStr + `\x1B[90m\u2500\u2500 debug \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\x1B[0m`);
     console.log(padStr + `\x1B[90m  tag file (daemon): $${tagCost.toFixed(4)}  (${interactions.length} entries)\x1B[0m`);
-    console.log(padStr + `\x1B[90m  direct parse+dedup: $${directCost2.toFixed(4)}  (${deduplicateInteractions(rawInteractions).length} entries)\x1B[0m`);
+    console.log(padStr + `\x1B[90m  direct parse+dedup: $${directCost.toFixed(4)}  (${deduplicateInteractions(rawInteractions).length} entries)\x1B[0m`);
     console.log(padStr + `\x1B[90m  raw parse (no dedup): $${rawInteractions.reduce((sum, i) => sum + i.cost, 0).toFixed(4)}  (${rawInteractions.length} entries)\x1B[0m`);
   }
   if (showOther) {
