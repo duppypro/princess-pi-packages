@@ -1878,7 +1878,7 @@ function renderDaemonStatus(status, restarting = false) {
       if (remainingMin <= 0) {
         return "  \x1B[33m\u25CF\x1B[0m idle (cache emptied)";
       }
-      return `  \x1B[33m\u25CF\x1B[0m idle (${remainingMin}min to expire)`;
+      return `  \x1B[33m\u25CF\x1B[0m idle (cache expires in ${remainingMin}min)`;
     }
     if (cacheTtlMs === null) {
       return "  \x1B[33m\u25CF\x1B[0m idle (local model)";
