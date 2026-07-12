@@ -1132,8 +1132,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const leftLen = getVisualLength(titleLeftFinal);
   const legendLen = getVisualLength(legendStr);
   const totalNeeded = leftLen + legendLen + timelineLen + 6;
-  const forceLegendRow = opts?.forceLegendRow ?? false;
-  if (!forceLegendRow && totalNeeded <= finalWidth - 3) {
+  if (totalNeeded <= finalWidth - 3) {
     const remainingSpaces = finalWidth - 3 - leftLen - legendLen - timelineLen - 2;
     const titleLine = titleLeftFinal + " ".repeat(remainingSpaces) + legendStr + "  " + timelineStr;
     widgetLines.push(titleLine);
@@ -1708,8 +1707,7 @@ async function watchMode(sessionPath, settings) {
       showTicks: finalShowTicks,
       mode: finalMode,
       timezone: finalTimezone,
-      disabledEmoji,
-      forceLegendRow: true
+      disabledEmoji
     });
     const buf = [];
     buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
@@ -2213,8 +2211,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       showTicks: finalShowTicks,
       mode: finalMode,
       timezone: finalTimezone,
-      disabledEmoji,
-      forceLegendRow: true
+      disabledEmoji
     });
     const buf = [];
     buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
