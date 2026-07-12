@@ -3014,11 +3014,21 @@ async function main() {
       stdio: "ignore"
     });
     child.unref();
-  } catch (err) {
+  } catch (_) {
   }
   let interactions = [];
   if (fs4.existsSync(tagPath)) {
     interactions = readClassifiedTagFile(tagPath);
+  }
+  if (interactions.length === 0) {
+    const tagWaitStart = Date.now();
+    while (Date.now() - tagWaitStart < 2e3) {
+      if (fs4.existsSync(tagPath)) {
+        interactions = readClassifiedTagFile(tagPath);
+        if (interactions.length > 0) break;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
   if (interactions.length === 0) {
     interactions = parseSessionFile(finalSessionPath);
