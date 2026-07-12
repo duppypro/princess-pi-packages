@@ -1,6 +1,8 @@
-# Spec Draft: Token-Unit Mode — Visual Encoding Options for #14
+# WTFT Token-Unit Mode — Code and Spec Approved (#14)
 
 Issue: [FEAT: wtft token-unit mode (vs cost) with custom scale factors](https://github.com/duppypro/princess-pi-packages/issues/14)
+
+Branch: `14-token-unit-mode` (6 commits)
 
 ## Goal
 
@@ -176,17 +178,31 @@ Using terminal notation where `\x1b[48;5;N` = background color N, `\x1b[38;5;M` 
 9. **Density formula**: `outputShare = segment.outputTokens / segment.totalTokens` → map ░(0-25%) ▒(25-50%) ▓(50-75%) █(75-100%). No cost normalization needed.
 10. **Bin token granularity**: Minimal — only `{ total, output }` per category. Full breakdown deferred.
 11. **Per-bar prefix**: `14:00  +3.4k  12.5k tok` — same structure, swap `$` for `tok`. No inline output-share.
-12. **Server tool costs**: Render as 1-char `◆` marker at bar tail, distinct color. No bar width. Explained in density key.
-13. **Density key bar**: `cheap $/tok  ░░ ▒▒ ▓▓ ██  expensive $/tok` — single row below chart, 4-block gradient.
+12. **Server tool costs**: Render as `$` marker at bar tail (orange-gold, 209). No bar width.
+    `$` is self-documenting in token mode — the only dollar sign on the page. Legend: `$ = cost-only (web tools)`.
+13. **Density key bar**: `cheap $/tok  ░░ ▒▒ ▓▓ ██  expensive $/tok` — single row below chart.
+    All four density chars in bright white (37) — monotone gradient, no color distraction.
 14. **Footer summary**: Add `↑47k ↓14k R1.3M CH99.7%` line below chart in token mode — mirrors Pi/Claude footer.
-15. **Custom scale factors**: DEFERRED — open follow-up issue. Density gradient already answers "where are expensive tokens?"
+15. **Custom scale factors**: DEFERRED. Density gradient already answers "where are expensive tokens?"
 16. **Quota mode**: DEFERRED — needs its own grilling session. Unknown data dependency (subscription limits).
-17. **Renderer architecture**: Extract shared binning/ticks/date-header into helpers. Two separate render functions: `buildCostBars()` (current) and `buildTokenBars()` (new). Caller dispatches based on `unit` param.
-18. **Config persistence**: Add `tokens: boolean` to `~/.config/pi/wtft.json`. CLI flag overrides.
-19. **Background color palette**: Dedicated 256-color bg codes per category (see table below). Density chars in bright white (15) against dark backgrounds.
-20. **Test strategy**: Unit test density calc + snapshot test for token mode output + parity test with cost mode.
-21. **Density key bar**: Position between last bar and footer summary. Category legend (top) = what colors mean; density key (bottom) = how to read overlay.
+17. **Renderer architecture**: Single `buildWtftLines()` with `unit` parameter branching inside.
+    Shared binning/ticks/date-header. Two bar-rendering paths: cost bars (foreground colors) and token bars (bg colors + density chars).
+18. **Config persistence**: `tokens: boolean` in `~/.config/pi/wtft.json`. CLI `--tokens` flag overrides.
+19. **Background color palette**: Dedicated 256-color bg codes per category. Density chars in bright white (15) against dark backgrounds.
+20. **Test strategy**: Existing tests pass. Unit test density calc + snapshot test deferred.
+21. **Density key bar position**: Between last bar and footer summary. Category legend (top) = what colors mean; density key (bottom) = how to read overlay.
 22. **Footer summary format**: `↑47k ↓14k R1.3M CH99.7%` — exact Pi footer convention. No cost total in token mode.
+
+## Reconciliation notes (Step 5)
+
+23. **Daemon-only architecture**: CLI never direct-parses session files. Daemon is the sole parser.
+    If tag file doesn't exist, wait up to 2 daemon beats (~1.4s). If still no data, print status message and exit.
+    No fallback — daemon or nothing.
+24. **Widget regression fix (#14, `3aa29cc`)**: `session_tree` handler no longer replaces `_allInteractions`
+    with fewer entries from a stale tag file. Only replaces when new source has strictly more entries.
+25. **Follow-up #92**: Collapse Pi widget to single tag-file data source — remove burst accumulator.
+    The 667ms daemon beat is faster than Pi's end-of-turn widget refresh cycle during long turns.
+    CLI `--watch` can get ahead of the Pi widget.
 
 ## Background Color Palette (Token Mode)
 
