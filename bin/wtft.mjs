@@ -1280,7 +1280,13 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const currentHour = getCurrentLocalHour(tz);
   const proximity = isDeepSeek ? checkSurgeProximity() : { status: void 0, multiplier: 1 };
   const timelineStr = buildTimelineString(surgeHours, currentHour, proximity.status);
-  widgetLines[0] = widgetLines[0] + "  " + timelineStr;
+  const timelineLen = getVisualLength(timelineStr);
+  const titleLen = getVisualLength(widgetLines[0]);
+  if (titleLen + 2 + timelineLen <= finalWidth - 2) {
+    widgetLines[0] = widgetLines[0] + "  " + timelineStr;
+  } else {
+    widgetLines.splice(1, 0, " ".repeat(Math.max(0, finalWidth - timelineLen - 2)) + timelineStr);
+  }
   if (unit2 === "cost") {
     const totalOtherCost = interactions.filter((i) => classifyInteraction(i) === "other").reduce((sum, i) => sum + i.cost, 0);
     if (totalSessionCost > 0) {
