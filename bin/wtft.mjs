@@ -1717,9 +1717,14 @@ async function watchMode(sessionPath, settings) {
       const padNeeded = Math.max(0, termW - (visLen % termW || termW) - 1);
       process.stdout.write(allLines[i] + " ".repeat(Math.max(0, padNeeded)) + "\x1B[K\n");
     }
-    process.stdout.write("\x1B[J");
     const tempOutput = allLines.join("\n") + "\n";
-    lastLineCount = visualLineCount(tempOutput, termW);
+    const newVisualLines = visualLineCount(tempOutput, termW);
+    if (newVisualLines < upRows) {
+      for (let i = newVisualLines; i < upRows; i++) {
+        process.stdout.write(" ".repeat(Math.max(0, termW - 1)) + "\x1B[K\n");
+      }
+    }
+    lastLineCount = newVisualLines;
     needsRedraw = false;
     _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
   };
@@ -2267,9 +2272,14 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       const padNeeded = Math.max(0, termW - lastSegLen - 1);
       process.stdout.write(allLines[i] + " ".repeat(padNeeded) + "\x1B[K\n");
     }
-    process.stdout.write("\x1B[J");
     const tempOutput = allLines.join("\n") + "\n";
-    lastLineCount = visualLineCount(tempOutput, termW);
+    const newVisualLines = visualLineCount(tempOutput, termW);
+    if (newVisualLines < upRows) {
+      for (let i = newVisualLines; i < upRows; i++) {
+        process.stdout.write(" ".repeat(Math.max(0, termW - 1)) + "\x1B[K\n");
+      }
+    }
+    lastLineCount = newVisualLines;
     needsRedraw = false;
   };
   render();
