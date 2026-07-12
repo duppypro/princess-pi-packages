@@ -3015,6 +3015,8 @@ async function main() {
     });
     child.unref();
   } catch (_) {
+    console.error(`\x1B[31m\u274C wtft-daemon not found at ${daemonPath}\x1B[0m`);
+    process.exit(1);
   }
   let interactions = [];
   if (fs4.existsSync(tagPath)) {
@@ -3022,16 +3024,18 @@ async function main() {
   }
   if (interactions.length === 0) {
     const tagWaitStart = Date.now();
-    while (Date.now() - tagWaitStart < 2e3) {
+    while (Date.now() - tagWaitStart < 1400) {
       if (fs4.existsSync(tagPath)) {
         interactions = readClassifiedTagFile(tagPath);
         if (interactions.length > 0) break;
       }
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 667));
     }
   }
   if (interactions.length === 0) {
-    interactions = parseSessionFile(finalSessionPath);
+    const sessionName = path5.basename(finalSessionPath).replace(/.jsonl$/, "");
+    console.log(`\x1B[33mDaemon started on session ${sessionName.slice(0, 12)}\u2026 \u2014 no data yet. Try again in a moment.\x1B[0m`);
+    process.exit(0);
   }
   const config = readConfig("wtft");
   const disabledEmoji = typeof config.disabledEmoji === "boolean" ? config.disabledEmoji : false;
