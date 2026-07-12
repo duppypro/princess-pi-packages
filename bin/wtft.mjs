@@ -479,12 +479,75 @@ function classifyInteraction(interaction) {
 }
 
 // extensions/lib/wtft-renderer.ts
+var TOKEN_BG_COLORS = {
+  spec: 22,
+  // deep forest green
+  mixed: 94,
+  // dark gold / earth
+  code: 130,
+  // burnt orange
+  tests: 178,
+  // warm tan
+  research: 54,
+  // midnight plum
+  git: 23,
+  // deep teal
+  grep: 24,
+  // navy blue
+  web: 88,
+  // crimson
+  prompt: 89,
+  // dark mauve
+  other: 236
+  // near-black charcoal
+};
+var DENSITY_CHARS = ["\u2591", "\u2592", "\u2593", "\u2588"];
+function densityChar(outputShare) {
+  const idx = Math.min(3, Math.floor(outputShare * 4));
+  return DENSITY_CHARS[idx];
+}
+function interactionTotalTokens(i) {
+  return i.inputTokens + i.outputTokens + i.cacheReadTokens + i.cacheWriteTokens + i.reasoningTokens;
+}
+function tokenFooterSummary(interactions) {
+  let input = 0, output = 0, cr = 0, cw = 0, reasoning = 0;
+  for (const i of interactions) {
+    input += i.inputTokens + i.cacheReadTokens + i.cacheWriteTokens;
+    output += i.outputTokens;
+    cr += i.cacheReadTokens;
+    cw += i.cacheWriteTokens;
+    reasoning += i.reasoningTokens;
+  }
+  const totalCacheOps = cr + cw + input - cr - cw;
+  const denom = input - cr - cw + cr + cw;
+  const hitRate = denom > 0 ? (cr / denom * 100).toFixed(0) : "0";
+  const parts = [];
+  if (input > 0) parts.push(`\u2191${formatTokenCount(input)}`);
+  if (output > 0) parts.push(`\u2193${formatTokenCount(output)}`);
+  if (reasoning > 0) parts.push(`R${formatTokenCount(reasoning)}`);
+  if (cr > 0 || cw > 0) parts.push(`CH${hitRate}%`);
+  return parts.join(" ");
+}
+function accumulateTokens(bin, category, interaction) {
+  if (!bin.tokens) {
+    bin.tokens = {};
+    for (const cat of ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "prompt", "other"]) {
+      bin.tokens[cat] = { total: 0, output: 0 };
+    }
+    bin.total_tokens = 0;
+  }
+  const t = interactionTotalTokens(interaction);
+  const o = interaction.outputTokens + interaction.reasoningTokens;
+  bin.tokens[category].total += t;
+  bin.tokens[category].output += o;
+  bin.total_tokens += t;
+}
 function parseInterval(val) {
   const match = /^(\d+)([mhdw])$/.exec(val);
   if (match) {
     const size = parseInt(match[1], 10);
-    const unit = match[2];
-    if (size > 0) return { size, unit };
+    const unit2 = match[2];
+    if (size > 0) return { size, unit: unit2 };
   }
   return { size: 1, unit: "h" };
 }
@@ -557,8 +620,8 @@ function getBinInfo(timestamp, config, tz) {
   const parts = getZonedParts(timestamp, tz);
   const pad2 = (n) => String(n).padStart(2, "0");
   const dateStr = `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
-  const { size, unit } = config;
-  if (unit === "m") {
+  const { size, unit: unit2 } = config;
+  if (unit2 === "m") {
     const totalMins = parts.hour * 60 + parts.minute;
     const binnedMins = Math.floor(totalMins / size) * size;
     return {
@@ -566,14 +629,14 @@ function getBinInfo(timestamp, config, tz) {
       label: `${pad2(Math.floor(binnedMins / 60))}:${pad2(binnedMins % 60)}`,
       dateStr
     };
-  } else if (unit === "h") {
+  } else if (unit2 === "h") {
     const startHours = Math.floor(parts.hour / size) * size;
     return {
       key: `${dateStr}T${pad2(startHours)}:00:00`,
       label: `${pad2(startHours)}:00`,
       dateStr
     };
-  } else if (unit === "d") {
+  } else if (unit2 === "d") {
     const binnedDays = Math.floor((parts.day - 1) / size) * size;
     const label = `${parts.year}-${pad2(parts.month)}-${pad2(binnedDays + 1)}`;
     return { key: `${label}T00:00:00`, label, dateStr: label };
@@ -629,6 +692,57 @@ function calculateScaleMax(total) {
   } else {
     return Math.ceil(total);
   }
+}
+function buildTokenTickLine(maxTokens, barWidth, prefixWidth, labelPrefix) {
+  if (maxTokens <= 0 || barWidth < 15) return null;
+  const totalWidth = prefixWidth + barWidth;
+  const chars = Array(totalWidth).fill("\u2500");
+  const cleanPrefix = labelPrefix.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  for (let i = 0; i < cleanPrefix.length; i++) {
+    chars[i] = cleanPrefix[i];
+  }
+  const ticks = [
+    prefixWidth,
+    prefixWidth + Math.floor(barWidth / 4),
+    prefixWidth + Math.floor(barWidth / 2),
+    prefixWidth + Math.floor(barWidth * 3 / 4),
+    prefixWidth + barWidth - 1
+  ];
+  const labels = [];
+  const tickValues = [0, maxTokens / 4, maxTokens / 2, maxTokens * 3 / 4, maxTokens];
+  for (let i = 0; i < ticks.length; i++) {
+    const text = formatTokenCount(Math.round(tickValues[i]));
+    const displayStr = ` ${text} `;
+    const startIdx = ticks[i];
+    const endIdx = startIdx + displayStr.length;
+    let overlap = false;
+    for (const l of labels) {
+      if (startIdx < l.end && endIdx > l.start) {
+        overlap = true;
+        break;
+      }
+    }
+    if (!overlap) {
+      labels.push({ text: displayStr, start: startIdx, end: endIdx });
+    }
+  }
+  labels.sort((a, b) => a.start - b.start);
+  let result = "";
+  let cursor = 0;
+  for (const l of labels) {
+    if (l.start > cursor) {
+      result += chars.slice(cursor, Math.min(l.start, chars.length)).join("");
+      if (l.start > chars.length) {
+        result += " ".repeat(l.start - Math.max(cursor, chars.length));
+      }
+    }
+    result += `\x1B[7m${l.text}\x1B[27m`;
+    cursor = Math.max(cursor, l.end);
+  }
+  if (cursor < chars.length) {
+    result += chars.slice(cursor).join("");
+  }
+  return result;
 }
 function buildTickLine(maxCost, barWidth, prefixWidth, labelPrefix) {
   if (maxCost <= 0 || barWidth < 15) return null;
@@ -856,6 +970,7 @@ function computeCacheMetrics(interactions) {
 function buildWtftLines(interactions, defaultSettings, opts) {
   const intervalStr2 = opts?.interval !== void 0 ? opts.interval : defaultSettings.interval;
   const limit2 = opts?.limit !== void 0 ? opts.limit : defaultSettings.limit;
+  const unit2 = opts?.unit ?? "cost";
   const isWidget = opts?.isWidget ?? false;
   const disabledEmoji = opts?.disabledEmoji !== void 0 ? opts.disabledEmoji : defaultSettings.disabledEmoji;
   const termWidth = getTerminalWidth(isWidget, disabledEmoji);
@@ -889,6 +1004,9 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       bin.total_cost += interaction.serverToolCost;
       totalSessionCost += interaction.serverToolCost;
     }
+    if (unit2 === "tokens") {
+      accumulateTokens(bin, classification, interaction);
+    }
   }
   const sortedBins = Array.from(binMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map((entry) => entry[1]);
   if (mode2 === "cumulative") {
@@ -905,20 +1023,58 @@ function buildWtftLines(interactions, defaultSettings, opts) {
         bin.costs[cat] = runningCosts[cat];
       }
       bin.total_cost = running_total;
+      if (unit2 === "tokens" && bin.tokens && bin.total_tokens != null) {
+        bin.incremental_tokens = bin.total_tokens;
+      }
+    }
+    if (unit2 === "tokens") {
+      let runningTokens = 0;
+      const runningTokByCat = {};
+      for (const cat of ALL_CATEGORIES) {
+        runningTokByCat[cat] = { total: 0, output: 0 };
+      }
+      for (const bin of sortedBins) {
+        if (bin.tokens) {
+          runningTokens += bin.total_tokens;
+          for (const cat of ALL_CATEGORIES) {
+            runningTokByCat[cat].total += bin.tokens[cat].total;
+            runningTokByCat[cat].output += bin.tokens[cat].output;
+            bin.tokens[cat] = { ...runningTokByCat[cat] };
+          }
+          bin.total_tokens = runningTokens;
+        }
+      }
     }
   }
+  const totalSessionTokens = unit2 === "tokens" ? interactions.reduce((sum, i) => sum + interactionTotalTokens(i), 0) : 0;
   const reversedBins = sortedBins.reverse();
   const displayedBins = reversedBins.slice(0, limit2);
   if (displayedBins.length === 0) {
     return null;
   }
-  const maxBarValue = mode2 === "cumulative" ? totalSessionCost : Math.max(...displayedBins.map((b) => b.total_cost), 0);
-  const scaleMax = calculateScaleMax(maxBarValue);
+  const maxBarValue = mode2 === "cumulative" ? unit2 === "tokens" ? totalSessionTokens : totalSessionCost : Math.max(...displayedBins.map((b) => unit2 === "tokens" ? b.total_tokens ?? 0 : b.total_cost), 0);
+  const scaleMax = unit2 === "tokens" ? Math.ceil(maxBarValue / 1e3) * 1e3 : calculateScaleMax(maxBarValue);
+  const formatScaleLabel = (v) => {
+    if (unit2 === "tokens") return formatTokenCount(v);
+    return formatCost(v);
+  };
   const labelWidth = Math.max(...displayedBins.map((b) => b.label.length), 5);
   let prefixWidth = labelWidth + 2;
   let maxIncLen = 6;
   let maxCostLen = 6;
-  if (mode2 === "cumulative") {
+  if (unit2 === "tokens") {
+    if (mode2 === "cumulative") {
+      maxIncLen = Math.max(...displayedBins.map((bin) => {
+        const incSign = (bin.incremental_tokens ?? 0) >= 0 ? "+" : "";
+        return `${incSign}${formatTokenCount(bin.incremental_tokens ?? 0)}`.length;
+      }), 6);
+      maxCostLen = Math.max(...displayedBins.map((b) => formatTokenCount(b.total_tokens ?? 0).length), 6);
+      prefixWidth += maxIncLen + 2 + maxCostLen + 2;
+    } else {
+      maxCostLen = Math.max(...displayedBins.map((b) => formatTokenCount(b.total_tokens ?? 0).length), 6);
+      prefixWidth += maxCostLen + 2;
+    }
+  } else if (mode2 === "cumulative") {
     maxIncLen = Math.max(...displayedBins.map((bin) => {
       const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
       return `${incSign}${formatCost(bin.incremental_cost ?? 0)}`.length;
@@ -942,7 +1098,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     titleDateStr = `${months[nowParts.month - 1]}-${pad2(nowParts.day)}`;
   }
   const widgetLines = [];
-  const titleLeft = disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
+  const titleLeft = unit2 === "tokens" ? disabledEmoji ? "[#] WTF Tokens?" : "\u{1F522} WTF Tokens?" : disabledEmoji ? "[$] WTF Tokens?" : "\u{1F4B8} WTF Tokens?";
   const sessionSuffix = opts?.sessionNameSuffix ? ` \x1B[90m...${opts.sessionNameSuffix.replace(/.jsonl$/, "").slice(-4)}\x1B[0m` : "";
   const titleLeftFinal = titleLeft + sessionSuffix;
   const legendItems = [
@@ -974,7 +1130,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     const dateLabel = `\u2500\u2500 ${titleDateStr} `;
     const paddingLen = Math.max(0, prefixWidth - dateLabel.length);
     const labelPrefix = dateLabel + "\u2500".repeat(paddingLen);
-    const ticksLine = buildTickLine(scaleMax, maxBarWidth, prefixWidth, labelPrefix);
+    const ticksLine = unit2 === "tokens" ? buildTokenTickLine(scaleMax, maxBarWidth, prefixWidth, labelPrefix) : buildTickLine(scaleMax, maxBarWidth, prefixWidth, labelPrefix);
     if (ticksLine) {
       widgetLines.push(`\x1B[90m${ticksLine}\x1B[0m`);
     }
@@ -1002,79 +1158,112 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       const dividerLine = dayChangeText + dividerChars.join("");
       widgetLines.push(`\x1B[90m${dividerLine}\x1B[0m`);
     }
-    let barStr = "";
-    if (mode2 === "cumulative") {
-      const barWidth = scaleMax > 0 ? Math.round(bin.total_cost / scaleMax * maxBarWidth) : 0;
-      const chars = distributeChars(bin.costs, barWidth);
-      if (chars.spec > 0) {
-        barStr += `\x1B[38;5;108m${"\u2588".repeat(chars.spec)}\x1B[0m`;
-      }
-      if (chars.mixed > 0) {
-        barStr += `\x1B[38;5;108;48;5;173m${"\u2592".repeat(chars.mixed)}\x1B[0m`;
-      }
-      if (chars.code > 0) {
-        barStr += `\x1B[38;5;173m${"\u2588".repeat(chars.code)}\x1B[0m`;
-      }
-      if (chars.tests > 0) {
-        barStr += `\x1B[38;5;223m${"\u2588".repeat(chars.tests)}\x1B[0m`;
-      }
-      if (chars.research > 0) {
-        barStr += `\x1B[38;5;134m${"\u2588".repeat(chars.research)}\x1B[0m`;
-      }
-      if (chars.git > 0) {
-        barStr += `\x1B[38;5;73m${"\u2588".repeat(chars.git)}\x1B[0m`;
-      }
-      if (chars.grep > 0) {
-        barStr += `\x1B[38;5;67m${"\u2588".repeat(chars.grep)}\x1B[0m`;
-      }
-      if (chars.web > 0) {
-        barStr += `\x1B[38;5;209m${"\u2593".repeat(chars.web)}\x1B[0m`;
-      }
-      if (chars.prompt > 0) {
-        barStr += `\x1B[38;5;168m${"\u2591".repeat(chars.prompt)}\x1B[0m`;
-      }
-      if (chars.other > 0) {
-        barStr += `\x1B[38;5;238m${"\u2591".repeat(chars.other)}\x1B[0m`;
-      }
-    } else {
-      const cells = Array(maxBarWidth).fill(" ");
-      const categoriesInReverse = [
-        { cat: "other", color: "\x1B[38;5;238m", char: "\u2591" },
-        { cat: "prompt", color: "\x1B[38;5;168m", char: "\u2591" },
-        { cat: "grep", color: "\x1B[38;5;67m", char: "\u2588" },
-        { cat: "web", color: "\x1B[38;5;209m", char: "\u2593" },
-        { cat: "git", color: "\x1B[38;5;73m", char: "\u2588" },
-        { cat: "research", color: "\x1B[38;5;134m", char: "\u2588" },
-        { cat: "tests", color: "\x1B[38;5;223m", char: "\u2588" },
-        { cat: "code", color: "\x1B[38;5;173m", char: "\u2588" },
-        { cat: "mixed", color: "\x1B[38;5;108;48;5;173m", char: "\u2592" },
-        { cat: "spec", color: "\x1B[38;5;108m", char: "\u2588" }
-      ];
-      for (const { cat, color, char } of categoriesInReverse) {
-        const cost = bin.costs[cat] || 0;
-        if (cost > 0 && scaleMax > 0) {
-          const pos = Math.round(cost / scaleMax * (maxBarWidth - 1));
-          if (pos >= 0 && pos < maxBarWidth) {
-            cells[pos] = `${color}${char}\x1B[0m`;
-          }
-        }
-      }
-      barStr = cells.join("");
-    }
     const labelPart = padString(bin.label, labelWidth);
     const coloredLabel = `\x1B[90m${labelPart}\x1B[0m`;
-    if (mode2 === "cumulative") {
-      const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
-      const incStr = `${incSign}${formatCost(bin.incremental_cost ?? 0)}`;
-      const incPart = padString(incStr, maxIncLen);
-      const coloredInc = `\x1B[90m${incPart}\x1B[0m`;
-      const costPart = padString(formatCost(bin.total_cost), maxCostLen);
-      const coloredCost = `\x1B[1;37m${costPart}\x1B[0m`;
-      widgetLines.push(`${coloredLabel}  ${coloredInc}  ${coloredCost}  ${barStr}`);
+    if (unit2 === "tokens" && bin.tokens) {
+      const barWidth = scaleMax > 0 ? Math.round((bin.total_tokens ?? 0) / scaleMax * maxBarWidth) : 0;
+      let barStr = "";
+      let allChars = 0;
+      for (const cat of ALL_CATEGORIES) {
+        const t = bin.tokens[cat];
+        if (!t || t.total <= 0) continue;
+        const segWidth = scaleMax > 0 ? Math.round((bin.total_tokens ?? 0) / scaleMax * maxBarWidth * (t.total / (bin.total_tokens || 1))) : 0;
+        const segChars = Math.max(0, Math.min(segWidth, maxBarWidth - allChars));
+        if (segChars <= 0) continue;
+        const outputShare = t.total > 0 ? t.output / t.total : 0;
+        const dc = densityChar(outputShare);
+        const bg = TOKEN_BG_COLORS[cat] ?? 236;
+        barStr += `\x1B[48;5;${bg}m\x1B[38;5;15m${dc.repeat(segChars)}\x1B[0m`;
+        allChars += segChars;
+      }
+      const hasServerToolCost = (bin.costs["web"] || 0) > 0 && (bin.tokens["web"]?.total ?? 0) === 0;
+      if (hasServerToolCost && allChars < maxBarWidth) {
+        barStr += `\x1B[38;5;209m\u25C6\x1B[0m`;
+        allChars++;
+      }
+      if (mode2 === "cumulative") {
+        const incSign = (bin.incremental_tokens ?? 0) >= 0 ? "+" : "";
+        const incStr = `${incSign}${formatTokenCount(bin.incremental_tokens ?? 0)}`;
+        const incPart = padString(incStr, maxIncLen);
+        const tokPart = padString(formatTokenCount(bin.total_tokens ?? 0), maxCostLen);
+        widgetLines.push(`${coloredLabel}  \x1B[90m${incPart}\x1B[0m  \x1B[1;37m${tokPart} tok\x1B[0m  ${barStr}`);
+      } else {
+        const tokPart = padString(formatTokenCount(bin.total_tokens ?? 0), maxCostLen);
+        widgetLines.push(`${coloredLabel}  \x1B[1;37m${tokPart} tok\x1B[0m  ${barStr}`);
+      }
     } else {
-      const costPart = padString(formatCost(bin.total_cost), maxCostLen);
-      const coloredCost = `\x1B[1;37m${costPart}\x1B[0m`;
-      widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
+      let barStr = "";
+      if (mode2 === "cumulative") {
+        const barWidth = scaleMax > 0 ? Math.round(bin.total_cost / scaleMax * maxBarWidth) : 0;
+        const chars = distributeChars(bin.costs, barWidth);
+        if (chars.spec > 0) {
+          barStr += `\x1B[38;5;108m${"\u2588".repeat(chars.spec)}\x1B[0m`;
+        }
+        if (chars.mixed > 0) {
+          barStr += `\x1B[38;5;108;48;5;173m${"\u2592".repeat(chars.mixed)}\x1B[0m`;
+        }
+        if (chars.code > 0) {
+          barStr += `\x1B[38;5;173m${"\u2588".repeat(chars.code)}\x1B[0m`;
+        }
+        if (chars.tests > 0) {
+          barStr += `\x1B[38;5;223m${"\u2588".repeat(chars.tests)}\x1B[0m`;
+        }
+        if (chars.research > 0) {
+          barStr += `\x1B[38;5;134m${"\u2588".repeat(chars.research)}\x1B[0m`;
+        }
+        if (chars.git > 0) {
+          barStr += `\x1B[38;5;73m${"\u2588".repeat(chars.git)}\x1B[0m`;
+        }
+        if (chars.grep > 0) {
+          barStr += `\x1B[38;5;67m${"\u2588".repeat(chars.grep)}\x1B[0m`;
+        }
+        if (chars.web > 0) {
+          barStr += `\x1B[38;5;209m${"\u2593".repeat(chars.web)}\x1B[0m`;
+        }
+        if (chars.prompt > 0) {
+          barStr += `\x1B[38;5;168m${"\u2591".repeat(chars.prompt)}\x1B[0m`;
+        }
+        if (chars.other > 0) {
+          barStr += `\x1B[38;5;238m${"\u2591".repeat(chars.other)}\x1B[0m`;
+        }
+      } else {
+        const cells = Array(maxBarWidth).fill(" ");
+        const categoriesInReverse = [
+          { cat: "other", color: "\x1B[38;5;238m", char: "\u2591" },
+          { cat: "prompt", color: "\x1B[38;5;168m", char: "\u2591" },
+          { cat: "grep", color: "\x1B[38;5;67m", char: "\u2588" },
+          { cat: "web", color: "\x1B[38;5;209m", char: "\u2593" },
+          { cat: "git", color: "\x1B[38;5;73m", char: "\u2588" },
+          { cat: "research", color: "\x1B[38;5;134m", char: "\u2588" },
+          { cat: "tests", color: "\x1B[38;5;223m", char: "\u2588" },
+          { cat: "code", color: "\x1B[38;5;173m", char: "\u2588" },
+          { cat: "mixed", color: "\x1B[38;5;108;48;5;173m", char: "\u2592" },
+          { cat: "spec", color: "\x1B[38;5;108m", char: "\u2588" }
+        ];
+        for (const { cat, color, char } of categoriesInReverse) {
+          const cost = bin.costs[cat] || 0;
+          if (cost > 0 && scaleMax > 0) {
+            const pos = Math.round(cost / scaleMax * (maxBarWidth - 1));
+            if (pos >= 0 && pos < maxBarWidth) {
+              cells[pos] = `${color}${char}\x1B[0m`;
+            }
+          }
+        }
+        barStr = cells.join("");
+      }
+      if (mode2 === "cumulative") {
+        const incSign = (bin.incremental_cost ?? 0) >= 0 ? "+" : "";
+        const incStr = `${incSign}${formatCost(bin.incremental_cost ?? 0)}`;
+        const incPart = padString(incStr, maxIncLen);
+        const coloredInc = `\x1B[90m${incPart}\x1B[0m`;
+        const costPart = padString(formatCost(bin.total_cost), maxCostLen);
+        const coloredCost = `\x1B[1;37m${costPart}\x1B[0m`;
+        widgetLines.push(`${coloredLabel}  ${coloredInc}  ${coloredCost}  ${barStr}`);
+      } else {
+        const costPart = padString(formatCost(bin.total_cost), maxCostLen);
+        const coloredCost = `\x1B[1;37m${costPart}\x1B[0m`;
+        widgetLines.push(`${coloredLabel}  ${coloredCost}  ${barStr}`);
+      }
     }
   }
   let surgeModel = opts?.model;
@@ -1092,18 +1281,33 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const proximity = isDeepSeek ? checkSurgeProximity() : { status: void 0, multiplier: 1 };
   const timelineStr = buildTimelineString(surgeHours, currentHour, proximity.status);
   widgetLines[0] = widgetLines[0] + "  " + timelineStr;
-  const totalOtherCost = interactions.filter((i) => classifyInteraction(i) === "other").reduce((sum, i) => sum + i.cost, 0);
-  if (totalSessionCost > 0) {
-    const otherPct = totalOtherCost / totalSessionCost;
-    if (otherPct > 0.2 && totalOtherCost > 6) {
-      const pctStr = `${Math.round(otherPct * 100)}%`;
-      const costStr = formatCost(totalOtherCost);
-      widgetLines.push(`\x1B[1;33m\u26A0\uFE0F  "Other" category: ${pctStr} of session cost (${costStr}). Run wtft --other to drill down.\x1B[0m`);
+  if (unit2 === "cost") {
+    const totalOtherCost = interactions.filter((i) => classifyInteraction(i) === "other").reduce((sum, i) => sum + i.cost, 0);
+    if (totalSessionCost > 0) {
+      const otherPct = totalOtherCost / totalSessionCost;
+      if (otherPct > 0.2 && totalOtherCost > 6) {
+        const pctStr = `${Math.round(otherPct * 100)}%`;
+        const costStr = formatCost(totalOtherCost);
+        widgetLines.push(`\x1B[1;33m\u26A0\uFE0F  "Other" category: ${pctStr} of session cost (${costStr}). Run wtft --other to drill down.\x1B[0m`);
+      }
     }
   }
-  const cacheMetrics = computeCacheMetrics(interactions);
-  if (cacheMetrics) {
-    widgetLines.push(`\x1B[90m  CH: ${cacheMetrics.hitRate}% cache hit (${cacheMetrics.readTokens} read / ${cacheMetrics.totalOps} total ops)\x1B[0m`);
+  if (unit2 === "tokens") {
+    widgetLines.push(`\x1B[90m  cheap $/tok  \x1B[38;5;22m\u2591\x1B[0m\x1B[38;5;22m\u2591\x1B[0m \x1B[38;5;94m\u2592\x1B[0m\x1B[38;5;94m\u2592\x1B[0m \x1B[38;5;130m\u2593\x1B[0m\x1B[38;5;130m\u2593\x1B[0m \x1B[38;5;88m\u2588\x1B[0m\x1B[38;5;88m\u2588\x1B[0m  expensive $/tok  \x1B[90m\u25C6 = cost-only (web tools)\x1B[0m`);
+    const summary = tokenFooterSummary(interactions);
+    if (summary) {
+      widgetLines.push(`\x1B[37m  ${summary}\x1B[0m`);
+    }
+    const cacheMetrics = computeCacheMetrics(interactions);
+    if (cacheMetrics) {
+      widgetLines.push(`\x1B[90m  CH: ${cacheMetrics.hitRate}% cache hit (${cacheMetrics.readTokens} read / ${cacheMetrics.totalOps} total ops)\x1B[0m`);
+    }
+  }
+  if (unit2 === "cost") {
+    const cacheMetrics = computeCacheMetrics(interactions);
+    if (cacheMetrics) {
+      widgetLines.push(`\x1B[90m  CH: ${cacheMetrics.hitRate}% cache hit (${cacheMetrics.readTokens} read / ${cacheMetrics.totalOps} total ops)\x1B[0m`);
+    }
   }
   return widgetLines;
 }
@@ -2498,6 +2702,7 @@ var harnessOption = "auto";
 var cwdOverride = void 0;
 var showOther = false;
 var showTokens = false;
+var unit = cfg.tokens ? "tokens" : "cost";
 var pad = 1;
 var hasPad = false;
 function printWhy() {
@@ -2556,7 +2761,8 @@ Options:
   --no-ticks              Disable the proportional cost scale ticks above the bars.
   -t, --tz <zone>         Specify a display timezone (e.g. America/Los_Angeles).
   -o, --other             Print a histogram of 'Other' commands grouped by semantic sub-category (Build, Lint, System, etc.).
-  -T, --tokens            Print a per-model token summary table (deduped) for cross-referencing with /usage.
+  -T, --tokens            Switch bar chart to token-unit mode (bg=token width, density=output $$$/tok)
+                          AND print per-model token summary table below.
   --thinking-budget <n>   Thinking token budget for utilization display in --tokens (default: no budget shown).
   -W, --watch             Watch a session file for changes and re-render the bar chart in real-time.
   -F, --force             Kill the log parser, delete tag files, and force a full session re-parse.
@@ -2641,6 +2847,7 @@ for (let i = 2; i < process.argv.length; i++) {
     hasOther = true;
   } else if (arg === "--tokens" || arg === "-T") {
     showTokens = true;
+    unit = "tokens";
     hasTokens = true;
   } else if (arg === "-W" || arg === "--watch") {
     showWatch = true;
@@ -2865,7 +3072,8 @@ async function main() {
     mode: finalMode,
     timezone: finalTimezone,
     disabledEmoji,
-    sessionNameSuffix: path5.basename(finalSessionPath)
+    sessionNameSuffix: path5.basename(finalSessionPath),
+    unit
   });
   if (!outputLines) {
     console.log(padStr + "No binned data found in session logs.");
