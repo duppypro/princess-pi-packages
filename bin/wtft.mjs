@@ -1601,9 +1601,9 @@ async function watchMode(sessionPath, settings) {
   let lastBuffer = [];
   let lastLineCount = 0;
   const exitWatch = () => {
-    if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
     showCursor();
     cleanupStdin();
+    console.log("");
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
@@ -2070,9 +2070,9 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   const exitWatch = () => {
     if (watcher) watcher.close();
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
-    if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
     showCursor();
     cleanupStdin();
+    console.log("");
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
