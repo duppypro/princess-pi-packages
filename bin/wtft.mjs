@@ -1714,8 +1714,11 @@ async function watchMode(sessionPath, settings) {
     const termW = width;
     for (let i = 0; i < allLines.length; i++) {
       const visLen = getVisualLength(allLines[i]);
-      const padNeeded = Math.max(0, termW - (visLen % termW || termW) - 1);
-      process.stdout.write(allLines[i] + " ".repeat(Math.max(0, padNeeded)) + "\x1B[K\n");
+      if (visLen < termW) {
+        process.stdout.write(allLines[i] + " ".repeat(termW - visLen - 1) + "\x1B[K\n");
+      } else {
+        process.stdout.write(allLines[i] + "\x1B[K\n");
+      }
     }
     const tempOutput = allLines.join("\n") + "\n";
     const newVisualLines = visualLineCount(tempOutput, termW);
@@ -2267,10 +2270,11 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const allLines = buf.map((l) => padStr + l);
     for (let i = 0; i < allLines.length; i++) {
       const visLen = getVisualLength(allLines[i]);
-      const wrapped = visLen > 0 ? Math.ceil(visLen / termW) : 1;
-      const lastSegLen = visLen > 0 ? (visLen - 1) % termW + 1 : 0;
-      const padNeeded = Math.max(0, termW - lastSegLen - 1);
-      process.stdout.write(allLines[i] + " ".repeat(padNeeded) + "\x1B[K\n");
+      if (visLen < termW) {
+        process.stdout.write(allLines[i] + " ".repeat(termW - visLen - 1) + "\x1B[K\n");
+      } else {
+        process.stdout.write(allLines[i] + "\x1B[K\n");
+      }
     }
     const tempOutput = allLines.join("\n") + "\n";
     const newVisualLines = visualLineCount(tempOutput, termW);
