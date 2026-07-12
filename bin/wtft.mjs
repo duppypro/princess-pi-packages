@@ -2062,7 +2062,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   const exitWatch = () => {
     if (watcher) watcher.close();
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
-    clearPreviousLines(lastLineCount);
+    process.stdout.write("\x1B8\x1B[J");
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -2185,7 +2185,9 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   } catch {
   }
   const render = () => {
-    clearPreviousLines(lastLineCount);
+    if (lastLineCount > 0) {
+      process.stdout.write("\x1B8");
+    }
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
@@ -2249,11 +2251,18 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const restartHint = settings.daemonPath ? `, using v${WTFT_TAGGER_VERSION}, ` + (daemonDead ? `\x1B[31m'r' to restart\x1B[0m` : `'r' to restart`) : "";
     buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
-    const output = buf.map((l) => padStr + l).join("\n") + "\n";
-    process.stdout.write(output);
-    lastLineCount = visualLineCount(output, width);
+    const termW = width;
+    const allLines = buf.map((l) => padStr + l);
+    for (let i = 0; i < allLines.length; i++) {
+      const visLen = getVisualLength(allLines[i]);
+      const padNeeded = Math.max(0, termW - visLen - 1);
+      process.stdout.write(allLines[i] + " ".repeat(padNeeded) + "\x1B[K\n");
+    }
+    process.stdout.write("\x1B[J");
+    lastLineCount = allLines.length;
     needsRedraw = false;
   };
+  process.stdout.write("\x1B7");
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
