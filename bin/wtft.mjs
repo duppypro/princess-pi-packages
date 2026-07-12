@@ -1129,17 +1129,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     `\x1B[38;5;238m\u2591\x1B[0mOther`
   ];
   const legendStr = legendItems.join(" ");
-  const leftLen = getVisualLength(titleLeftFinal);
-  const legendLen = getVisualLength(legendStr);
-  const totalNeeded = leftLen + legendLen + timelineLen + 6;
-  if (totalNeeded <= finalWidth - 3) {
-    const remainingSpaces = finalWidth - 3 - leftLen - legendLen - timelineLen - 2;
-    const titleLine = titleLeftFinal + " ".repeat(remainingSpaces) + legendStr + "  " + timelineStr;
-    widgetLines.push(titleLine);
-  } else {
-    widgetLines.push(titleLeftFinal + "  " + timelineStr);
-    widgetLines.push(legendStr);
-  }
+  widgetLines.push(titleLeftFinal + "  " + timelineStr);
+  widgetLines.push(legendStr);
   if (showTicks2 && scaleMax > 0) {
     const dateLabel = `\u2500\u2500 ${titleDateStr} `;
     const paddingLen = Math.max(0, prefixWidth - dateLabel.length);
