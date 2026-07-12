@@ -2062,7 +2062,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   const exitWatch = () => {
     if (watcher) watcher.close();
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
-    process.stdout.write("\x1B8\x1B[J");
+    if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -2186,7 +2186,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   }
   const render = () => {
     if (lastLineCount > 0) {
-      process.stdout.write("\x1B8");
+      process.stdout.write(`\x1B[${lastLineCount}A`);
     }
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
@@ -2262,7 +2262,6 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     lastLineCount = allLines.length;
     needsRedraw = false;
   };
-  process.stdout.write("\x1B7");
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
