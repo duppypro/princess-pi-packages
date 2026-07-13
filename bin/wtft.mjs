@@ -1603,7 +1603,8 @@ async function watchMode(sessionPath, settings) {
   const exitWatch = () => {
     showCursor();
     cleanupStdin();
-    console.log("");
+    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
+    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
@@ -1733,8 +1734,6 @@ async function watchMode(sessionPath, settings) {
   };
   render();
   process.on("SIGWINCH", () => {
-    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
-    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A\x1B[J`);
     render();
   });
   const POLL_MS = 667;
@@ -2080,7 +2079,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
     showCursor();
     cleanupStdin();
-    console.log("");
+    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
+    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
@@ -2289,8 +2289,6 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
-    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
-    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A\x1B[J`);
     render();
     resetWatchdog();
   });
