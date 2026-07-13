@@ -2023,7 +2023,12 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   } catch {
   }
   let _sigwinchHandled = false;
+  let _settleWindow = false;
   const render = () => {
+    if (_settleWindow) {
+      needsRedraw = true;
+      return;
+    }
     if (!_sigwinchHandled && lastLineCount > 0) {
       process.stdout.write(`\x1B[${lastLineCount}A`);
     }
@@ -2120,9 +2125,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   process.on("SIGWINCH", () => {
     if (_sigwinchPending) return;
     _sigwinchPending = true;
-    _sigwinchHandled = true;
+    _settleWindow = true;
     setTimeout(() => {
       _sigwinchPending = false;
+      _settleWindow = false;
       if (lastBuffer.length > 0) {
         const newWidth = getTerminalWidth();
         const output = lastBuffer.join("\n") + "\n";
