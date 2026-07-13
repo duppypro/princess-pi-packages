@@ -2138,7 +2138,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       }
       render();
       resetWatchdog();
-    }, 50);
+    }, 667);
   });
   let watcher = null;
   const startWatching = () => {
