@@ -1876,7 +1876,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let interactionCount = 0;
   let needsRedraw = true;
   let daemonWatchdog = null;
-  let _sigwinchPending = false;
+  let _lastRenderWidth = 0;
   const HEALTHY_BEAT_MS = 1334;
   const resetWatchdog = () => {
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
@@ -2022,17 +2022,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     }
   } catch {
   }
-  let _sigwinchHandled = false;
-  let _settleWindow = false;
   const render = () => {
-    if (_settleWindow) {
-      needsRedraw = true;
-      return;
-    }
-    if (!_sigwinchHandled && lastLineCount > 0) {
+    if (lastLineCount > 0) {
       process.stdout.write(`\x1B[${lastLineCount}A`);
     }
-    _sigwinchHandled = false;
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
@@ -2123,24 +2116,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
-    if (_sigwinchPending) return;
-    _sigwinchPending = true;
-    _settleWindow = true;
-    setTimeout(() => {
-      _sigwinchPending = false;
-      _settleWindow = false;
-      if (lastBuffer.length > 0) {
-        const newWidth = getTerminalWidth();
-        const output = lastBuffer.join("\n") + "\n";
-        lastLineCount = visualLineCount(output, newWidth);
-      }
-      if (lastLineCount > 0) {
-        process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
-        _sigwinchHandled = true;
-      }
-      render();
-      resetWatchdog();
-    }, 667);
+    lastLineCount = 0;
+    needsRedraw = true;
+    render();
+    resetWatchdog();
   });
   let watcher = null;
   const startWatching = () => {
