@@ -485,32 +485,16 @@ function classifyInteraction(interaction) {
     else if (category === "research") researchPaths.add(f.action);
     else if (category === "plan") planPaths.add(f.action);
   }
-  const specWrites = specPaths.has("write");
-  const codeWrites = codePaths.has("write");
-  const testsWrites = testsPaths.has("write");
-  const researchWrites = researchPaths.has("write");
-  const planWrites = planPaths.has("write");
-  const writeCount = (specWrites ? 1 : 0) + (codeWrites ? 1 : 0) + (testsWrites ? 1 : 0) + (researchWrites ? 1 : 0) + (planWrites ? 1 : 0);
-  if (writeCount > 1) return "mixed";
-  if (writeCount === 1) {
-    if (specWrites) return "spec";
-    if (codeWrites) return "code";
-    if (testsWrites) return "tests";
-    if (researchWrites) return "research";
-    if (planWrites) return "plan";
-  }
-  const hasSpec = specPaths.has("read");
-  const hasCode = codePaths.has("read");
-  const hasTests = testsPaths.has("read");
-  const hasResearch = researchPaths.has("read");
-  const hasPlan = planPaths.has("read");
-  const readCount = (hasSpec ? 1 : 0) + (hasCode ? 1 : 0) + (hasTests ? 1 : 0) + (hasResearch ? 1 : 0) + (hasPlan ? 1 : 0);
-  if (readCount > 1) return "mixed";
-  if (hasSpec) return "spec";
-  if (hasCode) return "code";
-  if (hasTests) return "tests";
-  if (hasResearch) return "research";
-  if (hasPlan) return "plan";
+  if (testsPaths.has("write")) return "tests";
+  if (codePaths.has("write")) return "code";
+  if (researchPaths.has("write")) return "research";
+  if (specPaths.has("write")) return "spec";
+  if (planPaths.has("write")) return "plan";
+  if (testsPaths.has("read")) return "tests";
+  if (codePaths.has("read")) return "code";
+  if (researchPaths.has("read")) return "research";
+  if (specPaths.has("read")) return "spec";
+  if (planPaths.has("read")) return "plan";
   if (interaction.toolCats && interaction.toolCats.length > 0) {
     for (const cat of ["agents", "web", "plan", "grep"]) {
       if (interaction.toolCats.includes(cat)) return cat;
@@ -538,36 +522,39 @@ function classifyInteraction(interaction) {
 }
 
 // extensions/lib/wtft-renderer.ts
-var TOKEN_BG_COLORS = {
-  spec: 22,
-  // deep forest green
-  mixed: 94,
-  // dark gold / earth
-  code: 130,
-  // burnt orange
-  tests: 178,
-  // warm tan
-  research: 54,
-  // midnight plum
-  git: 23,
-  // deep teal
-  grep: 24,
-  // navy blue
-  web: 88,
-  // crimson
-  agents: 55,
-  // dark purple (#52)
-  plan: 30,
-  // dark cyan (#52)
-  prompt: 89,
-  // dark mauve
-  compaction: 58,
-  // dark olive (#52, wired in Phase 3)
-  interrupted: 52,
-  // dark red (#52, wired in Phase 3)
-  other: 236
-  // near-black charcoal
+var CATEGORY_ORDER = [
+  "plan",
+  "spec",
+  "research",
+  "web",
+  "grep",
+  "code",
+  "tests",
+  "git",
+  "agents",
+  "prompt",
+  "compaction",
+  "interrupted",
+  "other"
+];
+var CATEGORY_STYLE = {
+  plan: { fg: 116, bg: 30, char: "\u2588", label: "Plan" },
+  spec: { fg: 108, bg: 22, char: "\u2588", label: "Spec" },
+  research: { fg: 134, bg: 54, char: "\u2588", label: "Research" },
+  web: { fg: 209, bg: 88, char: "\u2593", label: "Web" },
+  grep: { fg: 67, bg: 24, char: "\u2588", label: "Grep" },
+  code: { fg: 173, bg: 130, char: "\u2588", label: "Code" },
+  tests: { fg: 223, bg: 178, char: "\u2588", label: "Tests" },
+  git: { fg: 73, bg: 23, char: "\u2588", label: "Git" },
+  agents: { fg: 141, bg: 55, char: "\u2588", label: "Agents" },
+  prompt: { fg: 168, bg: 89, char: "\u2591", label: "Prompt" },
+  compaction: { fg: 143, bg: 58, char: "\u2591", label: null },
+  interrupted: { fg: 167, bg: 52, char: "\u2591", label: null },
+  other: { fg: 238, bg: 236, char: "\u2591", label: "Other" }
 };
+var TOKEN_BG_COLORS = Object.fromEntries(
+  CATEGORY_ORDER.map((c) => [c, CATEGORY_STYLE[c].bg])
+);
 var DENSITY_CHARS = ["\u2591", "\u2592", "\u2593", "\u2588"];
 function densityChar(outputShare) {
   const idx = Math.min(3, Math.floor(outputShare * 4));
@@ -598,7 +585,7 @@ function tokenFooterSummary(interactions) {
 function accumulateTokens(bin, category, interaction) {
   if (!bin.tokens) {
     bin.tokens = {};
-    for (const cat of ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "agents", "plan", "prompt", "compaction", "interrupted", "other"]) {
+    for (const cat of CATEGORY_ORDER) {
       bin.tokens[cat] = { total: 0, output: 0 };
     }
     bin.total_tokens = 0;
@@ -1050,7 +1037,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   interactions = deduplicateInteractions(interactions);
   const binMap = /* @__PURE__ */ new Map();
   let totalSessionCost = 0;
-  const ALL_CATEGORIES = ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "agents", "plan", "prompt", "compaction", "interrupted", "other"];
+  const ALL_CATEGORIES = CATEGORY_ORDER;
   for (const interaction of interactions) {
     const classification = classifyInteraction(interaction);
     const { key, label, dateStr } = getBinInfo(interaction.timestamp, intervalConfig, tz);
@@ -1183,20 +1170,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const proximity = isDeepSeek ? checkSurgeProximity() : { status: void 0, multiplier: 1 };
   const timelineStr = buildTimelineString(surgeHours, currentHour, proximity.status);
   const timelineLen = getVisualLength(timelineStr);
-  const legendItems = [
-    `\x1B[38;5;108m\u2588\x1B[0mSpec`,
-    `\x1B[38;5;108;48;5;173m\u2592\x1B[0mMixed`,
-    `\x1B[38;5;173m\u2588\x1B[0mCode`,
-    `\x1B[38;5;223m\u2588\x1B[0mTests`,
-    `\x1B[38;5;134m\u2588\x1B[0mResearch`,
-    `\x1B[38;5;73m\u2588\x1B[0mGit`,
-    `\x1B[38;5;67m\u2588\x1B[0mGrep`,
-    `\x1B[38;5;209m\u2593\x1B[0mWeb`,
-    `\x1B[38;5;141m\u2588\x1B[0mAgents`,
-    `\x1B[38;5;116m\u2588\x1B[0mPlan`,
-    `\x1B[38;5;168m\u2591\x1B[0mPrompt`,
-    `\x1B[38;5;238m\u2591\x1B[0mOther`
-  ];
+  const legendItems = CATEGORY_ORDER.filter((c) => CATEGORY_STYLE[c].label !== null).map((c) => `\x1B[38;5;${CATEGORY_STYLE[c].fg}m${CATEGORY_STYLE[c].char}\x1B[0m${CATEGORY_STYLE[c].label}`);
   const legendStr = legendItems.join(" ");
   widgetLines.push(titleLeftFinal + "  " + timelineStr);
   widgetLines.push(legendStr);
@@ -1270,66 +1244,20 @@ function buildWtftLines(interactions, defaultSettings, opts) {
       if (mode2 === "cumulative") {
         const barWidth = scaleMax > 0 ? Math.round(bin.total_cost / scaleMax * maxBarWidth) : 0;
         const chars = distributeChars(bin.costs, barWidth);
-        if (chars.spec > 0) {
-          barStr += `\x1B[38;5;108m${"\u2588".repeat(chars.spec)}\x1B[0m`;
-        }
-        if (chars.mixed > 0) {
-          barStr += `\x1B[38;5;108;48;5;173m${"\u2592".repeat(chars.mixed)}\x1B[0m`;
-        }
-        if (chars.code > 0) {
-          barStr += `\x1B[38;5;173m${"\u2588".repeat(chars.code)}\x1B[0m`;
-        }
-        if (chars.tests > 0) {
-          barStr += `\x1B[38;5;223m${"\u2588".repeat(chars.tests)}\x1B[0m`;
-        }
-        if (chars.research > 0) {
-          barStr += `\x1B[38;5;134m${"\u2588".repeat(chars.research)}\x1B[0m`;
-        }
-        if (chars.git > 0) {
-          barStr += `\x1B[38;5;73m${"\u2588".repeat(chars.git)}\x1B[0m`;
-        }
-        if (chars.grep > 0) {
-          barStr += `\x1B[38;5;67m${"\u2588".repeat(chars.grep)}\x1B[0m`;
-        }
-        if (chars.web > 0) {
-          barStr += `\x1B[38;5;209m${"\u2593".repeat(chars.web)}\x1B[0m`;
-        }
-        if (chars.agents > 0) {
-          barStr += `\x1B[38;5;141m${"\u2588".repeat(chars.agents)}\x1B[0m`;
-        }
-        if (chars.plan > 0) {
-          barStr += `\x1B[38;5;116m${"\u2588".repeat(chars.plan)}\x1B[0m`;
-        }
-        if (chars.prompt > 0) {
-          barStr += `\x1B[38;5;168m${"\u2591".repeat(chars.prompt)}\x1B[0m`;
-        }
-        if (chars.compaction > 0) {
-          barStr += `\x1B[38;5;143m${"\u2591".repeat(chars.compaction)}\x1B[0m`;
-        }
-        if (chars.interrupted > 0) {
-          barStr += `\x1B[38;5;167m${"\u2591".repeat(chars.interrupted)}\x1B[0m`;
-        }
-        if (chars.other > 0) {
-          barStr += `\x1B[38;5;238m${"\u2591".repeat(chars.other)}\x1B[0m`;
+        for (const cat of CATEGORY_ORDER) {
+          const count = chars[cat] || 0;
+          if (count > 0) {
+            const { fg, char } = CATEGORY_STYLE[cat];
+            barStr += `\x1B[38;5;${fg}m${char.repeat(count)}\x1B[0m`;
+          }
         }
       } else {
         const cells = Array(maxBarWidth).fill(" ");
-        const categoriesInReverse = [
-          { cat: "other", color: "\x1B[38;5;238m", char: "\u2591" },
-          { cat: "interrupted", color: "\x1B[38;5;167m", char: "\u2591" },
-          { cat: "compaction", color: "\x1B[38;5;143m", char: "\u2591" },
-          { cat: "prompt", color: "\x1B[38;5;168m", char: "\u2591" },
-          { cat: "plan", color: "\x1B[38;5;116m", char: "\u2588" },
-          { cat: "grep", color: "\x1B[38;5;67m", char: "\u2588" },
-          { cat: "web", color: "\x1B[38;5;209m", char: "\u2593" },
-          { cat: "agents", color: "\x1B[38;5;141m", char: "\u2588" },
-          { cat: "git", color: "\x1B[38;5;73m", char: "\u2588" },
-          { cat: "research", color: "\x1B[38;5;134m", char: "\u2588" },
-          { cat: "tests", color: "\x1B[38;5;223m", char: "\u2588" },
-          { cat: "code", color: "\x1B[38;5;173m", char: "\u2588" },
-          { cat: "mixed", color: "\x1B[38;5;108;48;5;173m", char: "\u2592" },
-          { cat: "spec", color: "\x1B[38;5;108m", char: "\u2588" }
-        ];
+        const categoriesInReverse = [...CATEGORY_ORDER].reverse().map((cat) => ({
+          cat,
+          color: `\x1B[38;5;${CATEGORY_STYLE[cat].fg}m`,
+          char: CATEGORY_STYLE[cat].char
+        }));
         for (const { cat, color, char } of categoriesInReverse) {
           const cost = bin.costs[cat] || 0;
           if (cost > 0 && scaleMax > 0) {
@@ -1740,7 +1668,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.4.1";
+var WTFT_TAGGER_VERSION = "2.4.2";
 function getTagPath(sessionPath) {
   const sessionDir = path2.dirname(sessionPath);
   const sessionBase = path2.basename(sessionPath);

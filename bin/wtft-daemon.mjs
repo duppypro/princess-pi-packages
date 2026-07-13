@@ -456,32 +456,16 @@ function classifyInteraction(interaction) {
     else if (category === "research") researchPaths.add(f.action);
     else if (category === "plan") planPaths.add(f.action);
   }
-  const specWrites = specPaths.has("write");
-  const codeWrites = codePaths.has("write");
-  const testsWrites = testsPaths.has("write");
-  const researchWrites = researchPaths.has("write");
-  const planWrites = planPaths.has("write");
-  const writeCount = (specWrites ? 1 : 0) + (codeWrites ? 1 : 0) + (testsWrites ? 1 : 0) + (researchWrites ? 1 : 0) + (planWrites ? 1 : 0);
-  if (writeCount > 1) return "mixed";
-  if (writeCount === 1) {
-    if (specWrites) return "spec";
-    if (codeWrites) return "code";
-    if (testsWrites) return "tests";
-    if (researchWrites) return "research";
-    if (planWrites) return "plan";
-  }
-  const hasSpec = specPaths.has("read");
-  const hasCode = codePaths.has("read");
-  const hasTests = testsPaths.has("read");
-  const hasResearch = researchPaths.has("read");
-  const hasPlan = planPaths.has("read");
-  const readCount = (hasSpec ? 1 : 0) + (hasCode ? 1 : 0) + (hasTests ? 1 : 0) + (hasResearch ? 1 : 0) + (hasPlan ? 1 : 0);
-  if (readCount > 1) return "mixed";
-  if (hasSpec) return "spec";
-  if (hasCode) return "code";
-  if (hasTests) return "tests";
-  if (hasResearch) return "research";
-  if (hasPlan) return "plan";
+  if (testsPaths.has("write")) return "tests";
+  if (codePaths.has("write")) return "code";
+  if (researchPaths.has("write")) return "research";
+  if (specPaths.has("write")) return "spec";
+  if (planPaths.has("write")) return "plan";
+  if (testsPaths.has("read")) return "tests";
+  if (codePaths.has("read")) return "code";
+  if (researchPaths.has("read")) return "research";
+  if (specPaths.has("read")) return "spec";
+  if (planPaths.has("read")) return "plan";
   if (interaction.toolCats && interaction.toolCats.length > 0) {
     for (const cat of ["agents", "web", "plan", "grep"]) {
       if (interaction.toolCats.includes(cat)) return cat;
@@ -507,6 +491,41 @@ function classifyInteraction(interaction) {
   if (interaction.texts.length > 0 && !interaction.unrecognizedTool) return "prompt";
   return "other";
 }
+
+// extensions/lib/wtft-renderer.ts
+var CATEGORY_ORDER = [
+  "plan",
+  "spec",
+  "research",
+  "web",
+  "grep",
+  "code",
+  "tests",
+  "git",
+  "agents",
+  "prompt",
+  "compaction",
+  "interrupted",
+  "other"
+];
+var CATEGORY_STYLE = {
+  plan: { fg: 116, bg: 30, char: "\u2588", label: "Plan" },
+  spec: { fg: 108, bg: 22, char: "\u2588", label: "Spec" },
+  research: { fg: 134, bg: 54, char: "\u2588", label: "Research" },
+  web: { fg: 209, bg: 88, char: "\u2593", label: "Web" },
+  grep: { fg: 67, bg: 24, char: "\u2588", label: "Grep" },
+  code: { fg: 173, bg: 130, char: "\u2588", label: "Code" },
+  tests: { fg: 223, bg: 178, char: "\u2588", label: "Tests" },
+  git: { fg: 73, bg: 23, char: "\u2588", label: "Git" },
+  agents: { fg: 141, bg: 55, char: "\u2588", label: "Agents" },
+  prompt: { fg: 168, bg: 89, char: "\u2591", label: "Prompt" },
+  compaction: { fg: 143, bg: 58, char: "\u2591", label: null },
+  interrupted: { fg: 167, bg: 52, char: "\u2591", label: null },
+  other: { fg: 238, bg: 236, char: "\u2591", label: "Other" }
+};
+var TOKEN_BG_COLORS = Object.fromEntries(
+  CATEGORY_ORDER.map((c) => [c, CATEGORY_STYLE[c].bg])
+);
 
 // extensions/lib/wtft-daemon-lib.ts
 function serializeClassified(interaction) {
@@ -534,7 +553,7 @@ function serializeClassified(interaction) {
   if (interaction.unrecognizedTool) line.ut = 1;
   return JSON.stringify(line) + "\n";
 }
-var WTFT_TAGGER_VERSION = "2.4.1";
+var WTFT_TAGGER_VERSION = "2.4.2";
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 
 // bin/wtft-daemon.ts
