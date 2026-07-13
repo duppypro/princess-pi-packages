@@ -2071,16 +2071,15 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       }, HEALTHY_BEAT_MS);
     }
   };
-  let lastLineCount = 0;
+  process.stdout.write("\x1B[?1049h");
   hideCursor();
   let lastBuffer = [];
   const exitWatch = () => {
     if (watcher) watcher.close();
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
+    process.stdout.write("\x1B[?1049l");
     showCursor();
     cleanupStdin();
-    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
-    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
@@ -2201,8 +2200,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   } catch {
   }
   const render = () => {
-    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
-    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
+    process.stdout.write("\x1B[2J\x1B[H");
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
@@ -2266,24 +2264,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const restartHint = settings.daemonPath ? `, using v${WTFT_TAGGER_VERSION}, ` + (daemonDead ? `\x1B[31m'r' to restart\x1B[0m` : `'r' to restart`) : "";
     buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
-    const termW = width;
     const allLines = buf.map((l) => padStr + l);
-    for (let i = 0; i < allLines.length; i++) {
-      const visLen = getVisualLength(allLines[i]);
-      if (visLen < termW) {
-        process.stdout.write(allLines[i] + " ".repeat(termW - visLen - 1) + "\x1B[K\n");
-      } else {
-        process.stdout.write(allLines[i] + "\x1B[K\n");
-      }
+    for (const l of allLines) {
+      process.stdout.write(l + "\x1B[K\n");
     }
-    const tempOutput = allLines.join("\n") + "\n";
-    const newVisualLines = visualLineCount(tempOutput, termW);
-    if (newVisualLines < upRows) {
-      for (let i = newVisualLines; i < upRows; i++) {
-        process.stdout.write(" ".repeat(Math.max(0, termW - 1)) + "\x1B[K\n");
-      }
-    }
-    lastLineCount = newVisualLines;
     needsRedraw = false;
   };
   render();
