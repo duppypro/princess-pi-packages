@@ -1891,21 +1891,16 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   };
   hideCursor();
   let lastBuffer = [];
-  let _lastPathLine = "";
   let lastLineCount = 0;
   const exitWatch = () => {
     if (watcher) watcher.close();
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
-    if (lastBuffer.length > 0) {
-      const width = getTerminalWidth();
-      const output = lastBuffer.join("\n") + "\n";
-      const upRows = visualLineCount(output, width);
-      process.stdout.write(`\x1B[${upRows}A\x1B[J`);
+    if (lastLineCount > 0) {
+      process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
     }
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
-      if (_lastPathLine) console.log(_lastPathLine);
       for (const l of lastBuffer) console.log(l);
     }
     console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
@@ -2060,10 +2055,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       disabledEmoji
     });
     const buf = [];
-    if (!_lastPathLine) {
-      _lastPathLine = padStr + `\x1B[90m${sessionPath}\x1B[0m`;
-      process.stdout.write(_lastPathLine + "\n");
-    }
+    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
     totalCost = deduped.reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
       let daemonStatusStr = "";
@@ -2090,19 +2082,28 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     lastBuffer = [...buf];
     const allLines = buf.map((l) => padStr + l);
     const paddedLines = [];
+    const cleanLines = [];
     for (const l of allLines) {
       const visLen = getVisualLength(l);
       if (visLen < width) {
         const line = l + " ".repeat(width - visLen);
         paddedLines.push(line);
+        cleanLines.push(line);
         process.stdout.write(line + "\n");
       } else {
+        const wrappedRows = Math.ceil(visLen / width);
         paddedLines.push(l);
-        process.stdout.write(l + "\x1B[K\n");
+        cleanLines.push(l);
+        process.stdout.write(l + "\n");
+        for (let r = 1; r < wrappedRows; r++) {
+          const blank = " ".repeat(width);
+          paddedLines.push(blank);
+          process.stdout.write(blank + "\n");
+        }
       }
     }
     const output = paddedLines.join("\n") + "\n";
-    lastBuffer = paddedLines;
+    lastBuffer = cleanLines;
     const newVisualLines = visualLineCount(output, width);
     if (newVisualLines < lastLineCount) {
       for (let i = newVisualLines; i < lastLineCount; i++) {
@@ -2116,7 +2117,6 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   resetWatchdog();
   process.on("SIGWINCH", () => {
     process.stdout.write("\n");
-    _lastPathLine = "";
     lastLineCount = 0;
     needsRedraw = true;
     render();
