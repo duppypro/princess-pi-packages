@@ -2120,6 +2120,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   process.on("SIGWINCH", () => {
     if (_sigwinchPending) return;
     _sigwinchPending = true;
+    _sigwinchHandled = true;
     setTimeout(() => {
       _sigwinchPending = false;
       if (lastBuffer.length > 0) {
