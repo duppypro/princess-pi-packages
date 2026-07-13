@@ -451,6 +451,7 @@ function classifyInteraction(interaction) {
   const codePaths = /* @__PURE__ */ new Set();
   const testsPaths = /* @__PURE__ */ new Set();
   const researchPaths = /* @__PURE__ */ new Set();
+  const planPaths = /* @__PURE__ */ new Set();
   for (const f of interaction.files) {
     const norm = f.path.replace(/\\/g, "/");
     let category = null;
@@ -460,6 +461,8 @@ function classifyInteraction(interaction) {
       } else {
         category = "code";
       }
+    } else if (norm.startsWith("docs/research/") || norm.includes("/docs/research/")) {
+      category = "plan";
     } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path.extname(norm).toLowerCase() === ".md") {
       category = "spec";
     } else if (norm.startsWith("tests/") || norm.includes("/tests/")) {
@@ -480,29 +483,34 @@ function classifyInteraction(interaction) {
     else if (category === "code") codePaths.add(f.action);
     else if (category === "tests") testsPaths.add(f.action);
     else if (category === "research") researchPaths.add(f.action);
+    else if (category === "plan") planPaths.add(f.action);
   }
   const specWrites = specPaths.has("write");
   const codeWrites = codePaths.has("write");
   const testsWrites = testsPaths.has("write");
   const researchWrites = researchPaths.has("write");
-  const writeCount = (specWrites ? 1 : 0) + (codeWrites ? 1 : 0) + (testsWrites ? 1 : 0) + (researchWrites ? 1 : 0);
+  const planWrites = planPaths.has("write");
+  const writeCount = (specWrites ? 1 : 0) + (codeWrites ? 1 : 0) + (testsWrites ? 1 : 0) + (researchWrites ? 1 : 0) + (planWrites ? 1 : 0);
   if (writeCount > 1) return "mixed";
   if (writeCount === 1) {
     if (specWrites) return "spec";
     if (codeWrites) return "code";
     if (testsWrites) return "tests";
     if (researchWrites) return "research";
+    if (planWrites) return "plan";
   }
   const hasSpec = specPaths.has("read");
   const hasCode = codePaths.has("read");
   const hasTests = testsPaths.has("read");
   const hasResearch = researchPaths.has("read");
-  const readCount = (hasSpec ? 1 : 0) + (hasCode ? 1 : 0) + (hasTests ? 1 : 0) + (hasResearch ? 1 : 0);
+  const hasPlan = planPaths.has("read");
+  const readCount = (hasSpec ? 1 : 0) + (hasCode ? 1 : 0) + (hasTests ? 1 : 0) + (hasResearch ? 1 : 0) + (hasPlan ? 1 : 0);
   if (readCount > 1) return "mixed";
   if (hasSpec) return "spec";
   if (hasCode) return "code";
   if (hasTests) return "tests";
   if (hasResearch) return "research";
+  if (hasPlan) return "plan";
   if (interaction.toolCats && interaction.toolCats.length > 0) {
     for (const cat of ["agents", "web", "plan", "grep"]) {
       if (interaction.toolCats.includes(cat)) return cat;
@@ -1732,7 +1740,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.4.0";
+var WTFT_TAGGER_VERSION = "2.4.1";
 function getTagPath(sessionPath) {
   const sessionDir = path2.dirname(sessionPath);
   const sessionBase = path2.basename(sessionPath);
