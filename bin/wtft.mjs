@@ -1570,6 +1570,11 @@ function showCursor() {
 function hideCursor() {
   process.stdout.write("\x1B[?25l");
 }
+function clearPreviousLines(lineCount) {
+  if (lineCount > 0) {
+    process.stdout.write(`\x1B[${lineCount}A\x1B[J`);
+  }
+}
 function visualLineCount(text, termWidth) {
   const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
   const lines = text.replace(/\n$/, "").split("\n");
@@ -1876,7 +1881,6 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let interactionCount = 0;
   let needsRedraw = true;
   let daemonWatchdog = null;
-  let _lastRenderWidth = 0;
   const HEALTHY_BEAT_MS = 1334;
   const resetWatchdog = () => {
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
@@ -1889,19 +1893,15 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       }, HEALTHY_BEAT_MS);
     }
   };
+  process.stdout.write("\x1B[?1049h");
   hideCursor();
   let lastBuffer = [];
-  let _lastPath = "";
-  let lastLineCount = 0;
   const exitWatch = () => {
     if (watcher) watcher.close();
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
-    if (lastLineCount > 0) {
-      process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
-    }
+    process.stdout.write("\x1B[?1049l");
     showCursor();
     cleanupStdin();
-    if (_lastPath) console.log(_lastPath);
     if (lastBuffer.length > 0) {
       for (const l of lastBuffer) console.log(l);
     }
@@ -2022,9 +2022,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   } catch {
   }
   const render = () => {
-    if (lastLineCount > 0) {
-      process.stdout.write(`\x1B[${lastLineCount}A`);
-    }
+    process.stdout.write("\x1B[2J\x1B[H");
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
@@ -2056,11 +2054,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       timezone: finalTimezone,
       disabledEmoji
     });
-    if (!_lastPath) {
-      _lastPath = padStr + `\x1B[90m${sessionPath}\x1B[0m`;
-      process.stdout.write(_lastPath + "\n");
-    }
     const buf = [];
+    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
     totalCost = deduped.reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
       let daemonStatusStr = "";
@@ -2076,7 +2071,13 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         daemonStatusStr = renderDaemonStatus({ alive: true }, false);
       }
       if (daemonStatusStr) {
-        lines.splice(1, 0, daemonStatusStr.trim());
+        const titleVisualLen = getVisualLength(lines[0]);
+        const statusVisualLen = getVisualLength(daemonStatusStr);
+        if (titleVisualLen + statusVisualLen <= finalWidth - 2) {
+          lines[0] = lines[0] + daemonStatusStr;
+        } else {
+          lines.splice(1, 0, daemonStatusStr.trim());
+        }
       }
       for (const l of lines) buf.push(l);
     } else {
@@ -2084,48 +2085,16 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     }
     const restartHint = settings.daemonPath ? `, using v${WTFT_TAGGER_VERSION}, ` + (daemonDead ? `\x1B[31m'r' to restart\x1B[0m` : `'r' to restart`) : "";
     buf.push(`'q' to exit${restartHint}`);
+    lastBuffer = [...buf];
     const allLines = buf.map((l) => padStr + l);
-    const paddedLines = [];
-    const cleanLines = [];
     for (const l of allLines) {
-      const visLen = getVisualLength(l);
-      if (visLen < width) {
-        const line = l + " ".repeat(width - visLen);
-        paddedLines.push(line);
-        cleanLines.push(line);
-        process.stdout.write(line + "\n");
-      } else {
-        const wrappedRows = Math.ceil(visLen / width);
-        paddedLines.push(l);
-        cleanLines.push(l);
-        process.stdout.write(l + "\n");
-        for (let r = 1; r < wrappedRows; r++) {
-          const blank = " ".repeat(width);
-          paddedLines.push(blank);
-          process.stdout.write(blank + "\n");
-        }
-      }
-    }
-    const output = paddedLines.join("\n") + "\n";
-    lastBuffer = cleanLines;
-    const newVisualLines = visualLineCount(output, width);
-    if (newVisualLines < lastLineCount) {
-      for (let i = newVisualLines; i < lastLineCount; i++) {
-        process.stdout.write(" ".repeat(width) + "\n");
-      }
-    }
-    if (lastLineCount === 0) {
-      lastLineCount = newVisualLines;
+      process.stdout.write(l + "\x1B[K\n");
     }
     needsRedraw = false;
   };
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
-    process.stdout.write("\n");
-    _lastPath = "";
-    lastLineCount = 0;
-    needsRedraw = true;
     render();
     resetWatchdog();
   });
@@ -2551,45 +2520,28 @@ async function selectSessionPrompt(candidates) {
 `;
       }
       const cols = process.stdout.columns || 80;
-      const prevLineCount = lastLineCount;
       lastLineCount = visualLineCount(out, cols);
       logicalLineCount = out.replace(/\\n$/, "").split("\\n").length;
-      const lines = out.split("\n");
-      let paddedOut = "";
-      for (const line of lines) {
-        const visLen = getVisualLength(line);
-        if (visLen < cols) {
-          paddedOut += line + " ".repeat(cols - visLen) + "\n";
-        } else {
-          paddedOut += line + "\n";
-        }
-      }
-      if (lastLineCount < prevLineCount) {
-        for (let i = lastLineCount; i < prevLineCount; i++) {
-          paddedOut += " ".repeat(cols) + "\n";
-        }
-        lastLineCount = prevLineCount;
-      }
-      process.stdout.write(paddedOut);
+      process.stdout.write(out);
     };
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
-        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
+        clearPreviousLines(lastLineCount);
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
-        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
+        clearPreviousLines(lastLineCount);
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
         resolve2(selectedPath);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A`);
+        clearPreviousLines(lastLineCount);
         render();
       } else if (key === "\x1B[B" || key === "j") {
         selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A`);
+        clearPreviousLines(lastLineCount);
         render();
       }
     };
