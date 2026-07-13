@@ -1570,11 +1570,6 @@ function showCursor() {
 function hideCursor() {
   process.stdout.write("\x1B[?25l");
 }
-function clearPreviousLines(lineCount) {
-  if (lineCount > 0) {
-    process.stdout.write(`\x1B[${lineCount}A\x1B[J`);
-  }
-}
 function visualLineCount(text, termWidth) {
   const ansiRe = /\x1b\[[0-9;]*[a-zA-Z]/g;
   const lines = text.replace(/\n$/, "").split("\n");
@@ -1587,184 +1582,6 @@ function visualLineCount(text, termWidth) {
 }
 
 // extensions/lib/wtft-daemon-lib.ts
-async function watchMode(sessionPath, settings) {
-  if (!process.stdout.isTTY) {
-    console.error("\u274C --watch requires a real terminal (TTY). Refusing to start.");
-    process.exit(1);
-  }
-  let totalCost = 0;
-  let interactionCount = 0;
-  let lastSize = 0;
-  let needsRedraw = true;
-  let _lastRenderMin = -1;
-  hideCursor();
-  let lastBuffer = [];
-  let lastLineCount = 0;
-  const exitWatch = () => {
-    showCursor();
-    cleanupStdin();
-    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
-    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
-    if (lastBuffer.length > 0) {
-      for (const l of lastBuffer) console.log(l);
-    }
-    console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
-    process.exit(0);
-  };
-  process.on("SIGINT", exitWatch);
-  const cleanupStdin = enterRawStdin((key) => {
-    if (key === "q" || key === "Q" || key === "") {
-      exitWatch();
-    }
-  });
-  const parseInteractions = (filePath) => {
-    const interactions = [];
-    let disabledEmoji2 = false;
-    let sessionInterval2;
-    let sessionLimit2;
-    let sessionMode2;
-    let sessionShowTicks2;
-    let sessionTimezone2;
-    try {
-      const stat = fs2.statSync(filePath);
-      const currentSize = stat.size;
-      if (currentSize < lastSize) {
-        lastSize = 0;
-      }
-      if (currentSize <= lastSize) return { interactions, disabledEmoji: disabledEmoji2, sessionInterval: sessionInterval2, sessionLimit: sessionLimit2, sessionMode: sessionMode2, sessionShowTicks: sessionShowTicks2, sessionTimezone: sessionTimezone2 };
-      const fd = fs2.openSync(filePath, "r");
-      const buf = Buffer.alloc(currentSize - lastSize);
-      fs2.readSync(fd, buf, 0, buf.length, lastSize);
-      fs2.closeSync(fd);
-      lastSize = currentSize;
-      const newContent = buf.toString("utf8");
-      const lines = newContent.split("\n");
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry.type === "custom" && entry.customType === "emoji-settings") {
-            if (entry.data && typeof entry.data.disabled === "boolean") {
-              disabledEmoji2 = entry.data.disabled;
-            }
-          } else if (entry.type === "custom" && entry.customType === "wtft-settings") {
-            if (entry.data) {
-              if (typeof entry.data.interval === "string") sessionInterval2 = entry.data.interval;
-              if (typeof entry.data.limit === "number") sessionLimit2 = entry.data.limit;
-              if (entry.data.mode === "cumulative" || entry.data.mode === "bucket") sessionMode2 = entry.data.mode;
-              if (typeof entry.data.showTicks === "boolean") sessionShowTicks2 = entry.data.showTicks;
-              if (typeof entry.data.timezone === "string") sessionTimezone2 = entry.data.timezone;
-            }
-          }
-          const interaction = parseEntryToInteraction(entry);
-          if (interaction) {
-            interactions.push(interaction);
-          }
-        } catch {
-        }
-      }
-    } catch {
-    }
-    return { interactions, disabledEmoji: disabledEmoji2, sessionInterval: sessionInterval2, sessionLimit: sessionLimit2, sessionMode: sessionMode2, sessionShowTicks: sessionShowTicks2, sessionTimezone: sessionTimezone2 };
-  };
-  let allInteractions = [];
-  let disabledEmoji = false;
-  let sessionInterval;
-  let sessionLimit;
-  let sessionMode;
-  let sessionShowTicks;
-  let sessionTimezone;
-  const render = () => {
-    const upRows = lastLineCount > 0 ? visualLineCount(lastBuffer.join("\n") + "\n", getTerminalWidth()) : 0;
-    if (upRows > 0) process.stdout.write(`\x1B[${upRows}A`);
-    const width = getTerminalWidth();
-    const finalInterval = settings.hasInterval ? settings.interval : sessionInterval ?? settings.interval;
-    const finalLimit = settings.hasLimit ? settings.limit : sessionLimit ?? settings.limit;
-    const finalMode = settings.hasMode ? settings.mode : sessionMode ?? settings.mode;
-    const finalShowTicks = settings.hasTicks ? settings.showTicks : sessionShowTicks ?? settings.showTicks;
-    const finalTimezone = settings.hasTimezone ? settings.timezone : sessionTimezone ?? settings.timezone;
-    const finalWidth = Math.min(width, 1023);
-    const defaultSettings = {
-      interval: "1h",
-      limit: 100,
-      width: finalWidth,
-      showTicks: true,
-      mode: "cumulative",
-      timezone: void 0
-    };
-    const lines = buildWtftLines(allInteractions, defaultSettings, {
-      interval: finalInterval,
-      limit: finalLimit,
-      width: finalWidth,
-      showTicks: finalShowTicks,
-      mode: finalMode,
-      timezone: finalTimezone,
-      disabledEmoji
-    });
-    const buf = [];
-    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
-    totalCost = deduplicateInteractions(allInteractions).reduce((sum, i) => sum + i.cost, 0);
-    if (lines && lines.length > 0) {
-      for (const l of lines) buf.push(l);
-    } else {
-      buf.push("\x1B[90mWaiting for session data...\x1B[0m");
-    }
-    buf.push(`'q' to exit`);
-    lastBuffer = [...buf];
-    const allLines = [...buf];
-    const termW = width;
-    for (let i = 0; i < allLines.length; i++) {
-      const visLen = getVisualLength(allLines[i]);
-      if (visLen < termW) {
-        process.stdout.write(allLines[i] + " ".repeat(termW - visLen - 1) + "\x1B[K\n");
-      } else {
-        process.stdout.write(allLines[i] + "\x1B[K\n");
-      }
-    }
-    const tempOutput = allLines.join("\n") + "\n";
-    const newVisualLines = visualLineCount(tempOutput, termW);
-    if (newVisualLines < upRows) {
-      for (let i = newVisualLines; i < upRows; i++) {
-        process.stdout.write(" ".repeat(Math.max(0, termW - 1)) + "\x1B[K\n");
-      }
-    }
-    lastLineCount = newVisualLines;
-    needsRedraw = false;
-    _lastRenderMin = (/* @__PURE__ */ new Date()).getMinutes();
-  };
-  render();
-  process.on("SIGWINCH", () => {
-    render();
-  });
-  const POLL_MS = 667;
-  while (true) {
-    await new Promise((resolve2) => setTimeout(resolve2, POLL_MS));
-    if (!fs2.existsSync(sessionPath)) {
-      lastSize = 0;
-      needsRedraw = true;
-      render();
-      continue;
-    }
-    const { interactions: newInteractions, disabledEmoji: newDisabledEmoji, sessionInterval: newInterval, sessionLimit: newLimit, sessionMode: newMode, sessionShowTicks: newTicks, sessionTimezone: newTz } = parseInteractions(sessionPath);
-    if (newDisabledEmoji !== void 0) disabledEmoji = newDisabledEmoji;
-    if (newInterval !== void 0) sessionInterval = newInterval;
-    if (newLimit !== void 0) sessionLimit = newLimit;
-    if (newMode !== void 0) sessionMode = newMode;
-    if (newTicks !== void 0) sessionShowTicks = newTicks;
-    if (newTz !== void 0) sessionTimezone = newTz;
-    if (newInteractions.length > 0) {
-      allInteractions.push(...newInteractions);
-      needsRedraw = true;
-    }
-    const _curMin = (/* @__PURE__ */ new Date()).getMinutes();
-    if (_curMin !== _lastRenderMin) {
-      needsRedraw = true;
-    }
-    if (needsRedraw) {
-      render();
-    }
-  }
-}
 function serializeClassified(interaction) {
   const cost = Number(interaction.cost.toFixed(6));
   const line = {
@@ -2071,13 +1888,23 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       }, HEALTHY_BEAT_MS);
     }
   };
-  process.stdout.write("\x1B[?1049h");
   hideCursor();
   let lastBuffer = [];
+  let lastLineCount = 0;
   const exitWatch = () => {
     if (watcher) watcher.close();
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
-    process.stdout.write("\x1B[?1049l");
+    if (lastBuffer.length > 0) {
+      const width = getTerminalWidth();
+      const pad2 = settings.pad || 0;
+      const maxPad = Math.max(0, Math.floor(width / 2) - 1);
+      const actualPad = Math.min(pad2, maxPad);
+      const padStr = " ".repeat(actualPad);
+      const allLines = lastBuffer.map((l) => padStr + l);
+      const output = allLines.join("\n") + "\n";
+      const upRows = visualLineCount(output, width);
+      process.stdout.write(`\x1B[${upRows}A\x1B[J`);
+    }
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
@@ -2199,8 +2026,12 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     }
   } catch {
   }
+  let _sigwinchHandled = false;
   const render = () => {
-    process.stdout.write("\x1B[2J\x1B[H");
+    if (!_sigwinchHandled && lastLineCount > 0) {
+      process.stdout.write(`\x1B[${lastLineCount}A`);
+    }
+    _sigwinchHandled = false;
     const width = getTerminalWidth();
     const pad2 = settings.pad || 0;
     const maxPad = Math.max(0, Math.floor(width / 2) - 1);
@@ -2265,14 +2096,41 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
     const allLines = buf.map((l) => padStr + l);
+    const output = allLines.join("\n") + "\n";
     for (const l of allLines) {
-      process.stdout.write(l + "\x1B[K\n");
+      const visLen = getVisualLength(l);
+      if (visLen < width) {
+        process.stdout.write(l + " ".repeat(width - visLen) + "\n");
+      } else {
+        process.stdout.write(l + "\x1B[K\n");
+      }
     }
+    const newVisualLines = visualLineCount(output, width);
+    if (newVisualLines < lastLineCount) {
+      for (let i = newVisualLines; i < lastLineCount; i++) {
+        process.stdout.write(" ".repeat(width) + "\n");
+      }
+    }
+    lastLineCount = Math.max(newVisualLines, lastLineCount);
     needsRedraw = false;
   };
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
+    if (lastBuffer.length > 0) {
+      const newWidth = getTerminalWidth();
+      const pad2 = settings.pad || 0;
+      const maxPad = Math.max(0, Math.floor(newWidth / 2) - 1);
+      const actualPad = Math.min(pad2, maxPad);
+      const padStr = " ".repeat(actualPad);
+      const allLines = lastBuffer.map((l) => padStr + l);
+      const output = allLines.join("\n") + "\n";
+      lastLineCount = visualLineCount(output, newWidth);
+    }
+    if (lastLineCount > 0) {
+      process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
+      _sigwinchHandled = true;
+    }
     render();
     resetWatchdog();
   });
@@ -2698,28 +2556,45 @@ async function selectSessionPrompt(candidates) {
 `;
       }
       const cols = process.stdout.columns || 80;
+      const prevLineCount = lastLineCount;
       lastLineCount = visualLineCount(out, cols);
       logicalLineCount = out.replace(/\\n$/, "").split("\\n").length;
-      process.stdout.write(out);
+      const lines = out.split("\n");
+      let paddedOut = "";
+      for (const line of lines) {
+        const visLen = getVisualLength(line);
+        if (visLen < cols) {
+          paddedOut += line + " ".repeat(cols - visLen) + "\n";
+        } else {
+          paddedOut += line + "\n";
+        }
+      }
+      if (lastLineCount < prevLineCount) {
+        for (let i = lastLineCount; i < prevLineCount; i++) {
+          paddedOut += " ".repeat(cols) + "\n";
+        }
+        lastLineCount = prevLineCount;
+      }
+      process.stdout.write(paddedOut);
     };
     render();
     const onKey = (key) => {
       if (key === "" || key === "q" || key === "Q") {
-        clearPreviousLines(lastLineCount);
+        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
         cleanup();
         process.exit(130);
       } else if (key === "\r" || key === "\n") {
-        clearPreviousLines(lastLineCount);
+        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A\x1B[J`);
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
         resolve2(selectedPath);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
-        clearPreviousLines(lastLineCount);
+        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A`);
         render();
       } else if (key === "\x1B[B" || key === "j") {
         selectedIndex = (selectedIndex + 1) % displayCandidates.length;
-        clearPreviousLines(lastLineCount);
+        if (lastLineCount > 0) process.stdout.write(`\x1B[${lastLineCount}A`);
         render();
       }
     };
@@ -3011,21 +2886,9 @@ async function main() {
       });
       child.unref();
     } catch (err) {
-      console.error(`\x1B[33m\u26A0 Log parser spawn failed, falling back to polling mode: ${err}\x1B[0m`);
-      await watchMode(finalSessionPath, {
-        interval: hasInterval ? intervalStr : "1h",
-        limit: hasLimit ? limit : 100,
-        mode: hasCumulative || hasBucket ? mode : "cumulative",
-        showTicks: hasTicks || hasNoTicks ? showTicks : true,
-        timezone: hasTz ? timezone : void 0,
-        pad,
-        hasInterval,
-        hasLimit,
-        hasMode: hasCumulative || hasBucket,
-        hasTicks: hasTicks || hasNoTicks,
-        hasTimezone: hasTz
-      });
-      return;
+      console.error(`\x1B[31m\u274C Failed to start log parser daemon: ${err}\x1B[0m`);
+      console.error(`   Expected: ${daemonPath2}`);
+      process.exit(1);
     }
     await new Promise((resolve2) => setTimeout(resolve2, 500));
     await watchTagFile(finalSessionPath, tagPath2, {
