@@ -1891,6 +1891,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   };
   hideCursor();
   let lastBuffer = [];
+  let _lastPathLine = "";
   let lastLineCount = 0;
   const exitWatch = () => {
     if (watcher) watcher.close();
@@ -1904,6 +1905,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     showCursor();
     cleanupStdin();
     if (lastBuffer.length > 0) {
+      if (_lastPathLine) console.log(_lastPathLine);
       for (const l of lastBuffer) console.log(l);
     }
     console.log(`WTFT watch stopped \u2014 ${interactionCount} interactions, $${totalCost.toFixed(4)} total cost.`);
@@ -2058,7 +2060,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       disabledEmoji
     });
     const buf = [];
-    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
+    if (!_lastPathLine) {
+      _lastPathLine = padStr + `\x1B[90m${sessionPath}\x1B[0m`;
+      process.stdout.write(_lastPathLine + "\n");
+    }
     totalCost = deduped.reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
       let daemonStatusStr = "";
