@@ -164,6 +164,36 @@ function calculateClaudeCost(model, usage, timestamp) {
 
 // extensions/lib/wtft-parser.ts
 import * as path from "node:path";
+var TOOL_CATEGORY_MAP = {
+  // Subagent orchestration — largest measured unmodeled spend (#52 measurements)
+  task: "agents",
+  agent: "agents",
+  workflow: "agents",
+  // Server-side web tools — token side joins the request-cost side (#73)
+  websearch: "web",
+  webfetch: "web",
+  // Standalone Grep tool joins bash grep/rg in the existing category
+  grep: "grep",
+  // Planning/steering tools — split out of "prompt" so prompt = pure reply
+  todowrite: "plan",
+  taskcreate: "plan",
+  taskupdate: "plan",
+  taskget: "plan",
+  tasklist: "plan",
+  askuserquestion: "plan",
+  enterplanmode: "plan",
+  exitplanmode: "plan",
+  skill: "plan",
+  toolsearch: "plan"
+};
+function mapToolToCategory(name, toolCats) {
+  const cat = TOOL_CATEGORY_MAP[name];
+  if (cat) {
+    toolCats.add(cat);
+    return true;
+  }
+  return false;
+}
 function extractFilesFromBashCommand(command, files) {
   const cmdLines = command.split("\n");
   for (const line of cmdLines) {
@@ -236,6 +266,8 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
     const files = [];
     const commands = [];
     const texts = [];
+    const toolCats = /* @__PURE__ */ new Set();
+    let unrecognizedTool = false;
     if (Array.isArray(assistantMsg.content)) {
       for (const block of assistantMsg.content) {
         if (block.type === "text") {
@@ -243,7 +275,7 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
         } else if (block.type === "thinking") {
           texts.push(block.thinking);
         } else if (block.type === "toolCall") {
-          const name = block.name;
+          const name = (block.name || "").toLowerCase();
           const args = block.arguments || {};
           if (name === "read") {
             if (args.path) files.push({ path: args.path, action: "read" });
@@ -254,6 +286,8 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
               commands.push(args.command);
               extractFilesFromBashCommand(args.command, files);
             }
+          } else if (!mapToolToCategory(name, toolCats)) {
+            unrecognizedTool = true;
           }
         } else if (block.type === "tool_use") {
           const name = (block.name || "").toLowerCase();
@@ -264,11 +298,15 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
           } else if (name === "edit" || name === "write" || name === "replace") {
             const p = args.file_path || args.path || args.target;
             if (p) files.push({ path: p, action: "write" });
+          } else if (name === "notebookedit") {
+            if (args.notebook_path) files.push({ path: args.notebook_path, action: "write" });
           } else if (name === "bash" || name === "run") {
             if (args.command) {
               commands.push(args.command);
               extractFilesFromBashCommand(args.command, files);
             }
+          } else if (!mapToolToCategory(name, toolCats)) {
+            unrecognizedTool = true;
           }
         }
       }
@@ -291,7 +329,9 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
       compactionTokensBefore,
       files,
       commands,
-      texts
+      texts,
+      toolCats: toolCats.size > 0 ? [...toolCats] : void 0,
+      unrecognizedTool: unrecognizedTool || void 0
     };
   }
   return null;
@@ -324,9 +364,12 @@ function deduplicateInteractions(interactions) {
         ...best,
         files: [],
         commands: [],
-        texts: []
+        texts: [],
+        toolCats: void 0,
+        unrecognizedTool: void 0
       };
       const seenFiles = /* @__PURE__ */ new Set();
+      const mergedToolCats = /* @__PURE__ */ new Set();
       for (const i of group) {
         for (const f of i.files) {
           const key = `${f.path}:${f.action}`;
@@ -341,7 +384,10 @@ function deduplicateInteractions(interactions) {
         for (const t of i.texts) {
           if (!merged.texts.includes(t)) merged.texts.push(t);
         }
+        for (const tc of i.toolCats || []) mergedToolCats.add(tc);
+        if (i.unrecognizedTool) merged.unrecognizedTool = true;
       }
+      if (mergedToolCats.size > 0) merged.toolCats = [...mergedToolCats];
       deduped.push(merged);
     }
   }
@@ -428,6 +474,11 @@ function classifyInteraction(interaction) {
   if (hasCode) return "code";
   if (hasTests) return "tests";
   if (hasResearch) return "research";
+  if (interaction.toolCats && interaction.toolCats.length > 0) {
+    for (const cat of ["agents", "web", "plan", "grep"]) {
+      if (interaction.toolCats.includes(cat)) return cat;
+    }
+  }
   if (interaction.commands.length > 0) {
     let isGit = false;
     let isGrep = false;
@@ -445,7 +496,7 @@ function classifyInteraction(interaction) {
     if (isGrep) return "grep";
     return "other";
   }
-  if (interaction.texts.length > 0) return "prompt";
+  if (interaction.texts.length > 0 && !interaction.unrecognizedTool) return "prompt";
   return "other";
 }
 
@@ -471,9 +522,11 @@ function serializeClassified(interaction) {
   if (interaction.webFetchRequests > 0) line.wf = interaction.webFetchRequests;
   if (interaction.thinkingLevel) line.tl = interaction.thinkingLevel;
   if (interaction.compactionTokensBefore) line.cb = interaction.compactionTokensBefore;
+  if (interaction.toolCats && interaction.toolCats.length > 0) line.tc = interaction.toolCats;
+  if (interaction.unrecognizedTool) line.ut = 1;
   return JSON.stringify(line) + "\n";
 }
-var WTFT_TAGGER_VERSION = "2.3.8";
+var WTFT_TAGGER_VERSION = "2.4.0";
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 
 // bin/wtft-daemon.ts

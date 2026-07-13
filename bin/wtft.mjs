@@ -163,6 +163,36 @@ function calculateClaudeCost(model, usage, timestamp) {
 // extensions/lib/wtft-parser.ts
 import * as path from "node:path";
 import * as fs from "node:fs";
+var TOOL_CATEGORY_MAP = {
+  // Subagent orchestration — largest measured unmodeled spend (#52 measurements)
+  task: "agents",
+  agent: "agents",
+  workflow: "agents",
+  // Server-side web tools — token side joins the request-cost side (#73)
+  websearch: "web",
+  webfetch: "web",
+  // Standalone Grep tool joins bash grep/rg in the existing category
+  grep: "grep",
+  // Planning/steering tools — split out of "prompt" so prompt = pure reply
+  todowrite: "plan",
+  taskcreate: "plan",
+  taskupdate: "plan",
+  taskget: "plan",
+  tasklist: "plan",
+  askuserquestion: "plan",
+  enterplanmode: "plan",
+  exitplanmode: "plan",
+  skill: "plan",
+  toolsearch: "plan"
+};
+function mapToolToCategory(name, toolCats) {
+  const cat = TOOL_CATEGORY_MAP[name];
+  if (cat) {
+    toolCats.add(cat);
+    return true;
+  }
+  return false;
+}
 function extractFilesFromBashCommand(command, files) {
   const cmdLines = command.split("\n");
   for (const line of cmdLines) {
@@ -235,6 +265,8 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
     const files = [];
     const commands = [];
     const texts = [];
+    const toolCats = /* @__PURE__ */ new Set();
+    let unrecognizedTool = false;
     if (Array.isArray(assistantMsg.content)) {
       for (const block of assistantMsg.content) {
         if (block.type === "text") {
@@ -242,7 +274,7 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
         } else if (block.type === "thinking") {
           texts.push(block.thinking);
         } else if (block.type === "toolCall") {
-          const name = block.name;
+          const name = (block.name || "").toLowerCase();
           const args = block.arguments || {};
           if (name === "read") {
             if (args.path) files.push({ path: args.path, action: "read" });
@@ -253,6 +285,8 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
               commands.push(args.command);
               extractFilesFromBashCommand(args.command, files);
             }
+          } else if (!mapToolToCategory(name, toolCats)) {
+            unrecognizedTool = true;
           }
         } else if (block.type === "tool_use") {
           const name = (block.name || "").toLowerCase();
@@ -263,11 +297,15 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
           } else if (name === "edit" || name === "write" || name === "replace") {
             const p = args.file_path || args.path || args.target;
             if (p) files.push({ path: p, action: "write" });
+          } else if (name === "notebookedit") {
+            if (args.notebook_path) files.push({ path: args.notebook_path, action: "write" });
           } else if (name === "bash" || name === "run") {
             if (args.command) {
               commands.push(args.command);
               extractFilesFromBashCommand(args.command, files);
             }
+          } else if (!mapToolToCategory(name, toolCats)) {
+            unrecognizedTool = true;
           }
         }
       }
@@ -290,7 +328,9 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
       compactionTokensBefore,
       files,
       commands,
-      texts
+      texts,
+      toolCats: toolCats.size > 0 ? [...toolCats] : void 0,
+      unrecognizedTool: unrecognizedTool || void 0
     };
   }
   return null;
@@ -353,9 +393,12 @@ function deduplicateInteractions(interactions) {
         ...best,
         files: [],
         commands: [],
-        texts: []
+        texts: [],
+        toolCats: void 0,
+        unrecognizedTool: void 0
       };
       const seenFiles = /* @__PURE__ */ new Set();
+      const mergedToolCats = /* @__PURE__ */ new Set();
       for (const i of group) {
         for (const f of i.files) {
           const key = `${f.path}:${f.action}`;
@@ -370,7 +413,10 @@ function deduplicateInteractions(interactions) {
         for (const t of i.texts) {
           if (!merged.texts.includes(t)) merged.texts.push(t);
         }
+        for (const tc of i.toolCats || []) mergedToolCats.add(tc);
+        if (i.unrecognizedTool) merged.unrecognizedTool = true;
       }
+      if (mergedToolCats.size > 0) merged.toolCats = [...mergedToolCats];
       deduped.push(merged);
     }
   }
@@ -457,6 +503,11 @@ function classifyInteraction(interaction) {
   if (hasCode) return "code";
   if (hasTests) return "tests";
   if (hasResearch) return "research";
+  if (interaction.toolCats && interaction.toolCats.length > 0) {
+    for (const cat of ["agents", "web", "plan", "grep"]) {
+      if (interaction.toolCats.includes(cat)) return cat;
+    }
+  }
   if (interaction.commands.length > 0) {
     let isGit = false;
     let isGrep = false;
@@ -474,7 +525,7 @@ function classifyInteraction(interaction) {
     if (isGrep) return "grep";
     return "other";
   }
-  if (interaction.texts.length > 0) return "prompt";
+  if (interaction.texts.length > 0 && !interaction.unrecognizedTool) return "prompt";
   return "other";
 }
 
@@ -496,8 +547,16 @@ var TOKEN_BG_COLORS = {
   // navy blue
   web: 88,
   // crimson
+  agents: 55,
+  // dark purple (#52)
+  plan: 30,
+  // dark cyan (#52)
   prompt: 89,
   // dark mauve
+  compaction: 58,
+  // dark olive (#52, wired in Phase 3)
+  interrupted: 52,
+  // dark red (#52, wired in Phase 3)
   other: 236
   // near-black charcoal
 };
@@ -531,7 +590,7 @@ function tokenFooterSummary(interactions) {
 function accumulateTokens(bin, category, interaction) {
   if (!bin.tokens) {
     bin.tokens = {};
-    for (const cat of ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "prompt", "other"]) {
+    for (const cat of ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "agents", "plan", "prompt", "compaction", "interrupted", "other"]) {
       bin.tokens[cat] = { total: 0, output: 0 };
     }
     bin.total_tokens = 0;
@@ -983,7 +1042,7 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   interactions = deduplicateInteractions(interactions);
   const binMap = /* @__PURE__ */ new Map();
   let totalSessionCost = 0;
-  const ALL_CATEGORIES = ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "prompt", "other"];
+  const ALL_CATEGORIES = ["spec", "code", "mixed", "tests", "research", "git", "grep", "web", "agents", "plan", "prompt", "compaction", "interrupted", "other"];
   for (const interaction of interactions) {
     const classification = classifyInteraction(interaction);
     const { key, label, dateStr } = getBinInfo(interaction.timestamp, intervalConfig, tz);
@@ -1125,6 +1184,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     `\x1B[38;5;73m\u2588\x1B[0mGit`,
     `\x1B[38;5;67m\u2588\x1B[0mGrep`,
     `\x1B[38;5;209m\u2593\x1B[0mWeb`,
+    `\x1B[38;5;141m\u2588\x1B[0mAgents`,
+    `\x1B[38;5;116m\u2588\x1B[0mPlan`,
     `\x1B[38;5;168m\u2591\x1B[0mPrompt`,
     `\x1B[38;5;238m\u2591\x1B[0mOther`
   ];
@@ -1225,8 +1286,20 @@ function buildWtftLines(interactions, defaultSettings, opts) {
         if (chars.web > 0) {
           barStr += `\x1B[38;5;209m${"\u2593".repeat(chars.web)}\x1B[0m`;
         }
+        if (chars.agents > 0) {
+          barStr += `\x1B[38;5;141m${"\u2588".repeat(chars.agents)}\x1B[0m`;
+        }
+        if (chars.plan > 0) {
+          barStr += `\x1B[38;5;116m${"\u2588".repeat(chars.plan)}\x1B[0m`;
+        }
         if (chars.prompt > 0) {
           barStr += `\x1B[38;5;168m${"\u2591".repeat(chars.prompt)}\x1B[0m`;
+        }
+        if (chars.compaction > 0) {
+          barStr += `\x1B[38;5;143m${"\u2591".repeat(chars.compaction)}\x1B[0m`;
+        }
+        if (chars.interrupted > 0) {
+          barStr += `\x1B[38;5;167m${"\u2591".repeat(chars.interrupted)}\x1B[0m`;
         }
         if (chars.other > 0) {
           barStr += `\x1B[38;5;238m${"\u2591".repeat(chars.other)}\x1B[0m`;
@@ -1235,9 +1308,13 @@ function buildWtftLines(interactions, defaultSettings, opts) {
         const cells = Array(maxBarWidth).fill(" ");
         const categoriesInReverse = [
           { cat: "other", color: "\x1B[38;5;238m", char: "\u2591" },
+          { cat: "interrupted", color: "\x1B[38;5;167m", char: "\u2591" },
+          { cat: "compaction", color: "\x1B[38;5;143m", char: "\u2591" },
           { cat: "prompt", color: "\x1B[38;5;168m", char: "\u2591" },
+          { cat: "plan", color: "\x1B[38;5;116m", char: "\u2588" },
           { cat: "grep", color: "\x1B[38;5;67m", char: "\u2588" },
           { cat: "web", color: "\x1B[38;5;209m", char: "\u2593" },
+          { cat: "agents", color: "\x1B[38;5;141m", char: "\u2588" },
           { cat: "git", color: "\x1B[38;5;73m", char: "\u2588" },
           { cat: "research", color: "\x1B[38;5;134m", char: "\u2588" },
           { cat: "tests", color: "\x1B[38;5;223m", char: "\u2588" },
@@ -1608,6 +1685,8 @@ function serializeClassified(interaction) {
   if (interaction.webFetchRequests > 0) line.wf = interaction.webFetchRequests;
   if (interaction.thinkingLevel) line.tl = interaction.thinkingLevel;
   if (interaction.compactionTokensBefore) line.cb = interaction.compactionTokensBefore;
+  if (interaction.toolCats && interaction.toolCats.length > 0) line.tc = interaction.toolCats;
+  if (interaction.unrecognizedTool) line.ut = 1;
   return JSON.stringify(line) + "\n";
 }
 function classifiedToInteraction(obj) {
@@ -1630,6 +1709,8 @@ function classifiedToInteraction(obj) {
     serverToolCost: obj.sc || 0,
     thinkingLevel: obj.tl || void 0,
     compactionTokensBefore: obj.cb || void 0,
+    toolCats: obj.tc || void 0,
+    unrecognizedTool: obj.ut ? true : void 0,
     _cat: obj.cat || void 0
   };
 }
@@ -1651,7 +1732,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.3.8";
+var WTFT_TAGGER_VERSION = "2.4.0";
 function getTagPath(sessionPath) {
   const sessionDir = path2.dirname(sessionPath);
   const sessionBase = path2.basename(sessionPath);
