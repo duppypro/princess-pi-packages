@@ -1897,12 +1897,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     if (daemonWatchdog) clearTimeout(daemonWatchdog);
     if (lastBuffer.length > 0) {
       const width = getTerminalWidth();
-      const pad2 = settings.pad || 0;
-      const maxPad = Math.max(0, Math.floor(width / 2) - 1);
-      const actualPad = Math.min(pad2, maxPad);
-      const padStr = " ".repeat(actualPad);
-      const allLines = lastBuffer.map((l) => padStr + l);
-      const output = allLines.join("\n") + "\n";
+      const output = lastBuffer.join("\n") + "\n";
       const upRows = visualLineCount(output, width);
       process.stdout.write(`\x1B[${upRows}A\x1B[J`);
     }
@@ -2097,15 +2092,20 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     buf.push(`'q' to exit${restartHint}`);
     lastBuffer = [...buf];
     const allLines = buf.map((l) => padStr + l);
-    const output = allLines.join("\n") + "\n";
+    const paddedLines = [];
     for (const l of allLines) {
       const visLen = getVisualLength(l);
       if (visLen < width) {
-        process.stdout.write(l + " ".repeat(width - visLen) + "\n");
+        const line = l + " ".repeat(width - visLen);
+        paddedLines.push(line);
+        process.stdout.write(line + "\n");
       } else {
+        paddedLines.push(l);
         process.stdout.write(l + "\x1B[K\n");
       }
     }
+    const output = paddedLines.join("\n") + "\n";
+    lastBuffer = paddedLines;
     const newVisualLines = visualLineCount(output, width);
     if (newVisualLines < lastLineCount) {
       for (let i = newVisualLines; i < lastLineCount; i++) {
@@ -2124,12 +2124,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       _sigwinchPending = false;
       if (lastBuffer.length > 0) {
         const newWidth = getTerminalWidth();
-        const pad2 = settings.pad || 0;
-        const maxPad = Math.max(0, Math.floor(newWidth / 2) - 1);
-        const actualPad = Math.min(pad2, maxPad);
-        const padStr = " ".repeat(actualPad);
-        const allLines = lastBuffer.map((l) => padStr + l);
-        const output = allLines.join("\n") + "\n";
+        const output = lastBuffer.join("\n") + "\n";
         lastLineCount = visualLineCount(output, newWidth);
       }
       if (lastLineCount > 0) {
