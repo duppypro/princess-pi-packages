@@ -2114,7 +2114,9 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         process.stdout.write(" ".repeat(width) + "\n");
       }
     }
-    lastLineCount = Math.max(newVisualLines, lastLineCount);
+    if (lastLineCount === 0) {
+      lastLineCount = newVisualLines;
+    }
     needsRedraw = false;
   };
   render();
