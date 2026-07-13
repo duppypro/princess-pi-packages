@@ -2074,13 +2074,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         daemonStatusStr = renderDaemonStatus({ alive: true }, false);
       }
       if (daemonStatusStr) {
-        const titleVisualLen = getVisualLength(lines[0]);
-        const statusVisualLen = getVisualLength(daemonStatusStr);
-        if (titleVisualLen + statusVisualLen <= finalWidth - 2) {
-          lines[0] = lines[0] + daemonStatusStr;
-        } else {
-          lines.splice(1, 0, daemonStatusStr.trim());
-        }
+        lines.splice(1, 0, daemonStatusStr.trim());
       }
       for (const l of lines) buf.push(l);
     } else {
