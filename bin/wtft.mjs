@@ -1701,9 +1701,7 @@ async function watchMode(sessionPath, settings) {
       disabledEmoji
     });
     const buf = [];
-    const wmMaxPathLen = Math.max(20, finalWidth - 2);
-    const wmShortPath = sessionPath.length > wmMaxPathLen ? "..." + sessionPath.slice(-(wmMaxPathLen - 3)) : sessionPath;
-    buf.push(`\x1B[90m${wmShortPath}\x1B[0m`);
+    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
     totalCost = deduplicateInteractions(allInteractions).reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
       for (const l of lines) buf.push(l);
@@ -2237,9 +2235,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       disabledEmoji
     });
     const buf = [];
-    const maxPathLen = Math.max(20, finalWidth - 2);
-    const shortPath = sessionPath.length > maxPathLen ? "..." + sessionPath.slice(-(maxPathLen - 3)) : sessionPath;
-    buf.push(`\x1B[90m${shortPath}\x1B[0m`);
+    buf.push(`\x1B[90m${sessionPath}\x1B[0m`);
     totalCost = deduped.reduce((sum, i) => sum + i.cost, 0);
     if (lines && lines.length > 0) {
       let daemonStatusStr = "";
