@@ -2115,6 +2115,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   render();
   resetWatchdog();
   process.on("SIGWINCH", () => {
+    process.stdout.write("\n");
+    _lastPathLine = "";
     lastLineCount = 0;
     needsRedraw = true;
     render();
