@@ -1,5 +1,6 @@
 import { shortenPath } from "../session-path-shortener.js";
 import { ServerInstance, KilledServerInstance, isInsideRepo } from "./domain.js";
+import wcwidth from "wcwidth";
 
 export function stripAnsi(str: string): string {
 	return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
@@ -10,13 +11,12 @@ export function getVisualLength(str: string): number {
 	let len = 0;
 	for (let i = 0; i < cleanStr.length; i++) {
 		const code = cleanStr.charCodeAt(i);
+		// Surrogate pair: pass the full code point (2 JS chars) to wcwidth
 		if (code >= 0xD800 && code <= 0xDBFF && i + 1 < cleanStr.length) {
-			len += 2;
+			len += wcwidth(cleanStr.substring(i, i + 2));
 			i++;
-		} else if (code >= 0x3000 && code <= 0x9FFF) {
-			len += 2;
 		} else {
-			len += 1;
+			len += wcwidth(cleanStr[i]);
 		}
 	}
 	return len;

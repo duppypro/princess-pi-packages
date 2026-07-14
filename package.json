@@ -36,6 +36,10 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/wcwidth": "^1.0.2",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "wcwidth": "^1.0.1"
   }
 }
