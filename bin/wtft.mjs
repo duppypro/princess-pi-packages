@@ -3000,14 +3000,18 @@ main().catch((err) => {
   process.exit(1);
 });
 export {
+  IDLE_THRESHOLD_MS,
   MODEL_PRICING,
   WTFT_TAGGER_VERSION,
   buildWtftLines,
   calculateClaudeCost,
   calculateServerToolCost,
+  checkDaemonHealth,
   classifiedToInteraction,
   classifyInteraction,
   deduplicateInteractions,
+  getDaemonPidPath,
+  getTagPath,
   getTerminalWidth,
   lookupModelPricing,
   parseEntryToInteraction,
