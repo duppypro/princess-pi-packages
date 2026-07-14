@@ -50,6 +50,18 @@ publishes.
 (`npm link` now auto-runs `prepare`; `npm cache clean --force` dropped — link doesn't hit
 the cache).
 
+**Installer = `bun install` (the disk-savings half of the migration).** `package-lock.json`
+is deleted; `bun.lock` is committed as the source of truth. This is the piece that pays off
+the original driver ("disk space saving first, then speed"): bun installs from a global
+content-addressable cache (`~/.bun/install/cache`) and **hardlinks** each package version into
+`node_modules` instead of copying — mechanically the same win as pnpm's store. A package
+version cached once is shared by every repo that needs it (verified: sample file shows
+`links=3`). `bun install` also runs the root `prepare`, so a fresh clone builds on install with
+no extra step. Note the split: bun is now BOTH the **build tool** (`Bun.build`) AND the
+**installer** — but the *consumer* side is untouched (registry tarball ships prebuilt `.mjs`;
+`npx`/stock-node consumers never run bun). `deploy:local` keeps `npm link` deliberately — it
+registers global bins and runs `prepare`; it is orthogonal to which tool populated devDeps.
+
 // ---
 // VERIFICATION (Step 4 gate) — ALL PASSED (2026-07-13/14, recorded in #97)
 // ---
@@ -62,6 +74,7 @@ the cache).
 5. ✅ git-URL channel: `npm install github:duppypro/princess-pi-packages#97-bun-build-ts7` in a scratch dir built via `prepare`+bun at install time (GENERATED banner present in installed bins — impossible unless built on install); all six bins linked and answering.
 6. ✅ `deploy:local` re-link + live Pi smoke (`/tpm`, wtft widget) passed — redone after a concurrent-session branch stomp was recovered via `git merge --ff-only origin/97-bun-build-ts7` (the first smoke had unknowingly run pre-#97 code).
 7. Deferred: first registry publish (separate decision); `wtft --tokens` terminal-width overflow seen during smoke is a pre-existing renderer bug → #99.
+8. ✅ Installer swap verified (#102, 2026-07-14): `rm -rf node_modules && bun install` → 250ms, auto-ran `prepare`; `node_modules` 36M with sample file `links=3` (hardlinked to `~/.bun` cache, not copied); `bun run typecheck` exit 0; built bins keep node shebang. The `bun.lock`-committed / `package-lock.json`-deleted state shipped in `ff063a7` under #97 but was documented as a distinct decision here.
 
 // ---
 // ROADS NOT TAKEN
