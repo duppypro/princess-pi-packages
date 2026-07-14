@@ -257,6 +257,8 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
+    const cacheCreation = usage.cache_creation || {};
+    const cacheTtl = (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? "1h" : (cacheCreation.ephemeral_5m_input_tokens || 0) > 0 ? "5m" : void 0;
     const serverToolRequests = usage.server_tool_use || {};
     const serverToolCost = calculateServerToolCost(
       assistantMsg.model || "",
@@ -327,6 +329,7 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
       serverToolCost,
       thinkingLevel,
       compactionTokensBefore,
+      cacheTtl,
       files,
       commands,
       texts,
@@ -551,9 +554,10 @@ function serializeClassified(interaction) {
   if (interaction.compactionTokensBefore) line.cb = interaction.compactionTokensBefore;
   if (interaction.toolCats && interaction.toolCats.length > 0) line.tc = interaction.toolCats;
   if (interaction.unrecognizedTool) line.ut = 1;
+  if (interaction.cacheTtl) line.ttl = interaction.cacheTtl;
   return JSON.stringify(line) + "\n";
 }
-var WTFT_TAGGER_VERSION = "2.4.2";
+var WTFT_TAGGER_VERSION = "2.5.0";
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1e3;
 
 // bin/wtft-daemon.ts
@@ -575,14 +579,23 @@ var running = true;
 function shutdown(reason) {
   if (!running) return;
   running = false;
-  flushPending();
+  let ownsLease = false;
   try {
-    fs.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + "\n");
+    ownsLease = fs.readFileSync(pidPath, "utf8").trim() === String(process.pid);
   } catch (_) {
   }
-  try {
-    fs.unlinkSync(pidPath);
-  } catch (_) {
+  if (ownsLease) {
+    flushPending();
+    try {
+      if (fs.existsSync(tagPath)) {
+        fs.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + "\n");
+      }
+    } catch (_) {
+    }
+    try {
+      fs.unlinkSync(pidPath);
+    } catch (_) {
+    }
   }
   process.exit(0);
 }
@@ -914,75 +927,70 @@ Log parser mode:
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   pidPath = path2.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
   const prefix = sessionBase + ".wtft-tag.v";
+  let claimedByTakeover = false;
   try {
     for (const f of fs.readdirSync(tagsDir)) {
       if (f.indexOf(prefix) === 0 && f !== sessionBase + TAG_SUFFIX) {
-        try {
-          const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
-          if (existingPid > 0) {
-            try {
-              process.kill(existingPid, "SIGTERM");
-            } catch {
-            }
-          }
-        } catch {
-        }
-        try {
-          fs.unlinkSync(pidPath);
-        } catch {
-        }
+        fs.writeFileSync(pidPath, String(process.pid));
+        claimedByTakeover = true;
         break;
       }
     }
   } catch (e) {
-    process.stderr.write(`[wtft-log-parser] auto-upgrade scan error: ${e.message}
+    process.stderr.write(`[wtft-log-parser] takeover scan error: ${e.message}
 `);
   }
-  try {
-    for (const f of fs.readdirSync(tagsDir)) {
-      if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
-        const stale = path2.join(tagsDir, f);
-        try {
-          fs.unlinkSync(stale);
-        } catch (_) {
-        }
-        if (process.env.WTFT_DAEMON_DEBUG) {
-          process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}
-`);
-        }
-      }
-    }
-  } catch (_) {
-  }
-  let fd;
-  try {
-    fd = fs.openSync(pidPath, "wx");
-    fs.writeSync(fd, String(process.pid));
-    fs.closeSync(fd);
-  } catch (_) {
+  if (!claimedByTakeover) {
+    let fd;
     try {
-      const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
-      if (existingPid > 0) {
-        try {
-          process.kill(existingPid, 0);
-          process.exit(0);
-        } catch (_2) {
-          fs.unlinkSync(pidPath);
-          fd = fs.openSync(pidPath, "wx");
-          fs.writeSync(fd, String(process.pid));
-          fs.closeSync(fd);
-        }
-      }
-    } catch (_3) {
-      try {
-        fs.unlinkSync(pidPath);
-      } catch (_4) {
-      }
       fd = fs.openSync(pidPath, "wx");
       fs.writeSync(fd, String(process.pid));
       fs.closeSync(fd);
+    } catch (_) {
+      try {
+        const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+        if (existingPid > 0) {
+          try {
+            process.kill(existingPid, 0);
+            process.exit(0);
+          } catch (_2) {
+            fs.unlinkSync(pidPath);
+            fd = fs.openSync(pidPath, "wx");
+            fs.writeSync(fd, String(process.pid));
+            fs.closeSync(fd);
+          }
+        }
+      } catch (_3) {
+        try {
+          fs.unlinkSync(pidPath);
+        } catch (_4) {
+        }
+        fd = fs.openSync(pidPath, "wx");
+        fs.writeSync(fd, String(process.pid));
+        fs.closeSync(fd);
+      }
     }
   }
+  const sweepOldTagFiles = () => {
+    try {
+      for (const f of fs.readdirSync(tagsDir)) {
+        if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
+          try {
+            fs.unlinkSync(path2.join(tagsDir, f));
+          } catch (_) {
+          }
+          if (process.env.WTFT_DAEMON_DEBUG) {
+            process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}
+`);
+          }
+        }
+      }
+    } catch (_) {
+    }
+  };
+  sweepOldTagFiles();
+  const resweep = setTimeout(sweepOldTagFiles, 5e3);
+  resweep.unref();
   initClassified();
   if (process.env.WTFT_DAEMON_DEBUG) {
     process.stderr.write(`[wtft-log-parser] started, watching: ${sessionPath}
@@ -994,6 +1002,15 @@ Log parser mode:
   }
   const loop = () => {
     if (!running) return;
+    try {
+      if (fs.readFileSync(pidPath, "utf8").trim() !== String(process.pid)) {
+        running = false;
+        process.exit(0);
+      }
+    } catch (_) {
+      running = false;
+      process.exit(0);
+    }
     try {
       const rawInteractions = parseNewLines(sessionPath);
       const newInteractions = deduplicateInteractions(rawInteractions);

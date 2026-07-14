@@ -256,6 +256,8 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
       };
       cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
     }
+    const cacheCreation = usage.cache_creation || {};
+    const cacheTtl = (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? "1h" : (cacheCreation.ephemeral_5m_input_tokens || 0) > 0 ? "5m" : void 0;
     const serverToolRequests = usage.server_tool_use || {};
     const serverToolCost = calculateServerToolCost(
       assistantMsg.model || "",
@@ -326,6 +328,7 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore) {
       serverToolCost,
       thinkingLevel,
       compactionTokensBefore,
+      cacheTtl,
       files,
       commands,
       texts,
@@ -1623,6 +1626,7 @@ function serializeClassified(interaction) {
   if (interaction.compactionTokensBefore) line.cb = interaction.compactionTokensBefore;
   if (interaction.toolCats && interaction.toolCats.length > 0) line.tc = interaction.toolCats;
   if (interaction.unrecognizedTool) line.ut = 1;
+  if (interaction.cacheTtl) line.ttl = interaction.cacheTtl;
   return JSON.stringify(line) + "\n";
 }
 function classifiedToInteraction(obj) {
@@ -1647,6 +1651,7 @@ function classifiedToInteraction(obj) {
     compactionTokensBefore: obj.cb || void 0,
     toolCats: obj.tc || void 0,
     unrecognizedTool: obj.ut ? true : void 0,
+    cacheTtl: obj.ttl === "1h" || obj.ttl === "5m" ? obj.ttl : void 0,
     _cat: obj.cat || void 0
   };
 }
@@ -1668,7 +1673,7 @@ function readClassifiedTagFile(tagPath) {
   }
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.4.2";
+var WTFT_TAGGER_VERSION = "2.5.0";
 function getTagPath(sessionPath) {
   const sessionDir = path2.dirname(sessionPath);
   const sessionBase = path2.basename(sessionPath);
@@ -1676,11 +1681,18 @@ function getTagPath(sessionPath) {
   const defaultPath = path2.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
   try {
     const prefix = sessionBase + ".wtft-tag.v";
+    let newest = null;
     for (const f of fs2.readdirSync(tagsDir)) {
-      if (f.startsWith(prefix) && f.endsWith(".jsonl")) {
-        return path2.join(tagsDir, f);
+      if (!f.startsWith(prefix) || !f.endsWith(".jsonl")) continue;
+      const full = path2.join(tagsDir, f);
+      if (full === defaultPath) return defaultPath;
+      try {
+        const mtimeMs = fs2.statSync(full).mtimeMs;
+        if (!newest || mtimeMs > newest.mtimeMs) newest = { path: full, mtimeMs };
+      } catch {
       }
     }
+    if (newest) return newest.path;
   } catch {
   }
   return defaultPath;
@@ -1788,29 +1800,38 @@ function checkDaemonHealth(sessionPath, tagPath) {
         fs2.closeSync(fd);
         const lines = buf.toString("utf8").split("\n");
         let lastModel;
+        let lastTtl;
         let idleMs;
         let idleSinceMs;
+        let sawClassified = false;
         for (let i = lines.length - 1; i >= 0; i--) {
           const line = lines[i].trim();
           if (!line) continue;
           try {
             const obj = JSON.parse(line);
             if (!lastModel && obj.m) lastModel = obj.m;
+            if (!lastTtl && (obj.ttl === "1h" || obj.ttl === "5m")) lastTtl = obj.ttl;
             if (obj._hb) {
-              if (typeof obj._hb === "object" && obj._hb.first && idleMs === void 0) {
+              if (typeof obj._hb === "object" && obj._hb.first && idleSinceMs === void 0 && !sawClassified) {
                 idleSinceMs = obj._hb.first;
-                idleMs = Date.now() - obj._hb.first;
               }
               continue;
             }
-            break;
+            if (!sawClassified) {
+              sawClassified = true;
+              if (typeof obj.t === "number" && idleSinceMs !== void 0 && obj.t > idleSinceMs) {
+                idleSinceMs = obj.t;
+              }
+            }
+            if (lastModel && lastTtl) break;
           } catch {
             continue;
           }
         }
+        if (idleSinceMs !== void 0) idleMs = Date.now() - idleSinceMs;
         if (idleMs !== void 0 && idleMs >= IDLE_THRESHOLD_MS) {
           if (!lastModel) lastModel = getModelFromSessionFile(sessionPath);
-          const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
+          const cacheTtlMs = lastTtl ? lastTtl === "1h" ? 36e5 : 3e5 : lastModel ? getModelCacheTtlMs(lastModel) : null;
           return { alive: true, idle: true, idleMs, idleSinceMs, cacheTtlMs };
         }
         {
@@ -1819,7 +1840,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
             const sessionIdleMs = Date.now() - sessionStat.mtimeMs;
             if (sessionIdleMs >= IDLE_THRESHOLD_MS) {
               if (!lastModel) lastModel = getModelFromSessionFile(sessionPath);
-              const cacheTtlMs = lastModel ? getModelCacheTtlMs(lastModel) : null;
+              const cacheTtlMs = lastTtl ? lastTtl === "1h" ? 36e5 : 3e5 : lastModel ? getModelCacheTtlMs(lastModel) : null;
               return { alive: true, idle: true, idleMs: sessionIdleMs, idleSinceMs: sessionStat.mtimeMs, cacheTtlMs };
             }
           } catch {
