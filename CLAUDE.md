@@ -28,6 +28,12 @@ This project contains custom extensions, skills, and documentation manifests for
 > Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
 > Type-checking is TS7 native (`bun run typecheck`); policy: fix code forward to satisfy TS7,
 > never pin an older TypeScript.
+>
+> **Step 5 commit-message rule (what `merge` actually validates, #100):** the subject line must
+> contain the word `approved` preceded by both `code` and a spec-word (`spec/specs/specification(s)`),
+> with no `not` anywhere before it. Case-insensitive, whole words, any phrasing — no fixed
+> "Step 5"/"Code and Spec Approved" phrase required (though the house style remains
+> `docs: Code and Spec Approved — <what> (#<issue>)`).
 
 ---
 
