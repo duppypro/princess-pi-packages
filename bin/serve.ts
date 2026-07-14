@@ -12,7 +12,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
-import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
 import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
