@@ -51,14 +51,17 @@ publishes.
 the cache).
 
 // ---
-// VERIFICATION (Step 4 gate)
+// VERIFICATION (Step 4 gate) — ALL PASSED (2026-07-13/14, recorded in #97)
 // ---
 
-1. `bun build.ts` exits 0; five `.mjs` produced, each with node shebang + GENERATED banner, executable.
-2. `./bin/wtft.mjs --help` and `./bin/merge.mjs --help` answer.
-3. `npm pack --dry-run` lists all five `.mjs` + `extensions/` + `skills/` (proves `files` beats `.gitignore`).
-4. `bun run typecheck` (tsc 7, `--noEmit`) exits 0; a deliberately broken type is caught (canary), then reverted.
-5. Follow-ups with Duppy (not this branch's gate): push → git-URL install test from GitHub; `deploy:local` re-link + live Pi `/tpm` + wtft widget smoke; first registry publish.
+1. ✅ `bun build.ts` exit 0; five `.mjs` produced, each with node shebang + GENERATED banner, executable. (Zero-shot: passed on first post-Code-Draft run.)
+2. ✅ `wtft`/`merge`/`yada`/`serve` `--help` all answer from the built `.mjs`.
+3. ✅ `npm pack --dry-run` lists all five gitignored `.mjs` + `extensions/` + `skills/` (`files` beats `.gitignore`); `prepare` auto-ran at pack time.
+4. ✅ `bun run typecheck` (tsc 7.0.2 native) exit 0 after fix-forward; deliberate-break canary caught (10 errors), reverted, clean again.
+   TS7's first pass found real bugs: missing `execSync` import in wtft-renderer (live ReferenceError on tmux/tput width paths), duplicate `Bin`/`IntervalConfig` type defs, duplicate `fileURLToPath` import in serve.ts, `sessionNameSuffix` missing from the render options type, untyped daemon state. `nginx.js` stays JS with a hand-written `nginx.d.ts`.
+5. ✅ git-URL channel: `npm install github:duppypro/princess-pi-packages#97-bun-build-ts7` in a scratch dir built via `prepare`+bun at install time (GENERATED banner present in installed bins — impossible unless built on install); all six bins linked and answering.
+6. ✅ `deploy:local` re-link + live Pi smoke (`/tpm`, wtft widget) passed — redone after a concurrent-session branch stomp was recovered via `git merge --ff-only origin/97-bun-build-ts7` (the first smoke had unknowingly run pre-#97 code).
+7. Deferred: first registry publish (separate decision); `wtft --tokens` terminal-width overflow seen during smoke is a pre-existing renderer bug → #99.
 
 // ---
 // ROADS NOT TAKEN
