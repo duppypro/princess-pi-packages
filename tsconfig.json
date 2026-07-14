@@ -1,0 +1,16 @@
+{
+  // TS7 (native compiler) typecheck config — first checker this repo has had (#97).
+  // Scope: bin/ CLIs (+ their transitively imported extensions/lib files).
+  // Full extensions/ checking is blocked on @earendil-works/pi-coding-agent types
+  // (not on the npm registry) — see docs/bun-build-migration-spec.md, roads not taken.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["bin/**/*.ts"]
+}

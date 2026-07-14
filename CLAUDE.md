@@ -20,10 +20,14 @@ This project contains custom extensions, skills, and documentation manifests for
 > `README.md`. **To build or port a tool to this bar, follow the recipe in
 > `skills/cross-harness-tool/SKILL.md`.** Reference implementation: `merge` (`bin/merge.mjs`, #8).
 >
-> **Hard rule — `.mjs` bins are build artifacts, never edit manually:** CLI bins (`bin/wtft.mjs`,
-> `bin/serve.mjs`, `bin/merge.mjs`) are generated from their `.ts` counterparts via `npm run build`.
-> Always edit the `.ts` source, then rebuild. Never manually patch `.mjs` — changes will be lost on
-> next build. Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
+> **Hard rule — generated `.mjs` bins are build artifacts, never edit manually:**
+> `bin/{serve,wtft,merge,wtft-daemon,yada}.mjs` are generated from their `.ts` counterparts via
+> `bun run build` (`build.ts`, Bun.build — #97). They are **gitignored** (not in the repo) and each
+> carries a `⚠️ GENERATED` banner. Always edit the `.ts` source, then rebuild. Exception:
+> `bin/patch-pi-widgets.mjs` is **handwritten source** (no `.ts` twin) — edit it directly.
+> Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
+> Type-checking is TS7 native (`bun run typecheck`); policy: fix code forward to satisfy TS7,
+> never pin an older TypeScript.
 
 ---
 
