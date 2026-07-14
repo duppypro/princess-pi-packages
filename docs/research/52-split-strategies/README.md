@@ -104,6 +104,36 @@ deposited), prompt grows 2.6× (user text + narration rent).
   strict-mixed cost share > 5% or movable dollars > 10%. Today: 0–0.5% and
   1.9–4.0% — an order of magnitude below.
 
+## Recache trigger analysis (2026-07-14, follow-up — `debug/recache-trigger-analysis.mjs`)
+
+Question (Duppy): is recache caused by model change, effort change, wall-clock gaps,
+or an under-the-hood cheaper-model swap?
+
+Measured over 16 recache events across 3 Claude sessions:
+
+| Candidate trigger | Verdict | Evidence |
+|---|---|---|
+| Model change (incl. hidden/mode routing) | **Ruled out** | `message.model` (API *response* side — a server swap would show) identical across all 16 events; one model id per session; a per-model cache swap would leave the old cache idle, not rewrite it |
+| Effort/thinking change | No signal | No mode/effort command entries adjacent to any event |
+| Branch jump (resume/rewind fork) | **Ruled out** | 0/16 events; 15 branch jumps on normal turns caused no recache |
+| Compaction | Excluded by signature | separate marker, separately tracked |
+| **Wall-clock gap (1h TTL expiry)** | **Primary: 11/16** | every event gap > 65min exceeds the 1h tier; control turns p90 gap = 0.7–3min |
+| **Early-context mutation** | **Secondary: ≥3/16 confirmed** | memory-file/MEMORY.md writes in the turns immediately preceding short-gap (0.1–19min) recaches; 2–3 short-gap events remain unexplained (invisible client-side prefix change suspected) |
+
+Structural finding: at every recache the *surviving* cache_read is a constant
+~11–16k tokens per session — smaller than the session bootstrap and alive even
+after 23h gaps. That is the **static harness prefix** (system prompt + tool
+schemas), shared byte-identical across all sessions org-wide and kept warm by
+other traffic. Recache = death of the *session-specific* segment only, either by
+TTL (idle > 1h) or by content invalidation at the segment's front — where
+CLAUDE.md and the memory files are injected, which is why a mid-session memory
+write on a 250k-token context can instantly cost a full context rewrite
+(~250k × cache-write rate).
+
+Practical levers: resuming a big session after >1h costs one recache (unavoidable,
+now visible); mid-session memory/CLAUDE.md writes on large contexts trigger
+avoidable recaches (batch them, or accept the known price).
+
 ## Recommendation
 
 1. **Adopt now (Phase 3 scope):** compaction meter-split (already approved) +
