@@ -78,6 +78,11 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
   const refspecs: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const a = tokens[i];
+    if (a === "--all" || a === "--branches" || a === "--mirror") {
+      // push modes that inherently sweep in main/master (and --mirror can
+      // force-update/delete every remote ref) — never safe, block outright
+      return `'${a}' pushes/rewrites all refs including main/master.`;
+    }
     if (PUSH_ARG_OPTIONS.has(a)) {
       i++; // skip the option's argument
     } else if (a.startsWith("-")) {

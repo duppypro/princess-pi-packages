@@ -59,6 +59,34 @@
       "why": "deleting a non-default remote branch is routine cleanup per standards"
     },
     {
+      "id": "block-push-all-from-feature",
+      "command": "git push --all origin",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--all pushes EVERY local branch including main; the bare-push fallback only sees the feature branch, so mode flags must block outright"
+    },
+    {
+      "id": "block-push-mirror-from-feature",
+      "command": "git push --mirror origin",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--mirror force-updates or deletes every remote ref, main included — never safe for an agent"
+    },
+    {
+      "id": "block-push-branches-from-feature",
+      "command": "git push --branches origin",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--branches is the modern alias for --all"
+    },
+    {
+      "id": "allow-push-tags-from-feature",
+      "command": "git push --tags origin",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "tags cannot move main; only branch-mode flags are inherently main-touching"
+    },
+    {
       "id": "block-explicit-push-main",
       "command": "git push origin main",
       "branch": "feat",

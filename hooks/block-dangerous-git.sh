@@ -105,6 +105,10 @@ check_push() {
   while [ "$i" -lt "$n" ]; do
     a="${args[$i]}"
     case "$a" in
+      # push modes that inherently sweep in main/master (and --mirror can
+      # force-update/delete every remote ref) — never safe, block outright
+      --all|--branches|--mirror)
+        block "'$a' pushes/rewrites all refs including main/master." ;;
       # options that consume a following argument
       -o|--push-option|--receive-pack|--exec|--repo)
         i=$((i + 2)) ;;
