@@ -59,7 +59,7 @@ function stripHeredocs(command: string): string {
 }
 
 // Push options that consume a following argument
-const PUSH_ARG_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
+const PUSH_ARG_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec"]);
 
 // ---
 // Push-target parsing (#74): returns a block reason, or null to allow.
@@ -74,7 +74,13 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
       // force-update/delete every remote ref) — never safe, block outright
       return `'${a}' pushes/rewrites all refs including main/master.`;
     }
-    if (PUSH_ARG_OPTIONS.has(a)) {
+    if (a === "--repo") {
+      // --repo IS the remote (git's repository argument) — record it so the
+      // following positionals are refspecs, not a remote (#74 review finding 4)
+      remote = tokens[++i] ?? "-";
+    } else if (a.startsWith("--repo=")) {
+      remote = a.slice("--repo=".length) || "-";
+    } else if (PUSH_ARG_OPTIONS.has(a)) {
       i++; // skip the option's argument
     } else if (a.startsWith("-")) {
       // flag, no argument consumed

@@ -94,8 +94,14 @@ check_push() {
       # force-update/delete every remote ref) — never safe, block outright
       --all|--branches|--mirror)
         block "'$a' pushes/rewrites all refs including main/master." ;;
+      # --repo IS the remote (git's repository argument) — record it so the
+      # following positionals are refspecs, not a remote (#74 review finding 4)
+      --repo)
+        remote="${args[$((i + 1))]:--}"; i=$((i + 2)) ;;
+      --repo=*)
+        remote="${a#--repo=}"; [ -z "$remote" ] && remote="-"; i=$((i + 1)) ;;
       # options that consume a following argument
-      -o|--push-option|--receive-pack|--exec|--repo)
+      -o|--push-option|--receive-pack|--exec)
         i=$((i + 2)) ;;
       -*)
         i=$((i + 1)) ;;

@@ -59,6 +59,34 @@
       "why": "deleting a non-default remote branch is routine cleanup per standards"
     },
     {
+      "id": "block-push-repo-refspec-main",
+      "command": "git push --repo origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 4: --repo IS the remote (git's repository argument), so 'main' is a refspec — treating --repo as an opaque option pair let 'main' land in the remote slot unchecked"
+    },
+    {
+      "id": "block-push-repo-eq-refspec-main",
+      "command": "git push --repo=origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "same hole via the --repo=<repo> single-token form"
+    },
+    {
+      "id": "allow-push-repo-refspec-feature",
+      "command": "git push --repo origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "--repo with a feature refspec stays allowed"
+    },
+    {
+      "id": "block-push-repo-bare-on-main",
+      "command": "git push --repo origin",
+      "branch": "main",
+      "verdict": "block",
+      "why": "--repo with no refspec is a bare push — current-branch fallback must still fire"
+    },
+    {
       "id": "block-push-all-from-feature",
       "command": "git push --all origin",
       "branch": "feat",
