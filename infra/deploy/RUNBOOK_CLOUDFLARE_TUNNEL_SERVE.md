@@ -176,8 +176,10 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 ---
 
 ## Phase 6 — Retire the nginx/oauth2-proxy gate + build per-slug automation
-> **Spec status: DRAFT (issue #64).** Scope settled 2026-07-07: full automation now, not
-> teardown-only. Two arcs, landed **in order** as separate commit pairs — 6A tracked in #64, 6B split to #66.
+> **Spec status: 6A APPROVED (2e2d626, 2026-07-07) · 6B DRAFT.** Scope settled 2026-07-07:
+> full automation now, not teardown-only. Two arcs, landed **in order** as separate commit
+> pairs — 6A tracked in #64, 6B split to #66. 6B Spec Approved is blocked on the 6B.0
+> wildcard-proxy verification (see VERIFY FIRST below).
 > WHY two arcs: each is independently testable, and teardown-first means 6B is built on a
 > serve that no longer touches /etc or sudo — no entanglement of old and new failure modes.
 
