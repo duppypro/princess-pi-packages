@@ -220,6 +220,34 @@
       "why": "tags cannot move main; only branch-mode flags are inherently main-touching"
     },
     {
+      "id": "block-push-head-on-main",
+      "command": "git push origin HEAD",
+      "branch": "main",
+      "verdict": "block",
+      "why": "review finding 8: HEAD is a symbolic ref — on main it pushes main, but the literal-string dst check saw 'HEAD' != 'main' and the nonempty refspec list skipped the current-branch fallback"
+    },
+    {
+      "id": "allow-push-head-on-feature",
+      "command": "git push origin HEAD",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "HEAD on a feature branch pushes the feature branch — must stay allowed"
+    },
+    {
+      "id": "block-push-at-on-main",
+      "command": "git push origin @",
+      "branch": "main",
+      "verdict": "block",
+      "why": "@ is shorthand for HEAD, same symbolic resolution"
+    },
+    {
+      "id": "block-push-head-colon-main",
+      "command": "git push origin HEAD:main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "explicit main destination wins regardless of the symbolic source"
+    },
+    {
       "id": "block-explicit-push-main",
       "command": "git push origin main",
       "branch": "feat",
@@ -272,6 +300,24 @@
       "cwd_branch": "",
       "verdict": "allow",
       "why": "same relative -C resolution, feature branch stays allowed"
+    },
+    {
+      "id": "block-multi-c-chained-bare-push-on-main",
+      "command": "git -C rel-repo -C sub push",
+      "c_path_branch": "main",
+      "c_path_rel": "rel-repo/sub",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "review finding 9: git resolves each -C relative to the directory established by the previous one — overwriting cpath inspected cwd/sub (nonexistent → '' → not-main) instead of cwd/rel-repo/sub on main"
+    },
+    {
+      "id": "allow-multi-c-chained-bare-push-on-feature",
+      "command": "git -C rel-repo -C sub push",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo/sub",
+      "cwd_branch": "",
+      "verdict": "allow",
+      "why": "chained -C resolution, feature branch stays allowed"
     },
     {
       "id": "block-c-path-push-explicit-main",

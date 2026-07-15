@@ -108,6 +108,15 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
     if (rs.startsWith("+")) rs = rs.slice(1); // +refspec force marker
     const colon = rs.lastIndexOf(":");
     const dst = colon >= 0 ? rs.slice(colon + 1) : rs; // src:dst — destination decides
+    if (dst === "HEAD" || dst === "@") {
+      // symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
+      // same-named remote ref — resolve it instead of matching the literal
+      // string (#74 review finding 8)
+      if (isMainRef(branchOf(cPath, hookCwd))) {
+        return "pushes current branch (HEAD) to main/master.";
+      }
+      continue;
+    }
     if (isMainRef(dst)) {
       return `pushes to main/master (ref '${rs}').`;
     }
@@ -224,7 +233,10 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
   while (i < T.length) {
     const t = T[i];
     if (t === "-C") {
-      cPath = T[i + 1] ?? "";
+      // git chains -C options: each relative path resolves from the directory
+      // established by the previous one (#74 review finding 9)
+      const next = T[i + 1] ?? "";
+      cPath = cPath && !next.startsWith("/") ? `${cPath}/${next}` : next;
       i += 2;
     } else if (t === "-c") {
       i += 2;

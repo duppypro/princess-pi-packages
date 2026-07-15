@@ -127,10 +127,20 @@ check_push() {
     return 0
   fi
 
-  local rs dst
+  local rs dst b2
   for rs in "${refspecs[@]}"; do
     rs="${rs#+}"          # +refspec force marker
     dst="${rs##*:}"       # src:dst — destination decides; no colon → the ref itself
+    if [ "$dst" = "HEAD" ] || [ "$dst" = "@" ]; then
+      # symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
+      # same-named remote ref — resolve it instead of matching the literal
+      # string (#74 review finding 8)
+      b2=$(branch_of "$cpath")
+      if is_main_ref "$b2"; then
+        block "pushes current branch (HEAD) to main/master."
+      fi
+      continue
+    fi
     if is_main_ref "$dst"; then
       block "pushes to main/master (ref '$rs')."
     fi
@@ -221,7 +231,16 @@ check_git_subcommand() {
   local cpath=""
   while [ "$i" -lt "$n" ]; do
     case "${T[$i]}" in
-      -C) cpath="${T[$((i + 1))]:-}"; i=$((i + 2)) ;;
+      -C)
+        # git chains -C options: each relative path resolves from the directory
+        # established by the previous one (#74 review finding 9)
+        local nxt="${T[$((i + 1))]:-}"
+        if [ -n "$cpath" ] && [ "${nxt#/}" = "$nxt" ]; then
+          cpath="$cpath/$nxt"
+        else
+          cpath="$nxt"
+        fi
+        i=$((i + 2)) ;;
       -c) i=$((i + 2)) ;;
       --git-dir=*|--work-tree=*|--no-pager|-P|--paginate|-p) i=$((i + 1)) ;;
       -*) i=$((i + 1)) ;;
