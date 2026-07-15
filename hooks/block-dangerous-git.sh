@@ -132,13 +132,31 @@ check_push() {
   return 0
 }
 
+# Wrapper binaries that pass execution straight through to git (#74 review finding 5)
+GIT_WRAPPERS=" command env nice nohup time timeout stdbuf setsid ionice sudo doas "
+
 check_git_subcommand() {
   local -a T
   read -ra T <<< "$1"
-  [ "${T[0]:-}" = "git" ] || return 0
+
+  # Skip a benign prefix — wrappers, their -options, VAR=val assignments,
+  # bare numbers (nice/timeout values) — until 'git'. Anything else means
+  # this is not a git invocation ('echo git push …' stays text).
+  local i=0 n=${#T[@]} t
+  while [ "$i" -lt "$n" ]; do
+    t="${T[$i]}"
+    [ "$t" = "git" ] && break
+    if [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
+    case "$GIT_WRAPPERS" in *" $t "*) i=$((i + 1)); continue ;; esac
+    case "$t" in -*) i=$((i + 1)); continue ;; esac
+    if [[ "$t" =~ ^[0-9]+[A-Za-z]*$ ]]; then i=$((i + 1)); continue; fi
+    return 0
+  done
+  [ "$i" -lt "$n" ] || return 0
+  i=$((i + 1))
 
   # git global options before the subcommand; capture -C <path>
-  local i=1 cpath="" n=${#T[@]}
+  local cpath=""
   while [ "$i" -lt "$n" ]; do
     case "${T[$i]}" in
       -C) cpath="${T[$((i + 1))]:-}"; i=$((i + 2)) ;;

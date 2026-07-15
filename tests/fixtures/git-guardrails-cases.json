@@ -59,6 +59,55 @@
       "why": "deleting a non-default remote branch is routine cleanup per standards"
     },
     {
+      "id": "block-command-wrapper-push-main",
+      "command": "command git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 5: first-token-must-be-git let shell wrappers carry the identical dangerous push"
+    },
+    {
+      "id": "block-env-wrapper-push-main",
+      "command": "env git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "env wrapper, same bypass"
+    },
+    {
+      "id": "block-env-assignment-push-main",
+      "command": "GIT_TRACE=1 git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "a leading VAR=val assignment also made the first token non-git — same class, no wrapper binary needed"
+    },
+    {
+      "id": "block-nice-wrapper-push-main",
+      "command": "nice -n 10 git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrapper with option + numeric argument before git"
+    },
+    {
+      "id": "block-timeout-wrapper-push-main",
+      "command": "timeout 30 git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrapper with duration argument before git"
+    },
+    {
+      "id": "allow-command-wrapper-push-feature",
+      "command": "command git push origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "wrapper stripping must not change the verdict for safe pushes"
+    },
+    {
+      "id": "allow-echo-git-push-main-text",
+      "command": "echo git push origin main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "echo is not a wrapper — prefix skipping stops at unknown words so quoted-less text stays text"
+    },
+    {
       "id": "block-push-repo-refspec-main",
       "command": "git push --repo origin main",
       "branch": "feat",

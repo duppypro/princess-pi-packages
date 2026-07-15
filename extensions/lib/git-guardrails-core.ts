@@ -110,12 +110,36 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
   return null;
 }
 
+// Wrapper binaries that pass execution straight through to git (#74 review finding 5)
+const GIT_WRAPPERS = new Set([
+  "command", "env", "nice", "nohup", "time", "timeout",
+  "stdbuf", "setsid", "ionice", "sudo", "doas",
+]);
+
 function checkGitSubcommand(sub: string, hookCwd: string): string | null {
   const T = sub.trim().split(/\s+/);
-  if (T[0] !== "git") return null;
+
+  // Skip a benign prefix — wrappers, their -options, VAR=val assignments,
+  // bare numbers (nice/timeout values) — until 'git'. Anything else means
+  // this is not a git invocation ('echo git push …' stays text).
+  let i = 0;
+  while (i < T.length && T[i] !== "git") {
+    const t = T[i];
+    if (
+      /^[A-Za-z_][A-Za-z0-9_]*=/.test(t) ||
+      GIT_WRAPPERS.has(t) ||
+      t.startsWith("-") ||
+      /^[0-9]+[A-Za-z]*$/.test(t)
+    ) {
+      i++;
+    } else {
+      return null;
+    }
+  }
+  if (i >= T.length) return null;
+  i++;
 
   // git global options before the subcommand; capture -C <path>
-  let i = 1;
   let cPath = "";
   while (i < T.length) {
     const t = T[i];
