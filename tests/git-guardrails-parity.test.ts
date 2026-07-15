@@ -17,7 +17,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
-import { checkGitCommand } from "../extensions/git-guardrails";
+import { checkGitCommand } from "../extensions/lib/git-guardrails-core";
 import fixture from "./fixtures/git-guardrails-cases.json";
 
 const REPO_ROOT = join(import.meta.dir, "..");
