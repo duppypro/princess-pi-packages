@@ -135,9 +135,65 @@ check_push() {
 # Wrapper binaries that pass execution straight through to git (#74 review finding 5)
 GIT_WRAPPERS=" command env nice nohup time timeout stdbuf setsid ionice sudo doas "
 
+# ---
+# Quote-aware lexing (#74 review finding 6): separators inside quotes are
+# data, not command boundaries — `printf "note\ngit push origin main\n"`
+# must yield ONE printf command, never a synthetic git push. Tokens keep
+# quoted content but drop the quote chars, so `git push origin "main"`
+# is seen as pushing main (the old naive split let quoted refs slip).
+# ---
+
+# Split at unquoted &&, ||, ;, |, &, and newlines → \x1f-separated string
+split_subcommands() {
+  local s="$1" out="" q="" ch i n=${#1}
+  for ((i = 0; i < n; i++)); do
+    ch="${s:$i:1}"
+    if [ "$q" = "'" ]; then
+      out+="$ch"; [ "$ch" = "'" ] && q=""
+    elif [ "$q" = '"' ]; then
+      if [ "$ch" = '\' ]; then out+="$ch${s:$((i + 1)):1}"; i=$((i + 1))
+      else out+="$ch"; [ "$ch" = '"' ] && q=""; fi
+    else
+      case "$ch" in
+        \\) out+="$ch${s:$((i + 1)):1}"; i=$((i + 1)) ;;
+        \'|\") q="$ch"; out+="$ch" ;;
+        $'\n'|';') out+=$'\x1f' ;;
+        '&'|'|') [ "${s:$((i + 1)):1}" = "$ch" ] && i=$((i + 1)); out+=$'\x1f' ;;
+        *) out+="$ch" ;;
+      esac
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# Whitespace-split honoring quotes: quoted content kept, quote chars dropped.
+# Fills the global TOKENS array.
+tokenize() {
+  TOKENS=()
+  local s="$1" cur="" q="" ch i n=${#1} quoted=0
+  for ((i = 0; i < n; i++)); do
+    ch="${s:$i:1}"
+    if [ "$q" = "'" ]; then
+      if [ "$ch" = "'" ]; then q=""; else cur+="$ch"; fi
+    elif [ "$q" = '"' ]; then
+      if [ "$ch" = '\' ]; then cur+="${s:$((i + 1)):1}"; i=$((i + 1))
+      elif [ "$ch" = '"' ]; then q=""
+      else cur+="$ch"; fi
+    else
+      case "$ch" in
+        \\) cur+="${s:$((i + 1)):1}"; i=$((i + 1)) ;;
+        \') q="'"; quoted=1 ;;
+        \") q='"'; quoted=1 ;;
+        ' '|$'\t') if [ -n "$cur" ] || [ "$quoted" = 1 ]; then TOKENS+=("$cur"); cur=""; quoted=0; fi ;;
+        *) cur+="$ch" ;;
+      esac
+    fi
+  done
+  if [ -n "$cur" ] || [ "$quoted" = 1 ]; then TOKENS+=("$cur"); fi
+}
+
 check_git_subcommand() {
-  local -a T
-  read -ra T <<< "$1"
+  local -a T=("${TOKENS[@]}")
 
   # Skip a benign prefix — wrappers, their -options, VAR=val assignments,
   # bare numbers (nice/timeout values) — until 'git'. Anything else means
@@ -220,13 +276,13 @@ check_git_subcommand() {
   return 0
 }
 
-# Split on shell separators (&&, ||, ;, |) and newlines; heredoc bodies already stripped.
-SUBS=$(printf '%s' "$STRIPPED" | sed -E 's/(\&\&|\|\||;|\|)/\x1f/g' | tr '\n' '\x1f')
+# Quote-aware split (heredoc bodies already stripped), then tokenize each
+# sub-command with quotes honored before inspection.
+SUBS=$(split_subcommands "$STRIPPED")
 while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
-  # trim leading whitespace so the first-token test works
-  sub="${sub#"${sub%%[![:space:]]*}"}"
-  [ -z "$sub" ] && continue
-  check_git_subcommand "$sub"
+  tokenize "$sub"
+  [ ${#TOKENS[@]} -eq 0 ] && continue
+  check_git_subcommand
 done <<< "${SUBS}"$'\x1f'
 
 exit 0

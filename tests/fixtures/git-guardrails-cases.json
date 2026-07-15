@@ -23,6 +23,41 @@
       "why": "#74 false-positive class 3: mere co-occurrence of 'push' and 'main' in a non-git command (hit live 3x)"
     },
     {
+      "id": "allow-printf-quoted-newline-push",
+      "command": "printf \"note\\ngit push origin main\\n\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "review finding 6: naive newline/separator split manufactured a 'git push origin main' subcommand out of quoted printf text"
+    },
+    {
+      "id": "allow-quoted-semicolon-git-push-text",
+      "command": "echo \"x; git push origin main\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "a ; inside double quotes is data, not a command separator"
+    },
+    {
+      "id": "allow-commit-message-mentioning-push",
+      "command": "git commit -m \"see: git push origin main\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "quoted commit message stays one token; the git subcommand is commit"
+    },
+    {
+      "id": "block-quoted-main-ref",
+      "command": "git push origin \"main\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "inverse fix: quote chars previously stuck to the token ('\"main\"' != 'main') so a quoted ref slipped the destination check"
+    },
+    {
+      "id": "block-background-ampersand-push-main",
+      "command": "git push origin feat & git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "single & (background) is a command separator too; the second command pushes main"
+    },
+    {
       "id": "allow-heredoc-mentioning-push-and-main",
       "command": "cat > /tmp/notes.md <<'EOF'\ngit push origin main is blocked by the ruleset\nEOF",
       "branch": "feat",

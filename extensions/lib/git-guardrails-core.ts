@@ -116,8 +116,83 @@ const GIT_WRAPPERS = new Set([
   "stdbuf", "setsid", "ionice", "sudo", "doas",
 ]);
 
-function checkGitSubcommand(sub: string, hookCwd: string): string | null {
-  const T = sub.trim().split(/\s+/);
+// ---
+// Quote-aware lexing (#74 review finding 6): separators inside quotes are
+// data, not command boundaries — `printf "note\ngit push origin main\n"`
+// must yield ONE printf command, never a synthetic git push. Tokens keep
+// quoted content but drop the quote chars, so `git push origin "main"`
+// is seen as pushing main (the old naive split let quoted refs slip).
+// ---
+
+/** Split at unquoted `&&`, `||`, `;`, `|`, `&`, and newlines. */
+function splitOutsideQuotes(s: string): string[] {
+  const subs: string[] = [];
+  let cur = "";
+  let q: "'" | '"' | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (q === "'") {
+      cur += ch;
+      if (ch === "'") q = null;
+    } else if (q === '"') {
+      cur += ch;
+      if (ch === "\\") cur += s[++i] ?? "";
+      else if (ch === '"') q = null;
+    } else if (ch === "\\") {
+      cur += ch + (s[++i] ?? "");
+    } else if (ch === "'" || ch === '"') {
+      q = ch;
+      cur += ch;
+    } else if (ch === "\n" || ch === ";") {
+      subs.push(cur);
+      cur = "";
+    } else if (ch === "&" || ch === "|") {
+      if (s[i + 1] === ch) i++; // && or ||
+      subs.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  subs.push(cur);
+  return subs;
+}
+
+/** Whitespace-split honoring quotes: quoted content is kept, quote chars dropped. */
+function tokenize(sub: string): string[] {
+  const toks: string[] = [];
+  let cur = "";
+  let q: "'" | '"' | null = null;
+  let quoted = false; // saw quotes → emit token even if content is empty
+  for (let i = 0; i < sub.length; i++) {
+    const ch = sub[i];
+    if (q === "'") {
+      if (ch === "'") q = null;
+      else cur += ch;
+    } else if (q === '"') {
+      if (ch === "\\") cur += sub[++i] ?? "";
+      else if (ch === '"') q = null;
+      else cur += ch;
+    } else if (ch === "\\") {
+      cur += sub[++i] ?? "";
+    } else if (ch === "'" || ch === '"') {
+      q = ch;
+      quoted = true;
+    } else if (/\s/.test(ch)) {
+      if (cur || quoted) {
+        toks.push(cur);
+        cur = "";
+        quoted = false;
+      }
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur || quoted) toks.push(cur);
+  return toks;
+}
+
+function checkGitSubcommand(T: string[], hookCwd: string): string | null {
 
   // Skip a benign prefix — wrappers, their -options, VAR=val assignments,
   // bare numbers (nice/timeout values) — until 'git'. Anything else means
@@ -206,9 +281,9 @@ export function checkGitCommand(command: string, hookCwd: string): string | null
 
   // Split on shell separators; heredoc bodies already stripped.
   // One blocked sub-command blocks the whole command line (fail-safe).
-  const subs = stripped.split(/&&|\|\||;|\||\n/);
+  const subs = splitOutsideQuotes(stripped);
   for (const sub of subs) {
-    const reason = checkGitSubcommand(sub, hookCwd);
+    const reason = checkGitSubcommand(tokenize(sub), hookCwd);
     if (reason) return reason;
   }
   return null;
