@@ -30,6 +30,7 @@ interface Case {
   branch?: string;
   cwd_branch?: string;
   c_path_branch?: string;
+  c_path_rel?: string;
   why: string;
 }
 
@@ -48,12 +49,18 @@ function nonRepoDir(): string {
 /** Materialize a case's declared branch state into (command, cwd). */
 function materialize(c: Case): { command: string; cwd: string } {
   let command = c.command;
-  if (c.c_path_branch !== undefined) {
-    const cRepo = repoOnBranch(c.c_path_branch);
-    command = command.replaceAll("/repo", cRepo);
-  }
   const cwdBranch = c.cwd_branch !== undefined ? c.cwd_branch : c.branch;
   const cwd = cwdBranch ? repoOnBranch(cwdBranch) : nonRepoDir();
+  if (c.c_path_branch !== undefined) {
+    if (c.c_path_rel !== undefined) {
+      // relative -C target: a repo INSIDE the tool-call cwd, referenced by
+      // its relative name — the command already says `-C <c_path_rel>`
+      execSync(`git init -q -b "${c.c_path_branch}" "${c.c_path_rel}"`, { cwd });
+    } else {
+      const cRepo = repoOnBranch(c.c_path_branch);
+      command = command.replaceAll("/repo", cRepo);
+    }
+  }
   return { command, cwd };
 }
 

@@ -95,6 +95,24 @@
       "why": "NEW (#74 under-block, Phase G escape 2026-07-13): hook resolved branch from shell cwd (non-repo, ''), not the -C target on main; only the server ruleset (GH006) stopped it"
     },
     {
+      "id": "block-c-relative-bare-push-on-main",
+      "command": "git -C rel-repo push",
+      "c_path_branch": "main",
+      "c_path_rel": "rel-repo",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "relative -C must resolve against the TOOL-CALL cwd, not the guard process's own cwd — otherwise the wrong repo (or none) is inspected and a main push slips through"
+    },
+    {
+      "id": "allow-c-relative-bare-push-on-feature",
+      "command": "git -C rel-repo push",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "cwd_branch": "",
+      "verdict": "allow",
+      "why": "same relative -C resolution, feature branch stays allowed"
+    },
+    {
       "id": "block-c-path-push-explicit-main",
       "command": "git -C /repo push origin main",
       "c_path_branch": "feat",

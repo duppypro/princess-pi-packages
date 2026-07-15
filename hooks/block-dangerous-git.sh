@@ -40,9 +40,14 @@ is_main_ref() {
   return 1
 }
 
-# Branch of the repo the sub-command acts on: -C path wins, else hook cwd (#74 under-block fix)
+# Branch of the repo the sub-command acts on: -C path wins, else hook cwd (#74 under-block fix).
+# A relative -C is what git would see from the TOOL-CALL cwd — resolve it there,
+# never against this hook process's own cwd (they differ when the guard runs out-of-repo).
 branch_of() {
   local dir="$1"
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
   [ -z "$dir" ] && dir="$HOOK_CWD"
   if [ -n "$dir" ]; then
     git -C "$dir" branch --show-current 2>/dev/null || true

@@ -9,6 +9,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { resolve } from "node:path";
 
 // --- Helpers ---
 
@@ -29,9 +30,12 @@ function isMainRef(ref: string): boolean {
   );
 }
 
-// Branch of the repo the sub-command acts on: -C path wins, else hook cwd (#74 under-block fix)
+// Branch of the repo the sub-command acts on: -C path wins, else hook cwd (#74 under-block fix).
+// A relative -C is what git would see from the TOOL-CALL cwd — resolve it there,
+// never against this process's own cwd (they differ when the guard runs out-of-repo).
 function branchOf(cPath: string, hookCwd: string): string {
-  return currentBranch(cPath || hookCwd);
+  const dir = cPath ? resolve(hookCwd || ".", cPath) : hookCwd;
+  return currentBranch(dir);
 }
 
 // ---
