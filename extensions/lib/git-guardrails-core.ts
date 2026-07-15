@@ -58,15 +58,6 @@ function stripHeredocs(command: string): string {
   return out.join("\n");
 }
 
-// --- Always-blocked patterns (discard uncommitted work, any branch) ---
-
-const ALWAYS_BLOCKED: RegExp[] = [
-  /\bgit\s+checkout\s+\.\B/,
-  /\bgit\s+restore\s+\.\B/,
-  /\bgit\s+clean\s+-fd\b/,
-  /\bgit\s+clean\s+-f\b/,
-];
-
 // Push options that consume a following argument
 const PUSH_ARG_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 
@@ -151,6 +142,25 @@ function checkGitSubcommand(sub: string, hookCwd: string): string | null {
         return "deletes main/master branch.";
       }
     }
+    return null;
+  }
+  // Always blocked on any branch (discard uncommitted/untracked work).
+  // Token-based (#74 review finding 3): whitespace-agnostic, catches the
+  // '--' pathspec separator and split flag forms the old literal-space
+  // regexes missed — and stops false-blocking dotfile pathspecs like
+  // 'git checkout .gitignore' (only the bare '.' token wipes everything).
+  if (cmd === "checkout" || cmd === "restore") {
+    if (rest.includes(".")) {
+      return `discards uncommitted work ('git ${cmd} .', always blocked).`;
+    }
+    return null;
+  }
+  if (cmd === "clean") {
+    for (const t of rest) {
+      if (t === "--force" || (t.startsWith("-") && !t.startsWith("--") && t.includes("f"))) {
+        return "discards untracked files (forced git clean, always blocked).";
+      }
+    }
   }
   return null;
 }
@@ -163,12 +173,6 @@ function checkGitSubcommand(sub: string, hookCwd: string): string | null {
  */
 export function checkGitCommand(command: string, hookCwd: string): string | null {
   const stripped = stripHeredocs(command);
-
-  for (const pattern of ALWAYS_BLOCKED) {
-    if (pattern.test(stripped)) {
-      return "discards uncommitted work (always blocked).";
-    }
-  }
 
   // Split on shell separators; heredoc bodies already stripped.
   // One blocked sub-command blocks the whole command line (fail-safe).

@@ -217,7 +217,63 @@
       "command": "git checkout .",
       "branch": "feat",
       "verdict": "block",
-      "why": "ALWAYS_BLOCKED unchanged: discards uncommitted work on any branch"
+      "why": "always blocked: discards uncommitted work on any branch"
+    },
+    {
+      "id": "block-checkout-dot-multispace",
+      "command": "git checkout    .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 3: literal-space regex missed multi-space/tab separation; tokenizer is whitespace-agnostic"
+    },
+    {
+      "id": "block-checkout-dashdash-dot",
+      "command": "git checkout -- .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 3: the -- pathspec separator split the dot into its own token past the old regex"
+    },
+    {
+      "id": "block-restore-dashdash-dot",
+      "command": "git restore -- .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "same -- separator escape for restore"
+    },
+    {
+      "id": "block-clean-split-flags",
+      "command": "git clean -f -d",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 3: -f -d as separate tokens evaded the combined -f/-fd patterns"
+    },
+    {
+      "id": "block-clean-fdx",
+      "command": "git clean -fdx",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "any short-flag cluster containing f is a forced clean"
+    },
+    {
+      "id": "block-clean-force-long",
+      "command": "git clean --force -d",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--force long form equals -f"
+    },
+    {
+      "id": "allow-clean-dry-run",
+      "command": "git clean -nd",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "dry run deletes nothing; only forced cleans discard work"
+    },
+    {
+      "id": "allow-checkout-dotfile-path",
+      "command": "git checkout .gitignore",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "inverse fix: the old substring regex ('git checkout \\.') false-blocked dotfile pathspecs; only the bare '.' token discards everything"
     }
   ]
 }

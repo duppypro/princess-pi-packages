@@ -78,21 +78,6 @@ strip_heredocs() {
 
 STRIPPED=$(strip_heredocs "$COMMAND")
 
-# --- Always-blocked patterns (discard uncommitted work, any branch) ---
-
-ALWAYS_BLOCKED=(
-  'git checkout \.'
-  'git restore \.'
-  'git clean -fd'
-  'git clean -f'
-)
-
-for pattern in "${ALWAYS_BLOCKED[@]}"; do
-  if echo "$STRIPPED" | grep -qE "$pattern"; then
-    block "discards uncommitted work (always blocked)."
-  fi
-done
-
 # ---
 # Push-target parsing (#74): inspect each git sub-command's tokens.
 # One blocked sub-command blocks the whole command line (fail-safe).
@@ -182,6 +167,29 @@ check_git_subcommand() {
           block "deletes main/master branch."
         fi
         prev="$tok2"
+      done
+      ;;
+    # Always blocked on any branch (discard uncommitted/untracked work).
+    # Token-based (#74 review finding 3): whitespace-agnostic, catches the
+    # '--' pathspec separator and split flag forms the old literal-space
+    # regexes missed — and stops false-blocking dotfile pathspecs like
+    # 'git checkout .gitignore' (only the bare '.' token wipes everything).
+    checkout|restore)
+      local tok3
+      for tok3 in "${T[@]:$i}"; do
+        if [ "$tok3" = "." ]; then
+          block "discards uncommitted work ('git $cmd .', always blocked)."
+        fi
+      done
+      ;;
+    clean)
+      local tok4
+      for tok4 in "${T[@]:$i}"; do
+        case "$tok4" in
+          --force) block "discards untracked files (forced git clean, always blocked)." ;;
+          --*) ;;
+          -*f*) block "discards untracked files (forced git clean, always blocked)." ;;
+        esac
       done
       ;;
   esac
