@@ -61,15 +61,21 @@ branch_of() {
 # is never mistaken for a command (#74 false-positive class 3).
 # ---
 strip_heredocs() {
-  local re="<<-?[[:space:]]*['\"]?([A-Za-z_][A-Za-z0-9_]*)"
-  local line delim="" in_body=0
+  local re="<<(-?)[[:space:]]*['\"]?([A-Za-z_][A-Za-z0-9_]*)"
+  local line probe delim="" in_body=0 dashed=0
   while IFS= read -r line; do
     if [ "$in_body" -eq 1 ]; then
-      [ "$line" = "$delim" ] && in_body=0
+      # <<- : terminator may be tab-indented (#74 review finding 7)
+      probe="$line"
+      if [ "$dashed" -eq 1 ]; then
+        probe="${probe#"${probe%%[!$'\t']*}"}"
+      fi
+      [ "$probe" = "$delim" ] && in_body=0
       continue
     fi
     if [[ "$line" =~ $re ]]; then
-      delim="${BASH_REMATCH[1]}"
+      [ "${BASH_REMATCH[1]}" = "-" ] && dashed=1 || dashed=0
+      delim="${BASH_REMATCH[2]}"
       in_body=1
     fi
     printf '%s\n' "$line"

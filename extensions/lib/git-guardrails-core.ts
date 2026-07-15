@@ -43,16 +43,21 @@ function branchOf(cPath: string, hookCwd: string): string {
 // is never mistaken for a command (#74 false-positive class 3).
 // ---
 function stripHeredocs(command: string): string {
-  const open = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)/;
+  const open = /<<(-?)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)/;
   const out: string[] = [];
   let delim: string | null = null;
+  let dashed = false; // <<- : terminator may be tab-indented (#74 review finding 7)
   for (const line of command.split("\n")) {
     if (delim !== null) {
-      if (line === delim) delim = null;
+      const probe = dashed ? line.replace(/^\t+/, "") : line;
+      if (probe === delim) delim = null;
       continue;
     }
     const m = open.exec(line);
-    if (m) delim = m[1];
+    if (m) {
+      dashed = m[1] === "-";
+      delim = m[2];
+    }
     out.push(line);
   }
   return out.join("\n");

@@ -65,6 +65,27 @@
       "why": "#74 false-positive class 3: heredoc body text is not a git invocation"
     },
     {
+      "id": "block-heredoc-dash-tab-terminator-then-push",
+      "command": "cat <<-EOF\n\tindented body\n\tEOF\ngit push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 7: <<- allows a tab-indented terminator; comparing the raw line to the delimiter never matched, so the REAL push after the heredoc was stripped from inspection"
+    },
+    {
+      "id": "allow-heredoc-dash-tab-body-text",
+      "command": "cat <<-EOF\n\tgit push origin main\n\tEOF",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "tab-indented body of a <<- heredoc is still data; terminator must now be recognized so nothing AFTER leaks, but the body itself never blocks"
+    },
+    {
+      "id": "allow-plain-heredoc-tab-eof-is-body",
+      "command": "cat <<EOF\n\tEOF\ngit push origin main\nEOF",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "without the dash, a tab-indented EOF is NOT a terminator in real shells — the push line is heredoc data, matching bash semantics"
+    },
+    {
       "id": "allow-c-path-push-feature",
       "command": "git -C /repo push origin feat",
       "c_path_branch": "feat",
