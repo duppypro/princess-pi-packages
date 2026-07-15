@@ -1,0 +1,177 @@
+{
+  "$comment": "Spec-as-fixture for issue #74: git-guardrails push-target parsing. Each case is run against BOTH harness copies (extensions/git-guardrails.ts and hooks/block-dangerous-git.sh) — verdicts must match (parity gate). 'branch' = the current branch of the repo the command would act on ('' = not a repo / branch unresolvable). 'cwd_branch' vs 'c_path_branch' distinguish the shell cwd repo from a `git -C <path>` target repo.",
+  "cases": [
+    {
+      "id": "allow-compound-push-then-pr-base-main",
+      "command": "git push origin feat && gh pr create --base main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#74 false-positive class 1: greedy regex spans the && chain; the push targets feat, 'main' belongs to gh pr create"
+    },
+    {
+      "id": "allow-branch-name-starting-with-main-token",
+      "command": "git push origin main-refactor",
+      "branch": "main-refactor",
+      "verdict": "allow",
+      "why": "#74 false-positive class 2: \\bmain\\b matches at the hyphen; ref token must EQUAL main/master, not contain it"
+    },
+    {
+      "id": "allow-word-cooccurrence-no-git-push",
+      "command": "node -e \"console.log('push to main is blocked')\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#74 false-positive class 3: mere co-occurrence of 'push' and 'main' in a non-git command (hit live 3x)"
+    },
+    {
+      "id": "allow-heredoc-mentioning-push-and-main",
+      "command": "cat > /tmp/notes.md <<'EOF'\ngit push origin main is blocked by the ruleset\nEOF",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#74 false-positive class 3: heredoc body text is not a git invocation"
+    },
+    {
+      "id": "allow-c-path-push-feature",
+      "command": "git -C /repo push origin feat",
+      "c_path_branch": "feat",
+      "cwd_branch": "",
+      "verdict": "allow",
+      "why": "-C aware: explicit refspec targets feat; -C repo branch is feat"
+    },
+    {
+      "id": "allow-bare-push-on-feature-branch",
+      "command": "git push",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "existing behavior preserved: bare push on a feature branch is fine"
+    },
+    {
+      "id": "allow-push-u-origin-feature",
+      "command": "git push -u origin 74-guardrails-push-target-parsing",
+      "branch": "74-guardrails-push-target-parsing",
+      "verdict": "allow",
+      "why": "options before the refspec must be skipped, not treated as refs"
+    },
+    {
+      "id": "allow-push-delete-feature-branch",
+      "command": "git push origin --delete test/identity-check",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "deleting a non-default remote branch is routine cleanup per standards"
+    },
+    {
+      "id": "block-explicit-push-main",
+      "command": "git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "destination ref token equals main"
+    },
+    {
+      "id": "block-refspec-dst-main",
+      "command": "git push origin feat:main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "src:dst refspec — DESTINATION is main even though source is feat"
+    },
+    {
+      "id": "block-force-push-main",
+      "command": "git push -f origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "force push with explicit main destination"
+    },
+    {
+      "id": "block-bare-push-on-main",
+      "command": "git push",
+      "branch": "main",
+      "verdict": "block",
+      "why": "existing behavior preserved: bare push resolves to current branch = main"
+    },
+    {
+      "id": "block-c-path-bare-push-on-main",
+      "command": "git -C /repo push",
+      "c_path_branch": "main",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "NEW (#74 under-block, Phase G escape 2026-07-13): hook resolved branch from shell cwd (non-repo, ''), not the -C target on main; only the server ruleset (GH006) stopped it"
+    },
+    {
+      "id": "block-c-path-push-explicit-main",
+      "command": "git -C /repo push origin main",
+      "c_path_branch": "feat",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "-C plus explicit main destination; explicit ref wins regardless of branch"
+    },
+    {
+      "id": "block-compound-second-subcommand-pushes-main",
+      "command": "git fetch && git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "separator-split must still inspect EVERY git-push sub-command, not just the first"
+    },
+    {
+      "id": "block-push-main-after-allowed-push",
+      "command": "git push origin feat && git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "one blocked sub-command blocks the whole command line (fail-safe)"
+    },
+    {
+      "id": "block-delete-remote-main",
+      "command": "git push origin --delete main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "deleting the default branch ref is a main mutation"
+    },
+    {
+      "id": "block-push-master",
+      "command": "git push origin master",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "master treated identically to main throughout"
+    },
+    {
+      "id": "block-branch-D-main",
+      "command": "git branch -D main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "existing rule preserved"
+    },
+    {
+      "id": "allow-branch-D-feature",
+      "command": "git branch -D test/identity-check",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "existing rule preserved: feature-branch deletion allowed"
+    },
+    {
+      "id": "block-reset-hard-on-main",
+      "command": "git reset --hard HEAD~1",
+      "branch": "main",
+      "verdict": "block",
+      "why": "existing rule preserved"
+    },
+    {
+      "id": "block-reset-hard-c-path-on-main",
+      "command": "git -C /repo reset --hard",
+      "c_path_branch": "main",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "-C resolution applies to reset --hard too, same under-block shape as push"
+    },
+    {
+      "id": "allow-reset-hard-on-feature",
+      "command": "git reset --hard origin/feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "existing rule preserved: feature branches may hard-reset"
+    },
+    {
+      "id": "block-checkout-dot-any-branch",
+      "command": "git checkout .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "ALWAYS_BLOCKED unchanged: discards uncommitted work on any branch"
+    }
+  ]
+}
