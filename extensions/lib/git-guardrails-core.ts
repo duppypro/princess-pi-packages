@@ -191,7 +191,15 @@ const GIT_WRAPPERS = new Map<string, Set<string>>([
   ["ionice", new Set(["-c", "-n", "-p", "-P", "-u"])],
   ["sudo", new Set(["-u", "-g", "-p", "-h", "-U", "-C", "-D", "-R", "-T", "-t", "-r"])],
   ["doas", new Set(["-u", "-C", "-t"])],
+  // exec replaces the shell with the command (#74 review finding 15);
+  // -a takes a separate argv[0] argument
+  ["exec", new Set(["-a"])],
 ]);
+
+// Shells whose -c argument is a full nested command string, and eval, which
+// re-parses its arguments as a command — both must recurse through the whole
+// check, not be skipped as opaque words (#74 review finding 14).
+const SHELL_RUNNERS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 // ---
 // Quote-aware lexing (#74 review finding 6): separators inside quotes are
@@ -278,6 +286,24 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
   let wrapperArgOpts: Set<string> | null = null; // arg-consuming options of the wrapper we're inside
   while (i < T.length && T[i] !== "git") {
     const t = T[i];
+    if (SHELL_RUNNERS.has(t)) {
+      // bash -c '<string>' runs a full nested shell command — recurse the
+      // whole check on the -c argument (#74 review finding 14). Without -c
+      // it's a script-file invocation whose arguments are data.
+      for (let j = i + 1; j < T.length; j++) {
+        const a = T[j];
+        if (a === "-c" || /^-[A-Za-z]*c[A-Za-z]*$/.test(a)) {
+          const nested = T[j + 1];
+          return nested ? checkGitCommand(nested, hookCwd) : null;
+        }
+        if (!a.startsWith("-")) break;
+      }
+      return null;
+    }
+    if (t === "eval") {
+      // eval concatenates and re-parses its arguments as a shell command
+      return checkGitCommand(T.slice(i + 1).join(" "), hookCwd);
+    }
     const opts = GIT_WRAPPERS.get(t);
     if (opts) {
       wrapperArgOpts = opts;

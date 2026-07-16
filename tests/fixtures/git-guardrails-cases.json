@@ -192,6 +192,90 @@
       "why": "echo is not a wrapper — prefix skipping stops at unknown words so quoted-less text stays text"
     },
     {
+      "id": "block-bash-c-push-main",
+      "command": "bash -c 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 14: bash is not a wrapper, so the prefix scan bailed and the -c payload — a full nested command string — was never inspected"
+    },
+    {
+      "id": "block-sh-c-push-main",
+      "command": "sh -c \"git push origin main\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "sh -c, same bypass"
+    },
+    {
+      "id": "block-bash-lc-cluster-push-main",
+      "command": "bash -lc 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "-c inside a short-flag cluster (-lc) still takes the next argument as the command string"
+    },
+    {
+      "id": "block-eval-push-main",
+      "command": "eval git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "eval re-parses its arguments as a shell command"
+    },
+    {
+      "id": "block-eval-quoted-push-main",
+      "command": "eval \"git push origin main\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "eval with the command as one quoted word"
+    },
+    {
+      "id": "block-sudo-bash-c-push-main",
+      "command": "sudo bash -c 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrapper prefix then shell runner — the two skip mechanisms must compose"
+    },
+    {
+      "id": "block-nested-bash-c-push-main",
+      "command": "bash -c \"bash -c 'git push origin main'\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "nested -c strings recurse: each layer re-splits and re-tokenizes"
+    },
+    {
+      "id": "block-bash-c-bare-push-on-main",
+      "command": "bash -c 'git push'",
+      "branch": "main",
+      "verdict": "block",
+      "why": "the nested check inherits the hook cwd, so branch-aware rules still fire inside -c strings"
+    },
+    {
+      "id": "allow-bash-c-push-feature",
+      "command": "bash -c 'git push origin feat'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "nested inspection must not change the verdict for safe pushes"
+    },
+    {
+      "id": "allow-bash-script-file-main-arg",
+      "command": "bash deploy.sh main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "no -c: a script-file invocation's arguments are data, not a command string ('main' is just an argument)"
+    },
+    {
+      "id": "block-exec-push-main",
+      "command": "exec git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 15: exec replaces the shell with the command — it is a pass-through wrapper the prefix scan bailed on"
+    },
+    {
+      "id": "block-exec-a-name-push-main",
+      "command": "exec -a fakename git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "exec -a takes a SEPARATE argv[0] argument — same wrapper-arg shape as sudo -u (finding 11)"
+    },
+    {
       "id": "block-push-repo-refspec-main",
       "command": "git push --repo origin main",
       "branch": "feat",

@@ -117,8 +117,6 @@ strip_heredocs() {
   done <<< "$1"
 }
 
-STRIPPED=$(strip_heredocs "$COMMAND")
-
 # ---
 # Push-target parsing (#74): inspect each git sub-command's tokens.
 # One blocked sub-command blocks the whole command line (fail-safe).
@@ -189,8 +187,14 @@ check_push() {
   return 0
 }
 
-# Wrapper binaries that pass execution straight through to git (#74 review finding 5)
-GIT_WRAPPERS=" command env nice nohup time timeout stdbuf setsid ionice sudo doas "
+# Wrapper binaries that pass execution straight through to git (#74 review
+# finding 5); exec replaces the shell with the command (#74 review finding 15)
+GIT_WRAPPERS=" command env nice nohup time timeout stdbuf setsid ionice sudo doas exec "
+
+# Shells whose -c argument is a full nested command string, and eval, which
+# re-parses its arguments as a command — both must recurse through the whole
+# check, not be skipped as opaque words (#74 review finding 14).
+SHELL_RUNNERS=" bash sh zsh dash ksh "
 
 # Options of each wrapper that consume a SEPARATE argument — `sudo -u root git
 # push` must skip 'root' with the '-u', or the unknown word bails the scan and
@@ -206,6 +210,7 @@ wrapper_arg_opts() {
     ionice)  echo " -c -n -p -P -u " ;;
     sudo)    echo " -u -g -p -h -U -C -D -R -T -t -r " ;;
     doas)    echo " -u -C -t " ;;
+    exec)    echo " -a " ;;  # separate argv[0] argument (#74 review finding 15)
     *)       echo " " ;;
   esac
 }
@@ -278,6 +283,28 @@ check_git_subcommand() {
     t="${T[$i]}"
     [ "$t" = "git" ] && break
     if [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
+    case "$SHELL_RUNNERS" in *" $t "*)
+      # bash -c '<string>' runs a full nested shell command — recurse the
+      # whole check on the -c argument (#74 review finding 14). Without -c
+      # it's a script-file invocation whose arguments are data.
+      local j=$((i + 1)) a
+      while [ "$j" -lt "$n" ]; do
+        a="${T[$j]}"
+        if [ "$a" = "-c" ] || [[ "$a" =~ ^-[A-Za-z]*c[A-Za-z]*$ ]]; then
+          if [ $((j + 1)) -lt "$n" ]; then
+            check_command_string "${T[$((j + 1))]}"
+          fi
+          return 0
+        fi
+        case "$a" in -*) j=$((j + 1)) ;; *) break ;; esac
+      done
+      return 0 ;;
+    esac
+    if [ "$t" = "eval" ]; then
+      # eval concatenates and re-parses its arguments as a shell command
+      check_command_string "${T[*]:$((i + 1))}"
+      return 0
+    fi
     case "$GIT_WRAPPERS" in *" $t "*)
       arg_opts=$(wrapper_arg_opts "$t"); i=$((i + 1)); continue ;;
     esac
@@ -384,13 +411,22 @@ check_git_subcommand() {
   return 0
 }
 
-# Quote-aware split (heredoc bodies already stripped), then tokenize each
-# sub-command with quotes honored before inspection.
-SUBS=$(split_subcommands "$STRIPPED")
-while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
-  tokenize "$sub"
-  [ ${#TOKENS[@]} -eq 0 ] && continue
-  check_git_subcommand
-done <<< "${SUBS}"$'\x1f'
+# Full check of one command string: strip heredocs, quote-aware split, then
+# tokenize each sub-command with quotes honored before inspection. Also the
+# recursion point for nested command strings (bash -c / eval — #74 review
+# finding 14): block() exits directly, so any nested hit stops everything.
+check_command_string() {
+  local stripped subs sub
+  stripped=$(strip_heredocs "$1")
+  subs=$(split_subcommands "$stripped")
+  while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
+    tokenize "$sub"
+    [ ${#TOKENS[@]} -eq 0 ] && continue
+    check_git_subcommand
+  done <<< "${subs}"$'\x1f'
+  return 0
+}
+
+check_command_string "$COMMAND"
 
 exit 0
