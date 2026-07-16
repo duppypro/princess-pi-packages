@@ -19,6 +19,10 @@ for bin in sudo nginx; do
   chmod +x "$SHIM/$bin"
 done
 
+# Since #97 the built bin/serve.mjs is untracked — prefer it when built, else run the
+# TypeScript source directly (same code path; esbuild only bundles).
+if [ -f "$PWD/bin/serve.mjs" ]; then SERVE="$PWD/bin/serve.mjs"; RUNNER=node; else SERVE="$PWD/bin/serve.ts"; RUNNER="npx tsx"; fi
+
 SITE="$WORK/site"; mkdir -p "$SITE"; echo "phase6a" > "$SITE/index.html"
 # NOTE: deliberately NO .serve-acl — Phase 6A serve must start without one.
 
@@ -27,9 +31,9 @@ BEFORE=$(etc_hash)
 
 echo "[$(TS)] start/kill cycle under PATH shim..."
 cd "$SITE"
-timeout 60 env PATH="$SHIM:$PATH" node "$OLDPWD/bin/serve.mjs" . >/dev/null 2>&1 || { echo "FAIL: serve start errored/hung (must start without .serve-acl)"; exit 1; }
+timeout 60 env PATH="$SHIM:$PATH" $RUNNER "$SERVE" . >/dev/null 2>&1 || { echo "FAIL: serve start errored/hung (must start without .serve-acl)"; exit 1; }
 sleep 1
-timeout 60 env PATH="$SHIM:$PATH" node "$OLDPWD/bin/serve.mjs" --kill all >/dev/null 2>&1 || true
+timeout 60 env PATH="$SHIM:$PATH" $RUNNER "$SERVE" --kill all >/dev/null 2>&1 || true
 cd "$OLDPWD"
 
 if [ -f "$MARKER" ]; then echo "FAIL: forbidden executable invoked:"; cat "$MARKER"; exit 1; fi
@@ -41,7 +45,7 @@ if command -v strace >/dev/null 2>&1; then
   # strace exits on its own. timeout is a belt-and-braces backstop only.
   cd "$SITE"
   timeout 40 strace -f -qq -e trace=execve -o "$WORK/trace" \
-    bash -c "node '$OLDPWD/bin/serve.mjs' . && node '$OLDPWD/bin/serve.mjs' --kill all" \
+    bash -c "$RUNNER '$SERVE' . && $RUNNER '$SERVE' --kill all" \
     >/dev/null 2>&1 || true
   cd "$OLDPWD"
   if grep -hE 'execve\("[^"]*(sudo|nginx)' "$WORK/trace" 2>/dev/null | grep -v ENOENT; then

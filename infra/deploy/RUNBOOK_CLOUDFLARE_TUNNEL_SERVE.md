@@ -207,8 +207,8 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
   deleted grant.
 
 ### Phase 6A — Teardown (serve → plain loopback origin)
-**Code (this repo — sources are `bin/serve.ts` + `extensions/lib/serve/*`; `bin/serve.mjs`
-is esbuild output, rebuild via `node build.mjs`):**
+**Code (this repo — sources are `bin/serve.ts` + `extensions/lib/serve/*`; since #97 the
+generated `bin/serve.mjs` is untracked — build via `bun build.ts` / `npm run build`):**
 1. `bin/serve.ts`: remove the `parseAclFile → updateNginxAcls → updateNginxPort →
    reloadNginx` path from start and stop/`--kill`; drop the `nginx.js` import. The
    `.serve-acl`-must-exist validation goes dormant with it (6B reintroduces `.serve-acl` as
