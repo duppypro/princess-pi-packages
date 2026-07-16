@@ -15,6 +15,7 @@ import {
 import { execSync } from "node:child_process";
 import wcwidth from "wcwidth";
 export interface Bin {
+	key?: string; // ISO bin key (e.g. "2026-07-15T18:00") — populated at creation
 	label: string;
 	dateStr: string;
 	costs: Record<Category, number>;
@@ -593,10 +594,29 @@ export function checkSurgeProximity(): { status: 'surge' | 'approaching' | 'endi
  * @param currentHour - Current local hour (0-23) for diamond marker
  * @param proximityStatus - If set, appends the appropriate surge badge
  */
+// Moon phase emoji — 8 phases from new moon through waning crescent.
+const MOON_PHASES = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
+const SYNODIC_MONTH_MS = 29.53058867 * 86400000;
+// Reference new moon: 2026-07-14 09:43 UTC. Re-centre every ~2 years.
+const REF_NEW_MOON = new Date("2026-07-14T09:43:00Z").getTime();
+
+function getMoonPhase(date: Date): string {
+	const ageMs = (date.getTime() - REF_NEW_MOON) % SYNODIC_MONTH_MS;
+	const ageDays = (ageMs + SYNODIC_MONTH_MS) % SYNODIC_MONTH_MS / 86400000;
+	// Offset by half a phase width so each bucket is centred on its
+	// astronomical event (e.g. 🌑 covers ±1.8d around exact new moon,
+	// not 0-3.7d which would classify a 2-day crescent as "new").
+	const centered = ((ageDays + 29.53058867 / 16) / 29.53058867);
+	const phase = Math.floor(centered * 8) % 8;
+	return MOON_PHASES[phase];
+}
+
 export function buildTimelineString(
 	surgeHours: Set<number>,
 	currentHour: number,
-	proximityStatus?: 'surge' | 'approaching' | 'ending'
+	proximityStatus?: 'surge' | 'approaching' | 'ending',
+	/** Date for moon-phase bookends — defaults to now. */
+	date?: Date
 ): string {
 	const segments: { color: string; text: string }[] = [];
 	let lastColor: string | null = null;
@@ -606,9 +626,10 @@ export function buildTimelineString(
 		const isCurrent = h === currentHour;
 
 		const color = isCurrent ? "1;" + (isSurge ? "38;5;208" : "32") : (isSurge ? "38;5;208" : "32");
-		// Noon (h=12): use 🕛 (clock face twelve o'clock) instead of "-" so the
-		// divider's purpose is self-documenting. The diamond still wins at current hour.
-		const char = isCurrent ? "◆" : (h === 12 ? "🕛" : "-");
+		// Current hour → clock face emoji (never at noon — ☀️ owns position 12).
+		// Noon → ☀️ sun. Otherwise → ─ box-drawing rule.
+		const CLOCK_FACES = ["🕛","🕐","🕑","🕒","🕓","🕔","🕕","🕖","🕗","🕘","🕙","🕚"];
+		const char = (isCurrent && h !== 12) ? CLOCK_FACES[h % 12] : (h === 12 ? "☀️" : "─");
 
 		if (color !== lastColor) {
 			segments.push({ color, text: char });
@@ -619,7 +640,8 @@ export function buildTimelineString(
 	}
 
 	const timelineBody = segments.map(s => `\x1b[${s.color}m${s.text}\x1b[0m`).join("");
-	let result = `(${timelineBody})`;
+	const moon = getMoonPhase(date ?? new Date());
+	let result = `${moon}${timelineBody}${moon}`;
 
 	if (proximityStatus === 'surge') {
 		result += ` \x1b[1;38;5;208m⚡ SURGE 2x\x1b[0m`;
@@ -716,7 +738,7 @@ export function buildWtftLines(
 			for (const cat of ALL_CATEGORIES) {
 				costs[cat] = 0;
 			}
-			bin = { label, dateStr, costs, total_cost: 0 };
+			bin = { key, label, dateStr, costs, total_cost: 0 };
 			binMap.set(key, bin);
 		}
 
@@ -741,6 +763,32 @@ export function buildWtftLines(
 	const sortedBins = Array.from(binMap.entries())
 		.sort((a, b) => a[0].localeCompare(b[0]))
 		.map(entry => entry[1]);
+
+	// Detect cache TTL expiry boundaries (#106). Walk interactions chronologically;
+	// when a cache write's TTL window elapses before the next interaction, mark
+	// that bin boundary for a "Cache Expired" divider line.
+	const cacheExpiryBins = new Set<string>();
+	{
+		const sortedInteractions = [...interactions].sort(
+			(a, b) => a.timestamp - b.timestamp
+		);
+		let latestExpiry: number | null = null;
+		for (const ix of sortedInteractions) {
+			const ts = new Date(ix.timestamp).getTime();
+			if (latestExpiry !== null && ts > latestExpiry) {
+				const { key } = getBinInfo(ix.timestamp, intervalConfig, tz);
+				cacheExpiryBins.add(key);
+				latestExpiry = null;
+			}
+			if (ix.cacheTtl) {
+				const ttlMs = ix.cacheTtl === "1h" ? 3600000 : 300000;
+				const expiry = ts + ttlMs;
+				if (latestExpiry === null || expiry > latestExpiry) {
+					latestExpiry = expiry;
+				}
+			}
+		}
+	}
 
 	// Apply mode conversions
 	if (mode === "cumulative") {
@@ -918,31 +966,111 @@ export function buildWtftLines(
 		}
 	}
 
+	// Pre-compute cumulative cost-mode char allocations in chronological
+	// order with clamping (#106). The absolute-cost floor alone guarantees
+	// monotonic non-decrease, but remainder redistribution can still give
+	// a +1 that disappears next bin — visible for small categories (Plan
+	// at 2–3 chars, a 1-char flicker is 33–50% of width). Clamping ensures
+	// every category's segment is strictly ≥ its previous bin's segment.
+	const precomputedChars: Map<Bin, Record<Category, number>> = new Map();
+	if (mode === "cumulative" && unit === "cost") {
+		const chronological = [...displayedBins].reverse();
+		let prevChars: Record<Category, number> | null = null;
+		for (const bin of chronological) {
+			const barWidth = scaleMax > 0 ? Math.round((bin.total_cost / scaleMax) * maxBarWidth) : 0;
+			const chars = {} as Record<Category, number>;
+			let allocated = 0;
+			const remainders = {} as Record<Category, number>;
+
+			for (const cat of CATEGORY_ORDER) {
+				const raw = scaleMax > 0 ? (bin.costs[cat] / scaleMax) * maxBarWidth : 0;
+				chars[cat] = Math.floor(raw);
+				remainders[cat] = raw - chars[cat];
+				allocated += chars[cat];
+			}
+
+			// Clamp to previous bin (guarantees monotonicity across bins)
+			if (prevChars) {
+				let clampedTotal = 0;
+				for (const cat of CATEGORY_ORDER) {
+					chars[cat] = Math.max(chars[cat], prevChars[cat]);
+					clampedTotal += chars[cat];
+				}
+				// If clamping overshot barWidth, trim from categories that grew
+				// the most (they stole from others' remainder slots).
+				let excess = clampedTotal - barWidth;
+				while (excess > 0) {
+					let maxGrow = -1, maxCat: Category | null = null;
+					for (const cat of CATEGORY_ORDER) {
+						if (chars[cat] <= 0) continue;
+						const grow = chars[cat] - prevChars[cat];
+						if (grow > maxGrow) { maxGrow = grow; maxCat = cat; }
+					}
+					if (maxCat) { chars[maxCat]--; excess--; }
+					else break;
+				}
+				allocated = barWidth - excess;
+			}
+
+			// Distribute remainders (only if not already at barWidth from clamping)
+			while (allocated < barWidth) {
+				let maxCat: Category | null = null;
+				let maxRemainder = -1;
+				for (const cat of CATEGORY_ORDER) {
+					if (remainders[cat] > maxRemainder) {
+						maxRemainder = remainders[cat];
+						maxCat = cat;
+					}
+				}
+				if (maxCat) {
+					chars[maxCat]++;
+					remainders[maxCat] = -1;
+					allocated++;
+				} else {
+					break;
+				}
+			}
+
+			precomputedChars.set(bin, chars);
+			prevChars = { ...chars };
+		}
+	}
+
+	// Helper: build a tick-aligned divider line with a left-side label.
+	// Same format as day change dividers, reused for cache TTL expiry (#106).
+	const buildDividerLine = (labelText: string): string => {
+		const prefix = `── ${labelText} `;
+		const dividerLen = Math.max(0, (finalWidth - tickReserve) - prefix.length);
+		const chars = Array.from({ length: dividerLen }, () => "─");
+		const tickPositions = [
+			prefixWidth,
+			prefixWidth + Math.floor(maxBarWidth / 4),
+			prefixWidth + Math.floor(maxBarWidth / 2),
+			prefixWidth + Math.floor((maxBarWidth * 3) / 4),
+			prefixWidth + maxBarWidth - 1
+		];
+		for (const t of tickPositions) {
+			const idx = t - prefix.length;
+			if (idx >= 0 && idx < chars.length) {
+				chars[idx] = "┼";
+			}
+		}
+		return prefix + chars.join("");
+	};
+
 	// Render binned stacked bars
 	for (let i = 0; i < displayedBins.length; i++) {
 		const bin = displayedBins[i];
 
-		// Day boundary divider (same for both modes)
+		// Day boundary divider (only with --ticks enabled)
 		if (showTicks && i > 0 && bin.dateStr !== displayedBins[i - 1].dateStr) {
-			const labelDay = formatMmmDdStr(bin.dateStr);
-			const dayChangeText = `── ${labelDay} `;
-			const dividerLen = Math.max(0, (finalWidth - tickReserve) - dayChangeText.length);
-			const dividerChars = Array.from({ length: dividerLen }, () => "─");
-			const tickPositions = [
-				prefixWidth,
-				prefixWidth + Math.floor(maxBarWidth / 4),
-				prefixWidth + Math.floor(maxBarWidth / 2),
-				prefixWidth + Math.floor((maxBarWidth * 3) / 4),
-				prefixWidth + maxBarWidth - 1
-			];
-			for (const t of tickPositions) {
-				const idx = t - dayChangeText.length;
-				if (idx >= 0 && idx < dividerChars.length) {
-					dividerChars[idx] = "┼";
-				}
-			}
-			const dividerLine = dayChangeText + dividerChars.join("");
-			widgetLines.push(`\x1b[90m${dividerLine}\x1b[0m`);
+			widgetLines.push(`\x1b[90m${buildDividerLine(formatMmmDdStr(bin.dateStr))}\x1b[0m`);
+		}
+
+		// Cache TTL expiry divider (#106) — always shown, even with --no-ticks.
+		// Drawn when the cache from a previous interaction expired before this bin.
+		if (bin.key && cacheExpiryBins.has(bin.key)) {
+			widgetLines.push(`\x1b[90m${buildDividerLine("Cache Expired")}\x1b[0m`);
 		}
 
 		const labelPart = padString(bin.label, labelWidth);
@@ -990,8 +1118,10 @@ export function buildWtftLines(
 			// --- COST MODE BAR RENDERING (original) ---
 			let barStr = "";
 			if (mode === "cumulative") {
-				const barWidth = scaleMax > 0 ? Math.round((bin.total_cost / scaleMax) * maxBarWidth) : 0;
-				const chars = distributeChars(bin.costs, barWidth);
+				// Use precomputed chars (see pre-computation pass above for
+				// absolute-cost allocation + clamping logic that guarantees
+				// monotonicity — #106).
+				const chars = precomputedChars.get(bin)!;
 
 				// Stack segments in CATEGORY_ORDER — matches the legend by construction
 				for (const cat of CATEGORY_ORDER) {
