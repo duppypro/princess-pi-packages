@@ -118,6 +118,101 @@ strip_heredocs() {
 }
 
 # ---
+# Recursively extract and check command substitutions ($(...) and backticks).
+# Nested git commands inside substitutions must be inspected — `echo $(git push
+# origin main)` would otherwise slip through because the main tokenizer sees
+# "echo" as the command. We parse out each substitution body, then apply the
+# full heredoc-strip / split / tokenize / check_git_subcommand pipeline to it.
+# ---
+
+extract_and_check_substitutions() {
+  local s="$1" n=${#s} i=0 ch nch depth start body q
+
+  while [ "$i" -lt "$n" ]; do
+    ch="${s:$i:1}"
+
+    # Skip single-quoted regions entirely (substitutions are literal inside)
+    if [ "$ch" = "'" ]; then
+      i=$((i + 1))
+      while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != "'" ]; do
+        i=$((i + 1))
+      done
+      i=$((i + 1))
+      continue
+    fi
+
+    # Skip escape sequences (outside single quotes)
+    if [ "$ch" = '\' ]; then
+      i=$((i + 2))
+      continue
+    fi
+
+    # Handle $(...) substitutions — executed in double quotes and unquoted
+    if [ "$ch" = '$' ]; then
+      nch="${s:$((i + 1)):1}"
+      if [ "$nch" = '(' ]; then
+        i=$((i + 2))
+        start=$i
+        depth=1
+        q=""
+        while [ "$i" -lt "$n" ] && [ "$depth" -gt 0 ]; do
+          ch="${s:$i:1}"
+          if [ -n "$q" ]; then
+            # Inside quotes — track quote state to ignore parens
+            if [ "$q" = "'" ]; then
+              [ "$ch" = "'" ] && q=""
+            else  # double quote
+              if [ "$ch" = '\' ]; then
+                i=$((i + 1))
+              elif [ "$ch" = '"' ]; then
+                q=""
+              fi
+            fi
+          else
+            # Outside quotes — count parens, track quote entry
+            case "$ch" in
+              \\) i=$((i + 1)) ;;
+              "'") q="'" ;;
+              '"') q='"' ;;
+              '(') depth=$((depth + 1)) ;;
+              ')') depth=$((depth - 1)) ;;
+            esac
+          fi
+          [ "$depth" -gt 0 ] && i=$((i + 1))
+        done
+        body="${s:$start:$((i - start))}"
+        i=$((i + 1))
+        check_command_string "$body"
+        continue
+      fi
+    fi
+
+    # Handle backtick substitutions
+    if [ "$ch" = '`' ]; then
+      i=$((i + 1))
+      start=$i
+      while [ "$i" -lt "$n" ]; do
+        ch="${s:$i:1}"
+        if [ "$ch" = '\' ]; then
+          i=$((i + 2))
+          continue
+        fi
+        if [ "$ch" = '`' ]; then
+          break
+        fi
+        i=$((i + 1))
+      done
+      body="${s:$start:$((i - start))}"
+      i=$((i + 1))
+      check_command_string "$body"
+      continue
+    fi
+
+    i=$((i + 1))
+  done
+}
+
+# ---
 # Push-target parsing (#74): inspect each git sub-command's tokens.
 # One blocked sub-command blocks the whole command line (fail-safe).
 # ---
@@ -281,7 +376,7 @@ check_git_subcommand() {
   local i=0 n=${#T[@]} t arg_opts=" "
   while [ "$i" -lt "$n" ]; do
     t="${T[$i]}"
-    [ "$t" = "git" ] && break
+    [ "${t##*/}" = "git" ] && break
     if [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
     case "$SHELL_RUNNERS" in *" $t "*)
       # bash -c '<string>' runs a full nested shell command — recurse the
@@ -411,13 +506,16 @@ check_git_subcommand() {
   return 0
 }
 
-# Full check of one command string: strip heredocs, quote-aware split, then
-# tokenize each sub-command with quotes honored before inspection. Also the
-# recursion point for nested command strings (bash -c / eval — #74 review
-# finding 14): block() exits directly, so any nested hit stops everything.
+# Full check of one command string: strip heredocs, inspect command
+# substitutions, quote-aware split, then tokenize each sub-command with
+# quotes honored before inspection. This is the recursion point for nested
+# command strings (bash -c / eval — #74 review finding 14) and for
+# substitution bodies ($(...) and backticks — #105/finding 16b): block()
+# exits directly, so any nested hit stops everything.
 check_command_string() {
   local stripped subs sub
   stripped=$(strip_heredocs "$1")
+  extract_and_check_substitutions "$stripped"
   subs=$(split_subcommands "$stripped")
   while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
     tokenize "$sub"

@@ -277,6 +277,66 @@ function tokenize(sub: string): string[] {
   return toks;
 }
 
+// Path-based invocations (/usr/bin/git, ./git) are still git — match by
+// basename, like bash's ${t##*/} (#105 / unified from Macroscope's .sh-only fix).
+function isGitWord(t: string): boolean {
+  return t.slice(t.lastIndexOf("/") + 1) === "git";
+}
+
+// ---
+// Command substitutions ($(...) and backticks) EXECUTE their bodies — `echo
+// $(git push origin main)` runs the push, it isn't echo data. Single-quoted
+// regions are literal and skipped; bodies recurse through the whole check
+// (#105 / the command-substitution residual documented at findings 14+15).
+// ---
+function checkSubstitutions(s: string, hookCwd: string): string | null {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "'") {
+      i++;
+      while (i < s.length && s[i] !== "'") i++;
+    } else if (ch === "\\") {
+      i++;
+    } else if (ch === "$" && s[i + 1] === "(") {
+      let j = i + 2;
+      let depth = 1;
+      let q: "'" | '"' | null = null;
+      while (j < s.length && depth > 0) {
+        const c = s[j];
+        if (q === "'") {
+          if (c === "'") q = null;
+        } else if (q === '"') {
+          if (c === "\\") j++;
+          else if (c === '"') q = null;
+        } else if (c === "\\") {
+          j++;
+        } else if (c === "'" || c === '"') {
+          q = c;
+        } else if (c === "(") {
+          depth++;
+        } else if (c === ")") {
+          depth--;
+          if (depth === 0) break;
+        }
+        j++;
+      }
+      const reason = checkGitCommand(s.slice(i + 2, j), hookCwd);
+      if (reason) return reason;
+      i = j;
+    } else if (ch === "`") {
+      let j = i + 1;
+      while (j < s.length && s[j] !== "`") {
+        if (s[j] === "\\") j++;
+        j++;
+      }
+      const reason = checkGitCommand(s.slice(i + 1, j), hookCwd);
+      if (reason) return reason;
+      i = j;
+    }
+  }
+  return null;
+}
+
 function checkGitSubcommand(T: string[], hookCwd: string): string | null {
 
   // Skip a benign prefix — wrappers, their -options, VAR=val assignments,
@@ -284,7 +344,7 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
   // this is not a git invocation ('echo git push …' stays text).
   let i = 0;
   let wrapperArgOpts: Set<string> | null = null; // arg-consuming options of the wrapper we're inside
-  while (i < T.length && T[i] !== "git") {
+  while (i < T.length && !isGitWord(T[i])) {
     const t = T[i];
     if (SHELL_RUNNERS.has(t)) {
       // bash -c '<string>' runs a full nested shell command — recurse the
@@ -409,6 +469,10 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
  */
 export function checkGitCommand(command: string, hookCwd: string): string | null {
   const stripped = stripHeredocs(command);
+
+  // Substitution bodies execute — inspect them before the main token walk
+  const substReason = checkSubstitutions(stripped, hookCwd);
+  if (substReason) return substReason;
 
   // Split on shell separators; heredoc bodies already stripped.
   // One blocked sub-command blocks the whole command line (fail-safe).

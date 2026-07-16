@@ -262,6 +262,55 @@
       "why": "no -c: a script-file invocation's arguments are data, not a command string ('main' is just an argument)"
     },
     {
+      "id": "block-abs-path-git-push-main",
+      "command": "/usr/bin/git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#105 (finding 16a): a path-based invocation is still git — match by basename, or the exact-string 'git' test bails"
+    },
+    {
+      "id": "block-rel-path-git-clean",
+      "command": "./git clean -fd",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "relative-path git binary, always-blocked forced clean"
+    },
+    {
+      "id": "block-subst-push-main",
+      "command": "echo $(git push origin main)",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#105 (finding 16b): a command substitution EXECUTES its body — the main tokenizer saw 'echo' and bailed while the push ran (the residual documented at findings 14+15)"
+    },
+    {
+      "id": "block-backtick-subst-push-main",
+      "command": "echo `git push origin main`",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "backtick substitution, same execution semantics"
+    },
+    {
+      "id": "block-subst-in-double-quotes",
+      "command": "echo \"result: $(git push origin main)\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "$() still executes inside double quotes"
+    },
+    {
+      "id": "allow-single-quoted-subst-literal",
+      "command": "echo '$(git push origin main)'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "inside single quotes a substitution is literal text — nothing executes"
+    },
+    {
+      "id": "allow-subst-safe-git",
+      "command": "echo $(git rev-parse HEAD)",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "substitution inspection must not change verdicts for safe git commands"
+    },
+    {
       "id": "block-exec-push-main",
       "command": "exec git push origin main",
       "branch": "feat",
