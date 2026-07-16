@@ -241,7 +241,7 @@ check_git_subcommand() {
   local i=0 n=${#T[@]} t arg_opts=" "
   while [ "$i" -lt "$n" ]; do
     t="${T[$i]}"
-    [ "$t" = "git" ] && break
+    [ "${t##*/}" = "git" ] && break
     if [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
     case "$GIT_WRAPPERS" in *" $t "*)
       arg_opts=$(wrapper_arg_opts "$t"); i=$((i + 1)); continue ;;
