@@ -2,19 +2,38 @@
 
 This project contains custom extensions, skills, and documentation manifests for the Princess-Pi Coding Agent.
 
+## 🚨 BEFORE ANY CODE CHANGE
+
+> **HARD GATE: `git branch --show-current` must return `<issue#>-<slug>`, never `main`.**
+>
+> If on `main`: create the branch NOW (`git checkout -b <issue#>-<slug>`) before editing any file.
+> If the commit you need is on `main` (e.g. after a merge cleanup): `git checkout -b <issue#>-<slug>`
+> and then `git branch -f main <commit>` to rewind main (you may need to be on a non-main branch first).
+>
+> This applies to: bug fixes, features, spec updates, docs reconciliation — everything.
+> Naming: `<issue#>-<slug>` (e.g. `73-server-tool-use-cost`). Slugs are kebab-case, descriptive, short.
+
+## 📐 Repo conventions
+
 > **Repo goal — cross-harness tooling:** one implementation of each tool that works in **both Pi and
 > Claude Code** (CLI + Pi extension + optional TUI widget, one shared manifest). See the mission in
 > `README.md`. **To build or port a tool to this bar, follow the recipe in
 > `skills/cross-harness-tool/SKILL.md`.** Reference implementation: `merge` (`bin/merge.mjs`, #8).
 >
-> **Hard rule — always branch for issues:** when working on a tracked GitHub issue, create a branch
-> named `<issue#>-<slug>` from `main` **before making any code changes**. Never edit `main` directly
-> for issue work. (Branch cleanup after merge is covered in the parent `~/git-projects/CLAUDE.md`.)
+> **Hard rule — generated `.mjs` bins are build artifacts, never edit manually:**
+> `bin/{serve,wtft,merge,wtft-daemon,yada}.mjs` are generated from their `.ts` counterparts via
+> `bun run build` (`build.ts`, Bun.build — #97). They are **gitignored** (not in the repo) and each
+> carries a `⚠️ GENERATED` banner. Always edit the `.ts` source, then rebuild. Exception:
+> `bin/patch-pi-widgets.mjs` is **handwritten source** (no `.ts` twin) — edit it directly.
+> Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
+> Type-checking is TS7 native (`bun run typecheck`); policy: fix code forward to satisfy TS7,
+> never pin an older TypeScript.
 >
-> **Hard rule — `.mjs` bins are build artifacts, never edit manually:** CLI bins (`bin/wtft.mjs`,
-> `bin/serve.mjs`, `bin/merge.mjs`) are generated from their `.ts` counterparts via `npm run build`.
-> Always edit the `.ts` source, then rebuild. Never manually patch `.mjs` — changes will be lost on
-> next build. Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
+> **Step 5 commit-message rule (what `merge` actually validates, #100):** the subject line must
+> contain the word `approved` preceded by both `code` and a spec-word (`spec/specs/specification(s)`),
+> with no `not` anywhere before it. Case-insensitive, whole words, any phrasing — no fixed
+> "Step 5"/"Code and Spec Approved" phrase required (though the house style remains
+> `docs: Code and Spec Approved — <what> (#<issue>)`).
 
 ---
 
@@ -22,7 +41,7 @@ This project contains custom extensions, skills, and documentation manifests for
 *   **Runtime**: Node.js (≥ 18). Pi extensions are `.ts`; standalone CLI bins are being standardized to plain ESM JavaScript (`.mjs`) — see the cross-harness convention below.
 *   **`extensions/`**: The raw `.ts` extension scripts loaded directly by the Pi Agent (e.g. `serve.ts`, `wtft.ts`, `smush.ts`). These remain the **typed twin** of any CLI bin.
 *   **`bin/`**: Standalone, Pi-independent CLI ports of extensions whose logic doesn't need the Pi runtime. Invokable from any shell, including Claude Code's `!` prefix — Claude Code has no extension-dispatch that bypasses the model the way Pi's `registerCommand` does, so the CLI is the practical zero-token substitute. Each command also gets a same-named wrapper script at the repo root (e.g. `./merge`) execing the bin.
-    *   **Cross-harness convention (why `.mjs`):** CLI bins should be **plain ESM JavaScript** with `#!/usr/bin/env node` — *not* `--experimental-strip-types` and *not* `npx tsx`. When installed globally for Claude (`npm install -g github:duppypro/princess-pi-packages`) the bin lives under `node_modules/`, where Node **refuses** type-stripping (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) and an `npx tsx` shebang forces a per-environment network fetch. Plain `.mjs` needs zero deps and no build step. **Reference implementations: `bin/merge.mjs`, `bin/serve.mjs`, `bin/wtft.mjs`.** `yada` is still `.ts` and doesn't yet run safely from a global install — tracked in #31.
+    *   **Cross-harness convention (why `.mjs`):** CLI bins should be **plain ESM JavaScript** with `#!/usr/bin/env node` — *not* `--experimental-strip-types` and *not* `npx tsx`. When installed globally for Claude (`npm install -g github:duppypro/princess-pi-packages`) the bin lives under `node_modules/`, where Node **refuses** type-stripping (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) and an `npx tsx` shebang forces a per-environment network fetch. Plain `.mjs` needs zero deps and no build step. **Reference implementations: `bin/merge.mjs`, `bin/serve.mjs`, `bin/wtft.mjs`.** As of #97 all five generated bins (including `yada`) are built to `.mjs` by `build.ts` at prepare/build time — no raw `.ts` bins remain.
 *   **`tests/`**: Dedicated permanent test suites.
 *   **`debug/`**: Ephemeral scripts for quick debugging (e.g., one-off log parsers).
 *   **`research/`**: Prototypes and longer-term experimental code.
@@ -52,7 +71,7 @@ Manifest `why` entries have three fields:
 - `commands` (string[]): One or more exact tool invocations to address it (omitting the tool name, which the renderer prepends).
 - `result` (string): What the end state looks like after running.
 
-For tools without manifests (e.g. `yada` until ported per #31), `--why` is rendered inline.
+For tools without manifests (e.g. `yada`, whose manifest port remains tracked in #31), `--why` is rendered inline.
 
 **Hard rule — every tool's `--help` must list `--why` as an available flag.** This applies to manifest-driven `--help` (add to `usage[]`), inline `printHelp()` (add a line), and Pi extension-only tools (add to inline help text). When creating any new command, both `--help` and `--why` are mandatory, and `--why` must appear in the `--help` output.
 
@@ -78,8 +97,9 @@ makes this cwd-independent; pulls from the remote, not a local clone):
 ```bash
 npm install -g github:duppypro/princess-pi-packages
 ```
-Today `merge`, `wtft`, and `serve` are verified global CLIs (plain `.mjs`); `yada` awaits the
-`.mjs` port (#31). Re-run the command to update.
+All CLI bins (`merge`, `wtft`, `serve`, `yada`/`dedupwcount`, `wtft-daemon`) install as built `.mjs`
+via the `prepare` script (#97) — git-URL installs require **bun on PATH**; the npm-registry tarball
+(when published) ships prebuilt and needs only node. Re-run the command to update.
 
 ### 3. Hot-Swapping & Updates
 When you make changes to files and push them, trigger a re-download and TUI compilation:

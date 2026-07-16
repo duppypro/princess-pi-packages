@@ -189,11 +189,9 @@ $ pi -r
 /serve
     </pre>
 
-    <h3>Architectural Layers</h3>
-    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040;">
-        <p><strong>Application:</strong> Command parsing (<code>/serve --hide</code>, <code>--kill</code>).</p>
-        <p><strong>Infrastructure:</strong> Sub-process spawning, <code>lsof</code> PID lookups, and session log visibility polling.</p>
-        <p><strong>Presentation:</strong> ANSI-safe string padding and TUI widget rendering.</p>
+    <h3>Settings Persistence (Cross-Harness Config)</h3>
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <p>Serve uses the shared <code>extensions/lib/config.ts</code> module for harness-agnostic settings persistence. Config files live at <code>~/.config/princess-pi/serve.json</code> (user-global) and <code>./.princess-pi/serve.json</code> (project-local, overrides global). CLI flags take highest precedence. See <code>EXT_WTFT.html</code> for the full config hierarchy documentation.</p>
     </div>
 
     <script>

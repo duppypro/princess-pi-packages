@@ -1,39 +1,47 @@
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
 	buildWtftLines as sharedBuildWtftLines,
-	type Category,
 	type Interaction,
-	classifyInteraction,
-	formatCost,
-	getSemanticCommandGroup,
-	parseEntryToInteraction,
 	renderOtherHistogram,
 	renderTokenSummary,
 	deduplicateInteractions,
 	getTerminalWidth,
-	getDeepSeekPeakMultiplier,
-	getCurrentLocalHour,
-	getSurgeLocalHours,
-	checkSurgeProximity,
-	buildTimelineString,
 	getVisualLength,
 	checkDaemonHealth,
-	restartDaemon,
+	readClassifiedTagFile,
+	renderDaemonStatus,
 	getTagPath,
+	getDaemonPidPath,
+	getModelCacheTtlMs,
 	type DaemonStatus
 } from "./lib/wtft-shared.js";
+import { readConfig, writeConfig, hasConfig } from "./lib/config.js";
+
 // ---
-// LOG PARSER STATE (keeps wtft-tag file warm for CLI use)
+// SINGLE DATA SOURCE: classified tag file from wtft-daemon (#92)
+// All interactions are read from the tag file on each event — no internal
+// accumulation state. The daemon writes at most every 667ms; the gap between
+// agent_settled and the next daemon beat is invisible at widget render time.
+// Known rendering artifacts on terminal resize: tracked in #93.
 // ---
 let _parserSessionPath: string | null = null;
 let _parserSpawned = false;
+let _currentThinkingLevel: string | undefined;
 
 function ensureParserRunning(sessionPath: string): void {
-	if (_parserSpawned && _parserSessionPath === sessionPath) return;
+	// Same session, already spawned — but verify daemon is actually alive.
+	// If the daemon died (idle timeout, crash), reset and re-spawn.
+	if (_parserSpawned && _parserSessionPath === sessionPath) {
+		const tagPath = getTagPath(sessionPath);
+		const health = checkDaemonHealth(sessionPath, tagPath);
+		if (health.alive) return;
+		// Daemon dead — fall through to re-spawn
+		_parserSpawned = false;
+	}
 
 	const daemonPath = path.join(
 		path.dirname(fileURLToPath(import.meta.url)),
@@ -56,9 +64,26 @@ function ensureParserRunning(sessionPath: string): void {
 function getParserStatus(sessionPath: string): DaemonStatus {
 	if (!_parserSessionPath) return { alive: false, reason: "log parser not started" };
 	const tagPath = getTagPath(sessionPath);
-	return checkDaemonHealth(sessionPath, tagPath);
+	const health = checkDaemonHealth(sessionPath, tagPath);
+	// Grace period: if the daemon PID is gone but the tag file was recently
+	// written (within 2s), a new daemon instance is spinning up — mask the
+	// restart gap by reporting alive (idle or live depending on session).
+	if (!health.alive && _parserSpawned) {
+		try {
+			const tagStat = fs.statSync(tagPath);
+			const tagAge = Date.now() - tagStat.mtimeMs;
+			if (tagAge < 2000 && tagStat.size > 0) {
+				return { alive: true, idle: true, idleMs: 0 };
+			}
+		} catch { /* tag file missing — genuinely dead */ }
+	}
+	return health;
 }
 
+
+// Module-scope flag overrides so getSettings can see them.
+let hasTokens = false;
+let hasCost = false;
 
 // ---
 // ARGUMENT PARSING
@@ -82,7 +107,9 @@ function parseArgs(argsStr: string = "") {
 	let pager = false;
 	let other = false;
 	let tokens = false;
+	let cost = false;
 	let enableEmoji: boolean | undefined = undefined;
+	let forceReparse = false;
 
 	let hasInterval = false;
 	let hasLimit = false;
@@ -91,7 +118,6 @@ function parseArgs(argsStr: string = "") {
 	let hasMode = false;
 	let hasTimezone = false;
 	let hasOther = false;
-	let hasTokens = false;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -110,7 +136,14 @@ function parseArgs(argsStr: string = "") {
 			hasOther = true;
 		} else if (arg === "--tokens" || arg === "-T") {
 			tokens = true;
+			cost = false;
 			hasTokens = true;
+		} else if (arg === "--cost" || arg === "-C") {
+			cost = true;
+			tokens = false;
+			hasCost = true;
+		} else if (arg === "--force" || arg === "-F") {
+			forceReparse = true;
 		} else if (arg === "--ticks") {
 			showTicks = true;
 			hasTicks = true;
@@ -209,8 +242,11 @@ function parseArgs(argsStr: string = "") {
 		hasTimezone,
 		hasOther,
 		hasTokens,
+		hasCost,
+		forceReparse,
 		other,
 		tokens,
+		cost,
 		enableEmoji
 	};
 }
@@ -274,66 +310,49 @@ class PagerComponent {
 // STATE PERSISTENCE (STORE/RETRIEVE)
 // ---
 
-function isEmojiDisabled(ctx: any): boolean {
-	if (!ctx || !ctx.sessionManager) return false;
-	let disabled = false;
-	for (const entry of ctx.sessionManager.getEntries()) {
-		if (entry.type === "custom" && entry.customType === "emoji-settings") {
-			if (entry.data && typeof entry.data.disabled === "boolean") {
-				disabled = entry.data.disabled;
-			}
-		}
-	}
-	return disabled;
+function isEmojiDisabled(): boolean {
+	const config = readConfig("wtft");
+	return typeof config.disabledEmoji === "boolean" ? config.disabledEmoji : false;
 }
 
 /**
- * Retrieves setting configurations stored persistently in the session log.
- * Defaults mode to "cumulative" for cohesive cost progression tracks.
+ * Retrieves setting configurations from the harness-agnostic config file (#72).
+ * All settings (including TUI appearance) are now config-only — no .jsonl persistence.
+ * Widget auto-shows on session_start if any config exists.
  */
-function getSettings(ctx: any) {
-	let interval = "1h";
-	let limit = 10;
-	
-	const disabledEmoji = isEmojiDisabled(ctx);
-	// Reset default fallback to 240 max so we can easily test scaling down on-the-fly to terminal columns
-	const termColumns = getTerminalWidth(true, disabledEmoji);
-	let width = 240;
-	let widthIsLocked = false;
-	let visible = false; // Default invisible on fresh session
-	let showTicks = true;
-	let mode: "bucket" | "cumulative" = "cumulative";
-	let timezone: string | undefined = "America/Los_Angeles";
+function getSettings(_ctx: any) {
+	const config = readConfig("wtft");
 
-	for (const entry of ctx.sessionManager.getEntries()) {
-		if (entry.type === "custom" && entry.customType === "wtft-settings") {
-			if (entry.data) {
-				if (entry.data.interval) interval = entry.data.interval;
-				if (typeof entry.data.limit === "number") limit = entry.data.limit;
-				if (typeof entry.data.width === "number") {
-					if (entry.data.widthIsLocked) {
-						width = Math.min(entry.data.width, termColumns, 240);
-						widthIsLocked = true;
-					} else {
-						// Responsive auto-fit on the fly!
-						const termColumnsDynamic = getTerminalWidth(true, disabledEmoji);
-						width = Math.min(termColumnsDynamic, 240);
-					}
-				}
-				if (typeof entry.data.visible === "boolean") visible = entry.data.visible;
-				if (typeof entry.data.showTicks === "boolean") showTicks = entry.data.showTicks;
-				if (entry.data.mode) mode = entry.data.mode;
-				if (entry.data.timezone) timezone = entry.data.timezone;
-			}
-		}
-	}
+	const interval = (config.interval as string) || "1h";
+	const limit = (typeof config.limit === "number" ? config.limit : 10) as number;
+	const showTicks = (typeof config.showTicks === "boolean" ? config.showTicks : true) as boolean;
+	const mode: "bucket" | "cumulative" = (config.mode === "bucket" || config.mode === "cumulative" ? config.mode : "cumulative") as "bucket" | "cumulative";
+	const timezone: string | undefined = (typeof config.timezone === "string" ? config.timezone : "America/Los_Angeles") as string | undefined;
+	const disabledEmoji = isEmojiDisabled();
+	// --tokens / --cost explicit flags override config (last wins)
+	const configTokens = (typeof config.tokens === "boolean" ? config.tokens : false) as boolean;
+	const tokens = hasCost ? false : (hasTokens ? true : configTokens);
 
-	return { interval, limit, width, widthIsLocked, visible, showTicks, mode, timezone, disabledEmoji };
+	// Width auto-fits to terminal (no separate lock/default — CLI doesn't use it either)
+	const width = Math.min(getTerminalWidth(true, disabledEmoji), 240);
+
+	// Auto-show if config exists (user has configured wtft at least once)
+	const visible = hasConfig("wtft");
+
+	return { interval, limit, width, visible, showTicks, mode, timezone, disabledEmoji, tokens };
 }
 
 // ---
 // TUI WIDGET UPDATE ENGINE & COMPILER
 // ---
+
+/** Read interactions from the daemon's classified tag file (#92). */
+function readInteractions(ctx: any): Interaction[] {
+	const sessionFile = ctx.sessionManager.getSessionFile?.();
+	if (!sessionFile) return [];
+	const tagPath = getTagPath(sessionFile);
+	return readClassifiedTagFile(tagPath);
+}
 
 function buildWtftLines(
 	ctx: any,
@@ -345,24 +364,18 @@ function buildWtftLines(
 		showTicks?: boolean;
 		mode?: "bucket" | "cumulative";
 		timezone?: string;
-		forceLegendRow?: boolean;
+		sessionNameSuffix?: string;
 	}
 ): string[] | null {
-	const branch = ctx.sessionManager.getBranch();
-	const interactions: Interaction[] = [];
+	// Read from the classified tag file — single source of truth (#92).
+	const interactions = readInteractions(ctx);
+	const settings = getSettings(ctx);
 
-	for (let i = 0; i < branch.length; i++) {
-		const interaction = parseEntryToInteraction(branch[i]);
-		if (interaction) {
-			interactions.push(interaction);
-		}
-	}
-
-	return sharedBuildWtftLines(interactions, getSettings(ctx), opts);
+	return sharedBuildWtftLines(interactions, settings, {
+		...opts,
+		unit: settings.tokens ? "tokens" as const : "cost" as const,
+	});
 }
-
-// SURGE TIMELINE helpers now imported from wtft-shared.js (getCurrentLocalHour,
-// getSurgeLocalHours, checkSurgeProximity, buildTimelineString)
 
 /**
  * Dynamically computes costs binned by interval and updates the TUI widget
@@ -389,46 +402,47 @@ function updateWtftWidget(
 		return;
 	}
 
-	// Check model for surge coloring; timeline itself is always shown.
-	let isDeepSeek = false;
+	// Detect model for SURGE timeline coloring (passed to shared buildWtftLines).
+	let modelId: string | undefined;
 	try {
 		const sessionCtx = ctx.sessionManager.buildSessionContext();
-		isDeepSeek = (sessionCtx?.model?.modelId || "").toLowerCase().includes("deepseek");
+		modelId = sessionCtx?.model?.modelId;
 	} catch (_) {}
 
-	// Force legend to its own row — timeline is always appended to title line
-	const buildOpts = { ...opts, forceLegendRow: true };
+	// Force legend to its own row — SURGE timeline is appended to title line inside buildWtftLines
+	const sessionFile = ctx.sessionManager.getSessionFile?.();
+	const sessionNameSuffix = sessionFile ? path.basename(sessionFile) : undefined;
+	const buildOpts = { ...opts, model: modelId, sessionNameSuffix };
 	const lines = buildWtftLines(ctx, pi, buildOpts);
 	if (!lines || lines.length === 0) {
-		ctx.ui.setWidget("wtft", undefined);
+		// --- Show cache/empty state instead of hiding widget. ---
+		const emptyModel = modelId || "";
+		const cacheTtl = getModelCacheTtlMs(emptyModel);
+		const emptyLine = cacheTtl === null
+			? "\x1b[90mNo Cache (local model)\x1b[0m"
+			: "\x1b[90mCache Empty\x1b[0m";
+
+		let parserStatusStr = "";
+		const sessionFile = ctx.sessionManager.getSessionFile?.();
+		if (sessionFile && _parserSpawned) {
+			const status = getParserStatus(sessionFile);
+			parserStatusStr = renderDaemonStatus(status, false);
+		}
+
+		const widgetLines = parserStatusStr
+			? [emptyLine, parserStatusStr.trim()]
+			: [emptyLine];
+		ctx.ui.setWidget("wtft", widgetLines, { placement: "belowEditor" });
 		return;
 	}
-
-	// 24-hour timeline: colored by surge for DeepSeek, all green for other models
-	const tz = current.timezone;
-	const surgeHours = isDeepSeek ? getSurgeLocalHours(tz) : new Set<number>();
-	const currentHour = getCurrentLocalHour(tz);
-	const proximity = isDeepSeek ? checkSurgeProximity() : { status: undefined, multiplier: 1.0 };
-	const timelineStr = buildTimelineString(surgeHours, currentHour, proximity.status);
-
-	// Append inline to the title line — legend is always on row 2 via forceLegendRow
-	lines[0] = lines[0] + "  " + timelineStr;
 
 	// ---
 	// Append log parser status (inline if it fits, otherwise separate line).
 	// ---
 	let parserStatusStr = "";
-	const sessionFile = ctx.sessionManager.getSessionFile?.();
 	if (sessionFile && _parserSpawned) {
 		const status = getParserStatus(sessionFile);
-		if (!status.alive) {
-			const label = status.lastHbTime
-				? `stopped ${status.lastHbTime}`
-				: (status.reason || "unknown");
-			parserStatusStr = `  \x1b[31m●\x1b[0m ${label}`;
-		} else {
-			parserStatusStr = "  \x1b[32m●\x1b[0m live";
-		}
+		parserStatusStr = renderDaemonStatus(status, false);
 	}
 
 	if (parserStatusStr) {
@@ -463,8 +477,9 @@ export default function wtftExtension(pi: ExtensionAPI) {
 		if (sessionFile) {
 			ensureParserRunning(sessionFile);
 		}
-		const current = getSettings(ctx);
-		if (current.visible) {
+
+		// Auto-show widget if user has configured wtft at least once (#72)
+		if (hasConfig("wtft")) {
 			updateWtftWidget(ctx, pi);
 		}
 		// Start 1-minute timer for timeline live-updates
@@ -480,8 +495,13 @@ export default function wtftExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// 2. Auto-refresh on turn completion (zero token cost)
-	pi.on("agent_end", async (_event, ctx) => {
+	// 2. Track thinking level for --tokens budget display.
+	pi.on("thinking_level_select", (event) => {
+		_currentThinkingLevel = event.level;
+	});
+
+	// 3. End-of-turn: read tag file + render (#92).
+	pi.on("agent_settled", async (_event, ctx) => {
 		_wtftCtx = ctx;
 		const current = getSettings(ctx);
 		if (current.visible) {
@@ -489,7 +509,25 @@ export default function wtftExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// 3. Command registration
+	// 4. Tree navigation: re-read tag file so widget reflects the new branch (#92).
+	pi.on("session_tree", async (_event, ctx) => {
+		_wtftCtx = ctx;
+		const current = getSettings(ctx);
+		if (current.visible) {
+			updateWtftWidget(ctx, pi);
+		}
+	});
+
+	// 5. Daemon health revive — keep CLI wtft --watch alive after idle timeout.
+	pi.on("agent_end", async (_event, ctx) => {
+		_wtftCtx = ctx;
+		const sessionFile = ctx.sessionManager.getSessionFile?.();
+		if (sessionFile) {
+			ensureParserRunning(sessionFile);
+		}
+	});
+
+	// 6. Command registration
 	pi.registerCommand("wtft", {
 		description: "Where The F***ing Tokens?! (WTFT) - Cost Auditing Widget",
 		handler: async (args, ctx) => {
@@ -514,13 +552,45 @@ export default function wtftExtension(pi: ExtensionAPI) {
 				hasTimezone,
 				hasOther,
 				hasTokens,
+				hasCost,
+				forceReparse,
 				other,
 				tokens,
+				cost,
 				enableEmoji
 			} = parseArgs(args);
 
+			// --force: kill daemon, delete tag file, respawn → full re-parse (#78)
+			if (forceReparse) {
+				const sessionFile = ctx.sessionManager.getSessionFile?.();
+				if (!sessionFile) {
+					ctx.ui.notify("No session file available for re-parse.", "warning");
+					return;
+				}
+				const tagPath = getTagPath(sessionFile);
+				const pidPath = getDaemonPidPath(sessionFile);
+				// Kill existing daemon
+				try {
+					const pid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+					if (pid > 0) {
+						try { process.kill(pid, "SIGTERM"); } catch {}
+					}
+					try { fs.unlinkSync(pidPath); } catch {}
+				} catch {}
+				// Delete tag file
+				try { fs.unlinkSync(tagPath); } catch {}
+				// Respawn daemon (reads session file from scratch, rewrites tag file)
+				_parserSpawned = false;
+				_parserSessionPath = null;
+				ensureParserRunning(sessionFile);
+				updateWtftWidget(ctx, pi);
+				ctx.ui.notify("Tag file deleted and log parser respawned — full session re-parse in progress.", "info");
+				return;
+			}
+
 			if (typeof enableEmoji === "boolean") {
-				pi.appendEntry("emoji-settings", { disabled: !enableEmoji });
+				// Persist to harness-agnostic config file (#72)
+				writeConfig("wtft", { disabledEmoji: !enableEmoji });
 				const statusText = enableEmoji ? "enabled" : "disabled";
 				ctx.ui.notify(`Emoji icons in widgets have been ${statusText}.`, "info");
 				updateWtftWidget(ctx, pi);
@@ -582,38 +652,34 @@ export default function wtftExtension(pi: ExtensionAPI) {
 			const current = getSettings(ctx);
 
 			if (other) {
-				const branch = ctx.sessionManager.getBranch();
-				const interactions = branch
-					.map((entry: any) => parseEntryToInteraction(entry))
-					.filter((i: any): i is NonNullable<typeof i> => i !== null);
-				
+				const interactions = readInteractions(ctx);
 				const deduped = deduplicateInteractions(interactions);
 				const output = renderOtherHistogram(deduped, Math.max(current.width, 40));
 				ctx.ui.notify(output, "info");
 				return;
 			}
 
+			if (tokens || cost) {
+			// Toggle widget token-unit mode and persist (#14).
+			// --cost explicitly switches back to $ units.
+			writeConfig("wtft", { tokens });
+			updateWtftWidget(ctx, pi, { visible: true });
+
 			if (tokens) {
-				const branch = ctx.sessionManager.getBranch();
-				const interactions = branch
-					.map((entry: any) => parseEntryToInteraction(entry))
-					.filter((i: any): i is NonNullable<typeof i> => i !== null);
-				
-				const output = renderTokenSummary(interactions, Math.max(current.width, 40));
+				// Map current thinking level to budget tokens (#79)
+				const BUDGET_MAP: Record<string, number> = {
+					minimal: 1024, low: 4096, medium: 10240,
+					high: 32768, xhigh: 65536, max: 131072
+				};
+				const budget = _currentThinkingLevel ? BUDGET_MAP[_currentThinkingLevel] : undefined;
+				const interactions = readInteractions(ctx);
+				const output = renderTokenSummary(interactions, Math.max(current.width, 40), budget);
 				ctx.ui.notify(output, "info");
 				return;
 			}
+		}
 
 			if (hideWidget) {
-				pi.appendEntry("wtft-settings", {
-					interval: current.interval,
-					limit: current.limit,
-					width: current.width,
-					visible: false,
-					showTicks: current.showTicks,
-					mode: current.mode,
-					timezone: current.timezone
-				});
 				ctx.ui.setWidget("wtft", undefined);
 				ctx.ui.notify("Token cost audit widget hidden.", "info");
 				return;
@@ -623,10 +689,9 @@ export default function wtftExtension(pi: ExtensionAPI) {
 			const nextLimit = hasLimit ? limit : current.limit;
 			
 			// Dynamic fallback (minus safety padding) capped at 240 if no explicit width set
-			const termColumns = getTerminalWidth(true, isEmojiDisabled(ctx));
+			const termColumns = getTerminalWidth(true, isEmojiDisabled());
 			const nextWidth = hasWidth ? Math.min(width, 240) : Math.min(termColumns, 240);
-			const nextWidthIsLocked = hasWidth || current.widthIsLocked || false;
-			
+
 			const nextTicks = hasTicks ? showTicks : current.showTicks;
 			const nextMode = hasMode ? mode : current.mode;
 			const nextTimezone = hasTimezone ? timezone : current.timezone;
@@ -653,12 +718,10 @@ export default function wtftExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			pi.appendEntry("wtft-settings", {
+			// Persist all settings to harness-agnostic config file (#72)
+			writeConfig("wtft", {
 				interval: nextInterval,
 				limit: nextLimit,
-				width: nextWidth,
-				widthIsLocked: nextWidthIsLocked,
-				visible: true,
 				showTicks: nextTicks,
 				mode: nextMode,
 				timezone: nextTimezone

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# git-ship — snap + push in one command.
+# Usage: git-ship "your commit message"
+set -euo pipefail
+
+MSG="${1:-}"
+if [ -z "$MSG" ]; then
+  echo "git-ship: message required"
+  echo "  git-ship \"feat: add widget (#42)\""
+  exit 1
+fi
+
+git-snap "$MSG"
+git push

@@ -1,0 +1,762 @@
+{
+  "$comment": "Spec-as-fixture for issue #74: git-guardrails push-target parsing. Each case is run against BOTH harness copies (extensions/git-guardrails.ts and hooks/block-dangerous-git.sh) — verdicts must match (parity gate). 'branch' = the current branch of the repo the command would act on ('' = not a repo / branch unresolvable). 'cwd_branch' vs 'c_path_branch' distinguish the shell cwd repo from a `git -C <path>` target repo.",
+  "cases": [
+    {
+      "id": "allow-compound-push-then-pr-base-main",
+      "command": "git push origin feat && gh pr create --base main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#74 false-positive class 1: greedy regex spans the && chain; the push targets feat, 'main' belongs to gh pr create"
+    },
+    {
+      "id": "allow-branch-name-starting-with-main-token",
+      "command": "git push origin main-refactor",
+      "branch": "main-refactor",
+      "verdict": "allow",
+      "why": "#74 false-positive class 2: \\bmain\\b matches at the hyphen; ref token must EQUAL main/master, not contain it"
+    },
+    {
+      "id": "allow-word-cooccurrence-no-git-push",
+      "command": "node -e \"console.log('push to main is blocked')\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#74 false-positive class 3: mere co-occurrence of 'push' and 'main' in a non-git command (hit live 3x)"
+    },
+    {
+      "id": "allow-printf-quoted-newline-push",
+      "command": "printf \"note\\ngit push origin main\\n\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "review finding 6: naive newline/separator split manufactured a 'git push origin main' subcommand out of quoted printf text"
+    },
+    {
+      "id": "allow-quoted-semicolon-git-push-text",
+      "command": "echo \"x; git push origin main\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "a ; inside double quotes is data, not a command separator"
+    },
+    {
+      "id": "allow-commit-message-mentioning-push",
+      "command": "git commit -m \"see: git push origin main\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "quoted commit message stays one token; the git subcommand is commit"
+    },
+    {
+      "id": "block-quoted-main-ref",
+      "command": "git push origin \"main\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "inverse fix: quote chars previously stuck to the token ('\"main\"' != 'main') so a quoted ref slipped the destination check"
+    },
+    {
+      "id": "block-background-ampersand-push-main",
+      "command": "git push origin feat & git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "single & (background) is a command separator too; the second command pushes main"
+    },
+    {
+      "id": "allow-heredoc-mentioning-push-and-main",
+      "command": "cat > /tmp/notes.md <<'EOF'\ngit push origin main is blocked by the ruleset\nEOF",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#74 false-positive class 3: heredoc body text is not a git invocation"
+    },
+    {
+      "id": "block-heredoc-dash-tab-terminator-then-push",
+      "command": "cat <<-EOF\n\tindented body\n\tEOF\ngit push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 7: <<- allows a tab-indented terminator; comparing the raw line to the delimiter never matched, so the REAL push after the heredoc was stripped from inspection"
+    },
+    {
+      "id": "allow-heredoc-dash-tab-body-text",
+      "command": "cat <<-EOF\n\tgit push origin main\n\tEOF",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "tab-indented body of a <<- heredoc is still data; terminator must now be recognized so nothing AFTER leaks, but the body itself never blocks"
+    },
+    {
+      "id": "allow-plain-heredoc-tab-eof-is-body",
+      "command": "cat <<EOF\n\tEOF\ngit push origin main\nEOF",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "without the dash, a tab-indented EOF is NOT a terminator in real shells — the push line is heredoc data, matching bash semantics"
+    },
+    {
+      "id": "block-quoted-heredoc-opener-then-push",
+      "command": "printf '%s\\n' '<<EOF'\ngit push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 13a: '<<EOF' inside single quotes is data — the blind regex entered body mode and stripped the REAL push on the next line (fail-open)"
+    },
+    {
+      "id": "allow-numeric-heredoc-delim",
+      "command": "cat <<123\ngit push origin main\n123",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "review finding 13b: heredoc delimiters are general shell WORDs — the identifier-only charset left <<123 unstripped, so body text falsely blocked"
+    },
+    {
+      "id": "allow-dashed-heredoc-delim",
+      "command": "cat <<my-delim.1\ngit push origin main\nmy-delim.1",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "dashes and dots are valid in heredoc delimiters too"
+    },
+    {
+      "id": "block-arith-shift-not-heredoc",
+      "command": "echo $((1<<2))\ngit push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "guard on the guard: << inside $(( )) is a bit-shift — treating it as a heredoc opener would strip the real push that follows (the numeric-delimiter fix must not introduce this)"
+    },
+    {
+      "id": "allow-c-path-push-feature",
+      "command": "git -C /repo push origin feat",
+      "c_path_branch": "feat",
+      "cwd_branch": "",
+      "verdict": "allow",
+      "why": "-C aware: explicit refspec targets feat; -C repo branch is feat"
+    },
+    {
+      "id": "allow-bare-push-on-feature-branch",
+      "command": "git push",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "existing behavior preserved: bare push on a feature branch is fine"
+    },
+    {
+      "id": "allow-push-u-origin-feature",
+      "command": "git push -u origin 74-guardrails-push-target-parsing",
+      "branch": "74-guardrails-push-target-parsing",
+      "verdict": "allow",
+      "why": "options before the refspec must be skipped, not treated as refs"
+    },
+    {
+      "id": "allow-push-delete-feature-branch",
+      "command": "git push origin --delete test/identity-check",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "deleting a non-default remote branch is routine cleanup per standards"
+    },
+    {
+      "id": "block-command-wrapper-push-main",
+      "command": "command git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 5: first-token-must-be-git let shell wrappers carry the identical dangerous push"
+    },
+    {
+      "id": "block-env-wrapper-push-main",
+      "command": "env git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "env wrapper, same bypass"
+    },
+    {
+      "id": "block-env-assignment-push-main",
+      "command": "GIT_TRACE=1 git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "a leading VAR=val assignment also made the first token non-git — same class, no wrapper binary needed"
+    },
+    {
+      "id": "block-nice-wrapper-push-main",
+      "command": "nice -n 10 git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrapper with option + numeric argument before git"
+    },
+    {
+      "id": "block-timeout-wrapper-push-main",
+      "command": "timeout 30 git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrapper with duration argument before git"
+    },
+    {
+      "id": "allow-command-wrapper-push-feature",
+      "command": "command git push origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "wrapper stripping must not change the verdict for safe pushes"
+    },
+    {
+      "id": "allow-echo-git-push-main-text",
+      "command": "echo git push origin main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "echo is not a wrapper — prefix skipping stops at unknown words so quoted-less text stays text"
+    },
+    {
+      "id": "block-bash-c-push-main",
+      "command": "bash -c 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 14: bash is not a wrapper, so the prefix scan bailed and the -c payload — a full nested command string — was never inspected"
+    },
+    {
+      "id": "block-sh-c-push-main",
+      "command": "sh -c \"git push origin main\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "sh -c, same bypass"
+    },
+    {
+      "id": "block-bash-lc-cluster-push-main",
+      "command": "bash -lc 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "-c inside a short-flag cluster (-lc) still takes the next argument as the command string"
+    },
+    {
+      "id": "block-eval-push-main",
+      "command": "eval git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "eval re-parses its arguments as a shell command"
+    },
+    {
+      "id": "block-eval-quoted-push-main",
+      "command": "eval \"git push origin main\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "eval with the command as one quoted word"
+    },
+    {
+      "id": "block-sudo-bash-c-push-main",
+      "command": "sudo bash -c 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrapper prefix then shell runner — the two skip mechanisms must compose"
+    },
+    {
+      "id": "block-nested-bash-c-push-main",
+      "command": "bash -c \"bash -c 'git push origin main'\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "nested -c strings recurse: each layer re-splits and re-tokenizes"
+    },
+    {
+      "id": "block-bash-c-bare-push-on-main",
+      "command": "bash -c 'git push'",
+      "branch": "main",
+      "verdict": "block",
+      "why": "the nested check inherits the hook cwd, so branch-aware rules still fire inside -c strings"
+    },
+    {
+      "id": "allow-bash-c-push-feature",
+      "command": "bash -c 'git push origin feat'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "nested inspection must not change the verdict for safe pushes"
+    },
+    {
+      "id": "allow-bash-script-file-main-arg",
+      "command": "bash deploy.sh main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "no -c: a script-file invocation's arguments are data, not a command string ('main' is just an argument)"
+    },
+    {
+      "id": "block-abs-path-git-push-main",
+      "command": "/usr/bin/git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#105 (finding 16a): a path-based invocation is still git — match by basename, or the exact-string 'git' test bails"
+    },
+    {
+      "id": "block-rel-path-git-clean",
+      "command": "./git clean -fd",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "relative-path git binary, always-blocked forced clean"
+    },
+    {
+      "id": "block-subst-push-main",
+      "command": "echo $(git push origin main)",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#105 (finding 16b): a command substitution EXECUTES its body — the main tokenizer saw 'echo' and bailed while the push ran (the residual documented at findings 14+15)"
+    },
+    {
+      "id": "block-backtick-subst-push-main",
+      "command": "echo `git push origin main`",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "backtick substitution, same execution semantics"
+    },
+    {
+      "id": "block-subst-in-double-quotes",
+      "command": "echo \"result: $(git push origin main)\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "$() still executes inside double quotes"
+    },
+    {
+      "id": "allow-single-quoted-subst-literal",
+      "command": "echo '$(git push origin main)'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "inside single quotes a substitution is literal text — nothing executes"
+    },
+    {
+      "id": "allow-subst-safe-git",
+      "command": "echo $(git rev-parse HEAD)",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "substitution inspection must not change verdicts for safe git commands"
+    },
+    {
+      "id": "block-exec-push-main",
+      "command": "exec git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 15: exec replaces the shell with the command — it is a pass-through wrapper the prefix scan bailed on"
+    },
+    {
+      "id": "block-exec-a-name-push-main",
+      "command": "exec -a fakename git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "exec -a takes a SEPARATE argv[0] argument — same wrapper-arg shape as sudo -u (finding 11)"
+    },
+    {
+      "id": "block-push-repo-refspec-main",
+      "command": "git push --repo origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 4: --repo IS the remote (git's repository argument), so 'main' is a refspec — treating --repo as an opaque option pair let 'main' land in the remote slot unchecked"
+    },
+    {
+      "id": "block-push-repo-eq-refspec-main",
+      "command": "git push --repo=origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "same hole via the --repo=<repo> single-token form"
+    },
+    {
+      "id": "allow-push-repo-refspec-feature",
+      "command": "git push --repo origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "--repo with a feature refspec stays allowed"
+    },
+    {
+      "id": "block-push-repo-bare-on-main",
+      "command": "git push --repo origin",
+      "branch": "main",
+      "verdict": "block",
+      "why": "--repo with no refspec is a bare push — current-branch fallback must still fire"
+    },
+    {
+      "id": "block-push-all-from-feature",
+      "command": "git push --all origin",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--all pushes EVERY local branch including main; the bare-push fallback only sees the feature branch, so mode flags must block outright"
+    },
+    {
+      "id": "block-push-mirror-from-feature",
+      "command": "git push --mirror origin",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--mirror force-updates or deletes every remote ref, main included — never safe for an agent"
+    },
+    {
+      "id": "block-push-branches-from-feature",
+      "command": "git push --branches origin",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--branches is the modern alias for --all"
+    },
+    {
+      "id": "allow-push-tags-from-feature",
+      "command": "git push --tags origin",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "tags cannot move main; only branch-mode flags are inherently main-touching"
+    },
+    {
+      "id": "block-push-matching-refspec",
+      "command": "git push origin :",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 10: ':' is git's MATCHING refspec — pushes every branch existing on both sides, main included; empty dst never equaled 'main' so it sailed past the destination check"
+    },
+    {
+      "id": "block-push-matching-refspec-force",
+      "command": "git push origin +:",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "'+:' force-updates all matching branches — strictly worse than ':'"
+    },
+    {
+      "id": "allow-push-delete-feature-colon-form",
+      "command": "git push origin :old-feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "':dst' with a NON-empty dst is a delete of that ref — only main/master deletion blocks; empty-dst detection must not overreach"
+    },
+    {
+      "id": "block-sudo-u-arg-push-main",
+      "command": "sudo -u root git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 11: sudo -u consumes a separate argument; 'root' failed every prefix check and the guard bailed → fail-open (the residual documented at #74 close, now fixed)"
+    },
+    {
+      "id": "block-env-unset-arg-push-main",
+      "command": "env -u GIT_DIR git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "env -u NAME, same bypass — NAME is not an assignment, wrapper, flag, or number"
+    },
+    {
+      "id": "block-doas-u-arg-push-main",
+      "command": "doas -u root git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "doas -u user, same shape as sudo"
+    },
+    {
+      "id": "allow-sudo-u-arg-push-feature",
+      "command": "sudo -u root git push origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "wrapper-arg skipping must not change the verdict for safe pushes"
+    },
+    {
+      "id": "block-push-head-on-main",
+      "command": "git push origin HEAD",
+      "branch": "main",
+      "verdict": "block",
+      "why": "review finding 8: HEAD is a symbolic ref — on main it pushes main, but the literal-string dst check saw 'HEAD' != 'main' and the nonempty refspec list skipped the current-branch fallback"
+    },
+    {
+      "id": "allow-push-head-on-feature",
+      "command": "git push origin HEAD",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "HEAD on a feature branch pushes the feature branch — must stay allowed"
+    },
+    {
+      "id": "block-push-at-on-main",
+      "command": "git push origin @",
+      "branch": "main",
+      "verdict": "block",
+      "why": "@ is shorthand for HEAD, same symbolic resolution"
+    },
+    {
+      "id": "block-push-head-colon-main",
+      "command": "git push origin HEAD:main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "explicit main destination wins regardless of the symbolic source"
+    },
+    {
+      "id": "block-explicit-push-main",
+      "command": "git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "destination ref token equals main"
+    },
+    {
+      "id": "block-refspec-dst-main",
+      "command": "git push origin feat:main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "src:dst refspec — DESTINATION is main even though source is feat"
+    },
+    {
+      "id": "block-force-push-main",
+      "command": "git push -f origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "force push with explicit main destination"
+    },
+    {
+      "id": "block-bare-push-on-main",
+      "command": "git push",
+      "branch": "main",
+      "verdict": "block",
+      "why": "existing behavior preserved: bare push resolves to current branch = main"
+    },
+    {
+      "id": "block-c-path-bare-push-on-main",
+      "command": "git -C /repo push",
+      "c_path_branch": "main",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "NEW (#74 under-block, Phase G escape 2026-07-13): hook resolved branch from shell cwd (non-repo, ''), not the -C target on main; only the server ruleset (GH006) stopped it"
+    },
+    {
+      "id": "block-c-relative-bare-push-on-main",
+      "command": "git -C rel-repo push",
+      "c_path_branch": "main",
+      "c_path_rel": "rel-repo",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "relative -C must resolve against the TOOL-CALL cwd, not the guard process's own cwd — otherwise the wrong repo (or none) is inspected and a main push slips through"
+    },
+    {
+      "id": "allow-c-relative-bare-push-on-feature",
+      "command": "git -C rel-repo push",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "cwd_branch": "",
+      "verdict": "allow",
+      "why": "same relative -C resolution, feature branch stays allowed"
+    },
+    {
+      "id": "block-multi-c-chained-bare-push-on-main",
+      "command": "git -C rel-repo -C sub push",
+      "c_path_branch": "main",
+      "c_path_rel": "rel-repo/sub",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "review finding 9: git resolves each -C relative to the directory established by the previous one — overwriting cpath inspected cwd/sub (nonexistent → '' → not-main) instead of cwd/rel-repo/sub on main"
+    },
+    {
+      "id": "allow-multi-c-chained-bare-push-on-feature",
+      "command": "git -C rel-repo -C sub push",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo/sub",
+      "cwd_branch": "",
+      "verdict": "allow",
+      "why": "chained -C resolution, feature branch stays allowed"
+    },
+    {
+      "id": "block-git-dir-eq-bare-push-on-main",
+      "command": "git --git-dir=/repo/.git push",
+      "c_path_branch": "main",
+      "cwd_branch": "feat",
+      "verdict": "block",
+      "why": "finding 17 (r3591855555): --git-dir selects the affected repo exactly like -C — skipping it fell back to the hook cwd (on feat) and the main push escaped"
+    },
+    {
+      "id": "block-git-dir-separate-arg-bare-push-on-main",
+      "command": "git --git-dir /repo/.git push",
+      "c_path_branch": "main",
+      "cwd_branch": "feat",
+      "verdict": "block",
+      "why": "--git-dir also takes a SEPARATE argument; the old generic -* skip left '/repo/.git' as the subcommand and 'push' invisible"
+    },
+    {
+      "id": "allow-git-dir-eq-bare-push-on-feature",
+      "command": "git --git-dir=/repo/.git push",
+      "c_path_branch": "feat",
+      "cwd_branch": "main",
+      "verdict": "allow",
+      "why": "inverse: the targeted repo is on feat even though the hook cwd is on main — --git-dir must win over cwd in BOTH directions"
+    },
+    {
+      "id": "block-sudo-long-user-push-main",
+      "command": "sudo --user root git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "finding 18 (r3591939370): sudo --user takes a separate argument like -u; only the short form was modeled, so 'root' bailed the scan"
+    },
+    {
+      "id": "allow-sudo-long-user-push-feature",
+      "command": "sudo --user root git push origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "long-form wrapper-arg skipping must not change the verdict for safe pushes"
+    },
+    {
+      "id": "block-path-sh-c-push-main",
+      "command": "/bin/sh -c 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "finding 19 (r3591939373): shell runners must match by basename like git does — /bin/sh bailed the scan and the -c payload went uninspected"
+    },
+    {
+      "id": "block-path-env-wrapper-push-main",
+      "command": "/usr/bin/env git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrappers must match by basename too — /usr/bin/env is still env"
+    },
+    {
+      "id": "block-c-path-push-explicit-main",
+      "command": "git -C /repo push origin main",
+      "c_path_branch": "feat",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "-C plus explicit main destination; explicit ref wins regardless of branch"
+    },
+    {
+      "id": "block-compound-second-subcommand-pushes-main",
+      "command": "git fetch && git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "separator-split must still inspect EVERY git-push sub-command, not just the first"
+    },
+    {
+      "id": "block-push-main-after-allowed-push",
+      "command": "git push origin feat && git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "one blocked sub-command blocks the whole command line (fail-safe)"
+    },
+    {
+      "id": "block-delete-remote-main",
+      "command": "git push origin --delete main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "deleting the default branch ref is a main mutation"
+    },
+    {
+      "id": "block-push-master",
+      "command": "git push origin master",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "master treated identically to main throughout"
+    },
+    {
+      "id": "block-branch-D-main",
+      "command": "git branch -D main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "existing rule preserved"
+    },
+    {
+      "id": "block-branch-long-delete-force-main",
+      "command": "git branch --delete --force main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 12: -D is documented shorthand for --delete --force — the exact '-D' match let every other spelling of the same force-delete through"
+    },
+    {
+      "id": "block-branch-split-flags-df-main",
+      "command": "git branch -d -f main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "split short flags: -d plus -f equals -D"
+    },
+    {
+      "id": "block-branch-cluster-df-main",
+      "command": "git branch -df main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "clustered short flags: git parses -df as -d -f"
+    },
+    {
+      "id": "block-branch-D-later-target",
+      "command": "git branch -D feat main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "git branch -D deletes EVERY listed branch — the old check only inspected the token immediately after -D, so main as a second target escaped"
+    },
+    {
+      "id": "allow-branch-safe-delete-main",
+      "command": "git branch -d main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "scope decision: non-force -d refuses unless the branch is fully merged, so nothing unrecoverable is lost (origin/main restores it); only FORCE deletion of main blocks"
+    },
+    {
+      "id": "allow-branch-delete-force-feature",
+      "command": "git branch --delete --force old-feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "force-deleting a feature branch is routine cleanup; only main/master targets block"
+    },
+    {
+      "id": "allow-branch-D-feature",
+      "command": "git branch -D test/identity-check",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "existing rule preserved: feature-branch deletion allowed"
+    },
+    {
+      "id": "block-reset-hard-on-main",
+      "command": "git reset --hard HEAD~1",
+      "branch": "main",
+      "verdict": "block",
+      "why": "existing rule preserved"
+    },
+    {
+      "id": "block-reset-hard-c-path-on-main",
+      "command": "git -C /repo reset --hard",
+      "c_path_branch": "main",
+      "cwd_branch": "",
+      "verdict": "block",
+      "why": "-C resolution applies to reset --hard too, same under-block shape as push"
+    },
+    {
+      "id": "allow-reset-hard-on-feature",
+      "command": "git reset --hard origin/feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "existing rule preserved: feature branches may hard-reset"
+    },
+    {
+      "id": "block-checkout-dot-any-branch",
+      "command": "git checkout .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "always blocked: discards uncommitted work on any branch"
+    },
+    {
+      "id": "block-checkout-dot-multispace",
+      "command": "git checkout    .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 3: literal-space regex missed multi-space/tab separation; tokenizer is whitespace-agnostic"
+    },
+    {
+      "id": "block-checkout-dashdash-dot",
+      "command": "git checkout -- .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 3: the -- pathspec separator split the dot into its own token past the old regex"
+    },
+    {
+      "id": "block-restore-dashdash-dot",
+      "command": "git restore -- .",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "same -- separator escape for restore"
+    },
+    {
+      "id": "block-clean-split-flags",
+      "command": "git clean -f -d",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 3: -f -d as separate tokens evaded the combined -f/-fd patterns"
+    },
+    {
+      "id": "block-clean-fdx",
+      "command": "git clean -fdx",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "any short-flag cluster containing f is a forced clean"
+    },
+    {
+      "id": "block-clean-force-long",
+      "command": "git clean --force -d",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "--force long form equals -f"
+    },
+    {
+      "id": "allow-clean-dry-run",
+      "command": "git clean -nd",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "dry run deletes nothing; only forced cleans discard work"
+    },
+    {
+      "id": "allow-checkout-dotfile-path",
+      "command": "git checkout .gitignore",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "inverse fix: the old substring regex ('git checkout \\.') false-blocked dotfile pathspecs; only the bare '.' token discards everything"
+    }
+  ]
+}

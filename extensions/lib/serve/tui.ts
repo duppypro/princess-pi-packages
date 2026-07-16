@@ -1,25 +1,18 @@
 import { shortenPath } from "../session-path-shortener.js";
 import { ServerInstance, KilledServerInstance, isInsideRepo } from "./domain.js";
+import wcwidth from "wcwidth";
 
 export function stripAnsi(str: string): string {
 	return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }
 
+/**
+ * Compute visual (monospace cell) width of a string after stripping ANSI escapes.
+ * Delegates to wcwidth for proper Unicode East Asian Width handling (#103).
+ */
 export function getVisualLength(str: string): number {
 	const cleanStr = stripAnsi(str);
-	let len = 0;
-	for (let i = 0; i < cleanStr.length; i++) {
-		const code = cleanStr.charCodeAt(i);
-		if (code >= 0xD800 && code <= 0xDBFF && i + 1 < cleanStr.length) {
-			len += 2;
-			i++;
-		} else if (code >= 0x3000 && code <= 0x9FFF) {
-			len += 2;
-		} else {
-			len += 1;
-		}
-	}
-	return len;
+	return wcwidth(cleanStr);
 }
 
 export function padVisual(str: string, targetLen: number): string {
@@ -28,19 +21,14 @@ export function padVisual(str: string, targetLen: number): string {
 		const cleanStr = stripAnsi(str);
 		let accumulated = 0;
 		let result = "";
-		for (let i = 0; i < cleanStr.length; i++) {
+		let i = 0;
+		while (i < cleanStr.length) {
 			const char = cleanStr[i];
-			const code = cleanStr.charCodeAt(i);
-			let charWidth = 1;
-			if (code >= 0xD800 && code <= 0xDBFF && i + 1 < cleanStr.length) {
-				charWidth = 2;
-			} else if (code >= 0x3000 && code <= 0x9FFF) {
-				charWidth = 2;
-			}
+			const charWidth = wcwidth(char);
 			if (accumulated + charWidth > targetLen) break;
 			result += char;
 			accumulated += charWidth;
-			if (charWidth === 2) i++;
+			i++;
 		}
 		return result + " ".repeat(targetLen - accumulated);
 	}

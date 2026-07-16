@@ -5,406 +5,85 @@
 // Throttled writes at 90bpm (667ms). Heartbeat protocol.
 // Auto-spawned by wtft CLI; runs detached.
 //
-// Source file — esbuild bundles into bin/wtft-daemon.mjs.
-// Self-contained: harness-specific parsing lives here, not in wtft-shared.ts.
-// The renderers (CLI, Pi extension) consume the harness-agnostic tag file format.
+// Source file — build.ts (Bun.build) bundles into bin/wtft-daemon.mjs.
+// Parsing, classification, and cost calculation live in extensions/lib/wtft-shared.ts
+// and are imported here. The daemon owns only: file watching, incremental parsing,
+// tag file I/O, heartbeat protocol, singleton PID management, and serialization.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import {
+	parseEntryToInteraction,
+	deduplicateInteractions,
+	serializeClassified,
+	serializeClassifiedWithOverheadSplit,
+	isInterruptMarker,
+	WTFT_TAGGER_VERSION as TAGGER_VERSION
+} from "../extensions/lib/wtft-shared.js";
 
-// ---
-// HARNESS-SPECIFIC PARSING & CLASSIFICATION (sole owner — not shared with renderers)
-// The daemon is the only component that reads raw Pi/Claude Code session.jsonl.
-// These functions live here, not in wtft-shared.ts, because the renderers
-// consume the harness-agnostic tag file format and never parse raw entries.
-// ---
 
-function getDeepSeekPeakMultiplier(timestamp) {
-  const ts = timestamp || Date.now();
-  const d = new Date(ts);
-  const utcHour = d.getUTCHours();
-  const utcMin = d.getUTCMinutes();
-  const utcTime = utcHour * 60 + utcMin;
-  if ((utcTime >= 60 && utcTime < 240) || (utcTime >= 360 && utcTime < 600)) {
-    return 2.0;
-  }
-  return 1.0;
-}
 
-function calculateClaudeCost(model, usage, timestamp) {
-  if (!usage) return 0;
-  let inputPrice = 3.0;
-  let outputPrice = 15.0;
-  let cacheReadPrice = 0.3;
-  const m = (model || "").toLowerCase();
-  if (m.includes("deepseek")) {
-    const peak = getDeepSeekPeakMultiplier(timestamp);
-    if (m.includes("v4-pro")) {
-      inputPrice = 1.74 * peak;
-      outputPrice = 3.48 * peak;
-      cacheReadPrice = 0.0145 * peak;
-    } else {
-      inputPrice = 0.14 * peak;
-      outputPrice = 0.28 * peak;
-      cacheReadPrice = 0.0028 * peak;
-    }
-  } else if (m.includes("haiku")) {
-    inputPrice = 1.0;
-    outputPrice = 5.0;
-    cacheReadPrice = 0.1;
-  } else if (m.includes("opus")) {
-    inputPrice = 5.0;
-    outputPrice = 25.0;
-    cacheReadPrice = 0.5;
-  }
-  // TTL-split cache-write pricing (#55): 5-min = 1.25x input, 1-hour = 2x input.
-  let cacheWriteCost = 0;
-  const cc = usage.cache_creation || {};
-  const cw5m = cc.ephemeral_5m_input_tokens ?? 0;
-  const cw1h = cc.ephemeral_1h_input_tokens ?? 0;
-  const cwFlat = Math.max(0, (usage.cache_creation_input_tokens || 0) - cw5m - cw1h);
-  if (m.includes("deepseek")) {
-    cacheWriteCost = 0;
-  } else {
-    cacheWriteCost =
-      cw5m * (inputPrice * 1.25 / 1e6) +
-      cw1h * (inputPrice * 2.0 / 1e6) +
-      cwFlat * (inputPrice * 1.25 / 1e6);
-  }
-  const cost =
-    (usage.input_tokens || 0) * (inputPrice / 1e6) +
-    (usage.output_tokens || 0) * (outputPrice / 1e6) +
-    (usage.reasoning_tokens || usage.reasoning || 0) * (outputPrice / 1e6) +
-    cacheWriteCost +
-    (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
-  return cost;
-}
-
-function extractFilesFromBashCommand(command, files) {
-  const cmdLines = command.split("\n");
-  for (const line of cmdLines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("cat ") && trimmed.includes("<<") && trimmed.includes(">")) {
-      const parts = trimmed.split(/>+/);
-      if (parts.length > 1) {
-        const possiblePath = parts[1].trim().replace(/['"]/g, "");
-        if (possiblePath && !possiblePath.startsWith("-")) {
-          files.push({ path: possiblePath, action: "write" });
-          continue;
-        }
-      }
-    }
-    if (trimmed.startsWith("cat ") || trimmed.startsWith("head ") || trimmed.startsWith("tail ")) {
-      const parts = trimmed.split(/\s+/);
-      if (parts.length > 1) {
-        const possiblePath = parts[1].replace(/['"]/g, "");
-        if (possiblePath && !possiblePath.startsWith("-")) {
-          files.push({ path: possiblePath, action: "read" });
-        } else if (parts.length > 2 && parts[1].startsWith("-")) {
-          for (let i = 2; i < parts.length; i++) {
-            const candidate = parts[i].replace(/['"]/g, "");
-            if (!candidate.startsWith("-") && isNaN(Number(candidate))) {
-              files.push({ path: candidate, action: "read" });
-              break;
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-function parseEntryToInteraction(entry) {
-  if (!entry) return null;
-  const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
-  const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
-  if (isPiSchema || isClaudeSchema) {
-    const assistantMsg = entry.message;
-    let timestampStr = assistantMsg.timestamp || entry.timestamp;
-    let timestamp = 0;
-    if (typeof timestampStr === "string") {
-      timestamp = new Date(timestampStr).getTime();
-    } else if (typeof timestampStr === "number") {
-      timestamp = timestampStr;
-    }
-    let cost = 0;
-    const usage = assistantMsg.usage || {};
-    const piCost = usage.cost?.total;
-    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 ||
-                      (usage.output_tokens || usage.output || 0) > 0 ||
-                      (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 ||
-                      (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0 ||
-                      (usage.reasoning_tokens || usage.reasoning || 0) > 0;
-    if (piCost !== undefined && piCost !== null && !(piCost === 0 && hasTokens)) {
-      cost = piCost;
-    } else if (assistantMsg.model && hasTokens) {
-      const normalizedUsage = {
-        input_tokens: usage.input_tokens ?? usage.input ?? 0,
-        output_tokens: usage.output_tokens ?? usage.output ?? 0,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
-        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
-        cache_creation: usage.cache_creation || null,
-        reasoning_tokens: usage.reasoning_tokens ?? usage.reasoning ?? 0,
-      };
-      cost = calculateClaudeCost(assistantMsg.model, normalizedUsage, timestamp);
-    }
-    const files = [];
-    const commands = [];
-    const texts = [];
-    if (Array.isArray(assistantMsg.content)) {
-      for (const block of assistantMsg.content) {
-        if (block.type === "text") {
-          texts.push(block.text);
-        } else if (block.type === "thinking") {
-          texts.push(block.thinking);
-        } else if (block.type === "toolCall") {
-          const name = block.name;
-          const args = block.arguments || {};
-          if (name === "read") {
-            if (args.path) files.push({ path: args.path, action: "read" });
-          } else if (name === "write" || name === "edit") {
-            if (args.path) files.push({ path: args.path, action: "write" });
-          } else if (name === "bash") {
-            if (args.command) {
-              commands.push(args.command);
-              extractFilesFromBashCommand(args.command, files);
-            }
-          }
-        } else if (block.type === "tool_use") {
-          const name = (block.name || "").toLowerCase();
-          const args = block.input || {};
-          if (name === "read" || name === "view" || name === "glob" || name === "ls") {
-            const p = args.file_path || args.path || args.directory || args.target;
-            if (p) files.push({ path: p, action: "read" });
-          } else if (name === "edit" || name === "write" || name === "replace") {
-            const p = args.file_path || args.path || args.target;
-            if (p) files.push({ path: p, action: "write" });
-          } else if (name === "bash" || name === "run") {
-            if (args.command) {
-              commands.push(args.command);
-              extractFilesFromBashCommand(args.command, files);
-            }
-          }
-        }
-      }
-    }
-    return {
-      timestamp, cost, messageId: assistantMsg.id,
-      model: assistantMsg.model || undefined,
-      inputTokens: usage.input_tokens ?? usage.input ?? 0,
-      outputTokens: usage.output_tokens ?? usage.output ?? 0,
-      cacheReadTokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
-      cacheWriteTokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
-      reasoningTokens: usage.reasoning_tokens ?? usage.reasoning ?? 0,
-      files, commands, texts,
-    };
-  }
-  return null;
-}
-
-// ---
-// COMMAND NORMALIZATION
-// ---
-
-function normalizeCommand(cmd) {
-  let normalized = cmd.trim();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const stripped = normalized.replace(/^(?:\w+=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*)+/, "");
-    if (stripped !== normalized) { normalized = stripped.trim(); changed = true; }
-    const afterSep = normalized.replace(/^(?:&&|;|\|\|?)\s*/, "");
-    if (afterSep !== normalized) { normalized = afterSep; changed = true; }
-    const afterCd = normalized.replace(/^cd\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*/, "");
-    if (afterCd !== normalized) { normalized = afterCd; changed = true; }
-  }
-  return normalized;
-}
-
-function classifyInteraction(interaction) {
-  const specPaths = new Set();
-  const codePaths = new Set();
-  const testsPaths = new Set();
-  const researchPaths = new Set();
-  for (const f of interaction.files) {
-    const norm = f.path.replace(/\\/g, "/");
-    let category = null;
-    if (norm.includes("node_modules/")) {
-      if (path.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
-        category = "research";
-      } else {
-        category = "code";
-      }
-    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path.extname(norm).toLowerCase() === ".md") {
-      category = "spec";
-    } else if (norm.startsWith("tests/") || norm.includes("/tests/")) {
-      category = "tests";
-    } else if (norm.startsWith("research/") || norm.includes("/research/")) {
-      category = "research";
-    } else if (norm.startsWith(".pi/extensions/") || norm.includes("/.pi/extensions/") || norm.startsWith("extensions/") || norm.includes("/extensions/") || norm.startsWith("src/") || norm.includes("/src/") || norm.startsWith("public/") || norm.includes("/public/") || norm.startsWith("bin/") || norm.includes("/bin/") || norm.startsWith("debug/") || norm.includes("/debug/")) {
-      category = "code";
-    } else {
-      const ext = path.extname(norm).toLowerCase();
-      if ([".ts", ".js", ".mjs", ".json", ".jsonl", ".css", ".tsx", ".jsx", ".py", ".rs", ".go", ".sh", ".yml", ".yaml", ".sql", ".txt"].includes(ext) || norm.endsWith(".gitignore") || norm.endsWith(".dockerignore")) {
-        category = "code";
-      } else if (ext === "") {
-        category = "code";
-      }
-    }
-    if (category === "spec") specPaths.add(f.action);
-    else if (category === "code") codePaths.add(f.action);
-    else if (category === "tests") testsPaths.add(f.action);
-    else if (category === "research") researchPaths.add(f.action);
-  }
-  const specWrites = specPaths.has("write");
-  const codeWrites = codePaths.has("write");
-  const testsWrites = testsPaths.has("write");
-  const researchWrites = researchPaths.has("write");
-  const writeCount = (specWrites ? 1 : 0) + (codeWrites ? 1 : 0) + (testsWrites ? 1 : 0) + (researchWrites ? 1 : 0);
-  if (writeCount > 1) return "mixed";
-  if (writeCount === 1) {
-    if (specWrites) return "spec";
-    if (codeWrites) return "code";
-    if (testsWrites) return "tests";
-    if (researchWrites) return "research";
-  }
-  const hasSpec = specPaths.has("read");
-  const hasCode = codePaths.has("read");
-  const hasTests = testsPaths.has("read");
-  const hasResearch = researchPaths.has("read");
-  const readCount = (hasSpec ? 1 : 0) + (hasCode ? 1 : 0) + (hasTests ? 1 : 0) + (hasResearch ? 1 : 0);
-  if (readCount > 1) return "mixed";
-  if (hasSpec) return "spec";
-  if (hasCode) return "code";
-  if (hasTests) return "tests";
-  if (hasResearch) return "research";
-  if (interaction.commands.length > 0) {
-    let isGit = false;
-    let isGrep = false;
-    for (const cmd of interaction.commands) {
-      const normalized = normalizeCommand(cmd);
-      if (!normalized) continue;
-      const lower = normalized.toLowerCase().trim();
-      if (lower === "git" || lower.startsWith("git ")) isGit = true;
-      else if (lower === "grep" || lower.startsWith("grep ") || lower === "rg" || lower.startsWith("rg ") || lower === "ripgrep" || lower.startsWith("ripgrep ") || lower === "find" || lower.startsWith("find ")) isGrep = true;
-    }
-    if (isGit) return "git";
-    if (isGrep) return "grep";
-    return "other";
-  }
-  if (interaction.texts.length > 0) return "prompt";
-  return "other";
-}
-
-function deduplicateInteractions(interactions) {
-  const byId = new Map();
-  const withoutId = [];
-  for (const i of interactions) {
-    if (i.messageId) {
-      const existing = byId.get(i.messageId);
-      if (existing) { existing.push(i); }
-      else { byId.set(i.messageId, [i]); }
-    } else {
-      withoutId.push(i);
-    }
-  }
-  const deduped = [...withoutId];
-  for (const [, group] of byId) {
-    if (group.length === 1) {
-      deduped.push(group[0]);
-    } else {
-      let best = group[0];
-      for (let j = 1; j < group.length; j++) {
-        if (group[j].cost > best.cost) best = group[j];
-      }
-      const merged = {
-        timestamp: best.timestamp, cost: best.cost,
-        messageId: best.messageId,
-        files: [], commands: [], texts: []
-      };
-      const seenFiles = new Set();
-      for (const i of group) {
-        for (const f of i.files) {
-          const key = f.path + ":" + f.action;
-          if (!seenFiles.has(key)) {
-            seenFiles.add(key);
-            merged.files.push(f);
-          }
-        }
-        for (const c of i.commands) {
-          if (!merged.commands.includes(c)) merged.commands.push(c);
-        }
-        for (const t of i.texts) {
-          if (!merged.texts.includes(t)) merged.texts.push(t);
-        }
-      }
-      deduped.push(merged);
-    }
-  }
-  return deduped;
-}
 
 // ---
 // DAEMON CONFIGURATION
 // ---
 
 // Bump when classification heuristics or cost model change (#54, #55, etc).
-const TAGGER_VERSION = "2.3.1";
 const TAG_SUFFIX = `.wtft-tag.v${TAGGER_VERSION}.jsonl`;
 const POLL_MS = 667;              // 90bpm throttle
-const IDLE_EXIT_MS = 30 * 60 * 1000; // exit if session.jsonl unchanged for 30 min
-
-function serializeClassified(interaction) {
-  const line: any = {
-    t: interaction.timestamp,
-    c: interaction.cost,
-    cat: classifyInteraction(interaction),
-    f: interaction.files.map(f => ({ p: f.path, a: f.action })),
-    cmd: interaction.commands,
-  };
-  // Include model/token data when available (for -T summary table)
-  if (interaction.model) line.m = interaction.model;
-  if (interaction.inputTokens > 0) line.in = interaction.inputTokens;
-  if (interaction.outputTokens > 0) line.out = interaction.outputTokens;
-  if (interaction.cacheReadTokens > 0) line.cr = interaction.cacheReadTokens;
-  if (interaction.cacheWriteTokens > 0) line.cw = interaction.cacheWriteTokens;
-  if (interaction.reasoningTokens > 0) line.rs = interaction.reasoningTokens;
-  return JSON.stringify(line) + "\n";
-}
+const IDLE_EXIT_MS = 24 * 60 * 60 * 1000; // exit if session.jsonl unchanged for 24h (polite to ps aux)
 
 // ---
 // DAEMON STATE
 // ---
 
-let sessionPath = null;
-let tagPath = null;
-let pidPath = null;
+// Empty string = not yet initialized (set once during startup, before the poll loop).
+let sessionPath = "";
+let tagPath = "";
+let pidPath = "";
 let lastSize = 0;            // bytes read from session.jsonl
 let lastWriteMs = 0;         // last time we flushed to the tag file
 let lastActivityMs = Date.now(); // last time we classified a new interaction
 let startupTime = Date.now();    // daemon start time (idle exit grace period)
-let pendingLines = [];       // classified lines waiting for next flush
+// {interaction, prevCtx} waiting for next flush (#52 Phase 3: serialized at
+// flush so late interrupt markers can still stamp the tail interaction).
+let pendingItems: { interaction: NonNullable<ReturnType<typeof parseEntryToInteraction>>; prevCtx: number }[] = [];
 let idleStartMs = 0;         // start of current idle period (for _hb range)
+let currentThinkingLevel: string | undefined; // Track thinking level from session events (#77)
+let lastCompactionTokensBefore: number | undefined; // Track compaction tokensBefore (#90)
+let pendingAfterCompaction = false; // Claude isCompactSummary → flag next interaction (#52 Phase 3)
+let stampInterruptOnPending = false; // interrupt marker seen; assistant turn is in pendingItems (#52 Phase 3)
+let prevCtxTokens = 0; // input+cacheRead+cacheWrite of prev non-sidechain interaction (recache signature)
 let running = true;
 
 // ---
 // SIGNAL HANDLING
 // ---
 
-function shutdown(reason) {
+function shutdown(reason: string) {
   if (!running) return;
   running = false;
-  // Flush any pending lines
-  flushPending();
-  // Write stop heartbeat
+  // Ownership-aware shutdown (#95): a taken-over daemon must exit silently.
+  // Writing anything would recreate the tag file the new owner's version
+  // hygiene just deleted, and unlinking would destroy the new owner's lease
+  // — that unlocked singleton was the daemon-per-restart leak.
+  let ownsLease = false;
   try {
-    fs.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + "\n");
+    ownsLease = fs.readFileSync(pidPath, "utf8").trim() === String(process.pid);
   } catch (_) {}
-  // Remove PID file
-  try { fs.unlinkSync(pidPath); } catch (_) {}
+  if (ownsLease) {
+    flushPending();
+    // Stop heartbeat only if our tag file still exists — never recreate.
+    try {
+      if (fs.existsSync(tagPath)) {
+        fs.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + "\n");
+      }
+    } catch (_) {}
+    try { fs.unlinkSync(pidPath); } catch (_) {}
+  }
   // Log parser goes silent but exits cleanly
   process.exit(0);
 }
@@ -427,7 +106,7 @@ process.on("SIGHUP", () => shutdown("SIGHUP"));
  * Scans backwards from EOF for the last newline to handle arbitrarily long
  * preceding lines (classified data lines can be large with `cmd` arrays).
  */
-function upsertHeartbeat(now) {
+function upsertHeartbeat(now: number) {
   try {
     const hbLine = JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + "\n";
     const stat = fs.statSync(tagPath);
@@ -488,23 +167,26 @@ function upsertHeartbeat(now) {
 }
 
 function flushPending() {
-  if (pendingLines.length === 0) return;
-  const batch = pendingLines.join("");
-  pendingLines = [];
+  if (pendingItems.length === 0) return;
+  // Serialize at flush: compaction/recache meter-splits emit dual lines,
+  // and interrupt markers that arrived after enqueue are already stamped.
+  const batch = pendingItems.map(it => serializeClassifiedWithOverheadSplit(it.interaction, it.prevCtx)).join("");
+  pendingItems = [];
   try {
     fs.appendFileSync(tagPath, batch);
     idleStartMs = 0; // Data arrived — idle period ended
   } catch (err) {
     // If we can't write, log and continue — don't crash the log parser
     if (process.env.WTFT_DAEMON_DEBUG) {
-      process.stderr.write(`[wtft-log-parser] write error: ${err.message}\n`);
+      process.stderr.write(`[wtft-log-parser] write error: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
   lastWriteMs = Date.now();
 }
 
-function parseNewLines(filePath) {
-  const interactions = [];
+function parseNewLines(filePath: string) {
+  // Pushes are null-guarded below, so the array holds only real Interactions.
+  const interactions: NonNullable<ReturnType<typeof parseEntryToInteraction>>[] = [];
   try {
     const stat = fs.statSync(filePath);
     const currentSize = stat.size;
@@ -527,9 +209,41 @@ function parseNewLines(filePath) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line);
-        const interaction = parseEntryToInteraction(entry);
+        // Track thinking level changes (#77)
+        if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
+          currentThinkingLevel = entry.thinkingLevel;
+          continue;
+        }
+        // Track compaction entries — stamp tokensBefore onto the next
+        // assistant interaction (#90).
+        if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
+          lastCompactionTokensBefore = entry.tokensBefore;
+          continue;
+        }
+        // Claude Code compact summary → flag next interaction for the
+        // compaction meter-split (#52 Phase 3).
+        if (entry.isCompactSummary === true) {
+          pendingAfterCompaction = true;
+          continue;
+        }
+        // User interrupt marker → the preceding assistant turn was killed.
+        // It is either the last interaction of this batch, or still sitting
+        // unflushed in pendingItems (stamped in the main loop). If it was
+        // already flushed to the tag file, the stamp is dropped — bounded by
+        // one 667ms beat.
+        if (isInterruptMarker(entry)) {
+          if (interactions.length > 0) {
+            interactions[interactions.length - 1].interrupted = true;
+          } else {
+            stampInterruptOnPending = true;
+          }
+          continue;
+        }
+        const interaction = parseEntryToInteraction(entry, currentThinkingLevel, lastCompactionTokensBefore, pendingAfterCompaction);
         if (interaction) {
           interactions.push(interaction);
+          lastCompactionTokensBefore = undefined; // consumed
+          pendingAfterCompaction = false; // consumed
         }
       } catch (_) {
         // Skip unparseable lines (partial writes, non-JSON)
@@ -565,6 +279,8 @@ function initClassified() {
     } else {
       // Tag file exists but no classified data (only heartbeats from a
       // previous daemon that exited before its first poll). Full re-parse.
+      // Clear the tag file so previous heartbeat/stop lines don't accumulate.
+      try { fs.truncateSync(tagPath, 0); } catch { /* best effort */ }
       lastSize = 0;
     }
   } catch (_) {
@@ -628,7 +344,7 @@ Log parser mode:
 
 if (showList || showCleanup || showRestart || stopSession) {
   const pidDir = os.tmpdir();
-  let pidFiles = [];
+  let pidFiles: string[] = [];
   try {
     pidFiles = fs.readdirSync(pidDir).filter(f => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
   } catch (_) {}
@@ -777,57 +493,86 @@ if (showList || showCleanup || showRestart || stopSession) {
   try { fs.mkdirSync(tagsDir, { recursive: true }); } catch (_) {}
   tagPath = path.join(tagsDir, sessionBase + TAG_SUFFIX);
 
-  // Clean up old-version tag files (different version suffix) on startup.
-  // Version-in-filename means no _cv header check — just delete stale files.
-  try {
-    const prefix = sessionBase + ".wtft-tag.v";
-    for (const f of fs.readdirSync(tagsDir)) {
-      if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
-        const stale = path.join(tagsDir, f);
-        try { fs.unlinkSync(stale); } catch (_) {}
-        if (process.env.WTFT_DAEMON_DEBUG) {
-          process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}\n`);
-        }
-      }
-    }
-  } catch (_) {}
-
   // PID file for singleton detection
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
   pidPath = path.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 
-  // Singleton check — atomic exclusive-create prevents TOCTOU race.
-  // If PID file exists, verify the process is alive; clean up stale ones.
-  let fd;
+  // Version-aware spawn takeover (#95): if an old-version tag file exists,
+  // an old-build daemon may still own this session (it baked its tag path at
+  // startup and would heartbeat into the stale file forever). Claim the PID
+  // file by overwriting it — the old daemon notices the lost lease on its
+  // next beat and exits via the takeover protocol. No SIGTERM: the signal
+  // handler race (dying daemon unlinking the new owner's PID file) was the
+  // daemon-per-restart leak.
+  const prefix = sessionBase + ".wtft-tag.v";
+  let claimedByTakeover = false;
   try {
-    fd = fs.openSync(pidPath, "wx");
-    fs.writeSync(fd, String(process.pid));
-    fs.closeSync(fd);
-  } catch (_) {
-    // PID file exists — check if the process is still alive
-    try {
-      const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
-      if (existingPid > 0) {
-        try {
-          process.kill(existingPid, 0);
-          // Process exists — another log parser is running, exit quietly
-          process.exit(0);
-        } catch (_2) {
-          // Stale PID — clean up and retry
-          fs.unlinkSync(pidPath);
-          fd = fs.openSync(pidPath, "wx");
-          fs.writeSync(fd, String(process.pid));
-          fs.closeSync(fd);
-        }
+    for (const f of fs.readdirSync(tagsDir)) {
+      if (f.indexOf(prefix) === 0 && f !== sessionBase + TAG_SUFFIX) {
+        fs.writeFileSync(pidPath, String(process.pid));
+        claimedByTakeover = true;
+        break;
       }
-    } catch (_3) {
-      // Couldn't read PID — clean up and retry
-      try { fs.unlinkSync(pidPath); } catch (_4) {}
+    }
+  } catch (e) {
+    process.stderr.write(`[wtft-log-parser] takeover scan error: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+
+  // Singleton check — atomic exclusive-create prevents TOCTOU race.
+  // Skipped when takeover already claimed the lease above.
+
+  if (!claimedByTakeover) {
+    let fd;
+    try {
       fd = fs.openSync(pidPath, "wx");
       fs.writeSync(fd, String(process.pid));
       fs.closeSync(fd);
+    } catch (_) {
+      // PID file exists — check if the process is still alive
+      try {
+        const existingPid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+        if (existingPid > 0) {
+          try {
+            process.kill(existingPid, 0);
+            // Process exists — another log parser is running, exit quietly
+            process.exit(0);
+          } catch (_2) {
+            // Stale PID — clean up and retry
+            fs.unlinkSync(pidPath);
+            fd = fs.openSync(pidPath, "wx");
+            fs.writeSync(fd, String(process.pid));
+            fs.closeSync(fd);
+          }
+        }
+      } catch (_3) {
+        // Couldn't read PID — clean up and retry
+        try { fs.unlinkSync(pidPath); } catch (_4) {}
+        fd = fs.openSync(pidPath, "wx");
+        fs.writeSync(fd, String(process.pid));
+        fs.closeSync(fd);
+      }
     }
   }
+
+  // Version hygiene AFTER claiming the lease (#95): other-version tag files
+  // are derived caches — regeneration is the point of the version bump.
+  // Re-sweep once after 5s to catch a final heartbeat the outgoing daemon
+  // may have written into its old file during its last beat window.
+  const sweepOldTagFiles = () => {
+    try {
+      for (const f of fs.readdirSync(tagsDir)) {
+        if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
+          try { fs.unlinkSync(path.join(tagsDir, f)); } catch (_) {}
+          if (process.env.WTFT_DAEMON_DEBUG) {
+            process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}\n`);
+          }
+        }
+      }
+    } catch (_) {}
+  };
+  sweepOldTagFiles();
+  const resweep = setTimeout(sweepOldTagFiles, 5000);
+  resweep.unref();
 
   // Initialize tag file (version check, header, start heartbeat)
   initClassified();
@@ -842,50 +587,87 @@ if (showList || showCleanup || showRestart || stopSession) {
   const loop = () => {
     if (!running) return;
 
-    // Read new lines from session, dedup by message.id (#54), then classify.
-    const rawInteractions = parseNewLines(sessionPath);
-    const newInteractions = deduplicateInteractions(rawInteractions);
-    if (newInteractions.length > 0) {
-      lastActivityMs = Date.now();
-      for (const interaction of newInteractions) {
-        pendingLines.push(serializeClassified(interaction));
+    // Takeover protocol (#95): ownership of the PID file IS ownership of the
+    // session. If the lease no longer holds our PID (another daemon claimed
+    // it, or the file is gone), exit before writing anything — the check runs
+    // first each beat so a superseded daemon dies within one beat.
+    try {
+      if (fs.readFileSync(pidPath, "utf8").trim() !== String(process.pid)) {
+        running = false;
+        process.exit(0);
       }
+    } catch (_) {
+      running = false;
+      process.exit(0);
     }
 
-    // Throttled flush: write at most every 667ms
-    const now = Date.now();
-    if (pendingLines.length > 0 && (now - lastWriteMs) >= POLL_MS) {
-      flushPending();
-    }
+    try {
+      // Read new lines from session, dedup by message.id (#54), then classify.
+      const rawInteractions = parseNewLines(sessionPath);
+      // Late interrupt marker: the killed turn is the unflushed tail of
+      // pendingItems (order is preserved; anything newer would have caught
+      // the stamp inside parseNewLines).
+      if (stampInterruptOnPending) {
+        if (pendingItems.length > 0) {
+          pendingItems[pendingItems.length - 1].interaction.interrupted = true;
+        }
+        stampInterruptOnPending = false;
+      }
+      const newInteractions = deduplicateInteractions(rawInteractions);
+      if (newInteractions.length > 0) {
+        lastActivityMs = Date.now();
+        for (const interaction of newInteractions) {
+          // prevCtx is captured per-interaction in arrival order — the
+          // recache signature compares against the previous non-sidechain
+          // message's context size (#52 Phase 3).
+          pendingItems.push({ interaction, prevCtx: prevCtxTokens });
+          if (!interaction.isSidechain) {
+            prevCtxTokens = interaction.inputTokens + interaction.cacheReadTokens + interaction.cacheWriteTokens;
+          }
+        }
+      }
 
-    // Heartbeat: on every poll cycle when idle, update the _hb range line.
-    // First idle poll appends {"_hb":{"first":<ts>}}. Subsequent idle polls
-    // overwrite the last line in-place with {"_hb":{"first":<ts>,"last":<ts>}}.
-    // When data arrives, the idle period ends — next idle starts a new line.
-    // NOTE: do NOT update lastActivityMs here — it tracks actual data activity
-    // for the idle-exit check below, not heartbeat flushes.
-    if (pendingLines.length === 0) {
-      if (idleStartMs === 0) idleStartMs = now;
-      upsertHeartbeat(now);
-      lastWriteMs = now;
-    }
+      // Throttled flush: write at most every 667ms
+      const now = Date.now();
+      if (pendingItems.length > 0 && (now - lastWriteMs) >= POLL_MS) {
+        flushPending();
+      }
 
-    // Idle exit: if no new interactions have been classified in >30 min,
-    // assume the session is finished and shut down cleanly.
-    // Skip idle exit during the first 60s of daemon runtime (startup grace
-    // period) so freshly-spawned daemons aren't killed on their first cycle.
-    if (now - lastActivityMs >= IDLE_EXIT_MS && now - startupTime >= 60000) {
+      // Heartbeat: on every poll cycle when idle, update the _hb range line.
+      // First idle poll appends {"_hb":{"first":<ts>}}. Subsequent idle polls
+      // overwrite the last line in-place with {"_hb":{"first":<ts>,"last":<ts>}}.
+      // When data arrives, the idle period ends — next idle starts a new line.
+      // NOTE: do NOT update lastActivityMs here — it tracks actual data activity
+      // for the idle-exit check below, not heartbeat flushes.
+      if (pendingItems.length === 0) {
+        if (idleStartMs === 0) idleStartMs = now;
+        upsertHeartbeat(now);
+        lastWriteMs = now;
+      }
+
+      // Idle exit: if no new interactions have been classified in >24h,
+      // assume the session is finished and shut down cleanly.
+      // Skip idle exit during the first 60s of daemon runtime (startup grace
+      // period) so freshly-spawned daemons aren't killed on their first cycle.
+      if (now - lastActivityMs >= IDLE_EXIT_MS && now - startupTime >= 60000) {
+        if (process.env.WTFT_DAEMON_DEBUG) {
+          process.stderr.write(`[wtft-log-parser] no new data for ${Math.round((now - lastActivityMs)/60000)}m, exiting\n`);
+        }
+        shutdown("idle timeout");
+        return;
+      }
+
+      // If the session file disappears, exit cleanly.
+      if (!fs.existsSync(sessionPath)) {
+        shutdown("session removed");
+        return;
+      }
+    } catch (err) {
+      // Transient error (disk full, permission denied, corrupted JSON) —
+      // log and continue. Don't crash the daemon on a single bad poll cycle.
       if (process.env.WTFT_DAEMON_DEBUG) {
-        process.stderr.write(`[wtft-log-parser] no new data for ${Math.round((now - lastActivityMs)/60000)}m, exiting\n`);
+        process.stderr.write(`[wtft-log-parser] poll error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
-      shutdown("idle timeout");
-      return;
-    }
-
-    // If the session file disappears, exit cleanly.
-    if (!fs.existsSync(sessionPath)) {
-      shutdown("session removed");
-      return;
     }
 
     setTimeout(loop, POLL_MS);

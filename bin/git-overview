@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# git-overview — one-command repo status snapshot.
+# Shows: branch + status, diff stat, recent commits.
+# Equivalent to the 3-command cluster agents repeat constantly.
+set -euo pipefail
+
+echo "=== branch ==="
+git branch --show-current
+echo ""
+echo "=== status ==="
+git status --short
+echo ""
+echo "=== diff stat ==="
+git diff --stat
+echo ""
+echo "=== recent commits ==="
+git log --oneline -5

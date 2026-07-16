@@ -2,6 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { loadConfig, writeConfig } from "./lib/config.js";
+
 
 // ---
 // CONFIGURATION
@@ -18,13 +20,24 @@ const MODEL_QUOTA_REGISTRY: Record<string, number> = {
   "glatfla": 2500000,  // gemini-flash-latest (Tier 2 limit: 3.0M)
   "g3.5fli": 2500000,  // gemini-3.5-flash-lite (Tier 2 limit: 3.0M)
   "glatfli": 2500000,  // gemini-flash-lite-latest (Tier 2 limit: 3.0M)
+  "g3.5pro": 1600000,  // gemini-3.5-pro (Tier 2 limit: 2.0M)
   "g1.5pro": 1600000,  // gemini-1.5-pro (Tier 2 limit: 2.0M)
   "glatpro": 1600000,  // gemini-pro-latest (Tier 2 limit: 2.0M)
-  "c3.5son": 320000,   // claude-3-5-sonnet (Tier 4 limit: 400K)
-  "c3.5hai": 320000,   // claude-3-5-haiku
+  "c5.0son": 320000,   // claude-sonnet-5 (Tier 4 limit: 400K)
+  "c3.5son": 320000,   // claude-3-5-sonnet / claude-sonnet-4-6 (Tier 4 limit: 400K)
+  "c5.0fab": 80000,    // claude-fable-5 (Opus-equivalent Tier: 100K)
+  "c3.5hai": 320000,   // claude-3-5-haiku (Tier 4 limit: 400K)
+  "c5.0hai": 320000,   // claude-haiku-5 (Tier 4 limit: 400K)
+  "c4.0opu": 80000,    // claude-opus-4-x (Opus standard limit)
   "c3.0opu": 80000,    // claude-3-opus (Opus standard limit)
   "d4.0fla": 2500000,  // deepseek-v4-flash (concurrency limit: 2500; no TPM limit — Gemini-equivalent ceiling for redline visibility)
   "d4.0pro": 1600000,  // deepseek-v4-pro (concurrency limit: 500; no TPM limit — Gemini-equivalent ceiling for redline visibility)
+  // GPT-5.x: no hard TPM limits (RPM-limited instead), but register for visibility
+  "gpt5sol": 1000000,  // gpt-5.6-sol (default ceiling for visibility)
+  "gpt5ter": 1000000,  // gpt-5.6-terra
+  "gpt5lun": 1000000,  // gpt-5.6-luna
+  "gpt5.5": 1000000,   // gpt-5.5
+  "gpt5.4": 1000000,   // gpt-5.4
 };
 
 const DEFAULT_CEILING = 1000000;
@@ -47,32 +60,58 @@ function getModelShortName(modelName: string): string {
   if (!modelName) return "unknown";
   const m = modelName.toLowerCase();
 
+  // Gemini
   if (m.includes("gemini-3.5-flash")) return "g3.5fla";
+  if (m.includes("gemini-3.5-pro")) return "g3.5pro";
   if (m.includes("gemini-flash-latest")) return "glatfla";
   if (m.includes("gemini-3.5-flash-lite")) return "g3.5fli";
   if (m.includes("gemini-flash-lite-latest")) return "glatfli";
-  if (m.includes("gemini-1.5-pro")) return "g1.5pro";
+  if (m.includes("gemini-1.5-pro") || m.includes("gemini-pro-latest")) return "glatpro";
+
+  // DeepSeek
   if (m.includes("deepseek-v4-pro")) return "d4.0pro";
   if (m.includes("deepseek-v4-flash") || m.includes("deepseek-chat") || m.includes("deepseek-reasoner")) return "d4.0fla";
 
-  if (m.includes("claude-3-5-sonnet") || m.includes("claude-sonnet-4-6") || m.includes("claude-3-5-sonnet-20240620") || m.includes("claude-3-5-sonnet-20241022")) {
+  // Claude — check from most specific to least
+  if (m.includes("claude-fable-5") || m.includes("fable-5")) return "c5.0fab";
+  if (m.includes("claude-sonnet-5") || m.includes("sonnet-5")) return "c5.0son";
+  if (m.includes("claude-haiku-5") || m.includes("haiku-5")) return "c5.0hai";
+  if (m.includes("claude-opus-4") || m.includes("opus-4")) return "c4.0opu";
+  if (m.includes("claude-3-5-sonnet") || m.includes("claude-sonnet-4-6") || m.includes("claude-sonnet-4-5") || m.includes("claude-3-5-sonnet-20240620") || m.includes("claude-3-5-sonnet-20241022")) {
     return "c3.5son";
   }
   if (m.includes("claude-3-5-haiku") || m.includes("claude-3-5-haiku-20241022")) {
     return "c3.5hai";
   }
-  if (m.includes("claude-3-opus") || m.includes("claude-3-0-opus") || m.includes("opus")) {
-    return "c3.0opu";
-  }
+  if (m.includes("claude-3-opus") || m.includes("claude-3-0-opus")) return "c3.0opu";
+  // Generic Claude fallbacks: check specific model families before the generic opus catch-all
+  if (m.includes("sonnet")) return "c3.5son"; // unknown sonnet variant → treat as Sonnet tier
+  if (m.includes("haiku")) return "c3.5hai";
+  if (m.includes("opus")) return "c4.0opu"; // unknown opus variant → treat as Opus 4 tier
+
+  // GPT-5.x
+  if (m.includes("gpt-5.6-sol")) return "gpt5sol";
+  if (m.includes("gpt-5.6-terra")) return "gpt5ter";
+  if (m.includes("gpt-5.6-luna")) return "gpt5lun";
+  if (m.includes("gpt-5.6")) return "gpt5sol"; // generic gpt-5.6 → Sol pricing tier
+  if (m.includes("gpt-5.5")) return "gpt5.5";
+  if (m.includes("gpt-5.4")) return "gpt5.4";
+  if (m.includes("gpt-5") || m.includes("gpt5")) return "gpt5sol"; // catch-all GPT-5 family
 
   // Fallback fixed-width 7-char encoder (P-VVV-MMM)
-  // Prefix: g=Gemini, c=Claude, d=DeepSeek
+  // Prefix: g=Gemini/Google, c=Claude, d=DeepSeek, o=OpenAI/GPT
   let comp = "c";
   if (m.includes("gemini") || m.includes("google")) comp = "g";
   else if (m.includes("deepseek")) comp = "d";
+  else if (m.includes("gpt") || m.includes("openai")) comp = "o";
   
   let ver = "3.5";
   if (m.includes("latest")) ver = "lat";
+  else if (m.includes("5.6")) ver = "5.6";
+  else if (m.includes("5.5")) ver = "5.5";
+  else if (m.includes("5.4")) ver = "5.4";
+  else if (m.includes("5.0") || m.includes("5-")) ver = "5.0";
+  else if (m.includes("4.0") || m.includes("4-")) ver = "4.0";
   else if (m.includes("3.0") || m.includes("3-0")) ver = "3.0";
   else if (m.includes("1.5") || m.includes("1-5")) ver = "1.5";
 
@@ -83,6 +122,9 @@ function getModelShortName(modelName: string): string {
     if (lastPart === "lite" || (lastPart === "latest" && m.includes("lite"))) modelPart = "fli";
     else if (lastPart === "latest" && m.includes("flash")) modelPart = "fla";
     else if (lastPart === "latest" && m.includes("pro")) modelPart = "pro";
+    else if (lastPart === "sol") modelPart = "sol";
+    else if (lastPart === "terra") modelPart = "ter";
+    else if (lastPart === "luna") modelPart = "lun";
     else modelPart = lastPart.slice(0, 3);
   }
 
@@ -109,6 +151,9 @@ function findActiveSessionFiles(): FileInfo[] {
   const now = Date.now();
   const TWO_MINUTES_MS = 2 * 60 * 1000;
 
+  // Scan wtft-tags directories for classified tag files — harness-agnostic,
+  // same source as the CLI, widget, and session selector. No raw .jsonl
+  // parsing needed (#87 — Ports & Adapters seam).
   function scanDir(dir: string) {
     if (!fs.existsSync(dir)) return;
     try {
@@ -117,10 +162,20 @@ function findActiveSessionFiles(): FileInfo[] {
         const fullPath = path.join(dir, f);
         const stat = fs.statSync(fullPath);
         if (stat.isDirectory()) {
-          scanDir(fullPath);
-        } else if (f.endsWith(".jsonl")) {
-          if (now - stat.mtimeMs < TWO_MINUTES_MS) {
-            activeFiles.push({ path: fullPath, mtime: stat.mtimeMs });
+          // Look for wtft-tags subdirectory
+          if (f === "wtft-tags") {
+            const tagFiles = fs.readdirSync(fullPath);
+            for (const tagFile of tagFiles) {
+              if (tagFile.endsWith(".jsonl")) {
+                const tagPath = path.join(fullPath, tagFile);
+                const tagStat = fs.statSync(tagPath);
+                if (now - tagStat.mtimeMs < TWO_MINUTES_MS) {
+                  activeFiles.push({ path: tagPath, mtime: tagStat.mtimeMs });
+                }
+              }
+            }
+          } else {
+            scanDir(fullPath);
           }
         }
       }
@@ -129,8 +184,10 @@ function findActiveSessionFiles(): FileInfo[] {
     }
   }
 
-  scanDir(CLAUDE_DIR);
+  // Pi sessions dir contains per-session subdirs, each with a wtft-tags/ subdir
   scanDir(PI_DIR);
+  // Claude Code projects dir contains per-project subdirs, each with session subdirs
+  scanDir(CLAUDE_DIR);
 
   return activeFiles;
 }
@@ -146,39 +203,30 @@ function aggregateActiveTpm(activeFiles: FileInfo[], hostingSessionId: string | 
   const now = Date.now();
 
   for (const { path: filePath } of activeFiles) {
+    // Derive hosting session ID from the tag file path:
+    // <sessionDir>/wtft-tags/<sessionId>.jsonl.wtft-tag.vX.Y.Z.jsonl
+    const tagName = path.basename(filePath);
+    const tagVersionIdx = tagName.indexOf(".wtft-tag.v");
+    const sessionId = tagVersionIdx > 0 ? tagName.substring(0, tagVersionIdx) : "";
+    const isHostingSession = hostingSessionId ? sessionId.includes(hostingSessionId) : false;
+
     try {
-      const isHostingSession = hostingSessionId && filePath.includes(hostingSessionId);
       const content = fs.readFileSync(filePath, "utf8");
       const lines = content.split("\n").filter(Boolean);
 
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line);
-          if (!entry) continue;
+          const obj = JSON.parse(line);
+          // Skip heartbeat lines
+          if (obj._hb) continue;
+          // Classified format: { c, in, out, cr, cw, m, t, cat, f, cmd, ... }
+          if (!obj.m || !obj.t) continue;
 
-          const msg = entry.message;
-          const timestampStr = msg?.timestamp || entry.timestamp;
-          let timestamp = 0;
-          if (typeof timestampStr === "string") {
-            timestamp = new Date(timestampStr).getTime();
-          } else if (typeof timestampStr === "number") {
-            timestamp = timestampStr;
-          }
-
-          if (!timestamp) continue;
-
-          const age = now - timestamp;
+          const age = now - obj.t;
           if (age > 120000) continue;
 
-          let modelName = "";
-          if (msg?.model) {
-            modelName = msg.model;
-          } else if (entry.model) {
-            modelName = entry.model;
-          }
-
-          if (!modelName) continue;
-          const shortCode = getModelShortName(modelName);
+          const shortCode = getModelShortName(obj.m);
+          const inputTokens = (obj.in || 0) + (obj.cr || 0);
 
           if (!modelStats[shortCode]) {
             modelStats[shortCode] = { tpm: 0, lastActiveAge: 120000, sessionTpm: 0 };
@@ -187,43 +235,18 @@ function aggregateActiveTpm(activeFiles: FileInfo[], hostingSessionId: string | 
           modelStats[shortCode].lastActiveAge = Math.min(modelStats[shortCode].lastActiveAge, age);
 
           if (age <= 60000) {
-            let inputTokens = 0;
-            if (entry.usage) {
-              if (typeof entry.usage.input === "number") {
-                inputTokens = entry.usage.input;
-                if (typeof entry.usage.cacheRead === "number") {
-                  inputTokens += entry.usage.cacheRead;
-                }
-              } else if (typeof entry.usage.input_tokens === "number") {
-                inputTokens = entry.usage.input_tokens;
-                if (typeof entry.usage.cache_read === "number") {
-                  inputTokens += entry.usage.cache_read;
-                }
-              } else if (typeof entry.usage.prompt_tokens === "number") {
-                inputTokens = entry.usage.prompt_tokens;
-              }
-            }
-
-            if (!inputTokens && msg?.usage) {
-              const baseInput = msg.usage.input || msg.usage.input_tokens || msg.usage.input_token_count || msg.usage.prompt_tokens || 0;
-              const cacheRead = msg.usage.cacheRead || msg.usage.cache_read || 0;
-              inputTokens = baseInput + cacheRead;
-            }
-            
-            // Increment global TPM
             modelStats[shortCode].tpm += inputTokens;
-            
             // If this is the hosting session, increment session-only TPM
             if (isHostingSession) {
               modelStats[shortCode].sessionTpm += inputTokens;
             }
           }
-        } catch (e) {
-          // ignore line parses
+        } catch {
+          // Skip unparseable lines
         }
       }
-    } catch (err) {
-      // ignore
+    } catch {
+      // File may not exist or be unreadable
     }
   }
 
@@ -250,7 +273,15 @@ function parseIntervalToMs(val: string): number {
 }
 
 function getHostingSessionTpm(hostingSessionId: string, activeFiles: FileInfo[]): Record<string, number> {
-  const hostingFile = activeFiles.find(f => f.path.includes(hostingSessionId));
+  // Find the tag file for the hosting session — identified by session ID in the
+  // tag filename: <sessionDir>/wtft-tags/<sessionId>.jsonl.wtft-tag.vX.Y.Z.jsonl
+  const hostingFile = activeFiles.find(f => {
+    const tagName = path.basename(f.path);
+    const tagVersionIdx = tagName.indexOf(".wtft-tag.v");
+    if (tagVersionIdx <= 0) return false;
+    const sessionId = tagName.substring(0, tagVersionIdx);
+    return sessionId.includes(hostingSessionId);
+  });
   if (!hostingFile) return {};
   
   const sessionTpms: Record<string, number> = {};
@@ -260,51 +291,14 @@ function getHostingSessionTpm(hostingSessionId: string, activeFiles: FileInfo[])
     const lines = content.split("\n").filter(Boolean);
     for (const line of lines) {
       try {
-        const entry = JSON.parse(line);
-        if (!entry) continue;
-        const msg = entry.message;
-        const timestampStr = msg?.timestamp || entry.timestamp;
-        let timestamp = 0;
-        if (typeof timestampStr === "string") {
-          timestamp = new Date(timestampStr).getTime();
-        } else if (typeof timestampStr === "number") {
-          timestamp = timestampStr;
-        }
-        if (!timestamp) continue;
-        const age = now - timestamp;
+        const obj = JSON.parse(line);
+        if (obj._hb) continue; // skip heartbeats
+        if (!obj.m || !obj.t) continue;
+        const age = now - obj.t;
         if (age > 60000) continue;
+        const shortCode = getModelShortName(obj.m);
 
-        let modelName = "";
-        if (msg?.model) {
-          modelName = msg.model;
-        } else if (entry.model) {
-          modelName = entry.model;
-        }
-        if (!modelName) continue;
-        const shortCode = getModelShortName(modelName);
-
-        let inputTokens = 0;
-        if (entry.usage) {
-          if (typeof entry.usage.input === "number") {
-            inputTokens = entry.usage.input;
-            if (typeof entry.usage.cacheRead === "number") {
-              inputTokens += entry.usage.cacheRead;
-            }
-          } else if (typeof entry.usage.input_tokens === "number") {
-            inputTokens = entry.usage.input_tokens;
-            if (typeof entry.usage.cache_read === "number") {
-              inputTokens += entry.usage.cache_read;
-            }
-          } else if (typeof entry.usage.prompt_tokens === "number") {
-            inputTokens = entry.usage.prompt_tokens;
-          }
-        }
-        if (!inputTokens && msg?.usage) {
-          const baseInput = msg.usage.input || msg.usage.input_tokens || msg.usage.input_token_count || msg.usage.prompt_tokens || 0;
-          const cacheRead = msg.usage.cacheRead || msg.usage.cache_read || 0;
-          inputTokens = baseInput + cacheRead;
-        }
-
+        const inputTokens = (obj.in || 0) + (obj.cr || 0);
         sessionTpms[shortCode] = (sessionTpms[shortCode] || 0) + inputTokens;
       } catch (e) {
         // ignore
@@ -384,36 +378,21 @@ interface TpmSettings {
   footer: boolean;
 }
 
-function getTpmSettings(ctx: any): TpmSettings {
-  if (!ctx || !ctx.sessionManager) return { widget: true, footer: false };
-  let widget = true;
-  let footer = false;
-  for (const entry of ctx.sessionManager.getEntries()) {
-    if (entry.type === "custom" && entry.customType === "tpm-settings") {
-      if (entry.data) {
-        if (typeof entry.data.widget === "boolean") widget = entry.data.widget;
-        if (typeof entry.data.footer === "boolean") footer = entry.data.footer;
-      }
-    }
-  }
-  return { widget, footer };
+function getTpmSettings(ctx?: any): TpmSettings {
+  const cfg = loadConfig("tpm", { widget: true, footer: false });
+  return {
+    widget: cfg.widget !== false,
+    footer: cfg.footer === true,
+  };
 }
 
-function isEmojiDisabled(ctx: any): boolean {
-  if (!ctx || !ctx.sessionManager) return false;
-  let disabled = false;
-  for (const entry of ctx.sessionManager.getEntries()) {
-    if (entry.type === "custom" && entry.customType === "emoji-settings") {
-      if (entry.data && typeof entry.data.disabled === "boolean") {
-        disabled = entry.data.disabled;
-      }
-    }
-  }
-  return disabled;
+function isEmojiDisabled(): boolean {
+  const cfg = loadConfig("tpm", {});
+  return cfg.emojiDisabled === true;
 }
 
 function updateRateLimiterWidget(ctx: ExtensionContext) {
-  const settings = getTpmSettings(ctx);
+  const settings = getTpmSettings();
 
   if (!settings.widget) {
     ctx.ui.setWidget("rate-limiter", undefined);
@@ -427,7 +406,7 @@ function updateRateLimiterWidget(ctx: ExtensionContext) {
     return;
   }
 
-  const emojiDisabled = isEmojiDisabled(ctx);
+  const emojiDisabled = isEmojiDisabled();
 
   try {
     const activeFiles = findActiveSessionFiles();
@@ -459,10 +438,7 @@ function updateRateLimiterWidget(ctx: ExtensionContext) {
         const cooldownIcon = emojiDisabled ? "[!]" : "☕";
         footerParts.push(`\x1b[1;33m${cooldownIcon} Cooldown: ${cooldownRemainingSecs}s\x1b[0m`);
       } else {
-        let hFilled = Math.min(Math.round((hostingData.tpm / hostingCeiling) * BAR_WIDTH), BAR_WIDTH);
-        if (hostingData.tpm > 0 && hFilled === 0) {
-          hFilled = 1;
-        }
+        let hFilled = Math.min(Math.ceil((hostingData.tpm / hostingCeiling) * BAR_WIDTH), BAR_WIDTH);
         const hBar = "$".repeat(hFilled) + ".".repeat(BAR_WIDTH - hFilled);
 
         let hColor = "\x1b[32m"; // Green
@@ -490,7 +466,7 @@ function updateRateLimiterWidget(ctx: ExtensionContext) {
       }
 
       // Render hosting session's ONLY TPM
-      let sFilled = Math.min(Math.round((hostingData.sessionTpm / hostingCeiling) * BAR_WIDTH), BAR_WIDTH);
+      let sFilled = Math.min(Math.ceil((hostingData.sessionTpm / hostingCeiling) * BAR_WIDTH), BAR_WIDTH);
       if (hostingData.sessionTpm > 0 && sFilled === 0) {
         sFilled = 1;
       }
@@ -507,10 +483,7 @@ function updateRateLimiterWidget(ctx: ExtensionContext) {
       lines.push(`\x1b[1;36m  Global Multi-Model Status ───────────────────────\x1b[0m`);
       
       // Render hosting model global stats first under global list
-      let hFilled = Math.min(Math.round((hostingData.tpm / hostingCeiling) * BAR_WIDTH), BAR_WIDTH);
-      if (hostingData.tpm > 0 && hFilled === 0) {
-        hFilled = 1;
-      }
+      let hFilled = Math.min(Math.ceil((hostingData.tpm / hostingCeiling) * BAR_WIDTH), BAR_WIDTH);
       const hBar = "$".repeat(hFilled) + ".".repeat(BAR_WIDTH - hFilled);
       
       let hColor = "\x1b[32m"; // Green
@@ -530,10 +503,7 @@ function updateRateLimiterWidget(ctx: ExtensionContext) {
         }
 
         const ceiling = MODEL_QUOTA_REGISTRY[shortCode] || DEFAULT_CEILING;
-        let filled = Math.min(Math.round((data.tpm / ceiling) * BAR_WIDTH), BAR_WIDTH);
-        if (data.tpm > 0 && filled === 0) {
-          filled = 1;
-        }
+        let filled = Math.min(Math.ceil((data.tpm / ceiling) * BAR_WIDTH), BAR_WIDTH);
         const bar = "$".repeat(filled) + ".".repeat(BAR_WIDTH - filled);
 
         let color = "\x1b[32m";
@@ -760,15 +730,22 @@ export default function rateLimiterExtension(pi: ExtensionAPI) {
       let newFooter = current.footer;
       let handled = false;
 
-      if (trimmed === "--no-emojii" || trimmed === "--no-emoji") {
-        pi.appendEntry("emoji-settings", { disabled: true });
+      if (trimmed === "--reset") {
+        writeConfig("tpm", { widget: null, footer: null });
         updateRateLimiterWidget(ctx);
-        ctx.ui.notify("Emoji icons in widgets have been disabled.", "info");
+        ctx.ui.notify("TPM settings reset. Edit ~/.config/princess-pi-packages/tpm.json for new defaults.", "info");
+        return;
+      }
+
+      if (trimmed === "--no-emojii" || trimmed === "--no-emoji") {
+        writeConfig("tpm", { emojiDisabled: true });
+        updateRateLimiterWidget(ctx);
+        ctx.ui.notify("Emoji icons in widgets have been disabled. (Persisted to tpm.json)", "info");
         return;
       } else if (trimmed === "--emojii" || trimmed === "--emoji") {
-        pi.appendEntry("emoji-settings", { disabled: false });
+        writeConfig("tpm", { emojiDisabled: false });
         updateRateLimiterWidget(ctx);
-        ctx.ui.notify("Emoji icons in widgets have been enabled.", "info");
+        ctx.ui.notify("Emoji icons in widgets have been enabled. (Persisted to tpm.json)", "info");
         return;
       }
 
@@ -811,7 +788,7 @@ export default function rateLimiterExtension(pi: ExtensionAPI) {
         newWidget = !current.widget;
       }
 
-      pi.appendEntry("tpm-settings", { widget: newWidget, footer: newFooter });
+      writeConfig("tpm", { widget: newWidget, footer: newFooter });
       updateRateLimiterWidget(ctx);
 
       const statusMsgs: string[] = [];

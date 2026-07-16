@@ -1,15 +1,15 @@
 {
   "name": "/wtft",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "tagline": "Where The F***ing Tokens?! (WTFT) - Cost Auditing Widget",
-  "description": "Displays a horizontal, stacked TUI bar chart widget of your session's token costs classified into Spec, Code, and Other work types.",
+  "description": "Displays a horizontal, stacked TUI bar chart widget of your session's cost during each activity (Spec, Code, Plan, Agents, ...). Bars are cost totals tagged by each turn's action - every turn's cost includes the context re-send overhead regardless of category, and Prompt means pure conversational replies. For an input/output token decomposition use --tokens.",
   "why": [
     {
       "scenario": "You just finished a coding session and want to see where your token costs went \u2014 was it all spec-writing or code refactoring?",
       "commands": [
         ""
       ],
-      "result": "A stacked bar chart widget appears showing token costs broken into Spec, Code, and Other categories over 1-hour intervals. You see exactly which hours burned the most tokens.",
+      "result": "A stacked bar chart widget appears showing your cost during each activity (Spec, Code, Plan, Agents, ...) over 1-hour intervals. You see exactly which hours burned the most tokens.",
       "demo": [
         "\u001b[90m\u2500\u2500 Jul-01 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m",
         "\u001b[90m13:00\u001b[0m  \u001b[90m+$0.12\u001b[0m  \u001b[1;37m$1.23\u001b[0m  \u001b[38;5;108m\u2588\u2588\u2588\u2588\u001b[0m\u001b[38;5;173m\u2588\u2588\u2588\u001b[0m\u001b[38;5;238m\u2591\u001b[0m",
@@ -96,6 +96,17 @@
         "  # won't help"
       ],
       "result": "WTFT uses public pricing estimates per model and excludes things like caching discounts, free-tier credits, or provider-specific billing nuances. It's a directional cost-awareness tool \u2014 not an accounting ledger."
+    },
+    {
+      "scenario": "Your session has been idle for a while and the model cache has expired, or you're running a local model like Ollama with no remote caching at all.",
+      "commands": [
+        ""
+      ],
+      "result": "Instead of hiding the widget or showing stale data, WTFT displays 'Cache Empty' (cloud models) or 'No Cache (local model)' in the widget area, plus the daemon's idle countdown. You know immediately whether the session is just idle or cache-free.",
+      "demo": [
+        "\u001b[90mCache Empty\u001b[0m",
+        "  \u001b[33m\u25CF\u001b[0m idle (0:23 to expire)"
+      ]
     }
   ],
   "usage": [
@@ -185,7 +196,19 @@
     },
     {
       "flags": "-T, --tokens",
-      "desc": "Print a per-model token summary table (deduped) for cross-referencing with /usage."
+      "desc": "Switch bar chart to token-unit mode and print a per-model token summary table (deduped). Bar chart uses bg color for token width and character density for output $/tok cost signal. Config-persistable. Use --cost to switch back."
+    },
+    {
+      "flags": "-C, --cost",
+      "desc": "Switch bar chart back to cost-unit mode ($). Overrides a persisted --tokens setting. Config-persistable."
+    },
+    {
+      "flags": "--pad <N>",
+      "desc": "Pad output with N spaces on each side (default: 1, max: floor(term/2)-1). Makes CLI output width match Pi TUI widget."
+    },
+    {
+      "flags": "--debug",
+      "desc": "Print diagnostic cost totals (tag file vs direct parse + dedup) after the chart."
     },
     {
       "flags": "--help, -h",
@@ -240,6 +263,14 @@
     {
       "cmd": "/wtft --watch",
       "desc": "Watch a session file in real-time and re-render the bar chart as new interactions arrive."
+    },
+    {
+      "cmd": "/wtft --debug",
+      "desc": "Print diagnostic cost totals (tag file vs direct parse + dedup) after the chart."
+    },
+    {
+      "cmd": "/wtft --pad 0",
+      "desc": "Render with zero padding (full terminal width). Default --pad 1 matches Pi widget width."
     }
   ]
 }

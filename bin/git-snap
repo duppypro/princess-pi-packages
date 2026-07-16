@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# git-snap — stage all changes and commit with the 5-step flow label.
+# Usage: git-snap "your commit message"
+# If no message given, opens $EDITOR.
+set -euo pipefail
+
+MSG="${1:-}"
+if [ -z "$MSG" ]; then
+  echo "git-snap: no message provided — opening editor"
+  git commit -a
+else
+  git add -A
+  git commit -m "${MSG} 👑π🐱"
+fi

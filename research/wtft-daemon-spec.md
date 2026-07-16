@@ -168,8 +168,8 @@ Auto-spawns daemon. Polls up to 5s for the tag file to exist. Opens `fs.watch`
 new bytes by offset, converts to Interactions, merges into accumulator,
 re-renders. No polling, no debounce — daemon guarantees complete atomic lines.
 
-Falls back to polling `watchMode()` (reads session.jsonl directly) if daemon
-spawn fails.
+If daemon spawn fails, the CLI errors and exits — there is no fallback to
+polling mode (#93).
 
 ---
 

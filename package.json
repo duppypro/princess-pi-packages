@@ -1,14 +1,18 @@
 {
   "name": "princess-pi-packages",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Custom global extensions for Pi Coding Agent, including DuckDuckGo search, serve with HTTPS, WTFT token auditor, and git merging.",
   "keywords": [
     "pi-package"
   ],
   "type": "module",
+  "repository": "github:duppypro/princess-pi-packages",
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
-    "yada": "./bin/yada.ts",
-    "dedupwcount": "./bin/yada.ts",
+    "yada": "./bin/yada.mjs",
+    "dedupwcount": "./bin/yada.mjs",
     "wtft": "./bin/wtft.mjs",
     "serve": "./bin/serve.mjs",
     "merge": "./bin/merge.mjs",
@@ -19,11 +23,23 @@
       "./extensions"
     ]
   },
+  "files": [
+    "bin/",
+    "extensions/",
+    "skills/"
+  ],
   "scripts": {
-    "build": "node build.mjs",
-    "deploy:local": "npm run build && npm uninstall -g princess-pi-packages && npm cache clean --force && npm link"
+    "build": "bun build.ts",
+    "prepare": "bun build.ts",
+    "typecheck": "tsc --noEmit",
+    "deploy:local": "npm uninstall -g princess-pi-packages; npm link"
   },
   "dependencies": {
-    "esbuild": "^0.28.1"
+    "wcwidth": "^1.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/wcwidth": "^1.0.0",
+    "typescript": "^7.0.2"
   }
 }

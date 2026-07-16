@@ -157,6 +157,10 @@
         </tbody>
     </table>
 
+    <h3>SURGE Timeline (24-hour pricing bar)</h3>
+    <p>The title line renders a 24-hour timeline showing DeepSeek peak-valley surge pricing windows. Orange segments mark surge-priced hours (UTC 01:00–04:00 and 06:00–10:00 mapped to local time), green segments mark normal-priced hours, and a ◆ diamond marks the current hour. When in or near a surge window, a badge is appended: <code>⚡ SURGE 2x</code> (active), <code>⚡ SURGE APPROACHING</code> (within 20 min of start, blinking orange), or <code>⚡ SURGE ENDING</code> (within 20 min of end, blinking green).</p>
+    <p><strong>Unified in <code>buildWtftLines</code>:</strong> Both Pi widget and CLI (non-watch and <code>--watch</code>) share one code path. The Pi widget passes the session model explicitly; the CLI auto-detects DeepSeek from classified interactions. Non-DeepSeek models render an all-green timeline with no badges.</p>
+
     <h3>TUI Visualization Style</h3>
     <p>The TUI offers two distinct high-fidelity visualization styles depending on the display mode:</p>
     <ul>
@@ -168,7 +172,7 @@
     
     <h4 style="color: var(--accent-yellow); margin-bottom: 5px;">Example 1: Granular 1-Minute Cumulative Widget (Wide Terminal with Collapsed, Inverted Ticks)</h4>
     <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0; font-family: monospace;">
-💸 WTF Tokens?
+💸 WTF Tokens?  (◆--◆) ⚡ SURGE 2x
 <span style="color: #87af87;">█</span> Spec  <span style="color: #87af87; background: #d7875f;">▒</span> Mixed  <span style="color: #d7875f;">█</span> Code  <span style="color: #ffafaf;">█</span> Tests  <span style="color: #af5fd7;">█</span> Research  <span style="color: #5fafaf;">█</span> Git  <span style="color: #5f87af;">█</span> Grep  <span style="color: #d75f87;">░</span> Prompt  <span style="color: #444444;">░</span> Other
 <span style="color: #888;">── Jun-20 ───────────<span style="background: #e0e0e0; color: #1e1e1e;"> $0.00 </span>──────<span style="background: #e0e0e0; color: #1e1e1e;"> $6.25 </span>─────<span style="background: #e0e0e0; color: #1e1e1e;"> $12.50 </span>─────<span style="background: #e0e0e0; color: #1e1e1e;"> $18.75 </span>─────<span style="background: #e0e0e0; color: #1e1e1e;"> $25.00 </span></span>
 <span style="color: #888;">22:42</span>  <span style="color: #888;">+$13.00</span>  <strong>$23.00</strong>  <span style="color: #87af87; background: #d7875f;">▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒</span><span style="color: #d7875f;">█████████████████████</span>
@@ -177,7 +181,7 @@
 
     <h4 style="color: var(--accent-yellow); margin-bottom: 5px;">Example 2: 1-Hour Bucket Widget Crossing Day Boundary (Point-of-Spend Multi-Line Style)</h4>
     <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0; font-family: monospace;">
-💸 WTF Tokens?
+💸 WTF Tokens?  (◆--◆) ⚡ SURGE 2x
 <span style="color: #87af87;">█</span> Spec  <span style="color: #87af87; background: #d7875f;">▒</span> Mixed  <span style="color: #d7875f;">█</span> Code  <span style="color: #ffafaf;">█</span> Tests  <span style="color: #af5fd7;">█</span> Research  <span style="color: #5fafaf;">█</span> Git  <span style="color: #5f87af;">█</span> Grep  <span style="color: #d75f87;">░</span> Prompt  <span style="color: #444444;">░</span> Other
 <span style="color: #888;">── Jun-20 ──<span style="background: #e0e0e0; color: #1e1e1e;"> $0.00 </span>────────<span style="background: #e0e0e0; color: #1e1e1e;"> $3.25 </span>────────<span style="background: #e0e0e0; color: #1e1e1e;"> $6.50 </span>───────<span style="background: #e0e0e0; color: #1e1e1e;"> $9.75 </span>───────<span style="background: #e0e0e0; color: #1e1e1e;"> $13.00 </span></span>
 <span style="color: #888;">22:00</span>  <strong>$13.00</strong>                                                                  <span style="color: #87af87; background: #d7875f;">▒</span>
@@ -187,7 +191,7 @@
 
     <h3>Architectural Design</h3>
     <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <p><strong>1. Log Parser:</strong> A persistent background daemon (<code>wtft-daemon</code>) watches the session <code>.jsonl</code> file, classifies each interaction, and writes pre-computed entries to a harness-agnostic tag file (<code>wtft-tags/*.tag.v2.2.0.jsonl</code>). In Pi, the widget reads directly from <code>ctx.sessionManager.getEntries()</code> (in-memory) but also spawns a log parser to keep the tag file warm for CLI use.</p>
+        <p><strong>1. Log Parser:</strong> A persistent background daemon (<code>wtft-daemon</code>) watches the session <code>.jsonl</code> file, classifies each interaction, and writes pre-computed entries to a harness-agnostic tag file (<code>wtft-tags/*.tag.v2.3.4.jsonl</code>). Costs are rounded to 6 decimal places (micro-cent precision) before serialization to eliminate float drift between the in-memory widget and file-based CLI. In Pi, the widget reads directly from <code>ctx.sessionManager.getEntries()</code> (in-memory) but also spawns a log parser on <code>session_start</code> to keep the tag file warm for CLI use. If the daemon dies from idle timeout (24h), the <code>agent_end</code> handler checks health via <code>checkDaemonHealth</code> and auto-revives it. On version bump, the new daemon detects the old-version tag file and auto-replaces the old daemon — no manual restart needed.</p>
         <p><strong>2. Binning Engine:</strong> Groups entries by their <code>timestamp</code> into chronological bins based on the requested interval (e.g., 6-minute windows for granular auditing, or 1-day windows for multi-day tracks).</p>
         <p><strong>3. Scaling & Layout:</strong> Normalizes the absolute length of each interval's ASCII bar based on the maximum cost in any single interval (typically capped at 30-40 characters wide to fit standard terminal outputs gracefully). Each sub-segment within that bar is allocated its proportional share of characters based on its absolute cost contribution, without rendering percentages or additional trailing text.</p>
         <p><strong>4. Recursive Subagent Rollup:</strong> When a Claude Code session log is targeted, WTFT auto-detects if a subagent directory exists (e.g., <code>&lt;session-id&gt;/subagents/</code>). If present, WTFT recursively reads all subagent <code>.jsonl</code> logs and blends their interactions chronologically based on their individual timestamps. This guarantees that binned timelines and other command histograms represent the true, cumulative cost and work allocations of the entire multi-agent session tree.</p>
@@ -225,6 +229,33 @@
         </p>
     </div>
 
+    <h3>Settings Persistence (Cross-Harness Config)</h3>
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <p>All WTFT settings are persisted in harness-agnostic JSON config files via the shared <code>extensions/lib/config.ts</code> module. There is no <code>.jsonl</code> persistence — settings survive across Pi sessions, Claude Code invocations, and machine restarts.</p>
+
+        <h4 style="color: var(--accent-yellow);">Config Hierarchy (lowest → highest precedence)</h4>
+        <ol>
+            <li><strong>Code defaults</strong> — hardcoded (interval=1h, limit=10, mode=cumulative, showTicks=true, timezone=America/Los_Angeles, disabledEmoji=false).</li>
+            <li><strong>User-global config:</strong> <code>~/.config/princess-pi/wtft.json</code></li>
+            <li><strong>Project-local config:</strong> <code>./.princess-pi/wtft.json</code> (overrides global keys)</li>
+            <li><strong>CLI flags</strong> — highest precedence, applied by caller after reading config.</li>
+        </ol>
+        <p>Each level overrides only the keys it defines; missing keys inherit from the layer below. When settings are changed via <code>/wtft</code> in Pi, they are written to the project-local config if it already exists, otherwise to the user-global config.</p>
+
+        <h4 style="color: var(--accent-yellow);">Config Format (wtft.json)</h4>
+        <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0; font-family: monospace;">{
+  "interval": "1h",
+  "limit": 10,
+  "mode": "cumulative",
+  "showTicks": true,
+  "timezone": "America/Los_Angeles",
+  "disabledEmoji": false
+}</pre>
+
+        <h4 style="color: var(--accent-yellow);">Widget Auto-Show</h4>
+        <p>The WTFT widget auto-shows on session start if a config file exists (user has configured wtft at least once). No separate <code>visible</code> setting needed — delete the config file to permanently hide, or use <code>/wtft --hide</code> to hide for the current session only.</p>
+    </div>
+
     <h3>Proposed Verification Plan</h3>
     <ul>
         <li><strong>Step 1 (Mock Log Generation):</strong> Create a dummy session log with predefined entries explicitly classified into Spec (touches `docs/`), Code (touches `src/`), and Other (general chit-chat).</li>
@@ -236,10 +267,38 @@
     <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
         <p>The widget title line shows a colored status indicator for the background log parser:</p>
         <ul>
-            <li><span style="color: #4a4;">🟢 live</span> — log parser is running and processing new interactions</li>
-            <li><span style="color: #d44;">🔴 stopped HH:MM</span> — log parser exited (idle timeout or crash), shows last heartbeat time</li>
-            <li><span style="color: #da0;">🟡 restarting...</span> — log parser is being restarted</li>
+            <li><span style="color: #888;">● reading...</span> — CLI startup placeholder, shown before the first health check completes (500ms)</li>
+            <li><span style="color: #4a4;">● live</span> — log parser is running and processing new interactions</li>
+            <li><span style="color: #da0;">● idle (3:22 to expire)</span> — no new data for 2m2s; countdown shows time until model cache expires (Claude: 5 min, DeepSeek: 1 hr, local: no countdown)</li>
+            <li><span style="color: #da0;">● idle (cache emptied)</span> — cache TTL fully elapsed (remaining ≤ 0 min); model context cache has expired</li>
+            <li><span style="color: #da0;">● idle (local model)</span> — daemon idle, no remote cache (local model)</li>
+            <li><span style="color: #d44;">● stopped HH:MM</span> — log parser exited (24h idle timeout or crash)</li>
+            <li><span style="color: #da0;">● restarting...</span> — log parser is being restarted</li>
         </ul>
+        <p>Status rendering is shared via <code>renderDaemonStatus()</code> in <code>wtft-daemon-lib.ts</code> — DRY between Pi widget and CLI watch modes.</p>
+
+        <h4>Health Check Mechanism</h4>
+        <p>The daemon health check (<code>checkDaemonHealth</code>) reads the PID file and the last ~8KB of the tag file to determine state:</p>
+        <ul>
+            <li><strong>PID alive + classified entries present</strong> → <code>live</code></li>
+            <li><strong>PID alive + only heartbeats for ≥ 2m2s</strong> → <code>idle</code>. The heartbeat's <code>first</code> timestamp (set by the daemon at idle start) is used as the clock baseline, so the countdown ticks accurately even across health-check poll intervals.</li>
+            <li><strong>PID alive + fresh heartbeat but session mtime ≥ 2m2s</strong> → <code>idle</code> immediately. This handles daemon restarts on already-idle sessions — the startup heartbeat's freshness is overridden by the session file's modification time.</li>
+            <li><strong>PID dead</strong> → <code>stopped</code>, with the most recent heartbeat's stop reason and timestamp.</li>
+            <li><strong>PID dead but tag file written within 2s</strong> → state unchanged (debounce). Masks the restart gap when a new daemon replaces an old one, preventing a spurious "stopped" flash.</li>
+        </ul>
+
+        <h4>Update Timing</h4>
+        <p>Status updates are triggered by three mechanisms, from fastest to slowest:</p>
+        <table style="width:100%; border-collapse: collapse;">
+            <tr style="border-bottom: 1px solid #404040;"><th style="text-align:left; padding: 4px 8px;">Trigger</th><th style="text-align:left; padding: 4px 8px;">Latency</th><th style="text-align:left; padding: 4px 8px;">Applies to</th></tr>
+            <tr style="border-bottom: 1px solid #303030;"><td style="padding: 4px 8px;">Inotify (fs.watch) on tag file</td><td style="padding: 4px 8px;">~667ms (daemon write interval)</td><td style="padding: 4px 8px;">CLI <code>--watch</code></td></tr>
+            <tr style="border-bottom: 1px solid #303030;"><td style="padding: 4px 8px;">Pi widget render timer</td><td style="padding: 4px 8px;">~2-5s (widget refresh)</td><td style="padding: 4px 8px;">Pi widget</td></tr>
+            <tr style="border-bottom: 1px solid #303030;"><td style="padding: 4px 8px;">60-second backup timer</td><td style="padding: 4px 8px;">≤ 60s</td><td style="padding: 4px 8px;">CLI <code>--watch</code> (fallback if inotify misses)</td></tr>
+            <tr><td style="padding: 4px 8px;">Initial startup</td><td style="padding: 4px 8px;">500ms</td><td style="padding: 4px 8px;">CLI <code>--watch</code></td></tr>
+        </table>
+        <p>Inotify-driven updates mean that idle → live transitions are instant — the status flips the moment the daemon writes classified entries to the tag file. The 60-second timer is a safety net, not the primary mechanism.</p>
+        <p>The log parser daemon wraps its main poll loop in a <code>try/catch</code> so transient errors (disk full, permission denied, corrupted JSON) are logged and the daemon continues running on the next poll cycle — it does not crash silently.</p>
+        <p>Width is always auto-detected from terminal (clamped at 1023). No <code>-w/--width</code> flag. Watch modes re-render on terminal resize (SIGWINCH).</p>
         <p>In CLI <code>--watch</code> mode, press <code>r</code> to restart the log parser. The footer shows <code style="color: #d44;">r to restart log parser</code> in red when the parser is stopped. The Pi widget auto-spawns a log parser on session start to keep the tag file warm for CLI use.</p>
         <p>Management commands: <code>--list</code> (list running parsers), <code>--cleanup</code> (kill stale parsers), <code>--restart</code> (restart all), <code>--stop &lt;session&gt;</code> (stop one).</p>
     </div>
