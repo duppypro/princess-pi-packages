@@ -220,6 +220,55 @@
       "why": "tags cannot move main; only branch-mode flags are inherently main-touching"
     },
     {
+      "id": "block-push-matching-refspec",
+      "command": "git push origin :",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 10: ':' is git's MATCHING refspec — pushes every branch existing on both sides, main included; empty dst never equaled 'main' so it sailed past the destination check"
+    },
+    {
+      "id": "block-push-matching-refspec-force",
+      "command": "git push origin +:",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "'+:' force-updates all matching branches — strictly worse than ':'"
+    },
+    {
+      "id": "allow-push-delete-feature-colon-form",
+      "command": "git push origin :old-feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "':dst' with a NON-empty dst is a delete of that ref — only main/master deletion blocks; empty-dst detection must not overreach"
+    },
+    {
+      "id": "block-sudo-u-arg-push-main",
+      "command": "sudo -u root git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 11: sudo -u consumes a separate argument; 'root' failed every prefix check and the guard bailed → fail-open (the residual documented at #74 close, now fixed)"
+    },
+    {
+      "id": "block-env-unset-arg-push-main",
+      "command": "env -u GIT_DIR git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "env -u NAME, same bypass — NAME is not an assignment, wrapper, flag, or number"
+    },
+    {
+      "id": "block-doas-u-arg-push-main",
+      "command": "doas -u root git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "doas -u user, same shape as sudo"
+    },
+    {
+      "id": "allow-sudo-u-arg-push-feature",
+      "command": "sudo -u root git push origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "wrapper-arg skipping must not change the verdict for safe pushes"
+    },
+    {
       "id": "block-push-head-on-main",
       "command": "git push origin HEAD",
       "branch": "main",

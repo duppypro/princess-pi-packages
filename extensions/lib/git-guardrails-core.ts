@@ -108,6 +108,12 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
     if (rs.startsWith("+")) rs = rs.slice(1); // +refspec force marker
     const colon = rs.lastIndexOf(":");
     const dst = colon >= 0 ? rs.slice(colon + 1) : rs; // src:dst — destination decides
+    if (colon >= 0 && dst === "") {
+      // ':' is git's MATCHING refspec — pushes every branch that exists on
+      // both sides, main included ('+:' force-updates them). An empty dst
+      // never equals 'main', so it needs its own gate (#74 review finding 10)
+      return "':' (matching refspec) pushes all matching branches including main/master.";
+    }
     if (dst === "HEAD" || dst === "@") {
       // symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       // same-named remote ref — resolve it instead of matching the literal
@@ -124,10 +130,24 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
   return null;
 }
 
-// Wrapper binaries that pass execution straight through to git (#74 review finding 5)
-const GIT_WRAPPERS = new Set([
-  "command", "env", "nice", "nohup", "time", "timeout",
-  "stdbuf", "setsid", "ionice", "sudo", "doas",
+// Wrapper binaries that pass execution straight through to git (#74 review
+// finding 5), each mapped to its options that consume a SEPARATE argument —
+// `sudo -u root git push` must skip 'root' with the '-u', or the unknown word
+// bails the scan and the push escapes (#74 review finding 11). Attached
+// (-uroot) and =-joined (--user=root) forms are single '-' tokens and need no
+// entry here.
+const GIT_WRAPPERS = new Map<string, Set<string>>([
+  ["command", new Set()],
+  ["env", new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"])],
+  ["nice", new Set(["-n", "--adjustment"])],
+  ["nohup", new Set()],
+  ["time", new Set(["-f", "--format", "-o", "--output"])],
+  ["timeout", new Set(["-k", "--kill-after", "-s", "--signal"])],
+  ["stdbuf", new Set(["-i", "-o", "-e"])],
+  ["setsid", new Set()],
+  ["ionice", new Set(["-c", "-n", "-p", "-P", "-u"])],
+  ["sudo", new Set(["-u", "-g", "-p", "-h", "-U", "-C", "-D", "-R", "-T", "-t", "-r"])],
+  ["doas", new Set(["-u", "-C", "-t"])],
 ]);
 
 // ---
@@ -212,11 +232,17 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
   // bare numbers (nice/timeout values) — until 'git'. Anything else means
   // this is not a git invocation ('echo git push …' stays text).
   let i = 0;
+  let wrapperArgOpts: Set<string> | null = null; // arg-consuming options of the wrapper we're inside
   while (i < T.length && T[i] !== "git") {
     const t = T[i];
-    if (
+    const opts = GIT_WRAPPERS.get(t);
+    if (opts) {
+      wrapperArgOpts = opts;
+      i++;
+    } else if (wrapperArgOpts?.has(t)) {
+      i += 2; // option + its separate argument (e.g. sudo -u root)
+    } else if (
       /^[A-Za-z_][A-Za-z0-9_]*=/.test(t) ||
-      GIT_WRAPPERS.has(t) ||
       t.startsWith("-") ||
       /^[0-9]+[A-Za-z]*$/.test(t)
     ) {

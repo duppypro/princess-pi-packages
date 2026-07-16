@@ -131,6 +131,12 @@ check_push() {
   for rs in "${refspecs[@]}"; do
     rs="${rs#+}"          # +refspec force marker
     dst="${rs##*:}"       # src:dst — destination decides; no colon → the ref itself
+    if [ -z "$dst" ] && [ "$rs" != "$dst" ]; then  # empty dst + a colon present
+      # ':' is git's MATCHING refspec — pushes every branch that exists on
+      # both sides, main included ('+:' force-updates them). An empty dst
+      # never equals 'main', so it needs its own gate (#74 review finding 10)
+      block "':' (matching refspec) pushes all matching branches including main/master."
+    fi
     if [ "$dst" = "HEAD" ] || [ "$dst" = "@" ]; then
       # symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       # same-named remote ref — resolve it instead of matching the literal
@@ -150,6 +156,24 @@ check_push() {
 
 # Wrapper binaries that pass execution straight through to git (#74 review finding 5)
 GIT_WRAPPERS=" command env nice nohup time timeout stdbuf setsid ionice sudo doas "
+
+# Options of each wrapper that consume a SEPARATE argument — `sudo -u root git
+# push` must skip 'root' with the '-u', or the unknown word bails the scan and
+# the push escapes (#74 review finding 11). Attached (-uroot) and =-joined
+# (--user=root) forms are single '-' tokens and need no entry here.
+wrapper_arg_opts() {
+  case "$1" in
+    env)     echo " -u --unset -C --chdir -S --split-string " ;;
+    nice)    echo " -n --adjustment " ;;
+    time)    echo " -f --format -o --output " ;;
+    timeout) echo " -k --kill-after -s --signal " ;;
+    stdbuf)  echo " -i -o -e " ;;
+    ionice)  echo " -c -n -p -P -u " ;;
+    sudo)    echo " -u -g -p -h -U -C -D -R -T -t -r " ;;
+    doas)    echo " -u -C -t " ;;
+    *)       echo " " ;;
+  esac
+}
 
 # ---
 # Quote-aware lexing (#74 review finding 6): separators inside quotes are
@@ -214,12 +238,16 @@ check_git_subcommand() {
   # Skip a benign prefix — wrappers, their -options, VAR=val assignments,
   # bare numbers (nice/timeout values) — until 'git'. Anything else means
   # this is not a git invocation ('echo git push …' stays text).
-  local i=0 n=${#T[@]} t
+  local i=0 n=${#T[@]} t arg_opts=" "
   while [ "$i" -lt "$n" ]; do
     t="${T[$i]}"
     [ "$t" = "git" ] && break
     if [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
-    case "$GIT_WRAPPERS" in *" $t "*) i=$((i + 1)); continue ;; esac
+    case "$GIT_WRAPPERS" in *" $t "*)
+      arg_opts=$(wrapper_arg_opts "$t"); i=$((i + 1)); continue ;;
+    esac
+    # option + its separate argument (e.g. sudo -u root) — #74 review finding 11
+    case "$arg_opts" in *" $t "*) i=$((i + 2)); continue ;; esac
     case "$t" in -*) i=$((i + 1)); continue ;; esac
     if [[ "$t" =~ ^[0-9]+[A-Za-z]*$ ]]; then i=$((i + 1)); continue; fi
     return 0
