@@ -530,6 +530,58 @@
       "why": "chained -C resolution, feature branch stays allowed"
     },
     {
+      "id": "block-git-dir-eq-bare-push-on-main",
+      "command": "git --git-dir=/repo/.git push",
+      "c_path_branch": "main",
+      "cwd_branch": "feat",
+      "verdict": "block",
+      "why": "finding 17 (r3591855555): --git-dir selects the affected repo exactly like -C — skipping it fell back to the hook cwd (on feat) and the main push escaped"
+    },
+    {
+      "id": "block-git-dir-separate-arg-bare-push-on-main",
+      "command": "git --git-dir /repo/.git push",
+      "c_path_branch": "main",
+      "cwd_branch": "feat",
+      "verdict": "block",
+      "why": "--git-dir also takes a SEPARATE argument; the old generic -* skip left '/repo/.git' as the subcommand and 'push' invisible"
+    },
+    {
+      "id": "allow-git-dir-eq-bare-push-on-feature",
+      "command": "git --git-dir=/repo/.git push",
+      "c_path_branch": "feat",
+      "cwd_branch": "main",
+      "verdict": "allow",
+      "why": "inverse: the targeted repo is on feat even though the hook cwd is on main — --git-dir must win over cwd in BOTH directions"
+    },
+    {
+      "id": "block-sudo-long-user-push-main",
+      "command": "sudo --user root git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "finding 18 (r3591939370): sudo --user takes a separate argument like -u; only the short form was modeled, so 'root' bailed the scan"
+    },
+    {
+      "id": "allow-sudo-long-user-push-feature",
+      "command": "sudo --user root git push origin feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "long-form wrapper-arg skipping must not change the verdict for safe pushes"
+    },
+    {
+      "id": "block-path-sh-c-push-main",
+      "command": "/bin/sh -c 'git push origin main'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "finding 19 (r3591939373): shell runners must match by basename like git does — /bin/sh bailed the scan and the -c payload went uninspected"
+    },
+    {
+      "id": "block-path-env-wrapper-push-main",
+      "command": "/usr/bin/env git push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "wrappers must match by basename too — /usr/bin/env is still env"
+    },
+    {
       "id": "block-c-path-push-explicit-main",
       "command": "git -C /repo push origin main",
       "c_path_branch": "feat",

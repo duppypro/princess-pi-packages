@@ -33,8 +33,24 @@ function isMainRef(ref: string): boolean {
 // Branch of the repo the sub-command acts on: -C path wins, else hook cwd (#74 under-block fix).
 // A relative -C is what git would see from the TOOL-CALL cwd — resolve it there,
 // never against this process's own cwd (they differ when the guard runs out-of-repo).
-function branchOf(cPath: string, hookCwd: string): string {
+// --git-dir selects the affected repo just like -C (finding 17): HEAD is read
+// from it, so it decides the branch. git resolves --git-dir relative to the
+// directory the -C chain established. (--work-tree does NOT move HEAD — the
+// branch still comes from the discovered/declared git dir — so it is skipped,
+// not captured.)
+function branchOf(cPath: string, hookCwd: string, gitDir = ""): string {
   const dir = cPath ? resolve(hookCwd || ".", cPath) : hookCwd;
+  if (gitDir) {
+    try {
+      return execSync("git branch --show-current", {
+        cwd: dir || ".",
+        encoding: "utf8",
+        env: { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) },
+      }).trim();
+    } catch {
+      return "";
+    }
+  }
   return currentBranch(dir);
 }
 
@@ -112,7 +128,7 @@ const PUSH_ARG_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--ex
 // ---
 // Push-target parsing (#74): returns a block reason, or null to allow.
 // ---
-function checkPush(tokens: string[], cPath: string, hookCwd: string): string | null {
+function checkPush(tokens: string[], cPath: string, hookCwd: string, gitDir: string): string | null {
   let remote = "";
   const refspecs: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -141,7 +157,7 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
 
   if (refspecs.length === 0) {
     // Bare push (at most a remote): the affected repo's current branch decides
-    if (isMainRef(branchOf(cPath, hookCwd))) {
+    if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
       return "pushes current branch main/master.";
     }
     return null;
@@ -161,7 +177,7 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string): string | n
       // symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       // same-named remote ref — resolve it instead of matching the literal
       // string (#74 review finding 8)
-      if (isMainRef(branchOf(cPath, hookCwd))) {
+      if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
         return "pushes current branch (HEAD) to main/master.";
       }
       continue;
@@ -189,7 +205,13 @@ const GIT_WRAPPERS = new Map<string, Set<string>>([
   ["stdbuf", new Set(["-i", "-o", "-e"])],
   ["setsid", new Set()],
   ["ionice", new Set(["-c", "-n", "-p", "-P", "-u"])],
-  ["sudo", new Set(["-u", "-g", "-p", "-h", "-U", "-C", "-D", "-R", "-T", "-t", "-r"])],
+  // long separate-argument forms included (finding 18): --user root etc.
+  // (=-joined --user=root is a single '-' token and needs no entry)
+  ["sudo", new Set([
+    "-u", "-g", "-p", "-h", "-U", "-C", "-D", "-R", "-T", "-t", "-r",
+    "--user", "--group", "--host", "--prompt", "--other-user",
+    "--chdir", "--chroot", "--close-from", "--role", "--type", "--command-timeout",
+  ])],
   ["doas", new Set(["-u", "-C", "-t"])],
   // exec replaces the shell with the command (#74 review finding 15);
   // -a takes a separate argv[0] argument
@@ -346,7 +368,10 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
   let wrapperArgOpts: Set<string> | null = null; // arg-consuming options of the wrapper we're inside
   while (i < T.length && !isGitWord(T[i])) {
     const t = T[i];
-    if (SHELL_RUNNERS.has(t)) {
+    // Runners and wrappers must match by basename like git itself does —
+    // /bin/sh and /usr/bin/env are still sh and env (finding 19)
+    const base = t.slice(t.lastIndexOf("/") + 1);
+    if (SHELL_RUNNERS.has(base)) {
       // bash -c '<string>' runs a full nested shell command — recurse the
       // whole check on the -c argument (#74 review finding 14). Without -c
       // it's a script-file invocation whose arguments are data.
@@ -364,7 +389,7 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
       // eval concatenates and re-parses its arguments as a shell command
       return checkGitCommand(T.slice(i + 1).join(" "), hookCwd);
     }
-    const opts = GIT_WRAPPERS.get(t);
+    const opts = GIT_WRAPPERS.get(base);
     if (opts) {
       wrapperArgOpts = opts;
       i++;
@@ -383,8 +408,12 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
   if (i >= T.length) return null;
   i++;
 
-  // git global options before the subcommand; capture -C <path>
+  // git global options before the subcommand; capture -C <path> and
+  // --git-dir <path> (both select the affected repo — finding 17).
+  // --work-tree is skipped, not captured: it moves the worktree, but HEAD
+  // (the branch) still comes from the git dir.
   let cPath = "";
+  let gitDir = "";
   while (i < T.length) {
     const t = T[i];
     if (t === "-C") {
@@ -393,7 +422,13 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
       const next = T[i + 1] ?? "";
       cPath = cPath && !next.startsWith("/") ? `${cPath}/${next}` : next;
       i += 2;
-    } else if (t === "-c") {
+    } else if (t === "--git-dir") {
+      gitDir = T[i + 1] ?? "";
+      i += 2;
+    } else if (t.startsWith("--git-dir=")) {
+      gitDir = t.slice("--git-dir=".length);
+      i += 1;
+    } else if (t === "--work-tree" || t === "-c") {
       i += 2;
     } else if (t.startsWith("-")) {
       i += 1;
@@ -405,10 +440,10 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
   const rest = T.slice(i + 1);
 
   if (cmd === "push") {
-    return checkPush(rest, cPath, hookCwd);
+    return checkPush(rest, cPath, hookCwd, gitDir);
   }
   if (cmd === "reset" && rest.includes("--hard")) {
-    if (isMainRef(branchOf(cPath, hookCwd))) {
+    if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
       return "hard-resets on main/master.";
     }
     return null;

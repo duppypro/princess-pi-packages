@@ -43,12 +43,23 @@ is_main_ref() {
 # Branch of the repo the sub-command acts on: -C path wins, else hook cwd (#74 under-block fix).
 # A relative -C is what git would see from the TOOL-CALL cwd — resolve it there,
 # never against this hook process's own cwd (they differ when the guard runs out-of-repo).
+# --git-dir selects the affected repo just like -C (finding 17): HEAD is read
+# from it, so it decides the branch. git resolves --git-dir relative to the
+# directory the -C chain established. (--work-tree does NOT move HEAD, so it
+# is skipped, not captured.)
 branch_of() {
-  local dir="$1"
+  local dir="$1" gitdir="$2"
   if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
     dir="$HOOK_CWD/$dir"
   fi
   [ -z "$dir" ] && dir="$HOOK_CWD"
+  if [ -n "$gitdir" ]; then
+    if [ "${gitdir#/}" = "$gitdir" ] && [ -n "$dir" ]; then
+      gitdir="$dir/$gitdir"
+    fi
+    GIT_DIR="$gitdir" git branch --show-current 2>/dev/null || true
+    return
+  fi
   if [ -n "$dir" ]; then
     git -C "$dir" branch --show-current 2>/dev/null || true
   else
@@ -221,7 +232,7 @@ extract_and_check_substitutions() {
 # ---
 
 check_push() {
-  local cpath="$1"; shift
+  local cpath="$1" gitdir="$2"; shift 2
   local args=("$@")
   local remote="" refspecs=() a i=0 n=${#args[@]}
   while [ "$i" -lt "$n" ]; do
@@ -251,7 +262,7 @@ check_push() {
   if [ ${#refspecs[@]} -eq 0 ]; then
     # Bare push (at most a remote): the affected repo's current branch decides
     local b
-    b=$(branch_of "$cpath")
+    b=$(branch_of "$cpath" "$gitdir")
     if is_main_ref "$b"; then
       block "pushes current branch main/master."
     fi
@@ -272,7 +283,7 @@ check_push() {
       # symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       # same-named remote ref — resolve it instead of matching the literal
       # string (#74 review finding 8)
-      b2=$(branch_of "$cpath")
+      b2=$(branch_of "$cpath" "$gitdir")
       if is_main_ref "$b2"; then
         block "pushes current branch (HEAD) to main/master."
       fi
@@ -306,7 +317,7 @@ wrapper_arg_opts() {
     timeout) echo " -k --kill-after -s --signal " ;;
     stdbuf)  echo " -i -o -e " ;;
     ionice)  echo " -c -n -p -P -u " ;;
-    sudo)    echo " -u -g -p -h -U -C -D -R -T -t -r " ;;
+    sudo)    echo " -u -g -p -h -U -C -D -R -T -t -r --user --group --host --prompt --other-user --chdir --chroot --close-from --role --type --command-timeout " ;;  # long separate-arg forms: finding 18
     doas)    echo " -u -C -t " ;;
     exec)    echo " -a " ;;  # separate argv[0] argument (#74 review finding 15)
     *)       echo " " ;;
@@ -381,7 +392,10 @@ check_git_subcommand() {
     t="${T[$i]}"
     [ "${t##*/}" = "git" ] && break
     if [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
-    case "$SHELL_RUNNERS" in *" $t "*)
+    # Runners and wrappers match by basename like git itself does —
+    # /bin/sh and /usr/bin/env are still sh and env (finding 19)
+    local base="${t##*/}"
+    case "$SHELL_RUNNERS" in *" $base "*)
       # bash -c '<string>' runs a full nested shell command — recurse the
       # whole check on the -c argument (#74 review finding 14). Without -c
       # it's a script-file invocation whose arguments are data.
@@ -403,8 +417,8 @@ check_git_subcommand() {
       check_command_string "${T[*]:$((i + 1))}"
       return 0
     fi
-    case "$GIT_WRAPPERS" in *" $t "*)
-      arg_opts=$(wrapper_arg_opts "$t"); i=$((i + 1)); continue ;;
+    case "$GIT_WRAPPERS" in *" $base "*)
+      arg_opts=$(wrapper_arg_opts "$base"); i=$((i + 1)); continue ;;
     esac
     # option + its separate argument (e.g. sudo -u root) — #74 review finding 11
     case "$arg_opts" in *" $t "*) i=$((i + 2)); continue ;; esac
@@ -415,8 +429,9 @@ check_git_subcommand() {
   [ "$i" -lt "$n" ] || return 0
   i=$((i + 1))
 
-  # git global options before the subcommand; capture -C <path>
-  local cpath=""
+  # git global options before the subcommand; capture -C <path> and
+  # --git-dir <path> (both select the affected repo — finding 17)
+  local cpath="" gitdir=""
   while [ "$i" -lt "$n" ]; do
     case "${T[$i]}" in
       -C)
@@ -430,7 +445,12 @@ check_git_subcommand() {
         fi
         i=$((i + 2)) ;;
       -c) i=$((i + 2)) ;;
-      --git-dir=*|--work-tree=*|--no-pager|-P|--paginate|-p) i=$((i + 1)) ;;
+      # --git-dir selects the affected repo (finding 17); --work-tree does
+      # not move HEAD, so it is skipped (both separate-arg and = forms)
+      --git-dir) gitdir="${T[$((i + 1))]:-}"; i=$((i + 2)) ;;
+      --git-dir=*) gitdir="${T[$i]#--git-dir=}"; i=$((i + 1)) ;;
+      --work-tree) i=$((i + 2)) ;;
+      --work-tree=*|--no-pager|-P|--paginate|-p) i=$((i + 1)) ;;
       -*) i=$((i + 1)) ;;
       *) break ;;
     esac
@@ -440,13 +460,13 @@ check_git_subcommand() {
 
   case "$cmd" in
     push)
-      check_push "$cpath" "${T[@]:$i}"
+      check_push "$cpath" "$gitdir" "${T[@]:$i}"
       ;;
     reset)
       local tok b
       for tok in "${T[@]:$i}"; do
         if [ "$tok" = "--hard" ]; then
-          b=$(branch_of "$cpath")
+          b=$(branch_of "$cpath" "$gitdir")
           if is_main_ref "$b"; then
             block "hard-resets on main/master."
           fi
