@@ -5,6 +5,9 @@
 #      Marker present after a full start/kill cycle => FAIL.
 #   2. strace (if installed): no execve of sudo/nginx anywhere in the process tree.
 #   3. /etc/nginx must be byte-identical before/after (hash), when it exists.
+# PRECONDITION (PR #108 F-C): on a fresh clone run `npm install` (and ideally the build)
+# first — the npx-tsx fallback needs deps installed (e.g. wcwidth, #103) or serve start
+# false-FAILs with ERR_MODULE_NOT_FOUND rather than a real zero-side-effect violation.
 # Run: bash tests/serve-no-sudo-nginx.test.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."

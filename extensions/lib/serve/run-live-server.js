@@ -303,10 +303,15 @@ function generateDirectoryIndex(dirPath, requestPath) {
 			if (entry.name.startsWith(".") || entry.name === "node_modules") {
 				continue;
 			}
+			// --- #60 F2 follow-up (PR #108 F-A): the href is a URL context, not an HTML
+			// one — escapeHtml stops markup but not scheme injection (a file literally
+			// named "javascript:..." renders as a live link). Leading "./" forces
+			// relative resolution; encodeURIComponent keeps #/?/spaces from breaking it.
+			const href = "./" + encodeURIComponent(entry.name) + (entry.isDirectory() ? "/" : "");
 			if (entry.isDirectory()) {
-				html += `<a href="${escapeHtml(entry.name)}/"><span class="icon">📁</span>${escapeHtml(entry.name)}/</a>`;
+				html += `<a href="${href}"><span class="icon">📁</span>${escapeHtml(entry.name)}/</a>`;
 			} else {
-				html += `<a href="${escapeHtml(entry.name)}"><span class="icon">📄</span>${escapeHtml(entry.name)}</a>`;
+				html += `<a href="${href}"><span class="icon">📄</span>${escapeHtml(entry.name)}</a>`;
 			}
 		}
 	} catch (err) {

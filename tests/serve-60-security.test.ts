@@ -40,6 +40,7 @@ async function run() {
 	fs.writeFileSync(path.join(sibling, "secret.txt"), "SIBLING-SECRET");
 	fs.writeFileSync(path.join(base, "outside.txt"), "OUTSIDE-SECRET");
 	fs.writeFileSync(path.join(root, `<img src=x onerror=alert(1)>.txt`), "xss bait");
+	fs.writeFileSync(path.join(root, "javascript:alert(1)"), "scheme bait");
 	fs.symlinkSync(path.join(base, "outside.txt"), path.join(root, "link-escape.txt"));
 
 	const runner = path.resolve("extensions/lib/serve/run-live-server.js");
@@ -76,6 +77,15 @@ async function run() {
 		assert.ok(!idx.body.includes("<img src=x"), "raw markup from filename must not reach the listing");
 		assert.ok(idx.body.includes("&lt;img src=x"), "filename must render HTML-escaped");
 		console.log("✓ F2: crafted filename is escaped in the listing");
+
+		// --- F2 follow-up (PR #108 F-A): scheme injection via filename must not yield a
+		// live javascript: href; links are ./-prefixed and URL-encoded, and still work.
+		assert.ok(!idx.body.includes(`href="javascript:`), "filename must not become a scheme href");
+		assert.ok(idx.body.includes(`href="./javascript%3Aalert(1)"`), "href must be ./-prefixed and URL-encoded");
+		const scheme = await rawGet("/javascript%3Aalert(1)");
+		assert.strictEqual(scheme.status, 200, "encoded link target must still serve");
+		assert.match(scheme.body, /scheme bait/);
+		console.log("✓ F-A: javascript: filename renders as inert ./-relative encoded href");
 	} finally {
 		child.kill("SIGKILL");
 		fs.rmSync(base, { recursive: true, force: true });
