@@ -126,7 +126,10 @@ strip_heredocs() {
 # ---
 
 extract_and_check_substitutions() {
-  local s="$1" n=${#s} i=0 ch nch depth start body q
+  # NB: ${#1}, NOT ${#s} — bash expands the whole `local` line before any
+  # assignment runs, so ${#s} reads the OLD (unset) s and n becomes 0,
+  # silently disabling the scan (the bug shipped in #105's original).
+  local s="$1" n=${#1} i=0 ch nch depth start body q
 
   while [ "$i" -lt "$n" ]; do
     ch="${s:$i:1}"
