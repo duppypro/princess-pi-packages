@@ -86,6 +86,34 @@
       "why": "without the dash, a tab-indented EOF is NOT a terminator in real shells — the push line is heredoc data, matching bash semantics"
     },
     {
+      "id": "block-quoted-heredoc-opener-then-push",
+      "command": "printf '%s\\n' '<<EOF'\ngit push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 13a: '<<EOF' inside single quotes is data — the blind regex entered body mode and stripped the REAL push on the next line (fail-open)"
+    },
+    {
+      "id": "allow-numeric-heredoc-delim",
+      "command": "cat <<123\ngit push origin main\n123",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "review finding 13b: heredoc delimiters are general shell WORDs — the identifier-only charset left <<123 unstripped, so body text falsely blocked"
+    },
+    {
+      "id": "allow-dashed-heredoc-delim",
+      "command": "cat <<my-delim.1\ngit push origin main\nmy-delim.1",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "dashes and dots are valid in heredoc delimiters too"
+    },
+    {
+      "id": "block-arith-shift-not-heredoc",
+      "command": "echo $((1<<2))\ngit push origin main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "guard on the guard: << inside $(( )) is a bit-shift — treating it as a heredoc opener would strip the real push that follows (the numeric-delimiter fix must not introduce this)"
+    },
+    {
       "id": "allow-c-path-push-feature",
       "command": "git -C /repo push origin feat",
       "c_path_branch": "feat",
@@ -410,6 +438,48 @@
       "branch": "feat",
       "verdict": "block",
       "why": "existing rule preserved"
+    },
+    {
+      "id": "block-branch-long-delete-force-main",
+      "command": "git branch --delete --force main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "review finding 12: -D is documented shorthand for --delete --force — the exact '-D' match let every other spelling of the same force-delete through"
+    },
+    {
+      "id": "block-branch-split-flags-df-main",
+      "command": "git branch -d -f main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "split short flags: -d plus -f equals -D"
+    },
+    {
+      "id": "block-branch-cluster-df-main",
+      "command": "git branch -df main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "clustered short flags: git parses -df as -d -f"
+    },
+    {
+      "id": "block-branch-D-later-target",
+      "command": "git branch -D feat main",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "git branch -D deletes EVERY listed branch — the old check only inspected the token immediately after -D, so main as a second target escaped"
+    },
+    {
+      "id": "allow-branch-safe-delete-main",
+      "command": "git branch -d main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "scope decision: non-force -d refuses unless the branch is fully merged, so nothing unrecoverable is lost (origin/main restores it); only FORCE deletion of main blocks"
+    },
+    {
+      "id": "allow-branch-delete-force-feature",
+      "command": "git branch --delete --force old-feat",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "force-deleting a feature branch is routine cleanup; only main/master targets block"
     },
     {
       "id": "allow-branch-D-feature",

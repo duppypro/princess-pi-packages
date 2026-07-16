@@ -60,24 +60,59 @@ branch_of() {
 # Drop heredoc bodies so quoted text like `<<EOF\ngit push origin main\nEOF`
 # is never mistaken for a command (#74 false-positive class 3).
 # ---
+# Heredoc delimiters are general shell WORDs, not identifiers — numeric and
+# dashed/dotted names are valid (#74 review finding 13b). And '<<EOF' inside
+# quotes is data — the old blind regex entered body mode on it and stripped
+# the real commands after, failing open (#74 review finding 13a). Char-scan
+# with quote state (persisting across lines, as shell quotes do) and $(( ))
+# tracking (a << there is a bit-shift, never a heredoc opener).
 strip_heredocs() {
-  local re="<<(-?)[[:space:]]*['\"]?([A-Za-z_][A-Za-z0-9_]*)"
-  local line probe delim="" in_body=0 dashed=0
+  local line probe delim="" dashed=0 q="" arith=0
+  local i n ch j w d
   while IFS= read -r line; do
-    if [ "$in_body" -eq 1 ]; then
+    if [ -n "$delim" ]; then
       # <<- : terminator may be tab-indented (#74 review finding 7)
       probe="$line"
       if [ "$dashed" -eq 1 ]; then
         probe="${probe#"${probe%%[!$'\t']*}"}"
       fi
-      [ "$probe" = "$delim" ] && in_body=0
+      [ "$probe" = "$delim" ] && delim=""
       continue
     fi
-    if [[ "$line" =~ $re ]]; then
-      [ "${BASH_REMATCH[1]}" = "-" ] && dashed=1 || dashed=0
-      delim="${BASH_REMATCH[2]}"
-      in_body=1
-    fi
+    n=${#line}
+    for ((i = 0; i < n; i++)); do
+      ch="${line:$i:1}"
+      if [ "$q" = "'" ]; then
+        [ "$ch" = "'" ] && q=""
+      elif [ "$q" = '"' ]; then
+        if [ "$ch" = '\' ]; then i=$((i + 1))
+        elif [ "$ch" = '"' ]; then q=""; fi
+      elif [ "$ch" = '\' ]; then
+        i=$((i + 1))
+      elif [ "$ch" = "'" ] || [ "$ch" = '"' ]; then
+        q="$ch"
+      elif [ "${line:$i:3}" = '$((' ]; then
+        arith=$((arith + 1)); i=$((i + 2))
+      elif [ "$arith" -gt 0 ] && [ "${line:$i:2}" = '))' ]; then
+        arith=$((arith - 1)); i=$((i + 1))
+      elif [ "$arith" -eq 0 ] && [ "${line:$i:2}" = '<<' ] \
+        && [ "${line:$i:3}" != '<<<' ] \
+        && { [ "$i" -eq 0 ] || [ "${line:$((i - 1)):1}" != '<' ]; }; then
+        j=$((i + 2)); d=0
+        [ "${line:$j:1}" = '-' ] && { d=1; j=$((j + 1)); }
+        while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [[:space:]] ]]; do j=$((j + 1)); done
+        case "${line:$j:1}" in \'|\") j=$((j + 1)) ;; esac
+        w=""
+        while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [A-Za-z0-9_.+-] ]]; do
+          w+="${line:$j:1}"; j=$((j + 1))
+        done
+        if [ -n "$w" ]; then
+          dashed=$d; delim="$w"
+          break # body starts on the next line
+        fi
+        i=$((j - 1))
+      fi
+    done
     printf '%s\n' "$line"
   done <<< "$1"
 }
@@ -294,13 +329,33 @@ check_git_subcommand() {
       done
       ;;
     branch)
-      local prev="" tok2
+      # -D is shorthand for --delete --force: split (-d -f), long
+      # (--delete --force), and clustered (-df) spellings force-delete just
+      # the same — and EVERY positional is a deletion target, not only the
+      # token after the flag (#74 review finding 12). Non-force -d stays
+      # allowed: it refuses unless merged, so nothing unrecoverable is lost.
+      local deleting=0 forcing=0 tok2
+      local -a del_targets=()
       for tok2 in "${T[@]:$i}"; do
-        if [ "$prev" = "-D" ] && is_main_ref "$tok2"; then
-          block "deletes main/master branch."
-        fi
-        prev="$tok2"
+        case "$tok2" in
+          --delete) deleting=1 ;;
+          --force) forcing=1 ;;
+          --*) ;;
+          -?*)
+            case "$tok2" in *D*) deleting=1; forcing=1 ;; esac
+            case "$tok2" in *d*) deleting=1 ;; esac
+            case "$tok2" in *f*) forcing=1 ;; esac
+            ;;
+          *) del_targets+=("$tok2") ;;
+        esac
       done
+      if [ "$deleting" = 1 ] && [ "$forcing" = 1 ]; then
+        for tok2 in "${del_targets[@]}"; do
+          if is_main_ref "$tok2"; then
+            block "force-deletes main/master branch."
+          fi
+        done
+      fi
       ;;
     # Always blocked on any branch (discard uncommitted/untracked work).
     # Token-based (#74 review finding 3): whitespace-agnostic, catches the

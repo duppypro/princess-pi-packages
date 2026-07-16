@@ -42,21 +42,64 @@ function branchOf(cPath: string, hookCwd: string): string {
 // Drop heredoc bodies so quoted text like `<<EOF\ngit push origin main\nEOF`
 // is never mistaken for a command (#74 false-positive class 3).
 // ---
+// Heredoc delimiters are general shell WORDs, not identifiers — numeric and
+// dashed/dotted names are valid (#74 review finding 13b).
+const HEREDOC_DELIM_CHARS = /[A-Za-z0-9_.+-]/;
+
 function stripHeredocs(command: string): string {
-  const open = /<<(-?)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)/;
   const out: string[] = [];
   let delim: string | null = null;
   let dashed = false; // <<- : terminator may be tab-indented (#74 review finding 7)
+  let q: "'" | '"' | null = null; // shell quotes span newlines — state persists across lines
+  let arith = 0; // inside $(( )) a << is a bit-shift, never a heredoc opener
   for (const line of command.split("\n")) {
     if (delim !== null) {
       const probe = dashed ? line.replace(/^\t+/, "") : line;
       if (probe === delim) delim = null;
       continue;
     }
-    const m = open.exec(line);
-    if (m) {
-      dashed = m[1] === "-";
-      delim = m[2];
+    // Char-scan for an UNQUOTED opener: '<<EOF' inside quotes is data — a
+    // blind regex entered body mode and stripped the real commands after it,
+    // failing open (#74 review finding 13a).
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q === "'") {
+        if (ch === "'") q = null;
+      } else if (q === '"') {
+        if (ch === "\\") i++;
+        else if (ch === '"') q = null;
+      } else if (ch === "\\") {
+        i++;
+      } else if (ch === "'" || ch === '"') {
+        q = ch;
+      } else if (line.startsWith("$((", i)) {
+        arith++;
+        i += 2;
+      } else if (arith > 0 && line.startsWith("))", i)) {
+        arith--;
+        i++;
+      } else if (
+        arith === 0 &&
+        ch === "<" && line[i + 1] === "<" &&
+        line[i + 2] !== "<" && line[i - 1] !== "<" // <<< herestring has no body
+      ) {
+        let j = i + 2;
+        let d = false;
+        if (line[j] === "-") { d = true; j++; }
+        while (j < line.length && /\s/.test(line[j])) j++;
+        if (line[j] === "'" || line[j] === '"') j++;
+        let word = "";
+        while (j < line.length && HEREDOC_DELIM_CHARS.test(line[j])) {
+          word += line[j];
+          j++;
+        }
+        if (word) {
+          dashed = d;
+          delim = word;
+          break; // body starts on the next line
+        }
+        i = j - 1;
+      }
     }
     out.push(line);
   }
@@ -285,10 +328,29 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
     return null;
   }
   if (cmd === "branch") {
-    for (let j = 0; j < rest.length - 1; j++) {
-      if (rest[j] === "-D" && isMainRef(rest[j + 1])) {
-        return "deletes main/master branch.";
+    // -D is shorthand for --delete --force: split (-d -f), long
+    // (--delete --force), and clustered (-df) spellings force-delete just the
+    // same — and EVERY positional is a deletion target, not only the token
+    // after the flag (#74 review finding 12). Non-force -d stays allowed: it
+    // refuses unless merged, so nothing unrecoverable is lost.
+    let deleting = false;
+    let forcing = false;
+    const targets: string[] = [];
+    for (const t of rest) {
+      if (t === "--delete") deleting = true;
+      else if (t === "--force") forcing = true;
+      else if (t.startsWith("--")) {
+        // other long option — no force-delete semantics
+      } else if (t.startsWith("-") && t.length > 1) {
+        if (t.includes("D")) { deleting = true; forcing = true; }
+        if (t.includes("d")) deleting = true;
+        if (t.includes("f")) forcing = true;
+      } else {
+        targets.push(t);
       }
+    }
+    if (deleting && forcing && targets.some(isMainRef)) {
+      return "force-deletes main/master branch.";
     }
     return null;
   }
