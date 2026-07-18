@@ -1,5 +1,10 @@
 node_modules/
 .pi/
+
+# bun-only repo: bun.lock is authoritative. A stray `npm install` writes this
+# (even with --no-save) — ignore it so it can't dirty the tree or get committed.
+package-lock.json
+
 debug/
 sessions/
 *.log
