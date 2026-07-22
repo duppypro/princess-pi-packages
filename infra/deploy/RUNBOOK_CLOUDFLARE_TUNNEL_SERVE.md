@@ -4,9 +4,14 @@
 > Replaces the retired nginx `/live/` + oauth2-proxy `:4182` gate (see #32, #38, #59) with
 > `cloudflared` Tunnel → loopback `/serve` servers, fronted by Cloudflare Access. Spec
 > approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
-> verified 2026-07-07 (see verification log below). **Phase 6 (retire nginx machinery +
-> build per-slug automation) is IN SPEC DRAFT** — scope settled with Duppy 2026-07-07
-> (issue #64): full automation, two sequential arcs — 6A teardown (#64), 6B automation (#66).
+> verified 2026-07-07 (see verification log below). **Phase 6A (retire nginx machinery) is
+> SPEC APPROVED (`2e2d626`) + code reviewed (PR #108, F-A/F-B/F-C fixed); CODE APPROVED is
+> pending Duppy's VPS test run + staged teardown + live Cloudflare gate check. Phase 6B
+> (per-slug automation, #66) is SPEC DRAFT.** Scope settled with Duppy 2026-07-07 (issue #64):
+> full automation, two sequential arcs — 6A teardown (#64), 6B automation (#66).
+> <!-- STEP 5 FLIP (final commit, after VPS green): change "CODE APPROVED is pending…" above
+>      to "Phase 6A is CODE AND SPEC APPROVED (Step 5, <date>)"; add the VPS + live-gate test
+>      evidence to the Phase 6A test list; then this doc merges with the Step-5 commit. -->
 >
 > **Phase 5 verification log (2026-07-07 UTC, Claude Cowork + Duppy; origin = bare
 > `python3 -m http.server 8080 --bind 127.0.0.1` to isolate the edge gate):**
@@ -176,7 +181,7 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 ---
 
 ## Phase 6 — Retire the nginx/oauth2-proxy gate + build per-slug automation
-> **Spec status: 6A APPROVED (2e2d626, 2026-07-07) · 6B DRAFT.** Scope settled 2026-07-07:
+> **Spec status: 6A APPROVED (2e2d626, 2026-07-07) + code reviewed (PR #108) · 6B DRAFT.** Scope settled 2026-07-07:
 > full automation now, not teardown-only. Two arcs, landed **in order** as separate commit
 > pairs — 6A tracked in #64, 6B split to #66. 6B Spec Approved is blocked on the 6B.0
 > wildcard-proxy verification (see VERIFY FIRST below).
@@ -207,33 +212,65 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
   deleted grant.
 
 ### Phase 6A — Teardown (serve → plain loopback origin)
+> **Reconciled to as-shipped (Step 5, PR #108).** The bullets below now describe what
+> actually landed, not the pre-build plan. Two items were **outside the issue #64 task list**
+> and caught by a sweep during Code Draft (both squarely in-scope — "strip nginx machinery"):
+> the extension-flavor serve (`extensions/serve.ts`) duplicated the whole nginx path, and
+> `process.ts` built the dead `/live/<slug>/` display URL. A later **review round (PR #108,
+> reviewer = princess-pi-bot)** added three fixes — F-A, F-B, F-C — folded in below.
+
 **Code (this repo — sources are `bin/serve.ts` + `extensions/lib/serve/*`; since #97 the
 generated `bin/serve.mjs` is untracked — build via `bun build.ts` / `npm run build`):**
-1. `bin/serve.ts`: remove the `parseAclFile → updateNginxAcls → updateNginxPort →
-   reloadNginx` path from start and stop/`--kill`; drop the `nginx.js` import. The
-   `.serve-acl`-must-exist validation goes dormant with it (6B reintroduces `.serve-acl` as
-   the Access allow-list source).
-2. `extensions/lib/serve/run-live-server.js`: remove the live-ACL watcher (~:535-544).
-3. Delete `extensions/lib/serve/nginx.js` (nothing imports it after 1-2). Rebuild.
-4. **Fold in #60 (same files, one pass):**
-   - F1 traversal (`run-live-server.js:423`): `!filePath.startsWith(targetDir)` →
-     `filePath !== targetDir && !filePath.startsWith(targetDir + path.sep)`; harden with
-     `fs.realpathSync` containment for symlink escapes.
-   - F2 XSS (`generateDirectoryIndex()` :243/:272/:294-296/:300): HTML-escape helper applied
-     to `requestPath`, `entry.name`, `err.message`.
-5. serve becomes: spawn loopback origin, done. The tunnel keeps statically routing
+1. `bin/serve.ts` **and `extensions/serve.ts`** (the Pi-extension flavor — sweep catch #1,
+   it duplicated the entire nginx path): remove the `parseAclFile → updateNginxAcls →
+   updateNginxPort → reloadNginx` sequence from start and stop/`--kill`, plus the kill-path
+   map cleanup; drop the `nginx.js` import. The `.serve-acl`-must-exist validation goes
+   dormant with it (6B reintroduces `.serve-acl` as the Access allow-list source).
+2. `extensions/lib/serve/run-live-server.js`: remove the live-ACL watcher (the
+   `.serve-acl`-change → `import("./nginx.js")` → reload branch in the `fs.watch` handler).
+3. `extensions/lib/serve/process.ts` (sweep catch #2): the discovered-server public URL was a
+   dead `https://princess-pi.dev/live/<slug>/` string. Now `port === 8080 ?
+   https://preview.princess-pi.dev/ : localUrl` — only the MVP ingress port has a public URL
+   until #66 adds per-slug publishing.
+4. Delete `extensions/lib/serve/nginx.js` (nothing imports it after 1-3). **F-B (review):
+   also delete the orphaned `extensions/lib/serve/nginx.d.ts`** — a type-decl for the now-gone
+   `.js`. Rebuild.
+5. **Fold in #60 (same files, one pass):**
+   - **F1 traversal** (`run-live-server.js`, request handler): the bare
+     `!filePath.startsWith(targetDir)` became `filePath !== targetDir &&
+     !filePath.startsWith(targetDir + path.sep)` (kills the `/a/bc` vs `/a/b` prefix bug),
+     hardened with an `fs.realpathSync` containment check so a symlink inside the root can't
+     serve a target outside the REAL root.
+   - **F2 XSS** (`generateDirectoryIndex()`): an `escapeHtml` helper wraps the *visible text*
+     — `requestPath`, `entry.name`, `err.message`. **F-A (review) — escape alone was
+     insufficient for the `href`:** a filename like `javascript:alert(1)` survived text-escape
+     and rendered as a live scheme link. Fixed by building the anchor href as `"./" +
+     encodeURIComponent(entry.name)` (+ trailing `/` for dirs) — the leading `./` forces
+     relative resolution so no filename can parse as a URI scheme, and `encodeURIComponent`
+     keeps `#`/`?`/space filenames from breaking the path. Text stays `escapeHtml`'d.
+6. serve becomes: spawn loopback origin, done. The tunnel keeps statically routing
    `preview.princess-pi.dev → 127.0.0.1:8080` throughout 6A.
 
-**6A Code Approved test list (run AFTER the "ready for test" Code Draft commit):**
-- **Zero-side-effect proof — asserted, not eyeballed** (a negative is not provable by
-  inspection): run start/stop cycles with a PATH-shim dir first in `PATH` whose `sudo` and
-  `nginx` executables write a marker file and exit 97; assert no marker afterwards.
-  Belt-and-braces: `strace -f -e trace=execve` over the same cycle asserts no execve of
-  `sudo`/`nginx`, and a before/after hash of `/etc/nginx` asserts no writes. Automated in
-  `tests/`.
-- #60 acceptance: sibling-dir request (`targetDir` = `/a/b`, request escaping to `/a/bc`)
-  → 403; crafted filename `<img src=x onerror=…>.txt` renders escaped in the index.
-- Existing serve tests still pass.
+**6A Code Approved test list — as-shipped (tests live in `tests/`, run AFTER the "ready for
+test" Code Draft commit):**
+- **Zero-side-effect proof — `tests/serve-no-sudo-nginx.test.sh`** (asserted, not eyeballed;
+  a negative is not provable by inspection): a PATH-shim dir first in `PATH` whose `sudo`/
+  `nginx` write a marker + exit 97 → no marker after a full start/kill cycle; `strace -f -e
+  trace=execve` over one traced start+kill run → no execve of `sudo`/`nginx`; before/after
+  hash of `/etc/nginx` → unchanged. Also asserts serve starts with **no `.serve-acl`
+  present**. **F-C (review):** header carries a precondition — on a fresh clone run
+  `npm install` (+ build) first, or the `npx tsx bin/serve.ts` fallback fails on missing deps
+  (`wcwidth`, #103), not on a real defect.
+- **#60 acceptance — `tests/serve-60-security.test.ts`** (5 cases): in-root file serves 200
+  (over-block guard); F1a sibling-dir traversal (`/a/b` → `/a/bc`) → 403; F1b symlink escape
+  → 403; F2 crafted `<img …>` filename renders HTML-escaped in the index; **F-A (review):
+  `javascript:alert(1)` filename renders as an inert `./`-relative encoded href and still
+  serves 200 when followed.**
+- **Retired `tests/serve-live-response.test.ts`** (sweep catch — deleted): it asserted the
+  nginx `/live/` gate denial on local `:443`, which 6A removes. The auth boundary moved
+  off-host to Cloudflare Access; its live equivalent is the gate check in the APPLY_RUNBOOK
+  (`preview.princess-pi.dev` challenges → allow-listed passes → non-listed denied).
+- Remaining serve tests (e.g. `serve-kill` / #39 regression) still pass.
 
 **Infra (VPS — STAGED ONLY, Duppy applies; staged files live in
 `infra/deploy/phase6-teardown/` + an `APPLY_RUNBOOK.md`):**
