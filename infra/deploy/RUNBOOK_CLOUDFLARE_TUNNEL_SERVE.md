@@ -271,8 +271,9 @@ test" Code Draft commit):**
   (`preview.princess-pi.dev` challenges → allow-listed passes → non-listed denied).
 - Remaining serve tests (e.g. `serve-kill` / #39 regression) still pass.
 
-**Infra (VPS — STAGED ONLY, Duppy applies; staged files live in
-`infra/deploy/phase6-teardown/` + an `APPLY_RUNBOOK.md`):**
+**Infra (VPS — APPLIED by Duppy, verified 2026-07-22; verification evidence lives in the
+`infra/deploy/phase6-teardown/APPLY_RUNBOOK.md` header. Checklist kept as the historical
+record of what was staged→applied):**
 1. nginx: remove `/live/` + `/oauth2/` blocks from `sites-available/princess-pi.dev`
    (staged copy + diff; apply = install, `nginx -t`, reload).
 2. `sudo systemctl disable --now oauth2-proxy-live-serve` (+ `:4180/:4181` instances if
