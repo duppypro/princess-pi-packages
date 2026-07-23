@@ -1,17 +1,16 @@
 # Runbook: Cloudflare Tunnel + Access for `/serve` previews
 
-> **Lifecycle status: CODE APPROVED (Step 4 — Phase 5 verified live on the VPS 2026-07-07).**
+> **Lifecycle status: Phase 6A is CODE AND SPEC APPROVED (Step 5 `99c8cd4`, PR #108 merged
+> 2026-07-22; infra teardown APPLIED + verified on the live VPS 2026-07-22 — evidence in
+> `phase6-teardown/APPLY_RUNBOOK.md`). Phase 6B (per-slug automation, #66) is SPEC DRAFT.**
 > Replaces the retired nginx `/live/` + oauth2-proxy `:4182` gate (see #32, #38, #59) with
 > `cloudflared` Tunnel → loopback `/serve` servers, fronted by Cloudflare Access. Spec
 > approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
-> verified 2026-07-07 (see verification log below). **Phase 6A (retire nginx machinery) is
-> SPEC APPROVED (`2e2d626`) + code reviewed (PR #108, F-A/F-B/F-C fixed); CODE APPROVED is
-> pending Duppy's VPS test run + staged teardown + live Cloudflare gate check. Phase 6B
-> (per-slug automation, #66) is SPEC DRAFT.** Scope settled with Duppy 2026-07-07 (issue #64):
-> full automation, two sequential arcs — 6A teardown (#64), 6B automation (#66).
-> <!-- STEP 5 FLIP (final commit, after VPS green): change "CODE APPROVED is pending…" above
->      to "Phase 6A is CODE AND SPEC APPROVED (Step 5, <date>)"; add the VPS + live-gate test
->      evidence to the Phase 6A test list; then this doc merges with the Step-5 commit. -->
+> verified 2026-07-07 (see verification log below). Post-teardown live-gate re-check
+> 2026-07-22: `https://preview.princess-pi.dev` → 302 to the Access login at
+> `princess-pi.cloudflareaccess.com` (gate intact at the edge, org + app unchanged).
+> Scope settled with Duppy 2026-07-07 (issue #64): full automation, two sequential arcs —
+> 6A teardown (#64), 6B automation (#66).
 >
 > **Phase 5 verification log (2026-07-07 UTC, Claude Cowork + Duppy; origin = bare
 > `python3 -m http.server 8080 --bind 127.0.0.1` to isolate the edge gate):**
@@ -291,14 +290,17 @@ test" Code Draft commit):**
 - Convert tunnel `serve-preview` to **remote-managed configuration** (dashboard: Zero Trust →
   Networks → Tunnels → migrate; or API PUT of current ingress). Existing static
   `preview.princess-pi.dev` rule carries over.
-- Create wildcard DNS: `*.princess-pi.dev` → `<UUID>.cfargotunnel.com`, **proxied**.
-  Confirm explicit records (`www`, `logger`, MX/TXT) still resolve unchanged.
-  **VERIFY FIRST (Duppy flag, 2026-07-07 — answer goes here before 6B Spec Approved):**
-  a *proxied* wildcard record has historically been Enterprise-only on Cloudflare; if the
-  Free plan can't proxy `*`, 6B falls back to **per-slug DNS records** created/deleted by
-  serve — which grows the token scope from DNS:Read to **DNS:Edit** and changes the
-  standing-privilege story above (a leaked token could then also rewrite zone records).
-  Confirm on the live dashboard at 6B.0; record the answer + chosen path here.
+- ~~Create wildcard DNS: `*.princess-pi.dev` → `<UUID>.cfargotunnel.com`, **proxied**.~~
+  **ALREADY DONE (discovered 2026-07-22):** the proxied wildcard record exists and routes
+  to the tunnel — `zzz-not-a-slug.princess-pi.dev` resolves to Cloudflare edge IPs and
+  returns the tunnel catch-all `http_status:404`. Explicit records confirmed unchanged
+  (apex/`www` → VPS IP direct, `logger` proxied, MX at Hover).
+  **VERIFIED (Duppy flag 2026-07-07 → answer recorded 2026-07-22):** proxied wildcard
+  records are now available on **all Cloudflare plans, including Free** (Cloudflare policy
+  change, per Duppy) — and empirically proven on this very zone (above). **Chosen path:
+  wildcard; token scope stays `DNS:Read`.** Road not taken: per-slug DNS records
+  created/deleted by serve, which would have grown the token to `DNS:Edit` (a leaked token
+  could then also rewrite zone records) — the fallback is moot now.
 - Create the API token (scopes: Account → Cloudflare Tunnel:Edit, Access: Apps and
   Policies:Edit; Zone → DNS:Read) → `~/.config/princess-pi/cf.env`, 0600.
 
