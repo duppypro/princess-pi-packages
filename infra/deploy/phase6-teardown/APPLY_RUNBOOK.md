@@ -1,12 +1,21 @@
 # Phase 6A infra teardown — APPLY RUNBOOK (Duppy runs this on the VPS)
 
-> **STAGED, NOT APPLIED.** Per the prod-edit rule and issue #64, nothing here has touched
-> the live VPS. Every step below is run by Duppy in his own SSH session. Claude/Pi never
-> sudos live prod config.
+> **APPLIED — verified on the live VPS 2026-07-22.** Duppy ran this teardown in his own SSH
+> session (per the prod-edit rule; agents never sudo live prod config). Live-state verification
+> 2026-07-22 ~17:45Z (read-only checks from a Claude session, no sudo):
+> - vhost `sites-available/princess-pi.dev`: no `/live/` or `/oauth2/` location blocks, no
+>   serve-acls/serve-ports/`:4182` references (stale descriptive comment also fixed 2026-07-22)
+> - no oauth2-proxy listeners on :4180–:4182; no active oauth2 systemd unit
+> - `/etc/nginx/serve-acls.map` + `serve-ports.map` deleted
+> - NOPASSWD sudoers grant removed (`sudo -n -l` → password required)
+> - `cloudflared` tunnel `serve-preview` active (running since 2026-07-14 22:56)
+> - `tests/serve-no-sudo-nginx.test.sh` on the VPS: ZERO-SIDE-EFFECT PROOF PASSED
 >
-> **Precondition (code before infra):** deploy the Phase 6A serve build FIRST
-> (`git fetch <bundle>` → merge/checkout → `npm run deploy:local`), so `serve` has stopped
-> calling `sudo nginx -s reload` before the sudoers grant disappears. Verify:
+> Kept below as the historical record + rollback reference.
+>
+> **Precondition (code before infra) — was satisfied before apply:** deploy the Phase 6A serve
+> build FIRST (`git fetch <bundle>` → merge/checkout → `npm run deploy:local`), so `serve` has
+> stopped calling `sudo nginx -s reload` before the sudoers grant disappears. Verify:
 > `bash tests/serve-no-sudo-nginx.test.sh` on the VPS.
 
 ## 0. Preflight snapshot (rollback material)
