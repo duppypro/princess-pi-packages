@@ -2,7 +2,8 @@
 
 > **Lifecycle status: Phase 6A is CODE AND SPEC APPROVED (Step 5 `99c8cd4`, PR #108 merged
 > 2026-07-22; infra teardown APPLIED + verified on the live VPS 2026-07-22 — evidence in
-> `phase6-teardown/APPLY_RUNBOOK.md`). Phase 6B (per-slug automation, #66) is SPEC DRAFT.**
+> `phase6-teardown/APPLY_RUNBOOK.md`). Phase 6B (per-slug automation, #66) is SPEC APPROVED
+> (2026-07-23) — the 6B.0 wildcard-proxy verification that gated approval resolved 2026-07-22.**
 > Replaces the retired nginx `/live/` + oauth2-proxy `:4182` gate (see #32, #38, #59) with
 > `cloudflared` Tunnel → loopback `/serve` servers, fronted by Cloudflare Access. Spec
 > approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
@@ -180,10 +181,11 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 ---
 
 ## Phase 6 — Retire the nginx/oauth2-proxy gate + build per-slug automation
-> **Spec status: 6A APPROVED (2e2d626, 2026-07-07) + code reviewed (PR #108) · 6B DRAFT.** Scope settled 2026-07-07:
+> **Spec status: 6A APPROVED (2e2d626, 2026-07-07) + code reviewed (PR #108) · 6B APPROVED
+> (2026-07-23).** Scope settled 2026-07-07:
 > full automation now, not teardown-only. Two arcs, landed **in order** as separate commit
-> pairs — 6A tracked in #64, 6B split to #66. 6B Spec Approved is blocked on the 6B.0
-> wildcard-proxy verification (see VERIFY FIRST below).
+> pairs — 6A tracked in #64, 6B split to #66. 6B Spec Approved's sole gate — the 6B.0
+> wildcard-proxy verification (see VERIFY FIRST below) — resolved 2026-07-22, clearing approval.
 > WHY two arcs: each is independently testable, and teardown-first means 6B is built on a
 > serve that no longer touches /etc or sudo — no entanglement of old and new failure modes.
 
