@@ -542,9 +542,21 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 		let shouldReload = false;
 		const cssChanges = new Set();
 
-		// --- Phase 6A (#64): the .serve-acl -> nginx live-ACL propagation is removed.
-		// Allow-lists live in Cloudflare Access now. (#66 re-adds the watcher, pointed
-		// at the Access policy API instead of nginx maps.)
+		// --- Phase 6B (#66): live-ACL watcher. A .serve-acl edit re-programs the slug's
+		// Cloudflare Access ALLOW policy (allow-list only — never touches ingress, so no
+		// browser reload). Dynamic import keeps the CF module out of the hot path until the
+		// allow-list actually changes; a CF/token failure warns and is non-fatal.
+		if (clientSlug && filesToProcess.some((p) => path.basename(p) === ".serve-acl")) {
+			try {
+				const cf = await import("./cloudflare.js");
+				const emails = cf.parseAclFile(targetDir);
+				await cf.updateSlugAllowlist({ slug: clientSlug, emails });
+				console.log(`[serve] .serve-acl changed → updated Cloudflare Access allow-list for "${clientSlug}" (${emails.length} email(s)).`);
+			} catch (err) {
+				console.warn(`[serve] .serve-acl changed but Access allow-list update failed: ${err.message}`);
+			}
+		}
+
 		for (const changedPath of filesToProcess) {
 			const ext = path.extname(changedPath).toLowerCase();
 

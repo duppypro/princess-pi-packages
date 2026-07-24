@@ -17,6 +17,8 @@ import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../exten
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
+// --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
+import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
@@ -145,9 +147,17 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 		return;
 	}
 
-	// --- Phase 6A (#64): nginx map cleanup + reload removed. WHY: the edge gate is
-	// Cloudflare Tunnel + Access now; killing the loopback origin is the whole job.
-	// (#66 re-adds per-slug UNpublishing via the Cloudflare API.)
+	// --- Phase 6B (#66): unpublish each killed slug from the edge (ingress rule + Access
+	// app). Best-effort: a CF failure must not mask a successful local kill, so we warn and
+	// continue. Slugs dedup'd so two servers sharing a dir unpublish once.
+	const killedSlugs = [...new Set(killedList.map((k) => k.clientSlug).filter((s): s is string => !!s))];
+	for (const slug of killedSlugs) {
+		try {
+			await unpublishSlug({ slug });
+		} catch (err) {
+			console.warn(`⚠️ Killed local origin for "${slug}" but failed to unpublish from Cloudflare: ${(err as Error).message}`);
+		}
+	}
 	console.log(buildKilledSummary(killedList, process.cwd()));
 }
 
@@ -160,6 +170,19 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	if (dirs.length === 0) dirs = ["public", "docs"];
 
 	let startPort = 8080;
+
+	// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill (stale allow-
+	// list live at the edge = security drift) before publishing new state. Best-effort:
+	// no token / API failure must not block serving.
+	try {
+		const reaped = await reapOrphans();
+		if (reaped.length) console.log(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`);
+	} catch (err) {
+		console.warn(`⚠️ Orphan reap skipped: ${(err as Error).message}`);
+	}
+
+	// Labels published this run — a second dir colliding on the same flattened label is refused.
+	const activeLabels = new Set<string>();
 
 	for (const rawDir of dirs) {
 		const targetDir = path.resolve(process.cwd(), rawDir);
@@ -203,9 +226,19 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
 
-		// --- Phase 6A (#64): nginx map writes + reload removed. serve spawns a plain
-		// loopback origin; the Cloudflare Tunnel statically routes the MVP hostname to
-		// it, and Cloudflare Access is the sole public gate. (#66: per-slug publishing.)
+		// --- Phase 6B (#66): publish this slug to the edge — upsert the tunnel ingress rule
+		// (<label>.princess-pi.dev → this loopback port) + a per-slug Access app carrying the
+		// .serve-acl allow-list. Best-effort by design: the loopback origin is already up, so
+		// any failure (no cf.env, reserved label, API error) warns and leaves the local server
+		// running — the preview just isn't reachable at its public hostname.
+		try {
+			const emails = parseAclFile(targetDir);
+			const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+			activeLabels.add(hostname.split(".")[0]);
+			console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`);
+		} catch (err) {
+			console.warn(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`);
+		}
 	}
 
 	await new Promise((r) => setTimeout(r, 1200));

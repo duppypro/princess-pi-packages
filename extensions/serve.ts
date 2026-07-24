@@ -18,6 +18,8 @@ import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
+// --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
+import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "./lib/serve/cloudflare.js";
 
 // Track widget visibility state locally (persisted across reloads via session log)
 let isWidgetVisible = true;
@@ -247,8 +249,17 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		// --- Phase 6A (#64): nginx map cleanup + reload removed — the Cloudflare edge
-		// gates now; killing the loopback origin is the whole job. (#66: per-slug unpublish.)
+		// --- Phase 6B (#66): unpublish each killed slug from the edge (ingress + Access app).
+		// Best-effort — a CF failure must not mask a successful local kill.
+		const killedSlugs = [...new Set(killedList.map(k => k.clientSlug).filter((s): s is string => !!s))];
+		for (const slug of killedSlugs) {
+			try {
+				await unpublishSlug({ slug });
+			} catch (err) {
+				ctx.ui.notify(`⚠️ Killed local origin for "${slug}" but failed to unpublish from Cloudflare: ${(err as Error).message}`, "warning");
+			}
+		}
+
 		const remainingServers = await discoverServers();
 		updateWidget(ctx, remainingServers, isWidgetVisible, process.cwd());
 
@@ -267,6 +278,18 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		let startPort = 8080;
 		const ip = await resolveIp();
+
+		// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill before
+		// publishing new state (stale allow-list live at the edge = security drift).
+		try {
+			const reaped = await reapOrphans();
+			if (reaped.length) ctx.ui.notify(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`, "info");
+		} catch (err) {
+			ctx.ui.notify(`⚠️ Orphan reap skipped: ${(err as Error).message}`, "warning");
+		}
+
+		// Labels published this run — a second dir colliding on the same flattened label is refused.
+		const activeLabels = new Set<string>();
 
 		for (const rawDir of dirs) {
 			const targetDir = path.resolve(process.cwd(), rawDir);
@@ -336,8 +359,17 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 
-			// --- Phase 6A (#64): nginx map writes + reload removed; serve spawns a plain
-			// loopback origin behind the Cloudflare Tunnel + Access edge. (#66: publishing.)
+			// --- Phase 6B (#66): publish this slug to the edge — tunnel ingress rule +
+			// per-slug Access app carrying the .serve-acl allow-list. Best-effort: the
+			// loopback origin is already up, so any failure warns and leaves it running.
+			try {
+				const emails = parseAclFile(targetDir);
+				const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+				activeLabels.add(hostname.split(".")[0]);
+				ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
+			} catch (err) {
+				ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
+			}
 		}
 
 		await new Promise(r => setTimeout(r, 1200));
