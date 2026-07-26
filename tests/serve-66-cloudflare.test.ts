@@ -10,7 +10,7 @@ import * as assert from "node:assert";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { flattenSlugToLabel, loadCfEnv, parseAclFile } from "../extensions/lib/serve/cloudflare.js";
+import { flattenSlugToLabel, loadCfEnv, parseAclFile, aclEntriesToInclude } from "../extensions/lib/serve/cloudflare.js";
 
 let passed = 0;
 function ok(name: string, fn: () => void) {
@@ -50,6 +50,16 @@ ok("reads + validates emails, strips comments", () => {
 	fs.writeFileSync(path.join(d, ".serve-acl"), `# who\na@x.com\nb@y.com  # inline\n`);
 	assert.deepEqual(parseAclFile(d), ["a@x.com", "b@y.com"]);
 });
+ok("accepts @domain rules alongside addresses", () => {
+	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
+	fs.writeFileSync(path.join(d, ".serve-acl"), `@roguelivestock.com\nmelissa@roguelivestock.com  # individual\n`);
+	assert.deepEqual(parseAclFile(d), ["@roguelivestock.com", "melissa@roguelivestock.com"]);
+});
+ok("malformed @domain (no dot) throws", () => {
+	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
+	fs.writeFileSync(path.join(d, ".serve-acl"), `@localhost\n`);
+	assert.throws(() => parseAclFile(d), /Invalid domain rule/);
+});
 ok("invalid email throws", () => {
 	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
 	fs.writeFileSync(path.join(d, ".serve-acl"), `not-an-email\n`);
@@ -60,5 +70,16 @@ ok("all-comment file → 'at least one' error", () => {
 	fs.writeFileSync(path.join(d, ".serve-acl"), `# only comments\n`);
 	assert.throws(() => parseAclFile(d), /at least one valid email/);
 });
+
+console.log("aclEntriesToInclude");
+ok("maps a single address to an email rule", () =>
+	assert.deepEqual(aclEntriesToInclude(["a@x.com"]), [{ email: { email: "a@x.com" } }]));
+ok("maps an @domain entry to an email_domain rule", () =>
+	assert.deepEqual(aclEntriesToInclude(["@roguelivestock.com"]), [{ email_domain: { domain: "roguelivestock.com" } }]));
+ok("maps a mixed list preserving order", () =>
+	assert.deepEqual(aclEntriesToInclude(["@r.com", "m@r.com"]), [
+		{ email_domain: { domain: "r.com" } },
+		{ email: { email: "m@r.com" } },
+	]));
 
 console.log(`\n${passed} assertions passed.`);

@@ -100,7 +100,9 @@ export function parseAclFile(targetDir) {
 		try {
 			const localContent = [
 				"# Local Access Control List for /serve",
-				"# Authorized Google email accounts allowed through Cloudflare Access for this slug",
+				"# Emails allowed through Cloudflare Access for this slug. One entry per line:",
+				"#   alice@example.com   — a single address",
+				"#   @example.com        — every address at a whole domain",
 				...defaultEmails,
 			].join("\n") + "\n";
 			fs.writeFileSync(aclPath, localContent, "utf8");
@@ -115,10 +117,21 @@ export function parseAclFile(targetDir) {
 		const hashIdx = line.indexOf("#");
 		const cleaned = (hashIdx !== -1 ? line.substring(0, hashIdx) : line).trim();
 		if (!cleaned) continue;
-		if (cleaned.includes("@") && cleaned.includes(".")) emails.push(cleaned);
-		else throw new Error(`Invalid email address found in .serve-acl: "${cleaned}"`);
+		// A leading '@' marks a whole-domain rule (`@roguelivestock.com` = every address at
+		// that domain → a Cloudflare `email_domain` Include). Kept verbatim with the '@' so
+		// upsertAccessApp can tell domain from address; the domain part must have a dot and
+		// no second '@'. Anything else must be a valid-shaped individual address.
+		if (cleaned.startsWith("@")) {
+			const domain = cleaned.slice(1);
+			if (domain.includes(".") && !domain.includes("@")) emails.push(cleaned);
+			else throw new Error(`Invalid domain rule found in .serve-acl: "${cleaned}"`);
+		} else if (cleaned.includes("@") && cleaned.includes(".")) {
+			emails.push(cleaned);
+		} else {
+			throw new Error(`Invalid email address found in .serve-acl: "${cleaned}"`);
+		}
 	}
-	if (emails.length === 0) throw new Error("The .serve-acl file must contain at least one valid email address.");
+	if (emails.length === 0) throw new Error("The .serve-acl file must contain at least one valid email address or @domain rule.");
 	return emails;
 }
 
@@ -325,6 +338,24 @@ async function putTunnelConfig(cf, config) {
 }
 
 // ---
+// Translate validated .serve-acl entries into Cloudflare Access policy Include rules. An
+// entry starting with '@' is a whole-domain rule (`email_domain`); everything else is a
+// single address (`email`). Pure + exported so this security-critical mapping is unit-
+// testable offline — a wrong rule here either locks out a client or lets the wrong domain in.
+// ---
+/**
+ * @param {string[]} entries validated allow-list entries from parseAclFile
+ * @returns {Array<{email:{email:string}}|{email_domain:{domain:string}}>}
+ */
+export function aclEntriesToInclude(entries) {
+	return entries.map((entry) =>
+		entry.startsWith("@")
+			? { email_domain: { domain: entry.slice(1) } }
+			: { email: { email: entry } },
+	);
+}
+
+// ---
 // Access application + Allow policy for a slug's hostname.
 // ---
 async function findAccessApp(cf, hostname) {
@@ -349,7 +380,7 @@ async function upsertAccessApp(cf, label, emails) {
 	const policyBody = {
 		name: `serve allow ${label}`,
 		decision: "allow",
-		include: emails.map((email) => ({ email: { email } })),
+		include: aclEntriesToInclude(emails),
 	};
 	const policies = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps/${appId}/policies`);
 	const mine = (policies || []).find((p) => p.name === policyBody.name);
