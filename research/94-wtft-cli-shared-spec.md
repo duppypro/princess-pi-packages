@@ -36,10 +36,10 @@ Flags handled (union of both sets):
 | `-b` `--bucket` | ✓ | ✓ | |
 | `--ticks` | ✓ | ✓ | |
 | `--no-ticks` | ✓ | ✓ | |
-| `-t` `--tz <val>` `--timezone <val>` | ✓ | ✓ | |
+| `--tz <val>` `--timezone <val>` | ✓ | ✓ | |
 | `--tz=<val>` `--timezone=<val>` | ✓ | — | |
 | `-o` `--other` | ✓ | ✓ | |
-| `-T` `--tokens` | ✓ | ✓ | |
+| `--tokens` | ✓ | ✓ | |
 | `-C` `--cost` | ✓ | ✓ | |
 | `-F` `--force` | ✓ | ✓ | |
 | `-H` `--hide` | ✓ | — | |
@@ -62,6 +62,8 @@ Flags handled (union of both sets):
 | `--thinking-budget <val>` | — | ✓ | |
 
 Both also gain `=` syntax for `--interval`, `--limit`, `--width`, `--tz`, and `--timezone` (extension already has it; CLI gets it for free).
+
+**Breaking change: `-t` and `-T` shortcuts are removed.** `-t` was overloaded across `--timezone`, `--tokens`, `--ticks`, and a planned `--turns`. All three now require the full `--` name. `-o` (for `--other`) is kept — it's unambiguous and well-established.
 
 ### 2. `spawnWtftDaemon(sessionPath: string)` → `ChildProcess | null`
 
