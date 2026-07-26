@@ -2,8 +2,11 @@
 
 > **Lifecycle status: Phase 6A is CODE AND SPEC APPROVED (Step 5 `99c8cd4`, PR #108 merged
 > 2026-07-22; infra teardown APPLIED + verified on the live VPS 2026-07-22 — evidence in
-> `phase6-teardown/APPLY_RUNBOOK.md`). Phase 6B (per-slug automation, #66) is SPEC APPROVED
-> (2026-07-23) — the 6B.0 wildcard-proxy verification that gated approval resolved 2026-07-22.**
+> `phase6-teardown/APPLY_RUNBOOK.md`). Phase 6B (per-slug automation, #66) is CODE APPROVED
+> for its offline surface (Step 4, 2026-07-26: 16/16 unit assertions + live read-only API
+> contract; `email_domain` whole-domain allow-list support added). The live publish/
+> unpublish/reap sign-off is gated on the one-time 6B.0 remote-managed tunnel migration —
+> `phase6b-migration/APPLY_RUNBOOK.md` (Duppy applies; tunnel is still `source:local`).**
 > Replaces the retired nginx `/live/` + oauth2-proxy `:4182` gate (see #32, #38, #59) with
 > `cloudflared` Tunnel → loopback `/serve` servers, fronted by Cloudflare Access. Spec
 > approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
