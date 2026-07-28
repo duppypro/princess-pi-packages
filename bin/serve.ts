@@ -16,7 +16,7 @@ import { spawn, execSync } from "node:child_process";
 import { isInsideRepo, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
-import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint } from "../extensions/lib/serve/tui.js";
+import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
 // --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
 
@@ -232,6 +232,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 					const hostname = await publishSlug({ slug: overrideSlug, port: existingServer.port, emails, activeLabels });
 					activeLabels.add(hostname.split(".")[0]);
 					console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`);
+				console.log(formatServerCard({ ...existingServer, url: `https://${hostname}/` }));
 				} catch (err) {
 					console.warn(`⚠️ Directory "${rawDir}" already served on port ${existingServer.port}, but edge publish failed: ${(err as Error).message}`);
 				}

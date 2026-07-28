@@ -100,22 +100,19 @@ export function formatServerCard(server: ServerInstance): string {
 	const urlLine = `  \x1b[4m\x1b[34m${server.url}\x1b[0m`;
 	const infoLine = `  ${typeColor}${typeLabel}\x1b[0m · logs: \x1b[36m${logPath}\x1b[0m`;
 
-	// Box inner-width: max of header+3 (for "┌─ "), url, info (#119 fix)
-	const inner = Math.max(
-		getVisualLength(header) + 3,
-		getVisualLength(urlLine),
-		getVisualLength(infoLine)
-	);
+	// Box inner-width: must fit longest content line AND the header (header needs
+	// at least 4 extra chars beyond its visual length for "┌─ " + " " + 1 dash).
+	const contentWidth = Math.max(getVisualLength(urlLine), getVisualLength(infoLine));
+	const boxInner = Math.max(contentWidth, getVisualLength(header) + 4);
 
-	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 2));
-	const urlPadded = padVisual(urlLine, inner);
-	const infoPadded = padVisual(infoLine, inner);
+	const headerDashes = "─".repeat(Math.max(1, boxInner - getVisualLength(header) - 3));
+	const bottomDashes = "─".repeat(boxInner);
 
 	return [
 		`${border}┌─ ${header} ${headerDashes}┐\x1b[0m`,
-		`${border}│\x1b[0m${urlPadded}${border}│\x1b[0m`,
-		`${border}│\x1b[0m${infoPadded}${border}│\x1b[0m`,
-		`${border}└${"─".repeat(inner)}┘\x1b[0m`,
+		`${border}│\x1b[0m${padVisual(urlLine, boxInner)}${border}│\x1b[0m`,
+		`${border}│\x1b[0m${padVisual(infoLine, boxInner)}${border}│\x1b[0m`,
+		`${border}└${bottomDashes}┘\x1b[0m`,
 	].join("\n");
 }
 
@@ -137,24 +134,22 @@ export function formatServerCardKilled(killed: KilledServerInstance): string {
 	const beforeLine = `  Before: ${killed.statusBefore}`;
 	const afterLine = `  After:  \x1b[31m${killed.statusAfter}\x1b[0m`;
 
-	const inner = Math.max(
-		getVisualLength(header) + 3,
+	const contentWidth = Math.max(
 		getVisualLength(urlLine),
 		getVisualLength(beforeLine),
 		getVisualLength(afterLine)
 	);
+	const boxInner = Math.max(contentWidth, getVisualLength(header) + 4);
 
-	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 2));
-	const urlPadded = padVisual(urlLine, inner);
-	const beforePadded = padVisual(beforeLine, inner);
-	const afterPadded = padVisual(afterLine, inner);
+	const headerDashes = "─".repeat(Math.max(1, boxInner - getVisualLength(header) - 3));
+	const bottomDashes = "─".repeat(boxInner);
 
 	return [
 		`${border}┌─ ${header} ${headerDashes}┐\x1b[0m`,
-		`${border}│\x1b[0m${urlPadded}${border}│\x1b[0m`,
-		`${border}│\x1b[0m${beforePadded}${border}│\x1b[0m`,
-		`${border}│\x1b[0m${afterPadded}${border}│\x1b[0m`,
-		`${border}└${"─".repeat(inner)}┘\x1b[0m`,
+		`${border}│\x1b[0m${padVisual(urlLine, boxInner)}${border}│\x1b[0m`,
+		`${border}│\x1b[0m${padVisual(beforeLine, boxInner)}${border}│\x1b[0m`,
+		`${border}│\x1b[0m${padVisual(afterLine, boxInner)}${border}│\x1b[0m`,
+		`${border}└${bottomDashes}┘\x1b[0m`,
 	].join("\n");
 }
 
@@ -203,7 +198,5 @@ export function buildDiscoveredSummary(servers: ServerInstance[]): string {
 
 // --- Post-kill summary: card format, only the servers that were *just* killed. ---
 export function buildKilledSummary(killedList: KilledServerInstance[]): string {
-	const cards = killedList.map(k => formatServerCardKilled(k));
-	const label = killedList.length === 1 ? "server" : "servers";
-	return `🛑 Terminated ${killedList.length} ${label}!\n\n${cards.join("\n\n")}`;
+	return killedList.map(k => formatServerCardKilled(k)).join("\n\n");
 }

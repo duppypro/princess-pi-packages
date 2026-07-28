@@ -17,7 +17,7 @@ import { discoverServers, resolveIp, checkServerStatus, killServerInstance } fro
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
-import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable } from "./lib/serve/tui.js";
+import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable, formatServerCard } from "./lib/serve/tui.js";
 // --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "./lib/serve/cloudflare.js";
 
@@ -324,7 +324,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 						const emails = parseAclFile(targetDir);
 						const hostname = await publishSlug({ slug: overrideSlug, port: existingServer.port, emails, activeLabels });
 						activeLabels.add(hostname.split(".")[0]);
-						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`, "info");
+						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.\n\n${formatServerCard({ ...existingServer, url: `https://${hostname}/` })}`, "info");
 					} catch (err) {
 						ctx.ui.notify(`⚠️ Directory "${rawDir}" already served on port ${existingServer.port}, but edge publish failed: ${(err as Error).message}`, "warning");
 					}
