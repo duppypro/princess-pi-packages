@@ -295,10 +295,12 @@ async function run(): Promise<void> {
 	if (trimmedArgs === "--list" || trimmedArgs === "-L") return handleList();
 	if (trimmedArgs === "--help" || trimmedArgs === "-h") return handleHelp();
 	// Pi-only flags — print a notice and exit cleanly
-	if (["--emoji", "--emojii", "--no-emoji", "--no-emojii", "--show", "-S", "--hide", "-H"].includes(trimmedArgs)) {
+	if (["--show", "-S", "--hide", "-H"].includes(trimmedArgs)) {
 		console.log("ℹ️  This flag is a Pi TUI setting only — run it inside Pi (/serve --help for details).");
 		return;
 	}
+	// Emoji flags are valid everywhere — accepted silently (controls terminal rendering)
+	if (["--emoji", "--emojii", "--no-emoji", "--no-emojii"].includes(trimmedArgs)) return;
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
 	return handleStart(trimmedArgs);
 }
