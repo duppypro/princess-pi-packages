@@ -3,7 +3,7 @@
 <head>
     <!-- (c) 2026 David 'Duppy' Proctor, Interface Arts -->
     <meta charset="UTF-8">
-    <title>Pi Extensions: Serve Utility Spec</title>
+    <title>Pi Extensions: Serve Utility</title>
     <style>
         :root {
             --bg-color: #1e1e1e;
@@ -29,77 +29,84 @@
         h2 { margin-top: 2rem; }
         a { color: var(--accent-blue); text-decoration: none; }
         a:hover { text-decoration: underline; }
-        
-        .diagram { 
-            background: var(--box-bg); 
-            border: 1px solid #404040; 
-            border-radius: 8px; 
-            padding: 20px; 
-            margin: 20px 0; 
-        }
+        code { background: var(--box-bg); padding: 2px 4px; border-radius: 4px; }
+        pre { background: var(--box-bg); padding: 15px; border-radius: 8px; overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #404040; padding: 8px; text-align: left; }
     </style>
 </head>
 <body>
-    <h2>Serve Utility (<code>EXT_SERVE.html</code>)</h2>
-    <p><strong>Domain:</strong> Local Development, Dev Server & Hot-Reloading</p>
+    <h1>Serve Utility (<code>/serve</code>)</h1>
+    <p><strong>Domain:</strong> Local Development Server, Live-Reload, Cloudflare-Gated Previews</p>
+    <p><strong>Reconciled:</strong> 2026-07-28 · Issue #119 · Supersedes <code>EXT_LIVE_SERVE.html</code> (folded in) and <code>SPEC_SERVE_LIST_FLAGS.md</code> (obsolete).</p>
 
-    <h3>Overview</h3>
-    <p>The Serve utility provides a custom, native, zero-dependency Node.js development server. It implements instant Server-Sent Events (SSE) live-reloading, automatic cache-busting, and a dynamic HTML/JS/CSS dependency-tracing engine. It also provides a <code>--static</code> fallback option to utilize standard <code>http-server</code> behavior when live-reloading is not desired.</p>
+    <h2>Overview</h2>
+    <p><code>/serve</code> spawns plain-HTTP development servers on loopback (<code>127.0.0.1</code>), with live-reload via Server-Sent Events and optional Cloudflare-Tunnel-gated public previews at <code>&lt;slug&gt;.princess-pi.dev</code>. No local SSL — the edge handles TLS termination. Available as a Pi extension (<code>/serve</code>) and a standalone CLI (<code>bin/serve.mjs</code>).</p>
 
-    
-<h3>Core Architecture</h3>
-    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <h4>1. Native HTTPS File Server (Default Mode)</h4>
-        <ul>
-            <li><strong>Zero Dependencies:</strong> Built strictly using Node.js standard library modules (<code>node:https</code>, <code>node:fs</code>, <code>node:path</code>, <code>node:mime</code>/custom mappings).</li>
-            <li><strong>Cache Control:</strong> Sets headers to strictly bypass browser caches (<code>Cache-Control: no-store, no-cache, must-revalidate</code>) to prevent sticky dev states.</li>
-            <li><strong>Client Script Injection:</strong> Automatically intercepts outgoing <code>.html</code> file read streams to inject a tiny (~15 lines) native SSE listener script before the closing <code>&lt;/body&gt;</code> tag.</li>
-        </ul>
-
-        <h4>2. Lightweight Live-Reload Protocol (SSE)</h4>
-        <ul>
-            <li><strong>Server-Sent Events:</strong> Avoids the overhead of external WebSockets packages (like <code>ws</code>). Exposes a special endpoint (<code>/__live-reload</code>) using standard HTTP/HTTPS protocols.</li>
-            <li><strong>Auto-Reconnections:</strong> Browsers natively support reconnecting to SSE event streams out-of-the-box via the built-in <code>EventSource</code> API.</li>
-        </ul>
-
-        <h4>3. FS Watcher & Debounce Queue</h4>
-        <ul>
-            <li><strong>Native Watching:</strong> Uses Node's native <code>fs.watch</code> (recursive) to monitor directory modifications.</li>
-            <li><strong>Debounce Window:</strong> Groups multiple rapid file changes (such as auto-formatter writes or multi-file saves) into a single batched event, delaying broadcasts by a configurable cooldown window (default: <code>150ms</code>).</li>
-        </ul>
-
-        <h4>4. Dynamic Dependency-Tracing Engine</h4>
-        <p>To keep reloads highly efficient and prevent unnecessary cycles, the server builds an internal in-memory Dependency Graph on startup and updates it dynamically on file saves:</p>
-        <ul>
-            <li><strong>HTML Scans:</strong> Scans `.html` files for <code>&lt;link rel="stylesheet"&gt;</code>, <code>&lt;script src="..."&gt;</code>, and <code>fetch(...)</code> endpoints to map stylesheets, scripts, and JSON configs to their HTML pages.</li>
-            <li><strong>JS Scans:</strong> Scans native ES modules for static and dynamic <code>import</code> statements (<code>import ... from '...'</code>).</li>
-            <li><strong>Graph Lookup & Hot-Swapping:</strong>
-                <ul>
-                    <li>If a <strong>CSS</strong> file changes, the server triggers a targeted <code>{ type: 'css', path: '/css/style.css' }</code> payload. The injected client script updates the DOM link reference with a cache-busting timestamp on-the-fly, giving <strong>instant visual updates with zero page reloads</strong>.</li>
-                    <li>If a <strong>JS or HTML</strong> file changes, the server traces up the dependency graph. If the file is imported by the currently viewed page, it triggers a page reload (<code>{ type: 'reload' }</code>); if the changed file is unused, it suppresses the reload entirely.</li>
-                </ul>
-            </li>
-        </ul>
-
-        <h4>5. Static Fallback (<code>--static</code> / <code>-s</code>)</h4>
-        <p>If a user desires to run a directory without any code-injection, cache-busting, or live-reload watchers, passing the <code>--static</code> flag will bypass the native Node.js Live Server and instead spawn a detached <code>npx http-server</code> instance directly over the targeted directory.</p>
+    <h2>Command Reference</h2>
+    <div id="serve-cmd-reference" style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040;">
+        <em style="color: #666;">Loading command manifest...</em>
     </div>
 
-    <h3>Step-by-Step Data Flow</h3>
-    <ol>
-        <li>User executes <code>/serve</code>.</li>
-        <li>Server reads persistent keys from <code>~/.pi-certs/</code> and spins up the native HTTPS Server.</li>
-        <li>Server traverses the target workspace directory to build the dependency map.</li>
-        <li>Browser requests <code>does-it-glider.html</code>.</li>
-        <li>Server reads the file, injects the SSE Client Script, and streams it to the browser.</li>
-        <li>Browser establishes connection with <code>/__live-reload</code>.</li>
-        <li>Developer modifies <code>game-state.js</code>.</li>
-        <li>FS Watcher detects the write, debounces it, checks the dependency map to confirm it is imported by the active document, and pushes a <code>{ type: 'reload' }</code> payload down the SSE connection.</li>
-        <li>Browser refreshes instantly.</li>
-    </ol>
+    <h2>Status Display (#119)</h2>
+    <p>All server-status output uses three shared formatters in <code>extensions/lib/serve/tui.ts</code>:</p>
+
+    <h3>Table (CLI <code>--list</code> & Pi widget)</h3>
+    <p>Bold magenta (<code>\x1b[1;35m</code>) aligned columns showing every running server on the machine:</p>
+    <pre>
+  SERVED DIRECTORY                                 PORT  TYPE  URL
+  ~/git-projects/rogue-savvy/frontend/dist         8080  Live  https://rogue-savvy.princess-pi.dev/
+  ~/.local/share/rogue-aix/prod                    8081  Live  https://rogue-aix.princess-pi.dev/
+    </pre>
+    <p>No title line; no repo-vs-all split (one <code>--list</code> shows everything). Paths use <code>~/</code> prefix for home-directory shortening. Port is explicit — needed for <code>--kill</code> and log-file lookup.</p>
+
+    <h3>Card (post-start, post-kill, republish)</h3>
+    <p>Dynamic-width box with gray borders, URL in blue underline, and status info. No title row — just the card(s).</p>
+    <pre>
+┌─ ~/git-projects/119-serve-cleanup-sweep/research :8082 ──────┐
+│  https://p119-research.princess-pi.dev/                       │
+│  Live · logs: ~/.pi-certs/logs/port-8082-access.log           │
+└───────────────────────────────────────────────────────────────┘
+    </pre>
+    <p>Killed variant shows Before/After health-check status instead of type + log path.</p>
+
+    <h2>Cloudflare Publishing (<code>--as &lt;slug&gt;</code>)</h2>
+    <p>Opt-in via <code>--as</code>. Publishes the server at <code>&lt;slug&gt;.princess-pi.dev</code> through Cloudflare Tunnel, gated by Cloudflare Access (email OTP). The <code>.serve-acl</code> file in the served directory controls the allow-list. Without <code>--as</code>, the server runs local-loopback only.</p>
+    <p><strong>Republishing:</strong> Running <code>serve &lt;dir&gt; --as &lt;new-slug&gt;</code> on an already-served directory publishes the new slug to the existing port — no new process spawned. Slug→port mappings persist in <code>~/.pi-certs/serve-slugs.json</code> so <code>--list</code> shows the public URL even for servers published after start.</p>
+    <p>See <code>SPEC_SECURE_DYNAMIC_SERVE.html</code> for the historical NGINX/OAuth design (superseded) and the Cloudflare migration context.</p>
+
+    <h2>Live-Reload Architecture</h2>
+    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+        <h3>1. Native HTTP File Server</h3>
+        <ul>
+            <li><strong>Zero Dependencies:</strong> Built strictly using Node.js standard library modules (<code>node:http</code>, <code>node:fs</code>, <code>node:path</code>, custom MIME mappings).</li>
+            <li><strong>Cache Control:</strong> Sets headers to strictly bypass browser caches (<code>Cache-Control: no-store, no-cache, must-revalidate</code>) to prevent sticky dev states.</li>
+            <li><strong>Client Script Injection:</strong> Automatically intercepts outgoing <code>.html</code> file read streams to inject a tiny native SSE listener script before the closing <code>&lt;/body&gt;</code> tag.</li>
+        </ul>
+
+        <h3>2. Lightweight Live-Reload Protocol (SSE)</h3>
+        <ul>
+            <li><strong>Server-Sent Events:</strong> Avoids external WebSocket packages. Exposes a special endpoint (<code>/__live-reload</code>) using standard HTTP protocols.</li>
+            <li><strong>Auto-Reconnections:</strong> Browsers natively support reconnecting to SSE streams via the built-in <code>EventSource</code> API.</li>
+        </ul>
+
+        <h3>3. FS Watcher & Debounce Queue</h3>
+        <ul>
+            <li><strong>Native Watching:</strong> Uses Node's native <code>fs.watch</code> (recursive) to monitor directory modifications.</li>
+            <li><strong>Debounce Window:</strong> Groups rapid file changes into a single batched event (default: <code>150ms</code> cooldown).</li>
+        </ul>
+
+        <h3>4. Dynamic Dependency-Tracing Engine</h3>
+        <p>The server builds an in-memory Dependency Graph on startup and updates it dynamically on file saves:</p>
+        <ul>
+            <li><strong>HTML Scans:</strong> Maps <code>&lt;link rel="stylesheet"&gt;</code>, <code>&lt;script src="..."&gt;</code>, and <code>fetch(...)</code> endpoints.</li>
+            <li><strong>JS Scans:</strong> Tracks static and dynamic <code>import</code> statements.</li>
+            <li><strong>CSS Hot-Swap:</strong> CSS changes trigger targeted DOM updates with zero page reload.</li>
+            <li><strong>JS/HTML Reload:</strong> Changes to imported modules trigger page reload; unused file changes are suppressed.</li>
+        </ul>
+    </div>
 
     <h3>The Injected SSE Client Script</h3>
-    <p>A minimal, vanilla injection script appended to outgoing HTML streams:</p>
     <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0;">
 &lt;script&gt;
   (function() {
@@ -123,76 +130,54 @@
 &lt;/script&gt;
     </pre>
 
-    
-<h3>Command Reference</h3>
-    <div id="serve-cmd-reference" style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040;">
-        <em style="color: #666;">Loading command manifest...</em>
-    </div>
+    <h2>Server Discovery & Lifecycle</h2>
+    <ul>
+        <li><strong>Discovery:</strong> Scans <code>ps aux</code> for <code>http-server</code> and <code>run-live-server</code> processes. Reads <code>--slug</code> from process cmdline and <code>~/.pi-certs/serve-slugs.json</code> for slugs published after start.</li>
+        <li><strong>Kill:</strong> <code>--kill &lt;port|dir|all&gt;</code> sends SIGKILL via captured PID. Unpublishes Cloudflare ingress rules and Access apps. Cleans slug map.</li>
+        <li><strong>Orphan Reap:</strong> On every <code>serve</code> invocation, queries Cloudflare for tunnel ingress rules with no matching local process and removes them.</li>
+        <li><strong>Session Shutdown:</strong> On Pi <code>/quit</code>, prints a table of active servers as a reminder. Servers remain running across sessions.</li>
+    </ul>
 
-    <h3>CLI Mode (Outside Pi Coding Agent) — Cross-Harness</h3>
-    <p><code>bin/serve.mjs</code> is a standalone, Pi-independent port that provides zero-token command execution outside of Pi. Just like <code>wtft</code> and <code>merge</code>, it uses <strong>esbuild</strong> to natively bundle its shared TypeScript logic (from <code>extensions/lib/serve/</code>) into a single, pure ESM JavaScript binary. Because it is pure JavaScript (<code>#!/usr/bin/env node</code>), it can be installed globally for cross-harness use without triggering Node's <code>--experimental-strip-types</code> <code>node_modules</code> errors.</p>
-    
-    <p><strong>Installation (Global CLI):</strong></p>
+    <h2>Static Fallback (<code>--static</code> / <code>-s</code>)</h2>
+    <p>Spawns <code>npx http-server</code> instead of the native live-reload server. No code injection, cache-busting, or file watching. Useful for testing production builds locally.</p>
+
+    <h2>CLI Mode (Outside Pi)</h2>
+    <p><code>bin/serve.mjs</code> is a standalone, Pi-independent port built with Bun. It reuses the same <code>extensions/lib/serve/</code> modules. Installed globally via:</p>
     <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0; font-family: monospace;">npm install -g github:duppypro/princess-pi-packages</pre>
-    <p>Once installed, invoke it as the npm-global <code>serve [args]</code>, via the <code>./serve</code> wrapper from the repo root, or through Claude Code's shell-escape prefix (e.g. <code>!serve --log</code>). Since Claude Code has no extension-dispatch mechanism to bypass the LLM reasoning loop like Pi's <code>registerCommand</code>, this CLI enables identical zero-token usage in that harness.</p>
-
     <ul>
-        <li><strong>Supported:</strong> default start, <code>--static</code>/<code>-s</code>, <code>--log</code>/<code>-L</code>, <code>--kill</code>/<code>-k</code>, <code>--help</code>/<code>-h</code> — identical behavior to the Pi extension.</li>
-        <li><strong>Omitted:</strong> <code>--hide</code>/<code>-H</code> and <code>--show</code>/<code>-S</code> have no CLI equivalent — there's no persistent TUI widget outside Pi to hide or show.</li>
-        <li><strong>Added:</strong> <code>--force</code>/<code>-f</code> bypasses the <code>.env</code> secret warning. The Pi extension can block on an interactive confirm dialog; the CLI can't safely assume a TTY is attached, so it skips directories containing <code>.env</code> by default and requires this flag to proceed.</li>
+        <li><strong>Supported:</strong> <code>[dirs...]</code>, <code>--static</code>/<code>-s</code>, <code>--list</code>/<code>-L</code>, <code>--kill</code>/<code>-k</code>, <code>--as &lt;slug&gt;</code>, <code>--help</code>/<code>-h</code>, <code>--version</code>, <code>--why</code>, <code>--force</code>/<code>-f</code> — identical behavior to the Pi extension.</li>
+        <li><strong>Pi-only (accepted silently):</strong> <code>--emoji</code>/<code>--no-emoji</code> (terminal rendering hint).</li>
+        <li><strong>Pi-only (notify):</strong> <code>--show</code>/<code>-S</code>, <code>--hide</code>/<code>-H</code> — no TUI widget in CLI.</li>
+        <li><strong>CLI-only:</strong> <code>--force</code>/<code>-f</code> bypasses the <code>.env</code> secret warning (Pi prompts interactively instead).</li>
     </ul>
 
-    <h3>Bounded Context & Rules</h3>
+    <h2>Security</h2>
     <ul>
-        <li><strong>Stateless Tracking:</strong> Servers are identified dynamically by scanning the host OS. A server belongs to the active context if its served directory resides within <code>process.cwd()</code>.</li>
-        <li><strong>Security:</strong> Scans target directories for <code>.env</code> files and prompts for confirmation before exposing them over the network.</li>
-        <li><strong>Deduplication:</strong> Prevents multiple HTTP servers from spawning on the exact same absolute directory path.</li>
-        <li><strong>Dual Dev Modes:</strong> Runs as a native, live-reloading server with hot CSS injections by default. Passing the <code>--static</code> or <code>-s</code> flag falls back to a standard static HTTP/HTTPS file server (spawning <code>http-server</code>) with no code injections or watchers.</li>
+        <li><strong>Loopback only:</strong> All servers bind to <code>127.0.0.1</code>. Public access is gated exclusively through Cloudflare Tunnel → Access (email OTP).</li>
+        <li><strong><code>.env</code> detection:</strong> Scans target directories for <code>.env</code> files and prompts for confirmation before serving. CLI requires <code>--force</code> to proceed.</li>
+        <li><strong>Access logging:</strong> Apache Common Log Format to <code>~/.pi-certs/logs/port-&lt;PORT&gt;-access.log</code>. Auto-rotates at 5MB (capped at 10MB total per server).</li>
+        <li><strong>No standing privilege:</strong> Cloudflare API token lives in <code>~/.config/princess-pi/cf.env</code> (0600). No sudo, no NGINX reloads, no filesystem ACL maps.</li>
     </ul>
 
-    <h3>Security & Certificates</h3>
-    <ul>
-        <li><strong>Certificate Storage:</strong> SSL certificates (<code>cert.pem</code> and <code>key.pem</code>) are stored persistently in the user's home directory under <code>~/.pi-certs/</code>. This ensures they survive system reboots and prevents browser certificate fingerprint mismatch warnings.</li>
-        <li><strong>Auto-Generation:</strong> If missing, 2048-bit RSA self-signed certificates are automatically generated securely using the host's <code>openssl</code> CLI.</li>
-        <li><strong>Conflict Prevention:</strong> Storing certificates in the user's home directory (with owner-only read/write permissions) avoids the permission conflicts and security risks associated with shared temporary directories.</li>
-        <li><strong>Access Logging & Automatic Rotation:</strong> The custom dev server natively implements Apache Common Log Format access logging. Logs are written to <code>~/.pi-certs/logs/port-&lt;PORT&gt;-access.log</code>. To prevent logs from consuming excessive disk space, the server includes a built-in, cross-platform, zero-dependency log rotation function. Once an active log exceeds 5MB, it is automatically rotated to a <code>.old.log</code> backup (capping total disk usage per server at exactly 10MB). This operates entirely inside the background process independent of any active Pi CLI sessions.</li>
-        <li><strong>VPS Firewall Protection:</strong> Because <code>/serve</code> exposes directories to all network interfaces, users on a VPS must explicitly restrict port access using their host's firewall (e.g., UFW or Hostinger Control Panel) to block unauthorized traffic.</li>
-    </ul>
+    <h2>Settings Persistence</h2>
+    <p>Uses the shared <code>extensions/lib/config.ts</code> module. Config at <code>~/.config/princess-pi/serve.json</code> (user-global) and <code>./.princess-pi/serve.json</code> (project-local, overrides global).</p>
 
-    <h3>Worktree Resolution & Multi-Serving</h3>
-    <p>By relying on the active session's directory (<code>ctx.cwd</code>) rather than a fixed process directory, the Serve utility dynamically tracks your active worktree. Note that Unix process limitations prevent child processes (such as sub-shells spawned via <code>!cd</code>) from modifying the parent Node process's working directory. Therefore, to switch your active session's worktree, you must quit and resume your session from the host terminal.</p>
-    
-    <h4>Dynamic Worktree Categorization</h4>
-    <p>The TUI widget dynamically filters and groups all active servers on the system into two distinct categories:</p>
-    <ul>
-        <li><strong>This Worktree:</strong> Active servers whose root directory matches or resides within the active session's directory (<code>ctx.cwd</code>).</li>
-        <li><strong>Other:</strong> All other active servers on the host machine.</li>
-        <li><strong>The 'all' Target:</strong> Running <code>/serve --kill all</code> (or <code>-k all</code>) sweeps the host system and immediately terminates <strong>all</strong> active development servers (both live and static) in both the current worktree and all other folders.</li>
-    </ul>
+    <h2>Module Map</h2>
+    <table>
+        <tr><th>Module</th><th>Role</th></tr>
+        <tr><td><code>extensions/serve.ts</code></td><td>Pi extension entry point — registers <code>/serve</code> command, routes flags to handlers</td></tr>
+        <tr><td><code>bin/serve.ts</code></td><td>CLI entry point — standalone shell command, same logic as extension</td></tr>
+        <tr><td><code>extensions/lib/serve/domain.ts</code></td><td>Types (<code>ServerInstance</code>, <code>KilledServerInstance</code>), <code>isInsideRepo</code> helper</td></tr>
+        <tr><td><code>extensions/lib/serve/process.ts</code></td><td>Server discovery (<code>ps aux</code> parsing), kill, health-check, slug-map integration</td></tr>
+        <tr><td><code>extensions/lib/serve/tui.ts</code></td><td>Formatters (table/card), widget rendering, box drawing, ANSI coloring</td></tr>
+        <tr><td><code>extensions/lib/serve/cloudflare.js</code></td><td>Cloudflare API: tunnel ingress rules, Access apps, slug-map persistence, orphan reaping</td></tr>
+        <tr><td><code>extensions/lib/serve/run-live-server.js</code></td><td>Live-reload server process: HTTP, SSE, dependency graph, FS watching</td></tr>
+        <tr><td><code>extensions/lib/serve/store.ts</code></td><td>Widget visibility config read/write</td></tr>
+        <tr><td><code>docs/manifests/serve-cmd.json</code></td><td>Command manifest — drives <code>--help</code>, <code>--why</code>, and this page's reference section</td></tr>
+    </table>
 
-    <h4>Step-by-Step Multi-Worktree Serving Example</h4>
-    <p>To serve multiple independent projects simultaneously:</p>
-    <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0;">
-# 1. Start Pi in your first worktree and serve it:
-$ cd /home/princess-pi/git-projects/does-it-glider-juice-my-extensions
-$ pi
-/serve
-
-# 2. Pause the Pi session:
-/quit
-
-# 3. Change directory on the host terminal and resume your session in the second worktree:
-$ cd ../does-it-glider-simple-prompt
-$ pi -r
-
-# 4. Serve the second project (will automatically choose next available port, e.g., 8082):
-/serve
-    </pre>
-
-    <h3>Settings Persistence (Cross-Harness Config)</h3>
-    <div style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-        <p>Serve uses the shared <code>extensions/lib/config.ts</code> module for harness-agnostic settings persistence. Config files live at <code>~/.config/princess-pi/serve.json</code> (user-global) and <code>./.princess-pi/serve.json</code> (project-local, overrides global). CLI flags take highest precedence. See <code>EXT_WTFT.html</code> for the full config hierarchy documentation.</p>
-    </div>
+    <h2>DeepSeek Surge Pricing Integration</h2>
+    <p>The <code>wtft</code> cost tracker detects DeepSeek peak hours (UTC 01:00–04:00 and 06:00–10:00) and applies a 2× multiplier to token costs. The 24h timeline bar shows orange surge segments. Individual bin rows with surge-priced interactions show their dollar amounts in orange (<code>\x1b[1;38;5;208m</code>) instead of white. See <code>extensions/lib/wtft-cost.ts</code> and <code>extensions/lib/wtft-renderer.ts</code>.</p>
 
     <script>
         fetch('manifests/serve-cmd.json')
@@ -201,9 +186,6 @@ $ pi -r
                 const container = document.getElementById('serve-cmd-reference');
                 if (!container) return;
                 
-                // Pi-facing spec page shows the /serve invocation; the same manifest
-                // also renders correctly as ./serve via bin/serve.ts's CLI help (see
-                // CLAUDE.md "Manifest-driven --help" convention: examples before flags).
                 const invokedAs = "/serve";
                 let html = `<p><strong><code>${data.name}</code></strong> - ${data.tagline}</p>`;
                 html += `<p>${data.description}</p>`;
