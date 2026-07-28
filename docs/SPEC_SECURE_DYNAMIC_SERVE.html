@@ -34,6 +34,24 @@
 </head>
 <body>
     <h1>Spec: Secure Dynamic <code>/serve</code> Tool with DNS, trusted SSL, and Google OAuth</h1>
+
+    <div style="border:2px solid #d93f0b; background:#fff3ef; color:#7a2410; padding:1em 1.25em; border-radius:8px; margin:1em 0;">
+        <strong>⚠️ SUPERSEDED — historical reference only (Google OAuth deprecated).</strong>
+        The architecture below (oauth2-proxy on port <code>4182</code> with <code>provider="google"</code>
+        Google OAuth, NGINX map-based ACLs, path-based <code>/live/&lt;slug&gt;/</code> routing, and
+        local self-signed certs) was <strong>not</strong> the delivered design. It was replaced
+        end-to-end by <strong>Cloudflare Tunnel → loopback <code>/serve</code> origins, gated by
+        Cloudflare Access with email One-Time-PIN (OTP)</strong>, on
+        <code>&lt;slug&gt;.princess-pi.dev</code> subdomains — no Google Cloud OAuth client, no
+        oauth2-proxy, no NGINX, no sudo. <strong>Google OAuth is deprecated</strong> in favor of
+        email OTP (optional Access IdP only).
+        <br><br>
+        <strong>Live spec:</strong> <code>infra/deploy/RUNBOOK_CLOUDFLARE_TUNNEL_SERVE.md</code>.
+        <strong>Delivered by:</strong> #38/#59 (token-bypass fix + hardening), #64 (retire the
+        nginx/oauth2-proxy gate), #66 (per-slug automation). Tracking issue #32 (closed).
+        This document is kept only for the make-vs-buy history below.
+    </div>
+
     <p>This specification outlines the architecture, routing patterns, ACL security, and local tool changes required to securely serve local web assets under <code>https://princess-pi.dev/live/&lt;client_slug&gt;/</code> paths.</p>
 
     <h2>1. Make vs Buy Analysis</h2>

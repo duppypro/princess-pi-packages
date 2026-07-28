@@ -34,12 +34,16 @@
 
 ## Goal
 `serve <dir>` on a loopback port, reachable at a **named subdomain** of princess-pi.dev,
-gated by **Google sign-in** (+ email OTP), and only openable by **allow-listed emails**.
-This is the go-forward replacement for the token-bypass gate we removed in #59.
+gated by **Cloudflare Access email OTP** (a one-time PIN mailed to the address), and only
+openable by **allow-listed emails**. This is the go-forward replacement for the token-bypass
+gate we removed in #59. (Google OAuth was the original plan — see #32 — **now deprecated** in
+favor of email OTP: no Google Cloud OAuth client to provision, smaller setup surface. Google
+remains available as an optional Access IdP if ever wanted, but is not configured.)
 
 ## Why this shape (decision already settled — not re-litigated here)
 - **Buy, not make.** Cloudflare Access natively does per-hostname email allow-lists,
-  multi-IdP (Google + OTP now), and service-token test bypass — free at our scale (≤50 users).
+  email OTP sign-in (pluggable IdPs — Google optional, not configured), and service-token
+  test bypass — free at our scale (≤50 users).
   This retires the hand-built nginx `auth_request` + oauth2-proxy stack and its phase-ordering
   bugs. (See the `cloudflare-platform-decision` note.)
 - **Outbound-only tunnel = no inbound ports.** `cloudflared` dials *out* to Cloudflare, so
@@ -151,13 +155,13 @@ test in a browser yet — without Access it would be open; add the gate first (P
 This part is dashboard work — Claude Cowork can drive it, or do it manually.
 
 1. **IdP setup** — Zero Trust → **Settings → Authentication → Login methods**:
-   - **One-time PIN** — enable it (zero config; Cloudflare emails a 6-digit code). Gets you
-     gated access *immediately*.
-   - **Google** — Add → needs a Google OAuth client (Google Cloud Console → Credentials →
-     OAuth client ID → Web application). **Authorized redirect URI:**
-     `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`. Paste the client ID/secret
-     into Cloudflare. (This is the same Google-client step the old oauth2-proxy needed, now
-     pointed at Cloudflare instead.)
+   - **One-time PIN** — enable it (zero config; Cloudflare emails a 6-digit code). **This is the
+     configured gate** — email OTP, no third-party account needed. Gates access *immediately*.
+   - **Google (OPTIONAL — deprecated, not configured; #32).** Not required. If you ever want
+     Google sign-in as an *additional* IdP: Add → provision a Google OAuth client (Google Cloud
+     Console → Credentials → OAuth client ID → Web application), redirect URI
+     `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`, paste client ID/secret into
+     Cloudflare. Skipped by default — email OTP alone satisfies the allow-list.
 2. **Access application** — Zero Trust → **Access → Applications → Add → Self-hosted**:
    - Application domain: `preview.princess-pi.dev`.
    - Session duration: your call (e.g. 24h).
@@ -165,8 +169,8 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
    - Action: **Allow**.
    - Include → **Emails** → `duppypro@gmail.com` (the allow-list — this is what
      `serve-acls.map` used to hold; it now lives here).
-   - Leave login methods as configured (Google + OTP). Access keys on the **verified email**,
-     so any configured IdP satisfies the same allow-list.
+   - Leave login methods as configured (**email OTP**; Google optional/deprecated). Access keys
+     on the **verified email**, so any configured IdP satisfies the same allow-list.
 **STOP:** confirm the app shows the policy and the allowed email before testing.
 
 ---
@@ -175,8 +179,8 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 1. On the VPS: `serve <some_dir>` and confirm it's listening on **127.0.0.1:8080** (match the
    ingress port; adjust one to fit the other).
 2. Browser (your laptop): visit `https://preview.princess-pi.dev` →
-   - redirected to Cloudflare Access → sign in as `duppypro@gmail.com` (Google or OTP) →
-     **see the preview**. ✅
+   - redirected to Cloudflare Access → sign in as `duppypro@gmail.com` via **email OTP** (the
+     6-digit code Cloudflare mails you) → **see the preview**. ✅
 3. Negative test: try an email NOT on the list → **denied**. ✅
 4. **Test bypasses** (replaces the removed `?token=` backdoor):
    - On the VPS itself: `curl http://127.0.0.1:8080/` → 200, no auth (loopback, per policy).
