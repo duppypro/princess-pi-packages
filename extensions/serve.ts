@@ -12,7 +12,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
-import { isInsideRepo, KilledServerInstance, type ListScope } from "./lib/serve/domain.js";
+import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
@@ -70,7 +70,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const allServers = await discoverServers();
 		const repoServers = allServers.filter(s => isInsideRepo(s.dir, process.cwd()));
 		if (repoServers.length > 0) {
-			const tableText = formatServerTable(repoServers, process.cwd());
+			const tableText = formatServerTable(repoServers);
 
 			console.log(
 				`\n\x1b[1m\x1b[33m⚠️  REMINDER: You have active background servers running in this repository:\x1b[0m\n\n` +
@@ -83,10 +83,10 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 	// --- Command handlers (one per /serve subcommand) ---
 
-	// #117: --list (scope "repo") and --list-all (scope "all") share one discovery + renderer.
-	async function handleList(ctx: any, scope: ListScope = "repo"): Promise<void> {
+	// #119: --list always shows every server on the box, full paths with ~/ prefix.
+	async function handleList(ctx: any): Promise<void> {
 		const activeServers = await discoverServers();
-		ctx.ui.notify(buildListSummary(activeServers, process.cwd(), scope), "info");
+		ctx.ui.notify(buildListSummary(activeServers), "info");
 	}
 
 	async function handleHelp(ctx: any): Promise<void> {
@@ -253,7 +253,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const remainingServers = await discoverServers();
 		updateWidget(ctx, remainingServers, isWidgetVisible, process.cwd());
 
-		const fullSummary = buildKilledSummary(killedList, process.cwd());
+		const fullSummary = buildKilledSummary(killedList);
 		ctx.ui.notify(fullSummary, "info");
 	}
 
@@ -278,7 +278,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		// suggest an agent prompt to find a servable dir. Start nothing; serving needs an explicit dir.
 		if (dirs.length === 0) {
 			const activeServers = await discoverServers();
-			ctx.ui.notify(`${buildListSummary(activeServers, process.cwd(), "repo")}\n\n${buildNoDirHint()}`, "info");
+			ctx.ui.notify(`${buildListSummary(activeServers)}\n\n${buildNoDirHint()}`, "info");
 			return;
 		}
 
@@ -402,7 +402,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		updateWidget(ctx, allActiveServers, isWidgetVisible, process.cwd());
 
 		if (newServers.length > 0) {
-			const fullSummary = buildDiscoveredSummary(newServers, process.cwd());
+			const fullSummary = buildDiscoveredSummary(newServers);
 			ctx.ui.notify(fullSummary, "info");
 		}
 	}
@@ -418,8 +418,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 	// --- Dispatch table: matches the raw trimmed args to the right subcommand handler ---
 	// `--kill` needs a prefix-match (it carries trailing target args); the rest are exact flags.
 	const routes: { test: (args: string) => boolean; handler: (args: string, ctx: any) => Promise<void> }[] = [
-		{ test: (a) => a === "--list" || a === "-L", handler: (_a, ctx) => handleList(ctx, "repo") },
-		{ test: (a) => a === "--list-all" || a === "-A", handler: (_a, ctx) => handleList(ctx, "all") },
+		{ test: (a) => a === "--list" || a === "-L", handler: (_a, ctx) => handleList(ctx) },
 		{ test: (a) => a === "--help" || a === "-h", handler: (_a, ctx) => handleHelp(ctx) },
 		{ test: (a) => a === "--version", handler: (_a, ctx) => handleVersion(ctx) },
 		{ test: (a) => a === "--why", handler: (_a, ctx) => handleWhy(ctx) },

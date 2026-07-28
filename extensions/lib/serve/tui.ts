@@ -1,5 +1,5 @@
-import { shortenPath } from "../session-path-shortener.js";
-import { ServerInstance, KilledServerInstance, isInsideRepo, selectServers, type ListScope } from "./domain.js";
+import * as os from "node:os";
+import { ServerInstance, KilledServerInstance, isInsideRepo } from "./domain.js";
 import wcwidth from "wcwidth";
 
 export function stripAnsi(str: string): string {
@@ -48,6 +48,20 @@ export function isEmojiDisabled(ctx: any): boolean {
 	return disabled;
 }
 
+// --- Path display ---
+
+const HOME = os.homedir();
+
+/**
+ * Shorten absolute paths for display: convert /home/<user>/ to ~/, leave
+ * everything else unchanged (#119).
+ */
+function homeRelative(dir: string): string {
+	if (dir === HOME) return "~";
+	if (dir.startsWith(HOME + "/")) return "~/" + dir.slice(HOME.length + 1);
+	return dir;
+}
+
 // --- Shared server-status formatters (#119) ---
 //
 // Three widths, one source of truth. Every surface that displays server status
@@ -56,27 +70,27 @@ export function isEmojiDisabled(ctx: any): boolean {
 /**
  * Format A — Compact single-line. For the TUI widget.
  *
- *   • dist/ :8080 [Live] @ https://rogue-savvy.princess-pi.dev
+ *   • ~/git-projects/rogue-savvy/frontend/dist :8080 [Live] @ https://rogue-savvy.princess-pi.dev
  */
-export function formatServerCompact(server: ServerInstance, cwd: string): string {
+export function formatServerCompact(server: ServerInstance): string {
 	const typeColor = server.isLive ? "\x1b[32m" : "\x1b[33m";
 	const typeLabel = server.isLive ? "Live" : "Static";
-	return `• \x1b[36m${shortenPath(server.dir, cwd)}\x1b[0m :${server.port} [${typeColor}${typeLabel}\x1b[0m] @ \x1b[4m\x1b[34m${server.url}\x1b[0m`;
+	return `• \x1b[36m${homeRelative(server.dir)}\x1b[0m :${server.port} [${typeColor}${typeLabel}\x1b[0m] @ \x1b[4m\x1b[34m${server.url}\x1b[0m`;
 }
 
 /**
- * Format B — Aligned table. For --list / --list-all and the session-shutdown
- * reminder. Plain-text (pipe-friendly), auto-sized columns.
+ * Format B — Aligned table. For --list and session-shutdown reminder.
+ * Plain-text (pipe-friendly), auto-sized columns, full paths with ~/ prefix.
  *
- *     DIRECTORY     PORT  TYPE     URL
- *     dist/         8080  Live     https://rogue-savvy.princess-pi.dev
- *     public/       8081  Static   http://localhost:8081
+ *     DIRECTORY                                            PORT  TYPE     URL
+ *     ~/git-projects/rogue-savvy/frontend/dist             8080  Live     https://rogue-savvy.princess-pi.dev
+ *     ~/.local/share/something                             8081  Static   http://localhost:8081
  */
-export function formatServerTable(servers: ServerInstance[], cwd: string): string {
+export function formatServerTable(servers: ServerInstance[]): string {
 	if (servers.length === 0) return "";
 
 	const rows = servers.map(s => ({
-		dir: shortenPath(s.dir, cwd),
+		dir: homeRelative(s.dir),
 		port: String(s.port),
 		type: s.isLive ? "Live" : "Static",
 		url: s.url,
@@ -99,14 +113,14 @@ export function formatServerTable(servers: ServerInstance[], cwd: string): strin
 /**
  * Format C — Rich card (post-start). One card per newly started server.
  *
- *   ┌─ dist/ :8080 ────────────────────────────────────────┐
- *   │  https://rogue-savvy.princess-pi.dev                  │
- *   │  Live · logs: ~/.pi-certs/logs/port-8080-access.log   │
- *   └──────────────────────────────────────────────────────┘
+ *   ┌─ ~/git-projects/rogue-savvy/frontend/dist :8080 ────────┐
+ *   │  https://rogue-savvy.princess-pi.dev                     │
+ *   │  Live · logs: ~/.pi-certs/logs/port-8080-access.log      │
+ *   └──────────────────────────────────────────────────────────┘
  */
-export function formatServerCard(server: ServerInstance, cwd: string): string {
+export function formatServerCard(server: ServerInstance): string {
 	const border = "\x1b[37m";
-	const header = `${shortenPath(server.dir, cwd)} :${server.port}`;
+	const header = `${homeRelative(server.dir)} :${server.port}`;
 	const headerDashes = "─".repeat(Math.max(1, 56 - getVisualLength(header)));
 	const typeColor = server.isLive ? "\x1b[32m" : "\x1b[33m";
 	const typeLabel = server.isLive ? "Live" : "Static";
@@ -124,15 +138,15 @@ export function formatServerCard(server: ServerInstance, cwd: string): string {
  * Format C (killed variant) — Rich card for killed servers. Shows before/after
  * health-check status instead of type + log path.
  *
- *   ┌─ dist/ :8080 ────────────────────────────────────────┐
- *   │  https://rogue-savvy.princess-pi.dev                  │
- *   │  Before: 200 OK (Secure HTTPS - Live)                 │
- *   │  After:  Connection refused                           │
- *   └──────────────────────────────────────────────────────┘
+ *   ┌─ ~/git-projects/rogue-savvy/frontend/dist :8080 ────────┐
+ *   │  https://rogue-savvy.princess-pi.dev                     │
+ *   │  Before: 200 OK (Secure HTTPS - Live)                    │
+ *   │  After:  Connection refused                              │
+ *   └──────────────────────────────────────────────────────────┘
  */
-export function formatServerCardKilled(killed: KilledServerInstance, cwd: string): string {
+export function formatServerCardKilled(killed: KilledServerInstance): string {
 	const border = "\x1b[37m";
-	const header = `${shortenPath(killed.dir, cwd)} :${killed.port}`;
+	const header = `${homeRelative(killed.dir)} :${killed.port}`;
 	const headerDashes = "─".repeat(Math.max(1, 56 - getVisualLength(header)));
 
 	return [
@@ -161,7 +175,7 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 		widgetLines.push(`\x1b[1m\x1b[35m${emojiPrefix} This Worktree\x1b[0m`);
 		if (thisRepo.length > 0) {
 			for (const server of thisRepo) {
-				widgetLines.push(formatServerCompact(server, cwd));
+				widgetLines.push(formatServerCompact(server));
 			}
 		} else {
 			widgetLines.push(`  \x1b[2m(none)\x1b[0m`);
@@ -172,7 +186,7 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 		widgetLines.push(`\x1b[1m\x1b[35m${emojiPrefix} Other\x1b[0m`);
 		if (otherRepo.length > 0) {
 			for (const server of otherRepo) {
-				widgetLines.push(formatServerCompact(server, cwd));
+				widgetLines.push(formatServerCompact(server));
 			}
 		} else {
 			widgetLines.push(`  \x1b[2m(none)\x1b[0m`);
@@ -184,20 +198,12 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 	}
 }
 
-// --- #117: shared plain-text listing for `--list` (scope "repo") and `--list-all` (scope
-// "all"). One renderer, one empty-state, one table format — the CLI console.log's it and Pi
-// notify()'s it. Kept ANSI-free so it reads the same in a non-TTY pipe and in a unit test.
-export function buildListSummary(servers: ServerInstance[], cwd: string = process.cwd(), scope: ListScope = "repo"): string {
-	const selected = selectServers(servers, cwd, scope);
-	if (selected.length === 0) {
-		return scope === "all"
-			? "No servers are currently running for this user."
-			: "No servers are currently running in this repository.";
+// --- #117/#119: --list always shows every server, full paths with ~/ prefix. ---
+export function buildListSummary(servers: ServerInstance[]): string {
+	if (servers.length === 0) {
+		return "No servers are currently running for this user.";
 	}
-	const header = scope === "all"
-		? "🚀 Servers active for this user (all repos):"
-		: "🚀 Servers active in this repository:";
-	return `${header}\n\n${formatServerTable(selected, cwd)}`;
+	return `🚀 Servers active for this user (all repos):\n\n${formatServerTable(servers)}`;
 }
 
 // --- #117: shown when `serve` is invoked with no target directory (bare, or flags-only).
@@ -211,20 +217,20 @@ export function buildNoDirHint(): string {
 		'  "Find the servable build/output dir in this repo and serve it."',
 		"",
 		"Or name it yourself:      serve <dir>",
-		"Servers in every repo:    serve --list-all",
+		"See every running server: serve --list",
 	].join("\n");
 }
 
 // --- Post-start summary: card format, only the servers that were *just* started (#119). ---
-export function buildDiscoveredSummary(servers: ServerInstance[], cwd: string = process.cwd()): string {
-	const cards = servers.map(s => formatServerCard(s, cwd));
+export function buildDiscoveredSummary(servers: ServerInstance[]): string {
+	const cards = servers.map(s => formatServerCard(s));
 	const label = servers.length === 1 ? "server" : "servers";
 	return `🚀 Started ${servers.length} ${label}:\n\n${cards.join("\n\n")}`;
 }
 
 // --- Post-kill summary: card format, only the servers that were *just* killed. ---
-export function buildKilledSummary(killedList: KilledServerInstance[], cwd: string = process.cwd()): string {
-	const cards = killedList.map(k => formatServerCardKilled(k, cwd));
+export function buildKilledSummary(killedList: KilledServerInstance[]): string {
+	const cards = killedList.map(k => formatServerCardKilled(k));
 	const label = killedList.length === 1 ? "server" : "servers";
 	return `🛑 Terminated ${killedList.length} ${label}!\n\n${cards.join("\n\n")}`;
 }

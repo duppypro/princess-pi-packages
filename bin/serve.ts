@@ -17,16 +17,15 @@ import { isInsideRepo, type KilledServerInstance } from "../extensions/lib/serve
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint } from "../extensions/lib/serve/tui.js";
-import type { ListScope } from "../extensions/lib/serve/domain.js";
 // --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
-// #117: --list (scope "repo") and --list-all (scope "all") share one discovery + renderer.
-async function handleList(scope: ListScope = "repo"): Promise<void> {
+// #119: --list always shows every server on the box, full paths with ~/ prefix.
+async function handleList(): Promise<void> {
 	const activeServers = await discoverServers();
-	console.log(buildListSummary(activeServers, process.cwd(), scope));
+	console.log(buildListSummary(activeServers));
 }
 
 function handleWhy(): void {
@@ -151,7 +150,7 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 			console.warn(`⚠️ Killed local origin for "${slug}" but failed to unpublish from Cloudflare: ${(err as Error).message}`);
 		}
 	}
-	console.log(buildKilledSummary(killedList, process.cwd()));
+	console.log(buildKilledSummary(killedList));
 }
 
 async function handleStart(trimmedArgs: string): Promise<void> {
@@ -176,7 +175,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	// bare `serve` or flags-only (e.g. `--static`) — list what's already running here, then
 	// suggest an agent prompt to find a servable dir. Start nothing; serving needs an explicit dir.
 	if (dirs.length === 0) {
-		await handleList("repo");
+		await handleList();
 		console.log("\n" + buildNoDirHint());
 		return;
 	}
@@ -272,7 +271,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		return;
 	}
 	if (newServers.length > 0) {
-		console.log(buildDiscoveredSummary(newServers, process.cwd()));
+		console.log(buildDiscoveredSummary(newServers));
 	}
 }
 
@@ -280,8 +279,7 @@ async function run(): Promise<void> {
 	await resolveIp();
 	const trimmedArgs = process.argv.slice(2).join(" ").trim();
 
-	if (trimmedArgs === "--list" || trimmedArgs === "-L") return handleList("repo");
-	if (trimmedArgs === "--list-all" || trimmedArgs === "-A") return handleList("all");
+	if (trimmedArgs === "--list" || trimmedArgs === "-L") return handleList();
 	if (trimmedArgs === "--help" || trimmedArgs === "-h") return handleHelp();
 	if (trimmedArgs === "--why") return handleWhy();
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);

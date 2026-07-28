@@ -24,15 +24,6 @@ export function isInsideRepo(dir: string, cwd: string = process.cwd()): boolean 
 	return !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-// --- #117: listing scope. "repo" = servers under the cwd subtree (the old --log view);
-// "all" = every discovered server on the box (the --list-all view). Kept as a pure filter
-// so both harness surfaces (CLI + Pi) and the unit tests share one definition of scope.
-export type ListScope = "repo" | "all";
-
-export function selectServers(servers: ServerInstance[], cwd: string = process.cwd(), scope: ListScope = "repo"): ServerInstance[] {
-	return scope === "all" ? servers.slice() : servers.filter((s) => isInsideRepo(s.dir, cwd));
-}
-
 // Helper to construct the dynamic client slug based on Git status
 export function getClientSlug(targetDir: string, cwd: string = process.cwd()): string {
 	const absoluteTarget = path.resolve(cwd, targetDir);
