@@ -17,7 +17,7 @@ import { discoverServers, resolveIp, checkServerStatus, killServerInstance } fro
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
-import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint } from "./lib/serve/tui.js";
+import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable } from "./lib/serve/tui.js";
 // --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "./lib/serve/cloudflare.js";
 
@@ -70,13 +70,11 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const allServers = await discoverServers();
 		const repoServers = allServers.filter(s => isInsideRepo(s.dir, process.cwd()));
 		if (repoServers.length > 0) {
-			const serverLinks = repoServers
-				.map(s => `  • \x1b[36m${shortenPath(s.dir, process.cwd())}\x1b[0m @ \x1b[4m\x1b[34m${s.url}\x1b[0m`)
-				.join("\n");
+			const tableText = formatServerTable(repoServers, process.cwd());
 
 			console.log(
-				`\n\x1b[1m\x1b[33m⚠️  REMINDER: You have active background servers running in this repository:\x1b[0m\n` +
-				serverLinks + `\n\n` +
+				`\n\x1b[1m\x1b[33m⚠️  REMINDER: You have active background servers running in this repository:\x1b[0m\n\n` +
+				tableText + `\n\n` +
 				`\x1b[33mThese servers will remain active during your "pause". To stop them, resume this session and run:\x1b[0m\n` +
 				`  \x1b[1m/serve --kill\x1b[0m\n`
 			);
@@ -290,6 +288,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 
 		let startPort = 8080;
+		const startedPorts: number[] = [];
 		const ip = await resolveIp();
 
 		// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill before
@@ -371,6 +370,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			});
 
 			serverProcess.unref();
+			startedPorts.push(port);
 
 			// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug — tunnel
 			// ingress rule + per-slug Access app carrying the .serve-acl allow-list. Best-
@@ -392,6 +392,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		await new Promise(r => setTimeout(r, 1200));
 
 		const allActiveServers = await discoverServers();
+		const newServers = allActiveServers.filter(s => startedPorts.includes(s.port));
 
 		if (allActiveServers.length === 0) {
 			ctx.ui.notify("No active directories are currently being served.", "warning");
@@ -400,8 +401,10 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		updateWidget(ctx, allActiveServers, isWidgetVisible, process.cwd());
 
-		const fullSummary = buildDiscoveredSummary(allActiveServers, process.cwd());
-		ctx.ui.notify(fullSummary, "info");
+		if (newServers.length > 0) {
+			const fullSummary = buildDiscoveredSummary(newServers, process.cwd());
+			ctx.ui.notify(fullSummary, "info");
+		}
 	}
 
 	async function handleEmojiToggle(enabled: boolean, ctx: any): Promise<void> {

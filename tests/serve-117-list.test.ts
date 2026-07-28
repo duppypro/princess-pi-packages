@@ -56,11 +56,12 @@ ok("all-scope with only-other-repo servers is NOT empty", () => {
 ok("repo-scope hides other-repo servers", () => {
 	assert.equal(buildListSummary([otherRepo], CWD, "repo"), "No servers are currently running in this repository.");
 });
-ok("repo header + bullet with url and log path", () => {
+ok("repo header + table with port and url", () => {
 	const out = buildListSummary(all, CWD, "repo");
 	assert.ok(out.includes("🚀 Servers active in this repository:"));
-	assert.ok(out.includes("@ https://foo.princess-pi.dev/"));
-	assert.ok(out.includes("(Logs: ~/.pi-certs/logs/port-8080-access.log)"));
+	assert.ok(out.includes("DIRECTORY") && out.includes("PORT") && out.includes("TYPE") && out.includes("URL"));
+	assert.ok(out.includes("https://foo.princess-pi.dev/"));
+	assert.ok(out.includes("8080")); // port is now an explicit column (#119)
 	assert.ok(!out.includes("8081")); // otherRepo excluded from repo scope
 });
 

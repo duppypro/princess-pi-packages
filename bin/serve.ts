@@ -187,6 +187,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	}
 
 	let startPort = 8080;
+	const startedPorts: number[] = [];
 
 	// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill (stale allow-
 	// list live at the edge = security drift) before publishing new state. Best-effort:
@@ -242,6 +243,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
+		startedPorts.push(port);
 
 		// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug. Upserts the
 		// tunnel ingress rule (<slug>.princess-pi.dev → this loopback port) + a per-slug Access
@@ -264,11 +266,14 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	await new Promise((r) => setTimeout(r, 1200));
 
 	const allActiveServers = await discoverServers();
+	const newServers = allActiveServers.filter(s => startedPorts.includes(s.port));
 	if (allActiveServers.length === 0) {
 		console.warn("No active directories are currently being served.");
 		return;
 	}
-	console.log(buildDiscoveredSummary(allActiveServers, process.cwd()));
+	if (newServers.length > 0) {
+		console.log(buildDiscoveredSummary(newServers, process.cwd()));
+	}
 }
 
 async function run(): Promise<void> {
