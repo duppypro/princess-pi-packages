@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) or set as TFC workspace variables.
+# CLOUDFLARE_API_TOKEN must be exported in the environment / set as a TFC env var.
+
+account_id = "REPLACE_CLOUDFLARE_ACCOUNT_ID"
+zone_name  = "princess-pi.dev"
+
+# Optional — enable the Google IdP (otherwise only email one-time-PIN is available).
+google_client_id     = ""
+google_client_secret = ""
