@@ -40,7 +40,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		isWidgetVisible = getVisibility(ctx);
 		const servers = await discoverServers();
 
-		updateWidget(ctx, servers, isWidgetVisible, process.cwd());
+		updateWidget(ctx, servers, isWidgetVisible);
 
 		// Subscribe to the centralized refresher tick event
 		unsubscribeTick = pi.events.on("clock:tick:4s", async () => {
@@ -55,7 +55,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const currentServers = await discoverServers();
-			updateWidget(ctx, currentServers, isWidgetVisible, process.cwd());
+			updateWidget(ctx, currentServers, isWidgetVisible);
 		});
 	});
 
@@ -142,7 +142,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 	async function handleHide(ctx: any): Promise<void> {
 		isWidgetVisible = false;
 		writeConfig("serve", { visible: false });
-		updateWidget(ctx, [], isWidgetVisible, process.cwd());
+		updateWidget(ctx, [], isWidgetVisible);
 		ctx.ui.notify("Active server list widget hidden.", "info");
 	}
 
@@ -150,7 +150,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		isWidgetVisible = true;
 		writeConfig("serve", { visible: true });
 		const servers = await discoverServers();
-		updateWidget(ctx, servers, isWidgetVisible, process.cwd());
+		updateWidget(ctx, servers, isWidgetVisible);
 
 		if (servers.length > 0) {
 			ctx.ui.notify(`Discovered and displaying ${servers.length} active servers.`, "info");
@@ -251,7 +251,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 
 		const remainingServers = await discoverServers();
-		updateWidget(ctx, remainingServers, isWidgetVisible, process.cwd());
+		updateWidget(ctx, remainingServers, isWidgetVisible);
 
 		const fullSummary = buildKilledSummary(killedList);
 		ctx.ui.notify(fullSummary, "info");
@@ -399,7 +399,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		updateWidget(ctx, allActiveServers, isWidgetVisible, process.cwd());
+		updateWidget(ctx, allActiveServers, isWidgetVisible);
 
 		if (newServers.length > 0) {
 			const fullSummary = buildDiscoveredSummary(newServers);
@@ -410,7 +410,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 	async function handleEmojiToggle(enabled: boolean, ctx: any): Promise<void> {
 		writeConfig("serve", { emojiDisabled: !enabled });
 		const servers = await discoverServers();
-		updateWidget(ctx, servers, isWidgetVisible, process.cwd());
+		updateWidget(ctx, servers, isWidgetVisible);
 		const statusText = enabled ? "enabled" : "disabled";
 		ctx.ui.notify(`Emoji icons in widgets have been ${statusText}.`, "info");
 	}

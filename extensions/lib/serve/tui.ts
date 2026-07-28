@@ -35,19 +35,6 @@ export function padVisual(str: string, targetLen: number): string {
 	return str + " ".repeat(targetLen - currentLen);
 }
 
-export function isEmojiDisabled(ctx: any): boolean {
-	if (!ctx || !ctx.sessionManager) return false;
-	let disabled = false;
-	for (const entry of ctx.sessionManager.getEntries()) {
-		if (entry.type === "custom" && entry.customType === "emoji-settings") {
-			if (entry.data && typeof entry.data.disabled === "boolean") {
-				disabled = entry.data.disabled;
-			}
-		}
-	}
-	return disabled;
-}
-
 // --- Path display ---
 
 const HOME = os.homedir();
@@ -71,6 +58,9 @@ function homeRelative(dir: string): string {
 export function formatServerTable(servers: ServerInstance[]): string {
 	if (servers.length === 0) return "";
 
+	const COLOR = "\x1b[1;35m";
+	const RESET = "\x1b[0m";
+
 	const rows = servers.map(s => ({
 		dir: homeRelative(s.dir),
 		port: String(s.port),
@@ -84,9 +74,9 @@ export function formatServerTable(servers: ServerInstance[]): string {
 		type: Math.max("TYPE".length, ...rows.map(r => getVisualLength(r.type))),
 	};
 
-	const header = `  ${padVisual("SERVED DIRECTORY", colWidths.dir)}  ${padVisual("PORT", colWidths.port)}  ${padVisual("TYPE", colWidths.type)}  URL`;
+	const header = `${COLOR}  ${padVisual("SERVED DIRECTORY", colWidths.dir)}  ${padVisual("PORT", colWidths.port)}  ${padVisual("TYPE", colWidths.type)}  URL${RESET}`;
 	const lines = rows.map(r =>
-		`  ${padVisual(r.dir, colWidths.dir)}  ${padVisual(r.port, colWidths.port)}  ${padVisual(r.type, colWidths.type)}  ${r.url}`
+		`${COLOR}  ${padVisual(r.dir, colWidths.dir)}  ${padVisual(r.port, colWidths.port)}  ${padVisual(r.type, colWidths.type)}  ${r.url}${RESET}`
 	);
 
 	return [header, ...lines].join("\n");
@@ -142,19 +132,14 @@ export function formatServerCardKilled(killed: KilledServerInstance): string {
 
 // --- TUI widget ---
 
-export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisible: boolean, cwd: string = process.cwd()) {
+export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisible: boolean) {
 	if (!isWidgetVisible) {
 		ctx.ui.setWidget("serve-ports", undefined);
 		return;
 	}
 
 	if (servers.length > 0) {
-		const emojiPrefix = isEmojiDisabled(ctx) ? "[ON]" : "🟢";
-		const tableLines = formatServerTable(servers).split("\n");
-		ctx.ui.setWidget("serve-ports", [
-			`\x1b[1m\x1b[35m${emojiPrefix} Active Servers\x1b[0m`,
-			...tableLines,
-		], { placement: "belowEditor" });
+		ctx.ui.setWidget("serve-ports", formatServerTable(servers).split("\n"), { placement: "belowEditor" });
 	} else {
 		ctx.ui.setWidget("serve-ports", undefined);
 	}

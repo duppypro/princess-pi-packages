@@ -36,7 +36,7 @@ ok("no title line — table only (#119)", () => {
 	const out = buildListSummary([server1]);
 	assert.ok(!out.includes("🚀"));
 	assert.ok(!out.includes("Servers active"));
-	assert.ok(out.startsWith("  SERVED DIRECTORY"));
+	assert.ok(out.includes("SERVED DIRECTORY")); // now ANSI-colored, so check contains not startsWith
 });
 ok("all servers listed regardless of directory location (#119)", () => {
 	const out = buildListSummary(all);
