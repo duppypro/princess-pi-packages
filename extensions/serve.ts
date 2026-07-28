@@ -312,14 +312,26 @@ export default function serveExtension(pi: ExtensionAPI) {
 			}
 
 			const activeServers = await discoverServers();
-			const hasMatchingTypeServer = activeServers.some(s =>
+			const existingServer = activeServers.find(s =>
 				path.resolve(process.cwd(), s.dir) === targetDir &&
 				!!s.isLive === !isStatic
 			);
 
-			if (hasMatchingTypeServer) {
-				const typeLabel = isStatic ? "statically" : "live-reloading";
-				ctx.ui.notify(`ℹ️ Note: Directory "${rawDir}" is already being served ${typeLabel}. Skipping.`, "info");
+			if (existingServer) {
+				if (overrideSlug) {
+					// Publish the new slug to the existing server's port (#119)
+					try {
+						const emails = parseAclFile(targetDir);
+						const hostname = await publishSlug({ slug: overrideSlug, port: existingServer.port, emails, activeLabels });
+						activeLabels.add(hostname.split(".")[0]);
+						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`, "info");
+					} catch (err) {
+						ctx.ui.notify(`⚠️ Directory "${rawDir}" already served on port ${existingServer.port}, but edge publish failed: ${(err as Error).message}`, "warning");
+					}
+				} else {
+					const typeLabel = isStatic ? "statically" : "live-reloading";
+					ctx.ui.notify(`ℹ️ Note: Directory "${rawDir}" is already being served ${typeLabel}. Skipping.`, "info");
+				}
 				continue;
 			}
 

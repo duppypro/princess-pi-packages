@@ -221,11 +221,23 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		}
 
 		const activeServers = await discoverServers();
-		const hasMatchingTypeServer = activeServers.some(
-			(s) => path.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic
+		const existingServer = activeServers.find(s =>
+			path.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic
 		);
-		if (hasMatchingTypeServer) {
-			console.log(`ℹ️ Note: Directory "${rawDir}" is already being served ${isStatic ? "statically" : "live-reloading"}. Skipping.`);
+		if (existingServer) {
+			if (overrideSlug) {
+				// Publish the new slug to the existing server's port (#119)
+				try {
+					const emails = parseAclFile(targetDir);
+					const hostname = await publishSlug({ slug: overrideSlug, port: existingServer.port, emails, activeLabels });
+					activeLabels.add(hostname.split(".")[0]);
+					console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`);
+				} catch (err) {
+					console.warn(`⚠️ Directory "${rawDir}" already served on port ${existingServer.port}, but edge publish failed: ${(err as Error).message}`);
+				}
+			} else {
+				console.log(`ℹ️ Note: Directory "${rawDir}" is already being served ${isStatic ? "statically" : "live-reloading"}. Skipping.`);
+			}
 			continue;
 		}
 
