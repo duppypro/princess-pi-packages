@@ -13,10 +13,12 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
-import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
+import { isInsideRepo, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
+// --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
+import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
@@ -145,9 +147,17 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 		return;
 	}
 
-	// --- Phase 6A (#64): nginx map cleanup + reload removed. WHY: the edge gate is
-	// Cloudflare Tunnel + Access now; killing the loopback origin is the whole job.
-	// (#66 re-adds per-slug UNpublishing via the Cloudflare API.)
+	// --- Phase 6B (#66): unpublish each killed slug from the edge (ingress rule + Access
+	// app). Best-effort: a CF failure must not mask a successful local kill, so we warn and
+	// continue. Slugs dedup'd so two servers sharing a dir unpublish once.
+	const killedSlugs = [...new Set(killedList.map((k) => k.clientSlug).filter((s): s is string => !!s))];
+	for (const slug of killedSlugs) {
+		try {
+			await unpublishSlug({ slug });
+		} catch (err) {
+			console.warn(`⚠️ Killed local origin for "${slug}" but failed to unpublish from Cloudflare: ${(err as Error).message}`);
+		}
+	}
 	console.log(buildKilledSummary(killedList, process.cwd()));
 }
 
@@ -157,9 +167,39 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	const force = dirs.includes("--force") || dirs.includes("-f");
 	dirs = dirs.filter((d) => d !== "--static" && d !== "-s" && d !== "--force" && d !== "-f");
 
+	// --- Phase 6B (#66): optional slug override. `serve <dir> --as <slug>` publishes at
+	// <slug>.princess-pi.dev instead of the repo-derived slug (which leaks internal paths,
+	// e.g. "rogue-savvy/frontend/dist"). One override can only name one hostname, so it
+	// requires exactly one target dir.
+	let overrideSlug: string | null = null;
+	const asIdx = dirs.indexOf("--as");
+	if (asIdx !== -1) {
+		const val = dirs[asIdx + 1];
+		if (val && !val.startsWith("-")) { overrideSlug = val; dirs.splice(asIdx, 2); }
+		else { console.warn("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring."); dirs.splice(asIdx, 1); }
+	}
+
 	if (dirs.length === 0) dirs = ["public", "docs"];
 
+	if (overrideSlug && dirs.length !== 1) {
+		console.warn(`⚠️ --as ${overrideSlug} ignored: it requires exactly one target directory (${dirs.length} given).`);
+		overrideSlug = null;
+	}
+
 	let startPort = 8080;
+
+	// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill (stale allow-
+	// list live at the edge = security drift) before publishing new state. Best-effort:
+	// no token / API failure must not block serving.
+	try {
+		const reaped = await reapOrphans();
+		if (reaped.length) console.log(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`);
+	} catch (err) {
+		console.warn(`⚠️ Orphan reap skipped: ${(err as Error).message}`);
+	}
+
+	// Labels published this run — a second dir colliding on the same flattened label is refused.
+	const activeLabels = new Set<string>();
 
 	for (const rawDir of dirs) {
 		const targetDir = path.resolve(process.cwd(), rawDir);
@@ -187,10 +227,10 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
 
-		// --- Phase 6A (#64): the .serve-acl gate validation is dormant — allow-lists
-		// now live in Cloudflare Access policy, managed outside serve. (#66 re-reads
-		// .serve-acl as the per-slug Access policy source.)
-		const clientSlug = getClientSlug(targetDir);
+		// #66: publishing is opt-in via --as. A slug ⟺ this preview is published to the edge:
+		// it flows to the runner's --slug (live-ACL watcher target) AND the publish call, so
+		// publish/kill/unpublish/watch all key off the same condition. No --as → local only.
+		const clientSlug = overrideSlug; // null unless --as given
 
 		const __dirname = path.dirname(fileURLToPath(import.meta.url));
 		const runnerPath = path.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
@@ -198,14 +238,27 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const spawnCmd = isStatic ? "npx" : "node";
 		const spawnArgs = isStatic
 			? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"]
-			: [runnerPath, targetDir, "--slug", clientSlug, "-p", String(port), "-a", "127.0.0.1"];
+			: [runnerPath, targetDir, ...(clientSlug ? ["--slug", clientSlug] : []), "-p", String(port), "-a", "127.0.0.1"];
 
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
 
-		// --- Phase 6A (#64): nginx map writes + reload removed. serve spawns a plain
-		// loopback origin; the Cloudflare Tunnel statically routes the MVP hostname to
-		// it, and Cloudflare Access is the sole public gate. (#66: per-slug publishing.)
+		// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug. Upserts the
+		// tunnel ingress rule (<slug>.princess-pi.dev → this loopback port) + a per-slug Access
+		// app carrying the .serve-acl allow-list. Best-effort: the loopback origin is already
+		// up, so any failure (no cf.env, reserved label, API error) warns and leaves it running.
+		if (clientSlug) {
+			try {
+				const emails = parseAclFile(targetDir);
+				const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+				activeLabels.add(hostname.split(".")[0]);
+				console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`);
+			} catch (err) {
+				console.warn(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`);
+			}
+		} else {
+			console.log(`ℹ️ Serving "${rawDir}" locally on 127.0.0.1:${port}. Pass --as <name> to publish a gated preview at <name>.princess-pi.dev.`);
+		}
 	}
 
 	await new Promise((r) => setTimeout(r, 1200));

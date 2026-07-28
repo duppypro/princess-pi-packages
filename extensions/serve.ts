@@ -12,12 +12,14 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
-import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/domain.js";
+import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
+// --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
+import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "./lib/serve/cloudflare.js";
 
 // Track widget visibility state locally (persisted across reloads via session log)
 let isWidgetVisible = true;
@@ -247,8 +249,17 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		// --- Phase 6A (#64): nginx map cleanup + reload removed — the Cloudflare edge
-		// gates now; killing the loopback origin is the whole job. (#66: per-slug unpublish.)
+		// --- Phase 6B (#66): unpublish each killed slug from the edge (ingress + Access app).
+		// Best-effort — a CF failure must not mask a successful local kill.
+		const killedSlugs = [...new Set(killedList.map(k => k.clientSlug).filter((s): s is string => !!s))];
+		for (const slug of killedSlugs) {
+			try {
+				await unpublishSlug({ slug });
+			} catch (err) {
+				ctx.ui.notify(`⚠️ Killed local origin for "${slug}" but failed to unpublish from Cloudflare: ${(err as Error).message}`, "warning");
+			}
+		}
+
 		const remainingServers = await discoverServers();
 		updateWidget(ctx, remainingServers, isWidgetVisible, process.cwd());
 
@@ -261,12 +272,40 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const isStatic = dirs.includes("--static") || dirs.includes("-s");
 		dirs = dirs.filter(d => d !== "--static" && d !== "-s");
 
+		// --- Phase 6B (#66): optional slug override. `/serve <dir> --as <slug>` publishes at
+		// <slug>.princess-pi.dev instead of the repo-derived slug. One override names one
+		// hostname, so it requires exactly one target dir.
+		let overrideSlug: string | null = null;
+		const asIdx = dirs.indexOf("--as");
+		if (asIdx !== -1) {
+			const val = dirs[asIdx + 1];
+			if (val && !val.startsWith("-")) { overrideSlug = val; dirs.splice(asIdx, 2); }
+			else { ctx.ui.notify("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring.", "warning"); dirs.splice(asIdx, 1); }
+		}
+
 		if (dirs.length === 0) {
 			dirs = ["public", "docs"];
 		}
 
+		if (overrideSlug && dirs.length !== 1) {
+			ctx.ui.notify(`⚠️ --as ${overrideSlug} ignored: it requires exactly one target directory (${dirs.length} given).`, "warning");
+			overrideSlug = null;
+		}
+
 		let startPort = 8080;
 		const ip = await resolveIp();
+
+		// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill before
+		// publishing new state (stale allow-list live at the edge = security drift).
+		try {
+			const reaped = await reapOrphans();
+			if (reaped.length) ctx.ui.notify(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`, "info");
+		} catch (err) {
+			ctx.ui.notify(`⚠️ Orphan reap skipped: ${(err as Error).message}`, "warning");
+		}
+
+		// Labels published this run — a second dir colliding on the same flattened label is refused.
+		const activeLabels = new Set<string>();
 
 		for (const rawDir of dirs) {
 			const targetDir = path.resolve(process.cwd(), rawDir);
@@ -306,9 +345,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const port = startPort++;
 
-			// --- Phase 6A (#64): .serve-acl gate validation dormant — allow-lists live in
-			// Cloudflare Access policy now. (#66 re-reads .serve-acl as the policy source.)
-			const clientSlug = getClientSlug(targetDir);
+			// #66: publishing is opt-in via --as. A slug ⟺ published to the edge; it flows to
+			// the runner's --slug (watcher target) AND the publish call. No --as → local only.
+			const clientSlug = overrideSlug; // null unless --as given
 
 			const __filename = fileURLToPath(import.meta.url);
 			const __dirname = path.dirname(__filename);
@@ -324,7 +363,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			] : [
 				runnerPath,
 				targetDir,
-				"--slug", clientSlug,
+				...(clientSlug ? ["--slug", clientSlug] : []),
 				"-p", String(port),
 				"-a", "127.0.0.1"
 			];
@@ -336,8 +375,21 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 
-			// --- Phase 6A (#64): nginx map writes + reload removed; serve spawns a plain
-			// loopback origin behind the Cloudflare Tunnel + Access edge. (#66: publishing.)
+			// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug — tunnel
+			// ingress rule + per-slug Access app carrying the .serve-acl allow-list. Best-
+			// effort: the loopback origin is already up, so any failure warns and leaves it up.
+			if (clientSlug) {
+				try {
+					const emails = parseAclFile(targetDir);
+					const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+					activeLabels.add(hostname.split(".")[0]);
+					ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
+				} catch (err) {
+					ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
+				}
+			} else {
+				ctx.ui.notify(`ℹ️ Serving "${rawDir}" locally. Pass --as <name> to publish a gated preview at <name>.princess-pi.dev.`, "info");
+			}
 		}
 
 		await new Promise(r => setTimeout(r, 1200));
