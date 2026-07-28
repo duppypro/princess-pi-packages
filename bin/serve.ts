@@ -28,6 +28,17 @@ async function handleList(): Promise<void> {
 	console.log(buildListSummary(activeServers));
 }
 
+function handleVersion(): void {
+	try {
+		const manifestPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
+		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+		console.log(`${manifest.name} ${manifest.version}`);
+	} catch (err) {
+		console.error(`⚠️ Failed to load command manifest: ${err}`);
+		process.exitCode = 1;
+	}
+}
+
 function handleWhy(): void {
 	try {
 		const manifestPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
@@ -279,9 +290,15 @@ async function run(): Promise<void> {
 	await resolveIp();
 	const trimmedArgs = process.argv.slice(2).join(" ").trim();
 
+	if (trimmedArgs === "--version") return handleVersion();
+	if (trimmedArgs === "--why") return handleWhy();
 	if (trimmedArgs === "--list" || trimmedArgs === "-L") return handleList();
 	if (trimmedArgs === "--help" || trimmedArgs === "-h") return handleHelp();
-	if (trimmedArgs === "--why") return handleWhy();
+	// Pi-only flags — print a notice and exit cleanly
+	if (["--emoji", "--emojii", "--no-emoji", "--no-emojii", "--show", "-S", "--hide", "-H"].includes(trimmedArgs)) {
+		console.log("ℹ️  This flag is a Pi TUI setting only — run it inside Pi (/serve --help for details).");
+		return;
+	}
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
 	return handleStart(trimmedArgs);
 }
