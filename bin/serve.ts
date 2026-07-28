@@ -167,7 +167,24 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	const force = dirs.includes("--force") || dirs.includes("-f");
 	dirs = dirs.filter((d) => d !== "--static" && d !== "-s" && d !== "--force" && d !== "-f");
 
+	// --- Phase 6B (#66): optional slug override. `serve <dir> --as <slug>` publishes at
+	// <slug>.princess-pi.dev instead of the repo-derived slug (which leaks internal paths,
+	// e.g. "rogue-savvy/frontend/dist"). One override can only name one hostname, so it
+	// requires exactly one target dir.
+	let overrideSlug: string | null = null;
+	const asIdx = dirs.indexOf("--as");
+	if (asIdx !== -1) {
+		const val = dirs[asIdx + 1];
+		if (val && !val.startsWith("-")) { overrideSlug = val; dirs.splice(asIdx, 2); }
+		else { console.warn("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring."); dirs.splice(asIdx, 1); }
+	}
+
 	if (dirs.length === 0) dirs = ["public", "docs"];
+
+	if (overrideSlug && dirs.length !== 1) {
+		console.warn(`⚠️ --as ${overrideSlug} ignored: it requires exactly one target directory (${dirs.length} given).`);
+		overrideSlug = null;
+	}
 
 	let startPort = 8080;
 
@@ -210,10 +227,10 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
 
-		// --- Phase 6A (#64): the .serve-acl gate validation is dormant — allow-lists
-		// now live in Cloudflare Access policy, managed outside serve. (#66 re-reads
-		// .serve-acl as the per-slug Access policy source.)
-		const clientSlug = getClientSlug(targetDir);
+		// #66: --as overrides the repo-derived slug (vanity per-client hostname). The chosen
+		// slug flows to both the spawned runner's --slug (live-ACL watcher target) and the
+		// edge publish, so kill/unpublish/watch all agree on the hostname.
+		const clientSlug = overrideSlug ?? getClientSlug(targetDir);
 
 		const __dirname = path.dirname(fileURLToPath(import.meta.url));
 		const runnerPath = path.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");

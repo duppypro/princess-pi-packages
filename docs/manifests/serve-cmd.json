@@ -8,6 +8,7 @@
     { "args": "--static", "desc": "Serve public/ and docs/ statically, with hot-reloading disabled." },
     { "args": "src/ assets/", "desc": "Serve src/ on 8080 and assets/ on 8081." },
     { "args": "secrets/ --force", "desc": "Serve a directory containing a .env file, bypassing the warning (CLI only)." },
+    { "args": "dist/ --as rogue-aix", "desc": "Publish dist/ at the vanity hostname rogue-aix.princess-pi.dev instead of the repo-derived slug." },
     { "args": "--kill 8080 docs/", "desc": "Kill the server on port 8080 and the server serving docs/." },
     { "args": "--kill all", "desc": "Instantly terminate every active dev server across all worktrees." }
   ],
@@ -42,6 +43,7 @@
     { "flags": "[dirs...]", "desc": "Serve specified directories (default: public, docs) on HTTPS ports." },
     { "flags": "-s, --static", "desc": "Disable live reloading and serve pure static files without code injection or file watching." },
     { "flags": "-f, --force", "desc": "Bypass the .env secret warning and serve the directory anyway. CLI only — Pi prompts interactively instead." },
+    { "flags": "--as <slug>", "desc": "Publish the single target dir at <slug>.princess-pi.dev (vanity per-client hostname) instead of the repo-derived slug (#66)." },
     { "flags": "-S, --show", "desc": "Discover and display the active servers list. Pi only — no persistent widget in the CLI." },
     { "flags": "-H, --hide", "desc": "Hide the active servers list from the screen. Pi only." },
     { "flags": "--no-emoji", "desc": "Disable emoji icons and use clean single-width ASCII characters for TUI widgets." },

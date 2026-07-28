@@ -272,8 +272,24 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const isStatic = dirs.includes("--static") || dirs.includes("-s");
 		dirs = dirs.filter(d => d !== "--static" && d !== "-s");
 
+		// --- Phase 6B (#66): optional slug override. `/serve <dir> --as <slug>` publishes at
+		// <slug>.princess-pi.dev instead of the repo-derived slug. One override names one
+		// hostname, so it requires exactly one target dir.
+		let overrideSlug: string | null = null;
+		const asIdx = dirs.indexOf("--as");
+		if (asIdx !== -1) {
+			const val = dirs[asIdx + 1];
+			if (val && !val.startsWith("-")) { overrideSlug = val; dirs.splice(asIdx, 2); }
+			else { ctx.ui.notify("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring.", "warning"); dirs.splice(asIdx, 1); }
+		}
+
 		if (dirs.length === 0) {
 			dirs = ["public", "docs"];
+		}
+
+		if (overrideSlug && dirs.length !== 1) {
+			ctx.ui.notify(`⚠️ --as ${overrideSlug} ignored: it requires exactly one target directory (${dirs.length} given).`, "warning");
+			overrideSlug = null;
 		}
 
 		let startPort = 8080;
@@ -329,9 +345,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const port = startPort++;
 
-			// --- Phase 6A (#64): .serve-acl gate validation dormant — allow-lists live in
-			// Cloudflare Access policy now. (#66 re-reads .serve-acl as the policy source.)
-			const clientSlug = getClientSlug(targetDir);
+			// #66: --as overrides the repo-derived slug (vanity per-client hostname); flows to
+			// the runner's --slug + the edge publish so kill/unpublish/watch all agree.
+			const clientSlug = overrideSlug ?? getClientSlug(targetDir);
 
 			const __filename = fileURLToPath(import.meta.url);
 			const __dirname = path.dirname(__filename);
