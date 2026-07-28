@@ -1,5 +1,5 @@
 import { shortenPath } from "../session-path-shortener.js";
-import { ServerInstance, KilledServerInstance, isInsideRepo } from "./domain.js";
+import { ServerInstance, KilledServerInstance, isInsideRepo, selectServers, type ListScope } from "./domain.js";
 import wcwidth from "wcwidth";
 
 export function stripAnsi(str: string): string {
@@ -88,6 +88,41 @@ export function updateWidget(ctx: any, servers: ServerInstance[], isWidgetVisibl
 	} else {
 		ctx.ui.setWidget("serve-ports", undefined); // Clear the widget completely if no active servers remain
 	}
+}
+
+// --- #117: shared plain-text listing for `--list` (scope "repo") and `--list-all` (scope
+// "all"). One renderer, one empty-state, one line format — the CLI console.log's it and Pi
+// notify()'s it. Kept ANSI-free so it reads the same in a non-TTY pipe and in a unit test.
+export function buildListSummary(servers: ServerInstance[], cwd: string = process.cwd(), scope: ListScope = "repo"): string {
+	const selected = selectServers(servers, cwd, scope);
+	if (selected.length === 0) {
+		return scope === "all"
+			? "No servers are currently running for this user."
+			: "No servers are currently running in this repository.";
+	}
+	const header = scope === "all"
+		? "🚀 Servers active for this user (all repos):"
+		: "🚀 Servers active in this repository:";
+	const lines = selected.map((s) => {
+		const logPath = `~/.pi-certs/logs/port-${s.port}-access.log`;
+		return `• ${shortenPath(s.dir, cwd)} @ ${s.url} (Logs: ${logPath})`;
+	});
+	return `${header}\n\n${lines.join("\n")}`;
+}
+
+// --- #117: shown when `serve` is invoked with no target directory (bare, or flags-only).
+// serve no longer defaults to public/+docs/ — instead it lists (above) and suggests an agent
+// prompt to locate a servable dir. Kept a pure string so both surfaces and the test share it.
+export function buildNoDirHint(): string {
+	return [
+		"No directory given — nothing started.",
+		"",
+		"Ask your agent to find one, e.g.:",
+		'  "Find the servable build/output dir in this repo and serve it."',
+		"",
+		"Or name it yourself:      serve <dir>",
+		"Servers in every repo:    serve --list-all",
+	].join("\n");
 }
 
 export function buildKilledSummary(killedList: KilledServerInstance[], cwd: string = process.cwd()): string {

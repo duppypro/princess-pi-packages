@@ -2,21 +2,29 @@
   "name": "serve",
   "version": "1.0.0",
   "tagline": "Secure HTTPS Server Utility",
-  "description": "Serves local directories securely using SSL/HTTPS certificates in a lightweight background process. Logs HTTP access automatically to ~/.pi-certs/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve (or bare serve, once the repo root is on $PATH) CLI script from any other shell, including Claude Code's '!' prefix.",
+  "description": "Serves local directories securely over local HTTP in a lightweight background process, gated at the Cloudflare edge when published. Logs HTTP access automatically to ~/.pi-certs/logs/. Run with no directory to list what's already serving and get a suggestion for finding one. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve (or bare serve, once the repo root is on $PATH) CLI script from any other shell, including Claude Code's '!' prefix.",
   "examples": [
-    { "args": "", "desc": "Serve public/ on 8080 and docs/ on 8081 (the defaults)." },
-    { "args": "--static", "desc": "Serve public/ and docs/ statically, with hot-reloading disabled." },
+    { "args": "", "desc": "List servers running in this repo and suggest a prompt to find a servable dir (starts nothing)." },
+    { "args": "dist/", "desc": "Serve dist/ on 8080." },
     { "args": "src/ assets/", "desc": "Serve src/ on 8080 and assets/ on 8081." },
+    { "args": "dist/ --static", "desc": "Serve dist/ statically, with hot-reloading disabled." },
     { "args": "secrets/ --force", "desc": "Serve a directory containing a .env file, bypassing the warning (CLI only)." },
     { "args": "dist/ --as rogue-aix", "desc": "Publish dist/ at the vanity hostname rogue-aix.princess-pi.dev instead of the repo-derived slug." },
-    { "args": "--kill 8080 docs/", "desc": "Kill the server on port 8080 and the server serving docs/." },
+    { "args": "--list", "desc": "List servers running in this repo." },
+    { "args": "--list-all", "desc": "List every server this user is running, across all repos." },
+    { "args": "--kill 8080 dist/", "desc": "Kill the server on port 8080 and the server serving dist/." },
     { "args": "--kill all", "desc": "Instantly terminate every active dev server across all worktrees." }
   ],
   "why": [
     {
-      "scenario": "You're developing a static site or web app and need HTTPS preview URLs to test locally — without manually configuring SSL certificates.",
+      "scenario": "You're developing a site or web app and want a live-reloading local preview of your build output.",
+      "commands": ["dist/"],
+      "result": "dist/ is served on an auto-assigned local port (8080) with live reload; the clickable URL is printed in the TUI widget. Pass --as <name> to publish it as an Access-gated preview at <name>.princess-pi.dev."
+    },
+    {
+      "scenario": "You forget which directory to serve, or just want to see what's already running before starting more.",
       "commands": [""],
-      "result": "The public/ and docs/ directories are served on auto-assigned HTTPS ports (8080, 8081), with live reload and clickable preview URLs printed in the TUI widget."
+      "result": "serve lists the servers running in this repo, then suggests an agent prompt to locate a servable dir (e.g. \"find the servable build/output dir here and serve it\"). Nothing is started — you name the dir explicitly."
     },
     {
       "scenario": "You've got stale dev servers from a previous session and need to clean them all up.",
@@ -25,8 +33,13 @@
     },
     {
       "scenario": "You want to check what directories are currently being served and on which ports.",
-      "commands": ["--log"],
+      "commands": ["--list"],
       "result": "All active servers in the current worktree are listed with their URLs and access log paths."
+    },
+    {
+      "scenario": "You suspect you left servers running in other repos and want the full box-wide picture.",
+      "commands": ["--list-all"],
+      "result": "Every serve/http-server process this user is running is listed, regardless of which repo it was started from — so you can spot and kill strays anywhere."
     },
     {
       "scenario": "You want to serve only static files (no live-reload injection) — for example, testing production builds locally.",
@@ -40,7 +53,7 @@
     }
   ],
   "usage": [
-    { "flags": "[dirs...]", "desc": "Serve specified directories (default: public, docs) on HTTPS ports." },
+    { "flags": "[dirs...]", "desc": "Serve the specified directories on local ports. With no dir, serve lists running servers and suggests how to find one (no default dirs — starts nothing)." },
     { "flags": "-s, --static", "desc": "Disable live reloading and serve pure static files without code injection or file watching." },
     { "flags": "-f, --force", "desc": "Bypass the .env secret warning and serve the directory anyway. CLI only — Pi prompts interactively instead." },
     { "flags": "--as <slug>", "desc": "Publish the single target dir as a gated preview at <slug>.princess-pi.dev. Without --as, serve runs local-loopback only and publishes nothing (#66)." },
@@ -48,7 +61,8 @@
     { "flags": "-H, --hide", "desc": "Hide the active servers list from the screen. Pi only." },
     { "flags": "--no-emoji", "desc": "Disable emoji icons and use clean single-width ASCII characters for TUI widgets." },
     { "flags": "--emoji", "desc": "Enable emoji icons in TUI widgets." },
-    { "flags": "-L, --log", "desc": "List all active servers serving directories within this worktree." },
+    { "flags": "-L, --list", "desc": "List all active servers serving directories within this worktree." },
+    { "flags": "-A, --list-all", "desc": "List every server this user is running across all repos on this machine (drops the in-worktree filter)." },
     { "flags": "-k, --kill [port|dir|all...]", "desc": "Kill servers by port, directory, or 'all'. Omit the target to kill every server in this worktree." },
     { "flags": "-h, --help", "desc": "Display this help information." },
     { "flags": "--version", "desc": "Display this tool's version." },

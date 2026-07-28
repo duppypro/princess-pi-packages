@@ -16,24 +16,17 @@ import { spawn, execSync } from "node:child_process";
 import { isInsideRepo, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
-import { buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
+import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint } from "../extensions/lib/serve/tui.js";
+import type { ListScope } from "../extensions/lib/serve/domain.js";
 // --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
-async function handleLog(): Promise<void> {
+// #117: --list (scope "repo") and --list-all (scope "all") share one discovery + renderer.
+async function handleList(scope: ListScope = "repo"): Promise<void> {
 	const activeServers = await discoverServers();
-	const repoServers = activeServers.filter((s) => isInsideRepo(s.dir, process.cwd()));
-	if (repoServers.length === 0) {
-		console.log("No servers are currently running in this repository.");
-		return;
-	}
-	const lines = repoServers.map((s) => {
-		const logPath = `~/.pi-certs/logs/port-${s.port}-access.log`;
-		return `• ${shortenPath(s.dir, process.cwd())} @ ${s.url} (Logs: ${logPath})`;
-	});
-	console.log(`🚀 Servers active in this repository:\n\n${lines.join("\n")}`);
+	console.log(buildListSummary(activeServers, process.cwd(), scope));
 }
 
 function handleWhy(): void {
@@ -179,7 +172,14 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		else { console.warn("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring."); dirs.splice(asIdx, 1); }
 	}
 
-	if (dirs.length === 0) dirs = ["public", "docs"];
+	// #117: no default dirs anymore (public/+docs/ rarely fit a given repo). With no target —
+	// bare `serve` or flags-only (e.g. `--static`) — list what's already running here, then
+	// suggest an agent prompt to find a servable dir. Start nothing; serving needs an explicit dir.
+	if (dirs.length === 0) {
+		await handleList("repo");
+		console.log("\n" + buildNoDirHint());
+		return;
+	}
 
 	if (overrideSlug && dirs.length !== 1) {
 		console.warn(`⚠️ --as ${overrideSlug} ignored: it requires exactly one target directory (${dirs.length} given).`);
@@ -275,7 +275,8 @@ async function run(): Promise<void> {
 	await resolveIp();
 	const trimmedArgs = process.argv.slice(2).join(" ").trim();
 
-	if (trimmedArgs === "--log" || trimmedArgs === "-L") return handleLog();
+	if (trimmedArgs === "--list" || trimmedArgs === "-L") return handleList("repo");
+	if (trimmedArgs === "--list-all" || trimmedArgs === "-A") return handleList("all");
 	if (trimmedArgs === "--help" || trimmedArgs === "-h") return handleHelp();
 	if (trimmedArgs === "--why") return handleWhy();
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);

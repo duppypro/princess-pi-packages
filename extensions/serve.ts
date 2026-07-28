@@ -12,12 +12,12 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
-import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
+import { isInsideRepo, KilledServerInstance, type ListScope } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
-import { updateWidget, buildKilledSummary, buildDiscoveredSummary } from "./lib/serve/tui.js";
+import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint } from "./lib/serve/tui.js";
 // --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "./lib/serve/cloudflare.js";
 
@@ -85,18 +85,10 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 	// --- Command handlers (one per /serve subcommand) ---
 
-	async function handleLog(ctx: any): Promise<void> {
+	// #117: --list (scope "repo") and --list-all (scope "all") share one discovery + renderer.
+	async function handleList(ctx: any, scope: ListScope = "repo"): Promise<void> {
 		const activeServers = await discoverServers();
-		const repoServers = activeServers.filter(s => isInsideRepo(s.dir, process.cwd()));
-		if (repoServers.length === 0) {
-			ctx.ui.notify("No servers are currently running in this repository.", "info");
-			return;
-		}
-		const lines = repoServers.map(s => {
-			const logPath = `~/.pi-certs/logs/port-${s.port}-access.log`;
-			return `• \x1b[36m${shortenPath(s.dir, process.cwd())}\x1b[0m @ \x1b[4m\x1b[34m${s.url}\x1b[0m \x1b[90m(Logs: ${logPath})\x1b[0m`;
-		});
-		ctx.ui.notify(`🚀 Servers active in this repository:\n\n${lines.join("\n")}`, "info");
+		ctx.ui.notify(buildListSummary(activeServers, process.cwd(), scope), "info");
 	}
 
 	async function handleHelp(ctx: any): Promise<void> {
@@ -283,8 +275,13 @@ export default function serveExtension(pi: ExtensionAPI) {
 			else { ctx.ui.notify("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring.", "warning"); dirs.splice(asIdx, 1); }
 		}
 
+		// #117: no default dirs anymore (public/+docs/ rarely fit a given repo). With no target —
+		// bare /serve or flags-only (e.g. --static) — list what's already running here, then
+		// suggest an agent prompt to find a servable dir. Start nothing; serving needs an explicit dir.
 		if (dirs.length === 0) {
-			dirs = ["public", "docs"];
+			const activeServers = await discoverServers();
+			ctx.ui.notify(`${buildListSummary(activeServers, process.cwd(), "repo")}\n\n${buildNoDirHint()}`, "info");
+			return;
 		}
 
 		if (overrideSlug && dirs.length !== 1) {
@@ -418,7 +415,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 	// --- Dispatch table: matches the raw trimmed args to the right subcommand handler ---
 	// `--kill` needs a prefix-match (it carries trailing target args); the rest are exact flags.
 	const routes: { test: (args: string) => boolean; handler: (args: string, ctx: any) => Promise<void> }[] = [
-		{ test: (a) => a === "--log" || a === "-L", handler: (_a, ctx) => handleLog(ctx) },
+		{ test: (a) => a === "--list" || a === "-L", handler: (_a, ctx) => handleList(ctx, "repo") },
+		{ test: (a) => a === "--list-all" || a === "-A", handler: (_a, ctx) => handleList(ctx, "all") },
 		{ test: (a) => a === "--help" || a === "-h", handler: (_a, ctx) => handleHelp(ctx) },
 		{ test: (a) => a === "--version", handler: (_a, ctx) => handleVersion(ctx) },
 		{ test: (a) => a === "--why", handler: (_a, ctx) => handleWhy(ctx) },
@@ -431,7 +429,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 	// 3. Define the /serve command
 	pi.registerCommand("serve", {
-		description: "Serve public/ and docs/ (or specified directories) securely over HTTPS with helper controls",
+		description: "Serve one or more directories securely over HTTPS with helper controls (bare /serve lists running servers and suggests how to find one)",
 		handler: async (args, ctx) => {
 			const trimmedArgs = args.trim();
 			const route = routes.find(r => r.test(trimmedArgs));
