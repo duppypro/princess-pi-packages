@@ -13,7 +13,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
-import { isInsideRepo, getClientSlug, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
+import { isInsideRepo, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary } from "../extensions/lib/serve/tui.js";
@@ -227,10 +227,10 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
 
-		// #66: --as overrides the repo-derived slug (vanity per-client hostname). The chosen
-		// slug flows to both the spawned runner's --slug (live-ACL watcher target) and the
-		// edge publish, so kill/unpublish/watch all agree on the hostname.
-		const clientSlug = overrideSlug ?? getClientSlug(targetDir);
+		// #66: publishing is opt-in via --as. A slug ⟺ this preview is published to the edge:
+		// it flows to the runner's --slug (live-ACL watcher target) AND the publish call, so
+		// publish/kill/unpublish/watch all key off the same condition. No --as → local only.
+		const clientSlug = overrideSlug; // null unless --as given
 
 		const __dirname = path.dirname(fileURLToPath(import.meta.url));
 		const runnerPath = path.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
@@ -238,23 +238,26 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const spawnCmd = isStatic ? "npx" : "node";
 		const spawnArgs = isStatic
 			? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"]
-			: [runnerPath, targetDir, "--slug", clientSlug, "-p", String(port), "-a", "127.0.0.1"];
+			: [runnerPath, targetDir, ...(clientSlug ? ["--slug", clientSlug] : []), "-p", String(port), "-a", "127.0.0.1"];
 
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
 
-		// --- Phase 6B (#66): publish this slug to the edge — upsert the tunnel ingress rule
-		// (<label>.princess-pi.dev → this loopback port) + a per-slug Access app carrying the
-		// .serve-acl allow-list. Best-effort by design: the loopback origin is already up, so
-		// any failure (no cf.env, reserved label, API error) warns and leaves the local server
-		// running — the preview just isn't reachable at its public hostname.
-		try {
-			const emails = parseAclFile(targetDir);
-			const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
-			activeLabels.add(hostname.split(".")[0]);
-			console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`);
-		} catch (err) {
-			console.warn(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`);
+		// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug. Upserts the
+		// tunnel ingress rule (<slug>.princess-pi.dev → this loopback port) + a per-slug Access
+		// app carrying the .serve-acl allow-list. Best-effort: the loopback origin is already
+		// up, so any failure (no cf.env, reserved label, API error) warns and leaves it running.
+		if (clientSlug) {
+			try {
+				const emails = parseAclFile(targetDir);
+				const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+				activeLabels.add(hostname.split(".")[0]);
+				console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`);
+			} catch (err) {
+				console.warn(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`);
+			}
+		} else {
+			console.log(`ℹ️ Serving "${rawDir}" locally on 127.0.0.1:${port}. Pass --as <name> to publish a gated preview at <name>.princess-pi.dev.`);
 		}
 	}
 

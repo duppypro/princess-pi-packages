@@ -12,7 +12,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
-import { isInsideRepo, getClientSlug, KilledServerInstance } from "./lib/serve/domain.js";
+import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
@@ -345,9 +345,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const port = startPort++;
 
-			// #66: --as overrides the repo-derived slug (vanity per-client hostname); flows to
-			// the runner's --slug + the edge publish so kill/unpublish/watch all agree.
-			const clientSlug = overrideSlug ?? getClientSlug(targetDir);
+			// #66: publishing is opt-in via --as. A slug ⟺ published to the edge; it flows to
+			// the runner's --slug (watcher target) AND the publish call. No --as → local only.
+			const clientSlug = overrideSlug; // null unless --as given
 
 			const __filename = fileURLToPath(import.meta.url);
 			const __dirname = path.dirname(__filename);
@@ -363,7 +363,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			] : [
 				runnerPath,
 				targetDir,
-				"--slug", clientSlug,
+				...(clientSlug ? ["--slug", clientSlug] : []),
 				"-p", String(port),
 				"-a", "127.0.0.1"
 			];
@@ -375,16 +375,20 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 
-			// --- Phase 6B (#66): publish this slug to the edge — tunnel ingress rule +
-			// per-slug Access app carrying the .serve-acl allow-list. Best-effort: the
-			// loopback origin is already up, so any failure warns and leaves it running.
-			try {
-				const emails = parseAclFile(targetDir);
-				const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
-				activeLabels.add(hostname.split(".")[0]);
-				ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
-			} catch (err) {
-				ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
+			// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug — tunnel
+			// ingress rule + per-slug Access app carrying the .serve-acl allow-list. Best-
+			// effort: the loopback origin is already up, so any failure warns and leaves it up.
+			if (clientSlug) {
+				try {
+					const emails = parseAclFile(targetDir);
+					const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+					activeLabels.add(hostname.split(".")[0]);
+					ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
+				} catch (err) {
+					ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
+				}
+			} else {
+				ctx.ui.notify(`ℹ️ Serving "${rawDir}" locally. Pass --as <name> to publish a gated preview at <name>.princess-pi.dev.`, "info");
 			}
 		}
 

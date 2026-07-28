@@ -288,6 +288,12 @@ async function checkLabelAvailable(cf, label, activeLabels) {
 		zoneLabels = new Set();
 		for (const r of records) {
 			const name = String(r.name).toLowerCase();
+			// A CNAME → our tunnel (`*.cfargotunnel.com`) is serve's own turf, not infra: the
+			// `*` wildcard routes there, and any per-slug CNAME (e.g. from `cloudflared tunnel
+			// route dns`) is a preview host serve may republish onto. Such records do NOT
+			// reserve the label (#66 Finding 1). Everything else — A/AAAA to the VPS, MX, TXT,
+			// or a CNAME pointing elsewhere — is infra worth protecting.
+			if (r.type === "CNAME" && String(r.content || "").toLowerCase().endsWith(".cfargotunnel.com")) continue;
 			if (name === ZONE_SUFFIX) { zoneLabels.add("apex"); continue; }
 			if (name.endsWith(`.${ZONE_SUFFIX}`)) zoneLabels.add(name.slice(0, name.length - ZONE_SUFFIX.length - 1).split(".").pop());
 		}
@@ -471,9 +477,25 @@ export async function reapOrphans() {
 		const reaped = [];
 		const config = await getTunnelConfig(cf);
 		const ingress = Array.isArray(config.ingress) ? config.ingress : [];
+		// Serve-OWNED hostnames = those fronted by a `serve <label>` Access app. Reap only
+		// sweeps these — a hostname with no serve-owned app (hand-seeded ingress, a foreign
+		// app) is never touched, so reap can't nuke a fixture it didn't publish (#66 Finding 2).
+		let ownedHosts;
+		try {
+			const apps = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
+			ownedHosts = new Set();
+			for (const a of apps || []) {
+				if (!String(a.name || "").startsWith(APP_PREFIX)) continue;
+				if (a.domain) ownedHosts.add(a.domain);
+				for (const d of a.self_hosted_domains || []) ownedHosts.add(d);
+			}
+		} catch {
+			return []; // can't prove ownership → reap nothing (fail-safe)
+		}
 		let next = ingress;
 		for (const rule of ingress) {
 			if (!rule.hostname || !rule.service?.startsWith("http://127.0.0.1:")) continue;
+			if (!ownedHosts.has(rule.hostname)) continue; // not serve-owned → leave it alone
 			const port = parseInt(rule.service.split(":").pop(), 10);
 			if (await isPortLive(port)) continue; // still serving — keep it
 			next = next.filter((r) => r.hostname !== rule.hostname);
