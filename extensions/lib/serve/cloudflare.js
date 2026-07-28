@@ -33,6 +33,38 @@ const LOCK_PATH = path.join(CONFIG_DIR, "tunnel-config.lock");
 const CF_API = "https://api.cloudflare.com/client/v4";
 const ZONE_SUFFIX = "princess-pi.dev";
 
+// Slug→port map persisted across restarts so discovery can show the public URL
+// even for servers that were published after start (#119).
+const SLUG_MAP_PATH = path.join(os.homedir(), ".pi-certs", "serve-slugs.json");
+
+export function readSlugMap() {
+	try {
+		if (fs.existsSync(SLUG_MAP_PATH)) {
+			return JSON.parse(fs.readFileSync(SLUG_MAP_PATH, "utf8"));
+		}
+	} catch { /* corrupt or missing — start fresh */ }
+	return {};
+}
+
+function writeSlugMap(port, slug) {
+	const map = readSlugMap();
+	const arr = map[String(port)] || [];
+	if (!arr.includes(slug)) arr.push(slug);
+	map[String(port)] = arr;
+	fs.mkdirSync(path.dirname(SLUG_MAP_PATH), { recursive: true });
+	fs.writeFileSync(SLUG_MAP_PATH, JSON.stringify(map), "utf8");
+}
+
+function removeSlugFromMap(slug) {
+	const map = readSlugMap();
+	for (const [port, slugs] of Object.entries(map)) {
+		const arr = slugs.filter(s => s !== slug);
+		if (arr.length === 0) delete map[port];
+		else map[port] = arr;
+	}
+	fs.writeFileSync(SLUG_MAP_PATH, JSON.stringify(map), "utf8");
+}
+
 // Access apps serve owns are named `serve <label>`. Reaping touches ONLY these — an app
 // serve did not create (e.g. a hand-made one) is never deleted, and its hostname is a
 // reserved-label collision (refuse to publish onto it).
@@ -432,6 +464,7 @@ export async function publishSlug({ slug, port, emails, activeLabels }) {
 			await sleep(120 + Math.floor(Math.random() * 200));
 		}
 		await upsertAccessApp(cf, label, emails);
+		writeSlugMap(port, slug);
 		return hostname;
 	});
 }
@@ -448,6 +481,7 @@ export async function unpublishSlug({ slug }) {
 		const config = await getTunnelConfig(cf);
 		await putTunnelConfig(cf, removeIngressRule(config, hostname));
 		await deleteAccessApp(cf, label);
+		removeSlugFromMap(slug);
 	});
 }
 

@@ -3,7 +3,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { exec } from "node:child_process";
 import { ServerInstance } from "./domain.js";
-import { flattenSlugToLabel } from "./cloudflare.js";
+import { flattenSlugToLabel, readSlugMap } from "./cloudflare.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -45,6 +45,9 @@ export function discoverServers(): Promise<ServerInstance[]> {
 			const lines = stdout.split("\n").filter(l => l.trim().length > 0);
 			const ip = await resolveIp();
 
+			// Slug map for servers published after start (#119)
+			const slugMap = readSlugMap();
+
 			for (const line of lines) {
 				const portMatch = line.match(/-p\s+(\d+)/) || line.match(/--port\s+(\d+)/);
 				if (!portMatch) continue;
@@ -82,10 +85,15 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				const absoluteDir = path.resolve(process.cwd(), dir);
 				// #66: the published slug is the runner's ACTUAL --slug arg (from `serve --as`),
 				// not a re-derivation from the dir — else kill/unpublish targets the wrong host.
-				// No --slug ⟺ never published (local-only) ⟺ clientSlug undefined, so the kill
-				// path skips unpublish for it.
 				const slugMatch = line.match(/--slug\s+(\S+)/);
-				const clientSlug = slugMatch ? slugMatch[1] : undefined;
+				let clientSlug = slugMatch ? slugMatch[1] : undefined;
+
+				// Check slug map for slugs published after server start (#119)
+				if (!clientSlug) {
+					const mappedSlugs = slugMap[String(port)];
+					if (mappedSlugs && mappedSlugs.length > 0) clientSlug = mappedSlugs[0];
+				}
+
 				// Why no ?token=: the static bypass token was a committed backdoor (#38 F2 → #59).
 				// Access is via the real gate (Cloudflare Access), not a shared query secret.
 				// #66: a published server's public URL is its own <slug>.princess-pi.dev; an
