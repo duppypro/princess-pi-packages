@@ -1,6 +1,12 @@
 # Spec: `serve` listing flags + no-default-dir (#117)
 
-Status: **SPEC DRAFT** · Issue: #117 · Supersedes the `public/`+`docs/` default and the `--log` flag.
+Status: **CODE AND SPEC APPROVED** (as-shipped) · Issue: #117 · Supersedes the `public/`+`docs/`
+default and the `--log` flag.
+
+> Reconciled to the shipped code (`6b2a65d`): flag names (`--list`/`-L`, `--list-all`/`-A`),
+> the three pure seams (`selectServers`, `buildListSummary`, `buildNoDirHint`), the empty-state
+> strings, and the no-dir agent-prompt text below all match `extensions/lib/serve/{domain,tui}.ts`
+> and both harness surfaces. Verified 12/12 offline + live CLI on the built `bin/serve.mjs`.
 
 ## Why
 
