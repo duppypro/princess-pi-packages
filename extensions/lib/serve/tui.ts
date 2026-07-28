@@ -107,7 +107,7 @@ export function formatServerCard(server: ServerInstance): string {
 		getVisualLength(infoLine)
 	);
 
-	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 3));
+	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 2));
 	const urlPadded = padVisual(urlLine, inner);
 	const infoPadded = padVisual(infoLine, inner);
 
@@ -144,7 +144,7 @@ export function formatServerCardKilled(killed: KilledServerInstance): string {
 		getVisualLength(afterLine)
 	);
 
-	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 3));
+	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 2));
 	const urlPadded = padVisual(urlLine, inner);
 	const beforePadded = padVisual(beforeLine, inner);
 	const afterPadded = padVisual(afterLine, inner);
