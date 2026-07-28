@@ -2,7 +2,8 @@ import * as https from "node:https";
 import * as http from "node:http";
 import * as path from "node:path";
 import { exec } from "node:child_process";
-import { ServerInstance, getClientSlug } from "./domain.js";
+import { ServerInstance } from "./domain.js";
+import { flattenSlugToLabel } from "./cloudflare.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -79,13 +80,17 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				const localUrl = `http://127.0.0.1:${port}`;
 				
 				const absoluteDir = path.resolve(process.cwd(), dir);
-				const clientSlug = getClientSlug(absoluteDir);
+				// #66: the published slug is the runner's ACTUAL --slug arg (from `serve --as`),
+				// not a re-derivation from the dir — else kill/unpublish targets the wrong host.
+				// No --slug ⟺ never published (local-only) ⟺ clientSlug undefined, so the kill
+				// path skips unpublish for it.
+				const slugMatch = line.match(/--slug\s+(\S+)/);
+				const clientSlug = slugMatch ? slugMatch[1] : undefined;
 				// Why no ?token=: the static bypass token was a committed backdoor (#38 F2 → #59).
 				// Access is via the real gate (Cloudflare Access), not a shared query secret.
-				// --- Phase 6A (#64): the nginx /live/<slug>/ path is retired. The tunnel
-				// statically routes ONE hostname to 127.0.0.1:8080 (the MVP ingress), so only
-				// port 8080 has a public URL until #66 adds per-slug publishing.
-				const url = port === 8080 ? "https://preview.princess-pi.dev/" : localUrl;
+				// #66: a published server's public URL is its own <slug>.princess-pi.dev; an
+				// unpublished (local-only) server has no public URL, only the loopback.
+				const url = clientSlug ? `https://${flattenSlugToLabel(clientSlug)}.princess-pi.dev/` : localUrl;
 
 				let title = "Index Page";
 				try {
