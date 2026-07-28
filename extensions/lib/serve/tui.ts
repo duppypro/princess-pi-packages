@@ -93,16 +93,29 @@ export function formatServerTable(servers: ServerInstance[]): string {
 export function formatServerCard(server: ServerInstance): string {
 	const border = "\x1b[37m";
 	const header = `${homeRelative(server.dir)} :${server.port}`;
-	const headerDashes = "─".repeat(Math.max(1, 56 - getVisualLength(header)));
 	const typeColor = server.isLive ? "\x1b[32m" : "\x1b[33m";
 	const typeLabel = server.isLive ? "Live" : "Static";
 	const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
 
+	const urlLine = `  \x1b[4m\x1b[34m${server.url}\x1b[0m`;
+	const infoLine = `  ${typeColor}${typeLabel}\x1b[0m · logs: \x1b[36m${logPath}\x1b[0m`;
+
+	// Box inner-width: max of header+3 (for "┌─ "), url, info (#119 fix)
+	const inner = Math.max(
+		getVisualLength(header) + 3,
+		getVisualLength(urlLine),
+		getVisualLength(infoLine)
+	);
+
+	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 3));
+	const urlPadded = padVisual(urlLine, inner);
+	const infoPadded = padVisual(infoLine, inner);
+
 	return [
 		`${border}┌─ ${header} ${headerDashes}┐\x1b[0m`,
-		`${border}│\x1b[0m  \x1b[4m\x1b[34m${server.url}\x1b[0m`,
-		`${border}│\x1b[0m  ${typeColor}${typeLabel}\x1b[0m · logs: \x1b[36m${logPath}\x1b[0m`,
-		`${border}└${"─".repeat(58)}┘\x1b[0m`,
+		`${border}│\x1b[0m${urlPadded}${border}│\x1b[0m`,
+		`${border}│\x1b[0m${infoPadded}${border}│\x1b[0m`,
+		`${border}└${"─".repeat(inner)}┘\x1b[0m`,
 	].join("\n");
 }
 
@@ -119,14 +132,29 @@ export function formatServerCard(server: ServerInstance): string {
 export function formatServerCardKilled(killed: KilledServerInstance): string {
 	const border = "\x1b[37m";
 	const header = `${homeRelative(killed.dir)} :${killed.port}`;
-	const headerDashes = "─".repeat(Math.max(1, 56 - getVisualLength(header)));
+
+	const urlLine = `  \x1b[4m\x1b[34m${killed.url || killed.localUrl}\x1b[0m`;
+	const beforeLine = `  Before: ${killed.statusBefore}`;
+	const afterLine = `  After:  \x1b[31m${killed.statusAfter}\x1b[0m`;
+
+	const inner = Math.max(
+		getVisualLength(header) + 3,
+		getVisualLength(urlLine),
+		getVisualLength(beforeLine),
+		getVisualLength(afterLine)
+	);
+
+	const headerDashes = "─".repeat(Math.max(1, inner - getVisualLength(header) - 3));
+	const urlPadded = padVisual(urlLine, inner);
+	const beforePadded = padVisual(beforeLine, inner);
+	const afterPadded = padVisual(afterLine, inner);
 
 	return [
 		`${border}┌─ ${header} ${headerDashes}┐\x1b[0m`,
-		`${border}│\x1b[0m  \x1b[4m\x1b[34m${killed.url || killed.localUrl}\x1b[0m`,
-		`${border}│\x1b[0m  Before: ${killed.statusBefore}`,
-		`${border}│\x1b[0m  After:  \x1b[31m${killed.statusAfter}\x1b[0m`,
-		`${border}└${"─".repeat(58)}┘\x1b[0m`,
+		`${border}│\x1b[0m${urlPadded}${border}│\x1b[0m`,
+		`${border}│\x1b[0m${beforePadded}${border}│\x1b[0m`,
+		`${border}│\x1b[0m${afterPadded}${border}│\x1b[0m`,
+		`${border}└${"─".repeat(inner)}┘\x1b[0m`,
 	].join("\n");
 }
 
@@ -170,9 +198,7 @@ export function buildNoDirHint(): string {
 
 // --- Post-start summary: card format, only the servers that were *just* started (#119). ---
 export function buildDiscoveredSummary(servers: ServerInstance[]): string {
-	const cards = servers.map(s => formatServerCard(s));
-	const label = servers.length === 1 ? "server" : "servers";
-	return `🚀 Started ${servers.length} ${label}:\n\n${cards.join("\n\n")}`;
+	return servers.map(s => formatServerCard(s)).join("\n\n");
 }
 
 // --- Post-kill summary: card format, only the servers that were *just* killed. ---
