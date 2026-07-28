@@ -1,5 +1,5 @@
 // Unit tests for #117/#119 — the OFFLINE listing surface (no `ps`, no network):
-//   - buildListSummary: single scope (always all servers), header + empty-state + table format
+//   - buildListSummary: table-only output (no title), empty-state, ~/ paths, SERVED DIRECTORY header
 //   - buildNoDirHint: the no-directory agent-prompt suggestion + --list pointer
 // Discovery itself (ps aux parsing) needs live processes and is covered by the manual
 // Code Approved checks in the spec, not here.
@@ -24,14 +24,19 @@ const all = [server1, server2, server3];
 
 console.log("buildListSummary");
 ok("empty → user empty-state", () => {
-	assert.equal(buildListSummary([]), "No servers are currently running for this user.");
+	assert.equal(buildListSummary([]), "No servers are currently running.");
 });
 ok("single server → table with header", () => {
 	const out = buildListSummary([server1]);
-	assert.ok(out.includes("🚀 Servers active for this user (all repos):"));
-	assert.ok(out.includes("DIRECTORY") && out.includes("PORT") && out.includes("TYPE") && out.includes("URL"));
+	assert.ok(out.includes("SERVED DIRECTORY") && out.includes("PORT") && out.includes("TYPE") && out.includes("URL"));
 	assert.ok(out.includes("8080"));
 	assert.ok(out.includes("https://foo.princess-pi.dev/"));
+});
+ok("no title line — table only (#119)", () => {
+	const out = buildListSummary([server1]);
+	assert.ok(!out.includes("🚀"));
+	assert.ok(!out.includes("Servers active"));
+	assert.ok(out.startsWith("  SERVED DIRECTORY"));
 });
 ok("all servers listed regardless of directory location (#119)", () => {
 	const out = buildListSummary(all);
