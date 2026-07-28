@@ -2,11 +2,14 @@
 
 > **Lifecycle status: Phase 6A is CODE AND SPEC APPROVED (Step 5 `99c8cd4`, PR #108 merged
 > 2026-07-22; infra teardown APPLIED + verified on the live VPS 2026-07-22 — evidence in
-> `phase6-teardown/APPLY_RUNBOOK.md`). Phase 6B (per-slug automation, #66) is CODE APPROVED
-> for its offline surface (Step 4, 2026-07-26: 16/16 unit assertions + live read-only API
-> contract; `email_domain` whole-domain allow-list support added). The live publish/
-> unpublish/reap sign-off is gated on the one-time 6B.0 remote-managed tunnel migration —
-> `phase6b-migration/APPLY_RUNBOOK.md` (Duppy applies; tunnel is still `source:local`).**
+> `phase6-teardown/APPLY_RUNBOOK.md`). Phase 6B (per-slug automation, #66) is CODE APPROVED —
+> **full lifecycle live-verified on the real CF edge (Step 4, `d7a771d`): 6B.0 migration done
+> (`config_src: cloudflare`), then publish/reap/kill/unpublish + infra-label refusal all green;
+> 16/16 unit + 5/5 build.** The live sign-off drove three fixes (reserved-guard tunnel-CNAME
+> allowance, reap keyed off `serve <label>` apps, kill reads the real `--slug`) and one design
+> change: **no fixed `preview` hostname — publishing is opt-in via `--as`.** This spec section
+> is reconciled to as-shipped (Step 5). Follow-ups: #114 (periodic GC), #115 (Access-propagation
+> window).**
 > Replaces the retired nginx `/live/` + oauth2-proxy `:4182` gate (see #32, #38, #59) with
 > `cloudflared` Tunnel → loopback `/serve` servers, fronted by Cloudflare Access. Spec
 > approved by Duppy 2026-07-07 (`999decb`); Phases 1–4 executed by Claude Cowork; Phase 5
@@ -184,8 +187,9 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 ---
 
 ## Phase 6 — Retire the nginx/oauth2-proxy gate + build per-slug automation
-> **Spec status: 6A APPROVED (2e2d626, 2026-07-07) + code reviewed (PR #108) · 6B APPROVED
-> (2026-07-23).** Scope settled 2026-07-07:
+> **Spec status: 6A APPROVED (2e2d626, 2026-07-07) + code reviewed (PR #108) · 6B CODE + SPEC
+> APPROVED (`d7a771d`, live-verified on the real CF edge 2026-07-27; this section reconciled to
+> as-shipped).** Scope settled 2026-07-07:
 > full automation now, not teardown-only. Two arcs, landed **in order** as separate commit
 > pairs — 6A tracked in #64, 6B split to #66. 6B Spec Approved's sole gate — the 6B.0
 > wildcard-proxy verification (see VERIFY FIRST below) — resolved 2026-07-22, clearing approval.
@@ -310,15 +314,28 @@ record of what was staged→applied):**
 - Create the API token (scopes: Account → Cloudflare Tunnel:Edit, Access: Apps and
   Policies:Edit; Zone → DNS:Read) → `~/.config/princess-pi/cf.env`, 0600.
 
-**6B code — on `serve <dir>` start:**
+> **Reconciled to as-shipped (Step 5, Code Approved `d7a771d`, live-verified on the real CF
+> edge). Two things changed from the pre-build plan, both caught by the live sign-off:**
+> - **No fixed `preview` hostname; publishing is opt-in via `--as`.** The original plan derived
+>   the slug from the git repo path (`getClientSlug`) and auto-published every serve. In practice
+>   that leaked internal structure (`rogue-savvy-frontend-dist.princess-pi.dev`) and the fixed
+>   `preview` fixture fought the reaper. Shipped: `serve <dir> --as <slug>` publishes
+>   `<slug>.princess-pi.dev`; **`serve <dir>` with no `--as` runs local-loopback only and
+>   publishes nothing.** `preview` is retired as a fixed hostname.
+> - **Reserved-guard allows tunnel CNAMEs.** A proxied CNAME → `*.cfargotunnel.com` is serve's
+>   own turf (the wildcard routes there; `cloudflared tunnel route dns` may have made per-slug
+>   ones), so it does NOT reserve the label — only real infra does.
+
+**6B code — on `serve <dir> --as <slug>` start (publishing is opt-in; no `--as` → local only):**
 1. Flatten slug → DNS label: lowercase; `[^a-z0-9-]` → `-`; collapse repeats; trim to 63
-   chars. ERROR (skip dir, keep others) if the label collides with (a) a **live zone record** —
-   serve GETs the zone's DNS records at start (Zone DNS:Read) and refuses any label
-   matching an existing explicit record of any type (`www`, `logger`, MX hosts, `_dmarc`,
-   …) or an Access app it doesn't own; (b) a different **active** slug's label. A minimal
-   hardcoded list (`www`, `mail`, `logger`) remains only as a **fail-closed backstop**: if
-   the zone read fails, refuse to publish (loopback still starts). WHY zone-derived: a
-   hand-maintained denylist drifts; the zone is the source of truth.
+   chars. ERROR (skip dir, keep others) if the label collides with (a) a **live infra record** —
+   serve GETs the zone's DNS records at start (Zone DNS:Read) and refuses any label matching an
+   existing explicit record of any type (`www`, apex `A`, MX hosts, `_dmarc`, …) **except a
+   proxied CNAME pointing at our tunnel (`*.cfargotunnel.com`)**, which is serve's own turf; or
+   an Access app it doesn't own; (b) a different **active** slug's label. A minimal hardcoded
+   list (`www`, `mail`, `logger`, …) remains only as a **fail-closed backstop**: if the zone
+   read fails, refuse to publish (loopback still starts). WHY zone-derived: a hand-maintained
+   denylist drifts; the zone is the source of truth.
 2. Read `.serve-acl` emails (parser returns; validation gate is live again — no file, no
    publish).
 3. API: upsert ingress rule `<label>.princess-pi.dev → http://127.0.0.1:<port>`
@@ -336,21 +353,31 @@ record of what was staged→applied):**
    cannot reach client B).
 5. Live-ACL watcher (reintroduced): `.serve-acl` change → update the Access policy only.
 
-**On `serve --kill`:** remove the ingress rule + the Access app for that label.
+**On `serve --kill`:** remove the ingress rule + the Access app for that label. The label is
+read from the killed process's **actual `--slug`** (captured at discovery), not re-derived from
+the dir — else kill would target the wrong hostname. A local-only server (no `--slug`) has no
+published state, so kill skips unpublish for it.
 
 **Orphan reaping** — a crash without `--kill` leaves an ingress rule + an Access app with a
 stale email allow-list **live at the edge**: security drift, not clutter. 6B ships
-**reap-on-start**: under the same lock, delete any serve-owned entry (Access apps are named
-`serve <label>`; only those are touched) whose port has no live listener, before publishing
-new state. **KNOWN GAP (named, deferred):** nothing reaps between a crash and the next
-serve run; periodic/TTL GC is a follow-up issue to file at 6B kickoff.
+**reap-on-start**: under the same lock, delete any entry **fronted by a serve-owned `serve
+<label>` Access app** whose loopback port has no live listener, before publishing new state.
+Keying on the app (not merely "any `127.0.0.1` ingress") is what stops reap from sweeping a
+hand-seeded or foreign hostname (the live sign-off caught it nuking the old fixed `preview`).
+Fail-safe: if the apps read errors, reap nothing. **KNOWN GAP (deferred → #114):** nothing
+reaps between a crash and the next serve run; periodic/TTL GC tracked there. **Also #115:** a
+brief ungated window while a freshly-created Access app propagates on first publish.
 
-**6B Code Approved test list:**
-- Unit (no network): flattening rules, reserved-list rejection, active-collision rejection,
-  cf.env missing → clear error + loopback server still starts.
-- Live (Duppy, VPS + laptop): `serve <dir>` → `https://<label>.princess-pi.dev` gates via
-  Access, allow-listed email passes, non-listed email denied; `.serve-acl` edit propagates;
-  `serve --kill` → hostname 404s and the Access app is gone; `www`/`logger`/mail unchanged.
+**6B Code Approved test list (as-run, `d7a771d`, 2026-07-27):**
+- Unit (no network): 16/16 — flatten rules, `loadCfEnv` parse/missing/missing-key, `parseAclFile`
+  email + `@domain`, `aclEntriesToInclude` email vs `email_domain`. Build: 5/5 bins.
+- Live (real CF account + VPS): `serve <dist> --as rogue-aix` → published `rogue-aix.princess-pi.dev`,
+  Access app `serve rogue-aix` + policy carrying `email_domain roguelivestock.com` + a personal
+  address, **HTTP 302 gated** (after ~15s Access propagation). Publish allowed despite the explicit
+  proxied `rogue-aix` CNAME (guard skips tunnel CNAMEs). Reap: orphan (dead port + serve-owned app)
+  → `🧹 Reaped 1`, then republished; foreign hosts untouched. `serve --kill` → ingress rule + Access
+  app gone, `rogue-aix → 404`. `serve <dist>` (no `--as`) → local loopback only, nothing published.
+  `serve --as www` → refused (infra `A` record). Not run: `tsc` (absent in env).
 
 ### 5-step governance + merge-eligibility (unambiguous)
 - Tracking: **6A = #64**, **6B = #66** (split 2026-07-07). #60 closes in the 6A Code
