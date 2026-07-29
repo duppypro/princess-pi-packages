@@ -10,9 +10,8 @@
     { "args": "dist/ --static", "desc": "Serve dist/ statically, with hot-reloading disabled." },
     { "args": "secrets/ --force", "desc": "Serve a directory containing a .env file, bypassing the warning (CLI only)." },
     { "args": "dist/ --as rogue-aix", "desc": "Publish dist/ at the vanity hostname rogue-aix.princess-pi.dev instead of the repo-derived slug." },
-    { "args": "--list", "desc": "List servers running in this repo." },
-    { "args": "--list-all", "desc": "List every server this user is running, across all repos." },
-    { "args": "--kill 8080 dist/", "desc": "Kill the server on port 8080 and the server serving dist/." },
+    { "args": "--list", "desc": "List every server this user is running on this machine." },
+    { "args": "--unpub p119-research", "desc": "Unpublish a slug from Cloudflare without killing the local server." },
     { "args": "--kill all", "desc": "Instantly terminate every active dev server across all worktrees." }
   ],
   "why": [
@@ -32,14 +31,14 @@
       "result": "Every active server across all worktrees is terminated immediately."
     },
     {
-      "scenario": "You want to check what directories are currently being served and on which ports.",
+      "scenario": "You want to check what directories are currently being served, on which ports, and at what URLs.",
       "commands": ["--list"],
-      "result": "All active servers in the current worktree are listed with their URLs and access log paths."
+      "result": "Every active server on this machine is listed with full paths, ports, types, and clickable URLs."
     },
     {
-      "scenario": "You suspect you left servers running in other repos and want the full box-wide picture.",
-      "commands": ["--list-all"],
-      "result": "Every serve/http-server process this user is running is listed, regardless of which repo it was started from — so you can spot and kill strays anywhere."
+      "scenario": "You want to take down a public preview URL but keep the local dev server running.",
+      "commands": ["--unpub p119-research"],
+      "result": "The Cloudflare ingress and Access app for p119-research are removed. The local server keeps running — republish anytime with --as."
     },
     {
       "scenario": "You want to serve only static files (no live-reload injection) — for example, testing production builds locally.",
@@ -63,6 +62,7 @@
     { "flags": "--emoji", "desc": "Enable emoji icons in TUI widgets." },
     { "flags": "-L, --list", "desc": "List every server this user is running on this machine (full paths, ports, types, URLs)." },
     { "flags": "-k, --kill [port|dir|all...]", "desc": "Kill servers by port, directory, or 'all'. Requires explicit targets — bare --kill is a no-op." },
+    { "flags": "-U, --unpub <slug>", "desc": "Unpublish a slug from Cloudflare (remove ingress + Access) without killing the local server." },
     { "flags": "-h, --help", "desc": "Display this help information." },
     { "flags": "--version", "desc": "Display this tool's version." },
     { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." }

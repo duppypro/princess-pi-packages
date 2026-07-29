@@ -9,7 +9,7 @@ A running process that serves a local directory on a loopback port. Discovered b
 _Avoid_: Service, daemon, listener
 
 **Live server**:
-A server instance running the native Node.js `run-live-server.js` process. Injects SSE client scripts into HTML, watches files for changes, and pushes live-reload events. The default mode — `--static` is the exception.
+A server instance running the native Node.js `run-live-server.js` process. Injects SSE client scripts into HTML, watches files for changes, and pushes live-reload events. This is the default mode — no flag needed. `--static` overrides it.
 _Avoid_: Dev server, hot-reload server
 
 **Static server**:

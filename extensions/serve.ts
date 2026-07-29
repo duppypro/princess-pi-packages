@@ -422,6 +422,15 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 	}
 
+	async function handleUnpub(slug: string, ctx: any): Promise<void> {
+		try {
+			await unpublishSlug({ slug });
+			ctx.ui.notify(`🌐 Unpublished ${slug}.princess-pi.dev`, "info");
+		} catch (err) {
+			ctx.ui.notify(`⚠️ Failed to unpublish ${slug}: ${(err as Error).message}`, "warning");
+		}
+	}
+
 	async function handleEmojiToggle(enabled: boolean, ctx: any): Promise<void> {
 		writeConfig("serve", { emojiDisabled: !enabled });
 		const servers = await discoverServers();
@@ -442,6 +451,11 @@ export default function serveExtension(pi: ExtensionAPI) {
 		{ test: (a) => a === "--no-emojii" || a === "--no-emoji", handler: (_a, ctx) => handleEmojiToggle(false, ctx) },
 		{ test: (a) => a === "--emojii" || a === "--emoji", handler: (_a, ctx) => handleEmojiToggle(true, ctx) },
 		{ test: (a) => /^(--kill|--cancel|--off|-k)(\s|$)/.test(a), handler: handleKill },
+		{ test: (a) => /^(--unpub|-U)(\s|$)/.test(a), handler: (args, ctx) => {
+			const slug = args.replace(/^(--unpub|-U)/, "").trim();
+			if (!slug) { ctx.ui.notify("Usage: --unpub <slug>", "warning"); return; }
+			return handleUnpub(slug, ctx);
+		}},
 	];
 
 	// 3. Define the /serve command

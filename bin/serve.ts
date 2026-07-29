@@ -97,6 +97,15 @@ function handleHelp(): void {
 	}
 }
 
+async function handleUnpub(slug: string): Promise<void> {
+	try {
+		await unpublishSlug({ slug });
+		console.log(`🌐 Unpublished ${slug}.princess-pi.dev`);
+	} catch (err) {
+		console.warn(`⚠️ Failed to unpublish ${slug}: ${(err as Error).message}`);
+	}
+}
+
 async function handleKill(trimmedArgs: string): Promise<void> {
 	const killArgs = trimmedArgs.replace(/^(--kill|--cancel|--off|-k)/, "").trim();
 	const targets = killArgs.split(/\s+/).map((t) => t.trim()).filter((t) => t.length > 0);
@@ -318,6 +327,11 @@ async function run(): Promise<void> {
 	// Emoji flags are valid everywhere — accepted silently (controls terminal rendering)
 	if (["--emoji", "--emojii", "--no-emoji", "--no-emojii"].includes(trimmedArgs)) return;
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
+	if (/^(--unpub|-U)(\s|$)/.test(trimmedArgs)) {
+		const slug = trimmedArgs.replace(/^(--unpub|-U)/, "").trim();
+		if (!slug) { console.log("Usage: --unpub <slug>"); return; }
+		return handleUnpub(slug);
+	}
 	return handleStart(trimmedArgs);
 }
 
