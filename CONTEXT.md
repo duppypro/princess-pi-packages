@@ -21,8 +21,12 @@ A short, URL-safe name that identifies a published preview. Passed via `--as <sl
 _Avoid_: Label, hostname, alias
 
 **Publish**:
-Creating the Cloudflare resources for a slug: a Tunnel ingress rule (`<slug>.princess-pi.dev → 127.0.0.1:<port>`) and a per-slug Access application gated by email OTP. Done by `publishSlug()` in `cloudflare.js`. Writes to the slug map.
+Creating the Cloudflare resources for a slug: a Tunnel ingress rule (`<slug>.princess-pi.dev → 127.0.0.1:<port>`) and a per-slug Access application gated by email OTP. Done by `publishSlug()` in `cloudflare.js`. Writes to the slug map. Multiple slugs can point to the same port — one directory can have several public URLs.
 _Avoid_: Deploy, expose, register
+
+**Alias**:
+Adding a new public URL to an already-running server instance. Running `serve <dir> --as <new-slug>` on a directory that's already being served publishes an additional slug pointing to the existing port — no new process spawned. The slug map accumulates slugs per port.
+_Avoid_: Republish, rename, reassign
 
 **Unpublish**:
 Removing the Cloudflare ingress rule and Access application for a slug. Done by `unpublishSlug()` on `--kill`. Removes the entry from the slug map. Idempotent — safe to call on already-unpublished slugs.

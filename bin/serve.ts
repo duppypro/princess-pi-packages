@@ -13,7 +13,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
-import { isInsideRepo, type KilledServerInstance } from "../extensions/lib/serve/domain.js";
+import { type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
@@ -105,14 +105,17 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 	const killedList: KilledServerInstance[] = [];
 	const killAll = targets.some((t) => t.toLowerCase() === "all");
 
-	if (targets.length === 0 || killAll) {
-		const targetsToKill = killAll ? activeServers : activeServers.filter((s) => isInsideRepo(s.dir, process.cwd()));
-		if (targetsToKill.length === 0) {
-			const scopeLabel = killAll ? "anywhere on this machine" : "in this repository/worktree";
-			console.warn(`⚠️ No servers are currently running ${scopeLabel} to kill.`);
+	if (targets.length === 0) {
+		console.log("No targets given — nothing killed. Use --kill <port|dir|all> to target specific servers.");
+		return;
+	}
+
+	if (killAll) {
+		if (activeServers.length === 0) {
+			console.warn("⚠️ No servers are currently running anywhere on this machine to kill.");
 			return;
 		}
-		for (const server of targetsToKill) {
+		for (const server of activeServers) {
 			const statusBefore = await checkServerStatus(server.localUrl || server.url);
 			const killed = await killServerInstance(server);
 			if (!killed) {

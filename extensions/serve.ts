@@ -169,15 +169,18 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		const killAll = targets.some(t => t.toLowerCase() === "all");
 
-		if (targets.length === 0 || killAll) {
-			const targetsToKill = killAll ? activeServers : activeServers.filter(s => isInsideRepo(s.dir, process.cwd()));
-			if (targetsToKill.length === 0) {
-				const scopeLabel = killAll ? "anywhere on this machine" : "in this repository/worktree";
-				ctx.ui.notify(`⚠️ No servers are currently running ${scopeLabel} to kill.`, "warning");
+		if (targets.length === 0) {
+			ctx.ui.notify("No targets given — nothing killed. Use --kill <port|dir|all> to target specific servers.", "warning");
+			return;
+		}
+
+		if (killAll) {
+			if (activeServers.length === 0) {
+				ctx.ui.notify("⚠️ No servers are currently running anywhere on this machine to kill.", "warning");
 				return;
 			}
 
-			for (const server of targetsToKill) {
+			for (const server of activeServers) {
 				const statusBefore = await checkServerStatus(server.localUrl || server.url);
 				const killed = await killServerInstance(server);
 				if (!killed) {
