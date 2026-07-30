@@ -3,7 +3,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { exec } from "node:child_process";
 import { ServerInstance } from "./domain.js";
-import { flattenSlugToLabel, readSlugMap } from "./cloudflare.js";
+import { flattenSubdomainToLabel, readSubdomainMap } from "./cloudflare.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -46,7 +46,7 @@ export function discoverServers(): Promise<ServerInstance[]> {
 			const ip = await resolveIp();
 
 			// Slug map for servers published after start (#119)
-			const slugMap = readSlugMap();
+			const subdomainMap = readSubdomainMap();
 
 			for (const line of lines) {
 				const portMatch = line.match(/-p\s+(\d+)/) || line.match(/--port\s+(\d+)/);
@@ -83,22 +83,22 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				const localUrl = `http://127.0.0.1:${port}`;
 				
 				const absoluteDir = path.resolve(process.cwd(), dir);
-				// #66: the published slug is the runner's ACTUAL --slug arg (from `serve --as`),
+				// #66: the sub-domain is the runner's ACTUAL --subdomain arg (from `serve --as`),
 				// not a re-derivation from the dir — else kill/unpublish targets the wrong host.
-				const slugMatch = line.match(/--slug\s+(\S+)/);
-				let clientSlug = slugMatch ? slugMatch[1] : undefined;
+				const subdomainMatch = line.match(/--subdomain\s+(\S+)/);
+				let subdomain = subdomainMatch ? subdomainMatch[1] : undefined;
 
-				// Check slug map for slugs published after server start (#119)
-				if (!clientSlug) {
-					const mappedSlugs = slugMap[String(port)];
-					if (mappedSlugs && mappedSlugs.length > 0) clientSlug = mappedSlugs[0];
+				// Check sub-domain map for slugs published after server start (#119)
+				if (!subdomain) {
+					const mappedSubdomains = subdomainMap[String(port)];
+					if (mappedSubdomains && mappedSubdomains.length > 0) subdomain = mappedSubdomains[0];
 				}
 
 				// Why no ?token=: the static bypass token was a committed backdoor (#38 F2 → #59).
 				// Access is via the real gate (Cloudflare Access), not a shared query secret.
-				// #66: a published server's public URL is its own <slug>.princess-pi.dev; an
+				// #66: a published server's public URL is its own <subdomain>.princess-pi.dev; an
 				// unpublished (local-only) server has no public URL, only the loopback.
-				const url = clientSlug ? `https://${flattenSlugToLabel(clientSlug)}.princess-pi.dev/` : localUrl;
+				const url = subdomain ? `https://${flattenSubdomainToLabel(subdomain)}.princess-pi.dev/` : localUrl;
 
 				let title = "Index Page";
 				try {
@@ -107,7 +107,7 @@ export function discoverServers(): Promise<ServerInstance[]> {
 					// ignore
 				}
 
-				servers.push({ port, dir, url, localUrl, title, isLive, clientSlug, pid });
+				servers.push({ port, dir, url, localUrl, title, isLive, subdomain, pid });
 			}
 
 			resolve(servers);

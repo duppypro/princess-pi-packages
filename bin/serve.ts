@@ -17,8 +17,8 @@ import { type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
-// --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
-import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
+// --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
+import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
@@ -97,9 +97,9 @@ function handleHelp(): void {
 	}
 }
 
-async function handleUnpub(slug: string): Promise<void> {
+async function handleUnpub(subdomain: string): Promise<void> {
 	try {
-		await unpublishSlug({ slug });
+		await unpublishSubdomain({ subdomain });
 		console.log(`🌐 Unpublished ${slug}.princess-pi.dev`);
 	} catch (err) {
 		console.warn(`⚠️ Failed to unpublish ${slug}: ${(err as Error).message}`);
@@ -132,7 +132,7 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 				continue;
 			}
 			const statusAfter = await checkServerStatus(server.localUrl || server.url);
-			killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, clientSlug: server.clientSlug, title: server.title, statusBefore, statusAfter });
+			killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, subdomain: server.subdomain, title: server.title, statusBefore, statusAfter });
 		}
 	} else {
 		for (const target of targets) {
@@ -150,7 +150,7 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 					continue;
 				}
 				const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-				killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, clientSlug: matchedServer.clientSlug, title: matchedServer.title, statusBefore, statusAfter });
+				killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, subdomain: matchedServer.subdomain, title: matchedServer.title, statusBefore, statusAfter });
 			} else {
 				console.warn(`⚠️ Could not find any active server matching "${target}".`);
 			}
@@ -162,15 +162,15 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 		return;
 	}
 
-	// --- Phase 6B (#66): unpublish each killed slug from the edge (ingress rule + Access
+	// --- Phase 6B (#66): unpublish each killed sub-domain from the edge (ingress rule + Access
 	// app). Best-effort: a CF failure must not mask a successful local kill, so we warn and
 	// continue. Slugs dedup'd so two servers sharing a dir unpublish once.
-	const killedSlugs = [...new Set(killedList.map((k) => k.clientSlug).filter((s): s is string => !!s))];
-	for (const slug of killedSlugs) {
+	const killedSubdomains = [...new Set(killedList.map((k) => k.subdomain).filter((s): s is string => !!s))];
+	for (const subdomain of killedSubdomains) {
 		try {
-			await unpublishSlug({ slug });
+			await unpublishSubdomain({ subdomain });
 		} catch (err) {
-			console.warn(`⚠️ Killed local origin for "${slug}" but failed to unpublish from Cloudflare: ${(err as Error).message}`);
+			console.warn(`⚠️ Killed local origin for "${subdomain}" but failed to unpublish from Cloudflare: ${(err as Error).message}`);
 		}
 	}
 	console.log(buildKilledSummary(killedList));
@@ -182,16 +182,16 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	const force = dirs.includes("--force") || dirs.includes("-f");
 	dirs = dirs.filter((d) => d !== "--static" && d !== "-s" && d !== "--force" && d !== "-f");
 
-	// --- Phase 6B (#66): optional slug override. `serve <dir> --as <slug>` publishes at
-	// <slug>.princess-pi.dev instead of the repo-derived slug (which leaks internal paths,
+	// --- Phase 6B (#66): optional slug override. `serve <dir> --as <subdomain>` publishes at
+	// <subdomain>.princess-pi.dev instead of the repo-derived slug (which leaks internal paths,
 	// e.g. "rogue-savvy/frontend/dist"). One override can only name one hostname, so it
 	// requires exactly one target dir.
-	let overrideSlug: string | null = null;
+	let overrideSubdomain: string | null = null;
 	const asIdx = dirs.indexOf("--as");
 	if (asIdx !== -1) {
 		const val = dirs[asIdx + 1];
-		if (val && !val.startsWith("-")) { overrideSlug = val; dirs.splice(asIdx, 2); }
-		else { console.warn("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring."); dirs.splice(asIdx, 1); }
+		if (val && !val.startsWith("-")) { overrideSubdomain = val; dirs.splice(asIdx, 2); }
+		else { console.warn("⚠️ --as needs a sub-domain value (e.g. --as rogue-aix); ignoring."); dirs.splice(asIdx, 1); }
 	}
 
 	// #117: no default dirs anymore (public/+docs/ rarely fit a given repo). With no target —
@@ -203,9 +203,9 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		return;
 	}
 
-	if (overrideSlug && dirs.length !== 1) {
-		console.warn(`⚠️ --as ${overrideSlug} ignored: it requires exactly one target directory (${dirs.length} given).`);
-		overrideSlug = null;
+	if (overrideSubdomain && dirs.length !== 1) {
+		console.warn(`⚠️ --as ${overrideSubdomain} ignored: it requires exactly one target directory (${dirs.length} given).`);
+		overrideSubdomain = null;
 	}
 
 	let startPort = 8080;
@@ -237,11 +237,11 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 			path.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic
 		);
 		if (existingServer) {
-			if (overrideSlug) {
+			if (overrideSubdomain) {
 				// Publish the new slug to the existing server's port (#119)
 				try {
 					const emails = parseAclFile(targetDir);
-					const hostname = await publishSlug({ slug: overrideSlug, port: existingServer.port, emails, activeLabels });
+					const hostname = await publishSubdomain({ slug: overrideSubdomain, port: existingServer.port, emails, activeLabels });
 					activeLabels.add(hostname.split(".")[0]);
 					console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`);
 				console.log(formatServerCard({ ...existingServer, url: `https://${hostname}/` }));
@@ -264,9 +264,9 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const port = startPort++;
 
 		// #66: publishing is opt-in via --as. A slug ⟺ this preview is published to the edge:
-		// it flows to the runner's --slug (live-ACL watcher target) AND the publish call, so
+		// it flows to the runner's --subdomain (live-ACL watcher target) AND the publish call, so
 		// publish/kill/unpublish/watch all key off the same condition. No --as → local only.
-		const clientSlug = overrideSlug; // null unless --as given
+		const subdomain = overrideSubdomain; // null unless --as given
 
 		const __dirname = path.dirname(fileURLToPath(import.meta.url));
 		const runnerPath = path.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
@@ -274,20 +274,20 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const spawnCmd = isStatic ? "npx" : "node";
 		const spawnArgs = isStatic
 			? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"]
-			: [runnerPath, targetDir, ...(clientSlug ? ["--slug", clientSlug] : []), "-p", String(port), "-a", "127.0.0.1"];
+			: [runnerPath, targetDir, ...(subdomain ? ["--subdomain", subdomain] : []), "-p", String(port), "-a", "127.0.0.1"];
 
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
 		startedPorts.push(port);
 
-		// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug. Upserts the
-		// tunnel ingress rule (<slug>.princess-pi.dev → this loopback port) + a per-slug Access
+		// --- Phase 6B (#66): publish to the edge ONLY when --as named a sub-domain. Upserts the
+		// tunnel ingress rule (<subdomain>.princess-pi.dev → this loopback port) + a per-subdomain Access
 		// app carrying the .serve-acl allow-list. Best-effort: the loopback origin is already
 		// up, so any failure (no cf.env, reserved label, API error) warns and leaves it running.
-		if (clientSlug) {
+		if (subdomain) {
 			try {
 				const emails = parseAclFile(targetDir);
-				const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+				const hostname = await publishSubdomain({ slug: subdomain, port, emails, activeLabels });
 				activeLabels.add(hostname.split(".")[0]);
 				console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`);
 			} catch (err) {
@@ -329,8 +329,8 @@ async function run(): Promise<void> {
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
 	if (/^(--unpub|-U)(\s|$)/.test(trimmedArgs)) {
 		const slug = trimmedArgs.replace(/^(--unpub|-U)/, "").trim();
-		if (!slug) { console.log("Usage: --unpub <slug>"); return; }
-		return handleUnpub(slug);
+		if (!slug) { console.log("Usage: --unpub <subdomain>"); return; }
+		return handleUnpub(subdomain);
 	}
 	return handleStart(trimmedArgs);
 }

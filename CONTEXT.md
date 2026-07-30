@@ -16,25 +16,25 @@ _Avoid_: Dev server, hot-reload server
 A server instance running `npx http-server`. Serves files as-is — no injection, no watchers, no live-reload. Opted into with `--static` / `-s`.
 _Avoid_: Production server, plain server
 
-**Slug**:
-A short, URL-safe name that identifies a published preview. Passed via `--as <slug>`. The public URL is `https://<slug>.princess-pi.dev/`. Stored in the process cmdline (`--slug`) for servers started with `--as`, and in `~/.pi-certs/serve-slugs.json` for servers published after start.
-_Avoid_: Label, hostname, alias
+**Sub-domain**:
+A short, URL-safe name that identifies a published preview. Passed via `--as <subdomain>`. The public URL is `https://<subdomain>.princess-pi.dev/`. Stored in the process cmdline (`--subdomain`) for servers started with `--as`, and in `~/.pi-certs/serve-subdomains.json` for servers published after start.
+_Avoid_: Slug, label, hostname, alias
 
 **Publish**:
-Creating the Cloudflare resources for a slug: a Tunnel ingress rule (`<slug>.princess-pi.dev → 127.0.0.1:<port>`) and a per-slug Access application gated by email OTP. Done by `publishSlug()` in `cloudflare.js`. Writes to the slug map. Multiple slugs can point to the same port — one directory can have several public URLs.
+Creating the Cloudflare resources for a sub-domain: a Tunnel ingress rule (`<subdomain>.princess-pi.dev → 127.0.0.1:<port>`) and a per-subdomain Access application gated by email OTP. Done by `publishSubdomain()` in `cloudflare.js`. Writes to the sub-domain map. Multiple sub-domains can point to the same port — one directory can have several public URLs.
 _Avoid_: Deploy, expose, register
 
 **Alias**:
-Adding a new public URL to an already-running server instance. Running `serve <dir> --as <new-slug>` on a directory that's already being served publishes an additional slug pointing to the existing port — no new process spawned. The slug map accumulates slugs per port.
+Adding a new public URL to an already-running server instance. Running `serve <dir> --as <new-name>` on a directory that's already being served publishes an additional sub-domain pointing to the existing port — no new process spawned. The sub-domain map accumulates sub-domains per port.
 _Avoid_: Republish, rename, reassign
 
 **Unpublish**:
-Removing the Cloudflare ingress rule and Access application for a slug. Done by `unpublishSlug()` on `--kill`. Removes the entry from the slug map. Idempotent — safe to call on already-unpublished slugs.
+Removing the Cloudflare ingress rule and Access application for a sub-domain. Done by `unpublishSubdomain()` on `--kill`. Removes the entry from the sub-domain map. Idempotent — safe to call on already-unsub-domains.
 _Avoid_: Takedown, deregister, remove
 
-**Slug map**:
-Persistence file at `~/.pi-certs/serve-slugs.json` mapping port numbers to arrays of slugs. Written on publish, read during server discovery, cleaned on unpublish. Exists so `--list` can show the public URL for servers that were published after they started (no `--slug` in their process cmdline).
-_Avoid_: Port registry, slug cache
+**Sub-domain map**:
+Persistence file at `~/.pi-certs/serve-subdomains.json` mapping port numbers to arrays of sub-domains. Written on publish, read during server discovery, cleaned on unpublish. Exists so `--list` can show the public URL for servers that were published after they started (no `--subdomain` in their process cmdline).
+_Avoid_: Port registry, sub-domain cache
 
 **Orphan**:
 A Cloudflare Tunnel ingress rule whose corresponding local server process no longer exists. Created by crash-without-kill. Reaped on every `serve` invocation by `reapOrphans()`.
@@ -45,7 +45,7 @@ The process of scanning Cloudflare Tunnel ingress rules and deleting any that po
 _Avoid_: Cleanup, sweep, GC
 
 **Access application**:
-A Cloudflare Access resource created per slug. Carries the email allow-list from the served directory's `.serve-acl` file. Authenticates visitors via email One-Time-PIN before they reach the origin.
+A Cloudflare Access resource created per sub-domain. Carries the email allow-list from the served directory's `.serve-acl` file. Authenticates visitors via email One-Time-PIN before they reach the origin.
 _Avoid_: Auth app, OAuth app, gate
 
 **Serve ACL**:
@@ -61,7 +61,7 @@ Cloudflare's network. Handles TLS termination (HTTPS), Tunnel ingress routing, a
 _Avoid_: Cloudflare, CDN, proxy
 
 **Discovery**:
-The process of finding running server instances by scanning `ps aux` output (`discoverServers()` in `process.ts`). Runs on session start, on a 4-second tick for the widget, and on every `--list` / `--kill` invocation. Reads both process cmdline and the slug map.
+The process of finding running server instances by scanning `ps aux` output (`discoverServers()` in `process.ts`). Runs on session start, on a 4-second tick for the widget, and on every `--list` / `--kill` invocation. Reads both process cmdline and the sub-domain map.
 _Avoid_: Scan, enumeration, detection
 
 **Health check**:

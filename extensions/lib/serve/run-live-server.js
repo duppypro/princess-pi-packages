@@ -17,9 +17,9 @@ for (let i = 0; i < args.length; i++) {
 	}
 }
 
-// Find port, slug, and bind address
+// Find port, sub-domain, and bind address
 let port = 8080;
-let clientSlug = "";
+let subdomain = "";
 // Fail-safe default: this server has no auth of its own and is always fronted by the
 // Cloudflare Tunnel + Access gate (Phase 6A, #64), so it must bind loopback. We honor -a
 // for parity with the static (http-server) path, but a non-loopback value is refused
@@ -30,8 +30,8 @@ for (let i = 0; i < args.length; i++) {
 	const arg = args[i];
 	if (arg === "-p" || arg === "--port") {
 		port = parseInt(args[i + 1], 10);
-	} else if (arg === "--slug") {
-		clientSlug = args[i + 1];
+	} else if (arg === "--subdomain") {
+		subdomain = args[i + 1];
 	} else if (arg === "-a" || arg === "--address") {
 		bind_address = args[i + 1];
 	}
@@ -542,16 +542,16 @@ fs.watch(targetDir, { recursive: true }, (eventType, filename) => {
 		let shouldReload = false;
 		const cssChanges = new Set();
 
-		// --- Phase 6B (#66): live-ACL watcher. A .serve-acl edit re-programs the slug's
+		// --- Phase 6B (#66): live-ACL watcher. A .serve-acl edit re-programs the sub-domain's
 		// Cloudflare Access ALLOW policy (allow-list only — never touches ingress, so no
 		// browser reload). Dynamic import keeps the CF module out of the hot path until the
 		// allow-list actually changes; a CF/token failure warns and is non-fatal.
-		if (clientSlug && filesToProcess.some((p) => path.basename(p) === ".serve-acl")) {
+		if (subdomain && filesToProcess.some((p) => path.basename(p) === ".serve-acl")) {
 			try {
 				const cf = await import("./cloudflare.js");
 				const emails = cf.parseAclFile(targetDir);
-				await cf.updateSlugAllowlist({ slug: clientSlug, emails });
-				console.log(`[serve] .serve-acl changed → updated Cloudflare Access allow-list for "${clientSlug}" (${emails.length} email(s)).`);
+				await cf.updateSubdomainAllowlist({ subdomain: subdomain, emails });
+				console.log(`[serve] .serve-acl changed → updated Cloudflare Access allow-list for "${subdomain}" (${emails.length} email(s)).`);
 			} catch (err) {
 				console.warn(`[serve] .serve-acl changed but Access allow-list update failed: ${err.message}`);
 			}

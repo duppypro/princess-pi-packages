@@ -18,8 +18,8 @@ import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable, formatServerCard } from "./lib/serve/tui.js";
-// --- Phase 6B (#66): per-slug edge publishing via the Cloudflare API (replaces nginx.js).
-import { parseAclFile, publishSlug, unpublishSlug, reapOrphans } from "./lib/serve/cloudflare.js";
+// --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
+import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans } from "./lib/serve/cloudflare.js";
 
 // Track widget visibility state locally (persisted across reloads via session log)
 let isWidgetVisible = true;
@@ -194,7 +194,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 					dir: server.dir,
 					url: server.url,
 					localUrl: server.localUrl,
-					clientSlug: server.clientSlug,
+					subdomain: server.subdomain,
 					title: server.title,
 					statusBefore,
 					statusAfter
@@ -226,7 +226,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 						dir: matchedServer.dir,
 						url: matchedServer.url,
 						localUrl: matchedServer.localUrl,
-						clientSlug: matchedServer.clientSlug,
+						subdomain: matchedServer.subdomain,
 						title: matchedServer.title,
 						statusBefore,
 						statusAfter
@@ -242,14 +242,14 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		// --- Phase 6B (#66): unpublish each killed slug from the edge (ingress + Access app).
+		// --- Phase 6B (#66): unpublish each killed sub-domain from the edge (ingress + Access app).
 		// Best-effort — a CF failure must not mask a successful local kill.
-		const killedSlugs = [...new Set(killedList.map(k => k.clientSlug).filter((s): s is string => !!s))];
-		for (const slug of killedSlugs) {
+		const killedSubdomains = [...new Set(killedList.map(k => k.subdomain).filter((s): s is string => !!s))];
+		for (const subdomain of killedSubdomains) {
 			try {
-				await unpublishSlug({ slug });
+				await unpublishSubdomain({ subdomain });
 			} catch (err) {
-				ctx.ui.notify(`⚠️ Killed local origin for "${slug}" but failed to unpublish from Cloudflare: ${(err as Error).message}`, "warning");
+				ctx.ui.notify(`⚠️ Killed local origin for "${subdomain}" but failed to unpublish from Cloudflare: ${(err as Error).message}`, "warning");
 			}
 		}
 
@@ -265,15 +265,15 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const isStatic = dirs.includes("--static") || dirs.includes("-s");
 		dirs = dirs.filter(d => d !== "--static" && d !== "-s");
 
-		// --- Phase 6B (#66): optional slug override. `/serve <dir> --as <slug>` publishes at
-		// <slug>.princess-pi.dev instead of the repo-derived slug. One override names one
+		// --- Phase 6B (#66): optional slug override. `/serve <dir> --as <subdomain>` publishes at
+		// <subdomain>.princess-pi.dev instead of the repo-derived slug. One override names one
 		// hostname, so it requires exactly one target dir.
-		let overrideSlug: string | null = null;
+		let overrideSubdomain: string | null = null;
 		const asIdx = dirs.indexOf("--as");
 		if (asIdx !== -1) {
 			const val = dirs[asIdx + 1];
-			if (val && !val.startsWith("-")) { overrideSlug = val; dirs.splice(asIdx, 2); }
-			else { ctx.ui.notify("⚠️ --as needs a slug value (e.g. --as rogue-aix); ignoring.", "warning"); dirs.splice(asIdx, 1); }
+			if (val && !val.startsWith("-")) { overrideSubdomain = val; dirs.splice(asIdx, 2); }
+			else { ctx.ui.notify("⚠️ --as needs a sub-domain value (e.g. --as rogue-aix); ignoring.", "warning"); dirs.splice(asIdx, 1); }
 		}
 
 		// #117: no default dirs anymore (public/+docs/ rarely fit a given repo). With no target —
@@ -285,9 +285,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		if (overrideSlug && dirs.length !== 1) {
-			ctx.ui.notify(`⚠️ --as ${overrideSlug} ignored: it requires exactly one target directory (${dirs.length} given).`, "warning");
-			overrideSlug = null;
+		if (overrideSubdomain && dirs.length !== 1) {
+			ctx.ui.notify(`⚠️ --as ${overrideSubdomain} ignored: it requires exactly one target directory (${dirs.length} given).`, "warning");
+			overrideSubdomain = null;
 		}
 
 		let startPort = 8080;
@@ -321,11 +321,11 @@ export default function serveExtension(pi: ExtensionAPI) {
 			);
 
 			if (existingServer) {
-				if (overrideSlug) {
+				if (overrideSubdomain) {
 					// Publish the new slug to the existing server's port (#119)
 					try {
 						const emails = parseAclFile(targetDir);
-						const hostname = await publishSlug({ slug: overrideSlug, port: existingServer.port, emails, activeLabels });
+						const hostname = await publishSubdomain({ slug: overrideSubdomain, port: existingServer.port, emails, activeLabels });
 						activeLabels.add(hostname.split(".")[0]);
 						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.\n\n${formatServerCard({ ...existingServer, url: `https://${hostname}/` })}`, "info");
 					} catch (err) {
@@ -357,8 +357,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 			const port = startPort++;
 
 			// #66: publishing is opt-in via --as. A slug ⟺ published to the edge; it flows to
-			// the runner's --slug (watcher target) AND the publish call. No --as → local only.
-			const clientSlug = overrideSlug; // null unless --as given
+			// the runner's --subdomain (watcher target) AND the publish call. No --as → local only.
+			const subdomain = overrideSubdomain; // null unless --as given
 
 			const __filename = fileURLToPath(import.meta.url);
 			const __dirname = path.dirname(__filename);
@@ -374,7 +374,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			] : [
 				runnerPath,
 				targetDir,
-				...(clientSlug ? ["--slug", clientSlug] : []),
+				...(subdomain ? ["--subdomain", subdomain] : []),
 				"-p", String(port),
 				"-a", "127.0.0.1"
 			];
@@ -387,13 +387,13 @@ export default function serveExtension(pi: ExtensionAPI) {
 			serverProcess.unref();
 			startedPorts.push(port);
 
-			// --- Phase 6B (#66): publish to the edge ONLY when --as named a slug — tunnel
-			// ingress rule + per-slug Access app carrying the .serve-acl allow-list. Best-
+			// --- Phase 6B (#66): publish to the edge ONLY when --as named a sub-domain — tunnel
+			// ingress rule + per-subdomain Access app carrying the .serve-acl allow-list. Best-
 			// effort: the loopback origin is already up, so any failure warns and leaves it up.
-			if (clientSlug) {
+			if (subdomain) {
 				try {
 					const emails = parseAclFile(targetDir);
-					const hostname = await publishSlug({ slug: clientSlug, port, emails, activeLabels });
+					const hostname = await publishSubdomain({ slug: subdomain, port, emails, activeLabels });
 					activeLabels.add(hostname.split(".")[0]);
 					ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
 				} catch (err) {
@@ -422,9 +422,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	async function handleUnpub(slug: string, ctx: any): Promise<void> {
+	async function handleUnpub(subdomain: string, ctx: any): Promise<void> {
 		try {
-			await unpublishSlug({ slug });
+			await unpublishSubdomain({ subdomain });
 			ctx.ui.notify(`🌐 Unpublished ${slug}.princess-pi.dev`, "info");
 		} catch (err) {
 			ctx.ui.notify(`⚠️ Failed to unpublish ${slug}: ${(err as Error).message}`, "warning");
@@ -452,9 +452,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 		{ test: (a) => a === "--emojii" || a === "--emoji", handler: (_a, ctx) => handleEmojiToggle(true, ctx) },
 		{ test: (a) => /^(--kill|--cancel|--off|-k)(\s|$)/.test(a), handler: handleKill },
 		{ test: (a) => /^(--unpub|-U)(\s|$)/.test(a), handler: (args, ctx) => {
-			const slug = args.replace(/^(--unpub|-U)/, "").trim();
-			if (!slug) { ctx.ui.notify("Usage: --unpub <slug>", "warning"); return; }
-			return handleUnpub(slug, ctx);
+			const subdomain = args.replace(/^(--unpub|-U)/, "").trim();
+			if (!slug) { ctx.ui.notify("Usage: --unpub <subdomain>", "warning"); return; }
+			return handleUnpub(subdomain, ctx);
 		}},
 	];
 

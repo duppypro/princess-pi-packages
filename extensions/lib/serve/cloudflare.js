@@ -1,12 +1,12 @@
 /**
  * @module cloudflare
- * @description Phase 6B (#66): per-slug preview automation via the Cloudflare API.
+ * @description Phase 6B (#66): per-subdomain preview automation via the Cloudflare API.
  * Replaces the retired `nginx.js` (map writes + `sudo nginx -s reload`). Instead of
  * touching /etc or sudo, serve programs the edge directly:
  *   - upserts a tunnel INGRESS rule  `<label>.princess-pi.dev -> http://127.0.0.1:<port>`
  *     through the remote-managed tunnel configuration (no local config.yml, no reload),
- *   - upserts a per-slug Access APPLICATION + Allow policy carrying the `.serve-acl`
- *     email allow-list (per-slug app = hard isolation; client A's reviewer can't reach B).
+ *   - upserts a per-subdomain Access APPLICATION + Allow policy carrying the `.serve-acl`
+ *     email allow-list (per-subdomain app = hard isolation; client A's reviewer can't reach B).
  *
  * WHY a whole new module and not an edit of nginx.js: the failure modes are disjoint —
  * nginx.js failed on filesystem/sudo, this fails on HTTP/token/lock. Keeping them as
@@ -35,34 +35,34 @@ const ZONE_SUFFIX = "princess-pi.dev";
 
 // Slug→port map persisted across restarts so discovery can show the public URL
 // even for servers that were published after start (#119).
-const SLUG_MAP_PATH = path.join(os.homedir(), ".pi-certs", "serve-slugs.json");
+const SUBDOMAIN_MAP_PATH = path.join(os.homedir(), ".pi-certs", "serve-subdomains.json");
 
-export function readSlugMap() {
+export function readSubdomainMap() {
 	try {
-		if (fs.existsSync(SLUG_MAP_PATH)) {
-			return JSON.parse(fs.readFileSync(SLUG_MAP_PATH, "utf8"));
+		if (fs.existsSync(SUBDOMAIN_MAP_PATH)) {
+			return JSON.parse(fs.readFileSync(SUBDOMAIN_MAP_PATH, "utf8"));
 		}
 	} catch { /* corrupt or missing — start fresh */ }
 	return {};
 }
 
-function writeSlugMap(port, slug) {
-	const map = readSlugMap();
+function writeSubdomainMap(port, subdomain) {
+	const map = readSubdomainMap();
 	const arr = map[String(port)] || [];
-	if (!arr.includes(slug)) arr.push(slug);
+	if (!arr.includes(subdomain)) arr.push(subdomain);
 	map[String(port)] = arr;
-	fs.mkdirSync(path.dirname(SLUG_MAP_PATH), { recursive: true });
-	fs.writeFileSync(SLUG_MAP_PATH, JSON.stringify(map), "utf8");
+	fs.mkdirSync(path.dirname(SUBDOMAIN_MAP_PATH), { recursive: true });
+	fs.writeFileSync(SUBDOMAIN_MAP_PATH, JSON.stringify(map), "utf8");
 }
 
-function removeSlugFromMap(slug) {
-	const map = readSlugMap();
-	for (const [port, slugs] of Object.entries(map)) {
-		const arr = slugs.filter(s => s !== slug);
+function removeSubdomainFromMap(subdomain) {
+	const map = readSubdomainMap();
+	for (const [port, subdomains] of Object.entries(map)) {
+		const arr = subdomains.filter(s => s !== subdomain);
 		if (arr.length === 0) delete map[port];
 		else map[port] = arr;
 	}
-	fs.writeFileSync(SLUG_MAP_PATH, JSON.stringify(map), "utf8");
+	fs.writeFileSync(SUBDOMAIN_MAP_PATH, JSON.stringify(map), "utf8");
 }
 
 // Access apps serve owns are named `serve <label>`. Reaping touches ONLY these — an app
@@ -132,7 +132,7 @@ export function parseAclFile(targetDir) {
 		try {
 			const localContent = [
 				"# Local Access Control List for /serve",
-				"# Emails allowed through Cloudflare Access for this slug. One entry per line:",
+				"# Emails allowed through Cloudflare Access for this sub-domain. One entry per line:",
 				"#   alice@example.com   — a single address",
 				"#   @example.com        — every address at a whole domain",
 				...defaultEmails,
@@ -168,24 +168,24 @@ export function parseAclFile(targetDir) {
 }
 
 // ---
-// Slug → DNS label. Cloudflare hostname labels are a strict subset of what a client slug can
+// Slug → DNS label. Cloudflare hostname labels are a strict subset of what a client sub-domain can
 // be (a path basename). Lowercase, non-[a-z0-9-] → '-', collapse repeats, trim leading/
 // trailing '-', cap at 63 chars (DNS label limit). Deterministic so the same dir always
 // maps to the same hostname across start/kill/reap.
 // ---
 /**
- * @param {string} slug
+ * @param {string} subdomain
  * @returns {string} a valid single DNS label
  */
-export function flattenSlugToLabel(slug) {
-	let label = String(slug)
+export function flattenSubdomainToLabel(subdomain) {
+	let label = String(subdomain)
 		.toLowerCase()
 		.replace(/[^a-z0-9-]/g, "-")
 		.replace(/-+/g, "-")
 		.replace(/^-+|-+$/g, "")
 		.slice(0, 63)
 		.replace(/-+$/g, ""); // a trailing '-' could reappear after the 63-char slice
-	if (!label) throw new Error(`Slug "${slug}" flattens to an empty DNS label.`);
+	if (!label) throw new Error(`Sub-domain "${subdomain}" flattens to an empty DNS label.`);
 	return label;
 }
 
@@ -311,7 +311,7 @@ function isPortLive(port) {
 async function checkLabelAvailable(cf, label, activeLabels) {
 	// (a) collision with a different active slug this run
 	if (activeLabels && activeLabels.has(label)) {
-		return { ok: false, reason: `label "${label}" collides with another active slug this run` };
+		return { ok: false, reason: `label "${label}" collides with another active sub-domain this run` };
 	}
 	// (b) live zone records — any explicit record's first label is reserved (infra names win).
 	let zoneLabels;
@@ -321,7 +321,7 @@ async function checkLabelAvailable(cf, label, activeLabels) {
 		for (const r of records) {
 			const name = String(r.name).toLowerCase();
 			// A CNAME → our tunnel (`*.cfargotunnel.com`) is serve's own turf, not infra: the
-			// `*` wildcard routes there, and any per-slug CNAME (e.g. from `cloudflared tunnel
+			// `*` wildcard routes there, and any per-subdomain CNAME (e.g. from `cloudflared tunnel
 			// route dns`) is a preview host serve may republish onto. Such records do NOT
 			// reserve the label (#66 Finding 1). Everything else — A/AAAA to the VPS, MX, TXT,
 			// or a CNAME pointing elsewhere — is infra worth protecting.
@@ -394,7 +394,7 @@ export function aclEntriesToInclude(entries) {
 }
 
 // ---
-// Access application + Allow policy for a slug's hostname.
+// Access application + Allow policy for a sub-domain's hostname.
 // ---
 async function findAccessApp(cf, hostname) {
 	const apps = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
@@ -440,14 +440,14 @@ async function deleteAccessApp(cf, label) {
 // ---
 
 /**
- * Publish one slug to the edge: ingress rule + Access app/policy. Returns the hostname on
+ * Publish one sub-domain to the edge: ingress rule + Access app/policy. Returns the hostname on
  * success. Throws (caller keeps the loopback origin running) on token/label/API failure.
- * @param {{slug:string, port:number, emails:string[], activeLabels?:Set<string>}} args
+ * @param {{subdomain:string, port:number, emails:string[], activeLabels?:Set<string>}} args
  * @returns {Promise<string>} the published hostname
  */
-export async function publishSlug({ slug, port, emails, activeLabels }) {
+export async function publishSubdomain({ subdomain, port, emails, activeLabels }) {
 	const cf = loadCfEnv();
-	const label = flattenSlugToLabel(slug);
+	const label = flattenSubdomainToLabel(subdomain);
 	const hostname = `${label}.${ZONE_SUFFIX}`;
 	return withLock(async () => {
 		const avail = await checkLabelAvailable(cf, label, activeLabels);
@@ -464,35 +464,35 @@ export async function publishSlug({ slug, port, emails, activeLabels }) {
 			await sleep(120 + Math.floor(Math.random() * 200));
 		}
 		await upsertAccessApp(cf, label, emails);
-		writeSlugMap(port, slug);
+		writeSubdomainMap(port, subdomain);
 		return hostname;
 	});
 }
 
 /**
- * Unpublish one slug: remove its ingress rule + Access app. Idempotent.
- * @param {{slug:string}} args
+ * Unpublish one sub-domain: remove its ingress rule + Access app. Idempotent.
+ * @param {{subdomain:string}} args
  */
-export async function unpublishSlug({ slug }) {
+export async function unpublishSubdomain({ subdomain }) {
 	const cf = loadCfEnv();
-	const label = flattenSlugToLabel(slug);
+	const label = flattenSubdomainToLabel(subdomain);
 	const hostname = `${label}.${ZONE_SUFFIX}`;
 	return withLock(async () => {
 		const config = await getTunnelConfig(cf);
 		await putTunnelConfig(cf, removeIngressRule(config, hostname));
 		await deleteAccessApp(cf, label);
-		removeSlugFromMap(slug);
+		removeSubdomainFromMap(subdomain);
 	});
 }
 
 /**
- * Update only the Access policy for a slug (live `.serve-acl` edit → allow-list change).
+ * Update only the Access policy for a sub-domain (live `.serve-acl` edit → allow-list change).
  * Does NOT touch ingress. Used by the run-live-server watcher.
- * @param {{slug:string, emails:string[]}} args
+ * @param {{subdomain:string, emails:string[]}} args
  */
-export async function updateSlugAllowlist({ slug, emails }) {
+export async function updateSubdomainAllowlist({ slug, emails }) {
 	const cf = loadCfEnv();
-	const label = flattenSlugToLabel(slug);
+	const label = flattenSubdomainToLabel(subdomain);
 	return withLock(async () => { await upsertAccessApp(cf, label, emails); });
 }
 

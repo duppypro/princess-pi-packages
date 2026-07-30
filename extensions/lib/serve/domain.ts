@@ -10,7 +10,7 @@ export interface ServerInstance {
 	// PID captured at discovery time from `ps` (single source of truth for killing — see #39).
 	pid?: number;
 	localUrl?: string;
-	clientSlug?: string;
+	subdomain?: string;
 }
 
 export interface KilledServerInstance extends ServerInstance {
@@ -24,8 +24,8 @@ export function isInsideRepo(dir: string, cwd: string = process.cwd()): boolean 
 	return !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-// Helper to construct the dynamic client slug based on Git status
-export function getClientSlug(targetDir: string, cwd: string = process.cwd()): string {
+// Helper to construct the dynamic client sub-domain based on Git status
+export function getClientSubdomain(targetDir: string, cwd: string = process.cwd()): string {
 	const absoluteTarget = path.resolve(cwd, targetDir);
 
 	// Find the root git repository name if inside a git repo
