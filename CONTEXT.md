@@ -17,7 +17,7 @@ A server instance running `npx http-server`. Serves files as-is — no injection
 _Avoid_: Production server, plain server
 
 **Sub-domain**:
-A short, URL-safe name that identifies a published preview. Passed via `--as <subdomain>`. The public URL is `https://<subdomain>.princess-pi.dev/`. Stored in the process cmdline (`--subdomain`) for servers started with `--as`, and in `~/.pi-certs/serve-subdomains.json` for servers published after start.
+A short, URL-safe name that identifies a published preview. Passed via `--pub <subdomain>` (`--as` is a legacy synonym). The public URL is `https://<subdomain>.princess-pi.dev/`. Stored in the process cmdline (`--subdomain`) for servers started with `--pub`, and in `~/.pi-certs/serve-subdomains.json` for servers published after start.
 _Avoid_: Slug, label, hostname, alias
 
 **Publish**:
@@ -25,7 +25,7 @@ Creating the Cloudflare resources for a sub-domain: a Tunnel ingress rule (`<sub
 _Avoid_: Deploy, expose, register
 
 **Alias**:
-Adding a new public URL to an already-running server instance. Running `serve <dir> --as <new-name>` on a directory that's already being served publishes an additional sub-domain pointing to the existing port — no new process spawned. The sub-domain map accumulates sub-domains per port.
+Adding a new public URL to an already-running server instance. Running `serve <dir> --pub <new-name>` on a directory that's already being served publishes an additional sub-domain pointing to the existing port — no new process spawned. The sub-domain map accumulates sub-domains per port.
 _Avoid_: Republish, rename, reassign
 
 **Unpublish**:

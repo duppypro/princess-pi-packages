@@ -182,16 +182,19 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	const force = dirs.includes("--force") || dirs.includes("-f");
 	dirs = dirs.filter((d) => d !== "--static" && d !== "-s" && d !== "--force" && d !== "-f");
 
-	// --- Phase 6B (#66): optional slug override. `serve <dir> --as <subdomain>` publishes at
+	// --- Phase 6B (#66): optional slug override. `serve <dir> --pub <subdomain>` publishes at
 	// <subdomain>.princess-pi.dev instead of the repo-derived slug (which leaks internal paths,
 	// e.g. "rogue-savvy/frontend/dist"). One override can only name one hostname, so it
 	// requires exactly one target dir.
 	let overrideSubdomain: string | null = null;
+	let pubIdx = dirs.indexOf("--pub");
+		if (pubIdx === -1) pubIdx = dirs.indexOf("-P");
 	const asIdx = dirs.indexOf("--as");
-	if (asIdx !== -1) {
-		const val = dirs[asIdx + 1];
-		if (val && !val.startsWith("-")) { overrideSubdomain = val; dirs.splice(asIdx, 2); }
-		else { console.warn("⚠️ --as needs a sub-domain value (e.g. --as rogue-aix); ignoring."); dirs.splice(asIdx, 1); }
+	const idx = pubIdx !== -1 ? pubIdx : asIdx;
+	if (idx !== -1) {
+		const val = dirs[idx + 1];
+		if (val && !val.startsWith("-")) { overrideSubdomain = val; dirs.splice(idx, 2); }
+		else { console.warn("⚠️ --pub needs a sub-domain value (e.g. --pub my-preview); ignoring."); dirs.splice(idx, 1); }
 	}
 
 	// #117: no default dirs anymore (public/+docs/ rarely fit a given repo). With no target —
@@ -204,7 +207,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	}
 
 	if (overrideSubdomain && dirs.length !== 1) {
-		console.warn(`⚠️ --as ${overrideSubdomain} ignored: it requires exactly one target directory (${dirs.length} given).`);
+		console.warn(`⚠️ --pub ${overrideSubdomain} ignored: it requires exactly one target directory (${dirs.length} given).`);
 		overrideSubdomain = null;
 	}
 
@@ -263,10 +266,10 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
 
-		// #66: publishing is opt-in via --as. A slug ⟺ this preview is published to the edge:
+		// #66: publishing is opt-in via --pub. A slug ⟺ this preview is published to the edge:
 		// it flows to the runner's --subdomain (live-ACL watcher target) AND the publish call, so
-		// publish/kill/unpublish/watch all key off the same condition. No --as → local only.
-		const subdomain = overrideSubdomain; // null unless --as given
+		// publish/kill/unpublish/watch all key off the same condition. No --pub → local only.
+		const subdomain = overrideSubdomain; // null unless --pub given
 
 		const __dirname = path.dirname(fileURLToPath(import.meta.url));
 		const runnerPath = path.resolve(__dirname, "../extensions/lib/serve/run-live-server.js");
@@ -280,7 +283,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		serverProcess.unref();
 		startedPorts.push(port);
 
-		// --- Phase 6B (#66): publish to the edge ONLY when --as named a sub-domain. Upserts the
+		// --- Phase 6B (#66): publish to the edge ONLY when --pub or --as names a sub-domain. Upserts the
 		// tunnel ingress rule (<subdomain>.princess-pi.dev → this loopback port) + a per-subdomain Access
 		// app carrying the .serve-acl allow-list. Best-effort: the loopback origin is already
 		// up, so any failure (no cf.env, reserved label, API error) warns and leaves it running.
@@ -294,7 +297,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 				console.warn(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`);
 			}
 		} else {
-			console.log(`ℹ️ Serving "${rawDir}" locally on 127.0.0.1:${port}. Pass --as <name> to publish a gated preview at <name>.princess-pi.dev.`);
+			console.log(`ℹ️ Serving "${rawDir}" locally on 127.0.0.1:${port}. Pass --pub <name> to publish a gated preview at <name>.princess-pi.dev.`);
 		}
 	}
 

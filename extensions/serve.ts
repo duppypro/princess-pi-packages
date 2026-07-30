@@ -265,15 +265,18 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const isStatic = dirs.includes("--static") || dirs.includes("-s");
 		dirs = dirs.filter(d => d !== "--static" && d !== "-s");
 
-		// --- Phase 6B (#66): optional slug override. `/serve <dir> --as <subdomain>` publishes at
+		// --- Phase 6B (#66): optional slug override. `/serve <dir> --pub <subdomain>` publishes at
 		// <subdomain>.princess-pi.dev instead of the repo-derived slug. One override names one
 		// hostname, so it requires exactly one target dir.
 		let overrideSubdomain: string | null = null;
+		let pubIdx = dirs.indexOf("--pub");
+		if (pubIdx === -1) pubIdx = dirs.indexOf("-P");
 		const asIdx = dirs.indexOf("--as");
-		if (asIdx !== -1) {
-			const val = dirs[asIdx + 1];
-			if (val && !val.startsWith("-")) { overrideSubdomain = val; dirs.splice(asIdx, 2); }
-			else { ctx.ui.notify("⚠️ --as needs a sub-domain value (e.g. --as rogue-aix); ignoring.", "warning"); dirs.splice(asIdx, 1); }
+		const idx = pubIdx !== -1 ? pubIdx : asIdx;
+		if (idx !== -1) {
+			const val = dirs[idx + 1];
+			if (val && !val.startsWith("-")) { overrideSubdomain = val; dirs.splice(idx, 2); }
+			else { ctx.ui.notify("⚠️ --pub needs a sub-domain value (e.g. --pub my-preview); ignoring.", "warning"); dirs.splice(idx, 1); }
 		}
 
 		// #117: no default dirs anymore (public/+docs/ rarely fit a given repo). With no target —
@@ -286,7 +289,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 
 		if (overrideSubdomain && dirs.length !== 1) {
-			ctx.ui.notify(`⚠️ --as ${overrideSubdomain} ignored: it requires exactly one target directory (${dirs.length} given).`, "warning");
+			ctx.ui.notify(`⚠️ --pub ${overrideSubdomain} ignored: it requires exactly one target directory (${dirs.length} given).`, "warning");
 			overrideSubdomain = null;
 		}
 
@@ -356,9 +359,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const port = startPort++;
 
-			// #66: publishing is opt-in via --as. A slug ⟺ published to the edge; it flows to
-			// the runner's --subdomain (watcher target) AND the publish call. No --as → local only.
-			const subdomain = overrideSubdomain; // null unless --as given
+			// #66: publishing is opt-in via --pub. A slug ⟺ published to the edge; it flows to
+			// the runner's --subdomain (watcher target) AND the publish call. No --pub → local only.
+			const subdomain = overrideSubdomain; // null unless --pub given
 
 			const __filename = fileURLToPath(import.meta.url);
 			const __dirname = path.dirname(__filename);
@@ -387,7 +390,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			serverProcess.unref();
 			startedPorts.push(port);
 
-			// --- Phase 6B (#66): publish to the edge ONLY when --as named a sub-domain — tunnel
+			// --- Phase 6B (#66): publish to the edge ONLY when --pub or --as names a sub-domain — tunnel
 			// ingress rule + per-subdomain Access app carrying the .serve-acl allow-list. Best-
 			// effort: the loopback origin is already up, so any failure warns and leaves it up.
 			if (subdomain) {
@@ -400,7 +403,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 					ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
 				}
 			} else {
-				ctx.ui.notify(`ℹ️ Serving "${rawDir}" locally. Pass --as <name> to publish a gated preview at <name>.princess-pi.dev.`, "info");
+				ctx.ui.notify(`ℹ️ Serving "${rawDir}" locally. Pass --pub <name> to publish a gated preview at <name>.princess-pi.dev.`, "info");
 			}
 		}
 
