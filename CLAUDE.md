@@ -1,10 +1,8 @@
 # Pi Packages Project Standard
 
-This project contains custom extensions, skills, and documentation manifests for the Princess-Pi Coding Agent.
+## ⛔ HARD GATE — CHECK BRANCH BEFORE ANY EDIT
 
-## 🚨 BEFORE ANY CODE CHANGE
-
-> **HARD GATE: `git branch --show-current` must return `<issue#>-<slug>`, never `main`.**
+> **`git branch --show-current` MUST return `<issue#>-<slug>`, never `main`.**
 >
 > If on `main`: create the branch NOW (`git checkout -b <issue#>-<slug>`) before editing any file.
 > If the commit you need is on `main` (e.g. after a merge cleanup): `git checkout -b <issue#>-<slug>`
@@ -12,6 +10,11 @@ This project contains custom extensions, skills, and documentation manifests for
 >
 > This applies to: bug fixes, features, spec updates, docs reconciliation — everything.
 > Naming: `<issue#>-<slug>` (e.g. `73-server-tool-use-cost`). Slugs are kebab-case, descriptive, short.
+>
+> Claude Code enforces this via `block-edit-on-main.sh` PreToolUse hook.
+> Pi warns via `git-guardrails.ts` session_start notification.
+
+This project contains custom extensions, skills, and documentation manifests for the Princess-Pi Coding Agent.
 
 ## 📐 Repo conventions
 

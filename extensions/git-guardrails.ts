@@ -30,11 +30,56 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import { checkGitCommand } from "./lib/git-guardrails-core";
+import { execSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+
+// --- Ax feedback log (#124): record sessions that start on main ---
+const AX_LOG = path.join(os.homedir(), ".pi", "agent", "logs", "main-branch-sessions.jsonl");
+function logMainBranchSession(cwd: string, branch: string) {
+  try {
+    const dir = path.dirname(AX_LOG);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      cwd,
+      branch,
+      harness: "pi",
+      hook: "git-guardrails-session-start",
+    }) + "\n";
+    fs.appendFileSync(AX_LOG, entry);
+  } catch { /* logging is best-effort */ }
+}
 
 // --- Extension ---
 
 export default function (pi: ExtensionAPI) {
   const cwd = process.cwd();
+
+  // Session-start branch check (#124): warn if cwd is on main/master.
+  // Claude Code already blocks edits on main via PreToolUse hook
+  // (block-edit-on-main.sh); this is the Pi-side equivalent — it can't
+  // block, but it puts the reminder front-and-center before any work.
+  // Also persists a custom entry to the session transcript so ax can
+  // surface the metric (ax recall main-branch-warning, future signal).
+  pi.on("session_start", async (_event, ctx) => {
+    try {
+      const inside = execSync("git rev-parse --is-inside-work-tree", { cwd, encoding: "utf8", timeout: 3000 }).trim();
+      if (inside !== "true") return;
+      const branch = execSync("git branch --show-current", { cwd, encoding: "utf8", timeout: 3000 }).trim();
+      if (branch === "main" || branch === "master") {
+        logMainBranchSession(cwd, branch);
+        pi.appendEntry("main-branch-warning", { branch, cwd });
+        ctx.ui.notify(
+          `⛔ On branch '${branch}' — create a feature branch before editing.\n` +
+          `   git checkout -b <issue#>-<slug>\n` +
+          `   (CLAUDE.md HARD GATE — editing on main risks lossy stash/checkout recovery.)`,
+          "warning"
+        );
+      }
+    } catch { /* not a git repo, or git not available — silent */ }
+  });
 
   const bashTool = createBashTool(cwd, {
     spawnHook: ({ command, cwd: hookCwd, env }) => {
