@@ -119,4 +119,56 @@ try {
   process.exit(1);
 }
 
+// --- New: manifest-driven --help, --why, --version, config loader ---
+
+// Test Case 7: --help output is manifest-driven (not inline)
+try {
+  console.log("  [Test 7] Manifest-driven --help...");
+  const result = spawnSync("node", ["--experimental-strip-types", yadaBin, "--help"], {
+    encoding: "utf-8",
+  });
+  const stdout = result.stdout;
+  assert.ok(stdout.includes("Dynamic streaming log deduplicator"), "help tagline");
+  assert.ok(stdout.includes("Examples:"), "help examples section");
+  assert.ok(stdout.includes("Usage:"), "help usage section");
+  assert.ok(stdout.includes("--no-collapse"), "help shows --no-collapse");
+  assert.ok(stdout.includes("--version"), "help shows --version");
+  assert.ok(stdout.includes("--why"), "help shows --why");
+  console.log("  ✅ Passed [Test 7]");
+} catch (err) {
+  console.error("  ❌ Failed [Test 7]:", err);
+  process.exit(1);
+}
+
+// Test Case 8: --why output is manifest-driven
+try {
+  console.log("  [Test 8] Manifest-driven --why...");
+  const result = spawnSync("node", ["--experimental-strip-types", yadaBin, "--why"], {
+    encoding: "utf-8",
+  });
+  const stdout = result.stdout;
+  assert.ok(stdout.includes("Why run yada?"), "why section title");
+  assert.ok(stdout.includes("Yada is a streaming deduplicator"), "why anti-use-case");
+  assert.ok(stdout.includes("--help"), "why points to --help");
+  console.log("  ✅ Passed [Test 8]");
+} catch (err) {
+  console.error("  ❌ Failed [Test 8]:", err);
+  process.exit(1);
+}
+
+// Test Case 9: --version output
+try {
+  console.log("  [Test 9] --version...");
+  const result = spawnSync("node", ["--experimental-strip-types", yadaBin, "--version"], {
+    encoding: "utf-8",
+  });
+  const stdout = result.stdout.trim();
+  assert.ok(stdout.startsWith("yada "), `version starts with 'yada ': ${stdout}`);
+  assert.ok(/\d+\.\d+\.\d+/.test(stdout), `version contains semver: ${stdout}`);
+  console.log("  ✅ Passed [Test 9]");
+} catch (err) {
+  console.error("  ❌ Failed [Test 9]:", err);
+  process.exit(1);
+}
+
 console.log("\n🎉 All tests passed successfully!");
