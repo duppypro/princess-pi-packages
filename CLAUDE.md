@@ -97,18 +97,12 @@ pi -r -e ./      # Resume the last session with local packages
 ```bash
 pi install git:github.com/duppypro/princess-pi-packages@main
 ```
-**Claude Code / any shell** — install the CLI bins on `$PATH` from GitHub `main` (the `-g` flag
-makes this cwd-independent; pulls from the remote, not a local clone):
-```bash
-npm install -g github:duppypro/princess-pi-packages
-```
-All CLI bins (`merge`, `wtft`, `serve`, `yada`/`dedupwcount`, `wtft-daemon`) install as built `.mjs`.
-The `prepare` script installs production deps (`bun install --production --ignore-scripts`)
-then runs `bun build.ts` (#97) to compile the `.ts` sources. Git-URL installs require
-**bun on PATH**. The npm-registry tarball
-(when published) ships prebuilt and needs only node. Re-run the command to update.
+**Claude Code / any shell** — the documented way to install CLI bins globally is
+`npm install -g github:duppypro/princess-pi-packages`, but **npm 10.x has a bug** where
+global git-URL installs create a symlink to a temp directory that gets cleaned up.
+Until this is fixed, use the local install flow below.
 
-### 3. Local Install (Current Branch — Dev Workflow)
+### 3. Local Install (Primary Workflow)
 To install the CLI bins from your **local clone's current branch** (for development/testing
 without pushing to GitHub):
 ```bash
