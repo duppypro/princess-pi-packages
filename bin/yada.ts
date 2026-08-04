@@ -5,8 +5,14 @@
  * @description Dynamic streaming log deduplicator with fuzzy matching and periodicity detection.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadConfig } from "../extensions/lib/config.ts";
+import { renderHelp, renderWhy } from "../extensions/lib/merge/help.ts";
+
 // --- CLI Option Parsing ---
-interface CLIOptions {
+interface YadaConfig {
   similarity: number;
   format: string;
   wordMatch: boolean;
@@ -15,99 +21,45 @@ interface CLIOptions {
   maxGap: number;
 }
 
-const options: CLIOptions = {
+const config = loadConfig("yada", {
   similarity: 0.85,
   format: "☝️ +{count}",
   wordMatch: true,
   periodicity: true,
   noCollapse: false,
-  maxGap: 10000, // 10 seconds default
-};
+  maxGap: 10000,
+}) as unknown as YadaConfig;
 
-function printWhy() {
-  console.log(`
-yada - Dynamic Streaming Log Deduplicator
+const options: YadaConfig = { ...config };
 
-Why run yada?
+const manifestPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "docs",
+  "manifests",
+  "yada-cmd.json",
+);
 
-` +
-    `  You're watching a noisy log stream (e.g. tail -f access.log) and the same entries
-` +
-    `  repeat hundreds of times, making it hard to spot real changes.
-` +
-    `    $ tail -f access.log | yada
-` +
-    `    → Repeated near-identical lines are collapsed in-place with a count badge, so you
-` +
-    `      see only meaningful changes as they happen.
-
-` +
-    `  You're analyzing a log file and want to quickly identify periodic patterns
-` +
-    `    (e.g. a cron job that fires every 5 minutes).
-` +
-    `    $ cat app.log | yada
-` +
-    `    → Collapsed lines show periodicity annotations like "every ~5m" or "every ~30s",
-` +
-    `      revealing timing patterns at a glance.
-
-` +
-    `  You want strict exact-match deduplication (not fuzzy) for structured logs.
-` +
-    `    $ cat access.log | yada --no-word-match -s 0.99 --no-periodicity
-` +
-    `    → Only exact or nearly-exact duplicates are collapsed; word-level differences
-` +
-    `      (e.g. different IDs, usernames) are treated as distinct lines.
-
-` +
-    `  You want to pipe yada's output into another tool without in-place terminal rewriting.
-` +
-    `    $ tail -f logs.txt | yada --no-collapse | grep ERROR
-` +
-    `    → Each collapsed summary prints once as a full line (no ANSI cursor moves),
-` +
-    `      making it safe to pipe into grep, awk, or file redirection.
-
-` +
-    `  You want to aggregate logs into a database or SIEM system for long-term storage.
-` +
-    `    $ yada  # won't help
-` +
-    `    → Yada is a streaming deduplicator for real-time terminal viewing — it is not
-` +
-    `      a log database or retention tool. Use graylog, ELK, or Loki for log aggregation.
-
-` +
-    `Run yada --help for the full flag reference.
-`);
+function invokedAs(): string {
+  return path.basename(process.argv[1] ?? "yada", path.extname(process.argv[1] ?? ".mjs")) || "yada";
 }
 
-function printHelp() {
-  console.log(`
-Usage: yada [options]
-
-Options:
-  -s, --similarity <num>  Similarity threshold between 0.0 and 1.0 (default: 0.85)
-  -f, --format <string>   Custom collapse badge format (default: "☝️ +{count}")
-  -w, --word-match <bool> Match general word changes, not just numbers (default: true)
-  -p, --no-periodicity    Disable advanced periodicity detection
-  -g, --max-gap <num>     Max time gap in seconds to keep collapsing consecutive duplicates (default: 10)
-  --no-collapse           Disable in-place terminal rewriting (behaves like streaming uniq -c)
-  --why                   Explain why you'd run this tool, with user scenarios and anti-use-cases
-  -h, --help              Display this help menu
-`);
+function printVersion(): void {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  console.log(`${manifest.name} ${manifest.version}`);
 }
 
-// Simple manual argument parser
+// --- CLI argument parser ---
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   if (arg === "-h" || arg === "--help") {
-    printHelp();
+    console.log(renderHelp(manifestPath, invokedAs()));
     process.exit(0);
   } else if (arg === "--why") {
-    printWhy();
+    console.log(renderWhy(manifestPath, invokedAs()));
+    process.exit(0);
+  } else if (arg === "--version") {
+    printVersion();
     process.exit(0);
   } else if (arg === "-s" || arg === "--similarity") {
     const val = parseFloat(process.argv[++i]);

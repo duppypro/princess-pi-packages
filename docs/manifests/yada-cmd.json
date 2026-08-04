@@ -1,0 +1,52 @@
+{
+  "name": "yada",
+  "version": "1.0.0",
+  "tagline": "Dynamic streaming log deduplicator with fuzzy matching and periodicity detection",
+  "description": "A streaming pipe tool that collapses repeated near-identical log lines in-place with count badges, revealing real changes as they happen. Uses Levenshtein distance for fuzzy matching so lines with different IDs, timestamps, or numbers are still recognized as duplicates. Detects periodic patterns (e.g. cron jobs) and annotates them. Pass --no-collapse for safe pipe-to-grep/file without ANSI escape sequences.",
+  "examples": [
+    { "args": "", "desc": "Read stdin, collapse repeats in-place, show periodicity" },
+    { "args": "-s 0.95 -w false", "desc": "Stricter similarity, word-match off (only numbers differ)" },
+    { "args": "--no-collapse", "desc": "Streaming uniq -c: print once per collapse, no terminal rewrite" },
+    { "args": "-g 30", "desc": "Keep collapsing duplicates up to 30s apart (default: 10s)" },
+    { "args": "--no-periodicity", "desc": "Skip periodicity detection (faster, simpler output)" }
+  ],
+  "why": [
+    {
+      "scenario": "You're watching a noisy log stream (e.g. tail -f access.log) and the same entries repeat hundreds of times, making it hard to spot real changes.",
+      "commands": [""],
+      "result": "Repeated near-identical lines are collapsed in-place with a count badge, so you see only meaningful changes as they happen."
+    },
+    {
+      "scenario": "You're analyzing a log file and want to quickly identify periodic patterns (e.g. a cron job that fires every 5 minutes).",
+      "commands": [""],
+      "result": "Collapsed lines show periodicity annotations like 'every ~5m' or 'every ~30s', revealing timing patterns at a glance."
+    },
+    {
+      "scenario": "You want strict exact-match deduplication (not fuzzy) for structured logs.",
+      "commands": ["-w false -s 0.99 --no-periodicity"],
+      "result": "Only exact or nearly-exact duplicates are collapsed; word-level differences (e.g. different IDs, usernames) are treated as distinct lines."
+    },
+    {
+      "scenario": "You want to pipe yada's output into another tool without in-place terminal rewriting.",
+      "commands": ["--no-collapse"],
+      "result": "Each collapsed summary prints once as a full line (no ANSI cursor moves), making it safe to pipe into grep, awk, or file redirection."
+    },
+    {
+      "scenario": "You want to aggregate logs into a database or SIEM system for long-term storage.",
+      "commands": ["<won't help>"],
+      "result": "Yada is a streaming deduplicator for real-time terminal viewing — it is not a log database or retention tool. Use graylog, ELK, or Loki for log aggregation."
+    }
+  ],
+  "usage": [
+    { "flags": "", "desc": "Read stdin, output deduplicated stream to stdout" },
+    { "flags": "-s, --similarity <num>", "desc": "Similarity threshold 0.0–1.0 (default: 0.85)" },
+    { "flags": "-w, --word-match <bool>", "desc": "Match general word changes, not just numbers (default: true)" },
+    { "flags": "-p, --no-periodicity", "desc": "Disable advanced periodicity detection" },
+    { "flags": "-g, --max-gap <num>", "desc": "Max time gap in seconds to keep collapsing consecutive duplicates (default: 10)" },
+    { "flags": "--no-collapse", "desc": "Disable in-place terminal rewriting (behaves like streaming uniq -c)" },
+    { "flags": "-f, --format <string>", "desc": "Custom collapse badge format (default: '☝️ +{count}')" },
+    { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases" },
+    { "flags": "-h, --help", "desc": "Display this help menu" },
+    { "flags": "--version", "desc": "Print version number" }
+  ]
+}
