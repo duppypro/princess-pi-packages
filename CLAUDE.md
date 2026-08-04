@@ -101,8 +101,9 @@ makes this cwd-independent; pulls from the remote, not a local clone):
 npm install -g github:duppypro/princess-pi-packages
 ```
 All CLI bins (`merge`, `wtft`, `serve`, `yada`/`dedupwcount`, `wtft-daemon`) install as built `.mjs`.
-The `preinstall` script runs `bun install --production` (git-URL installs require **bun on PATH**),
-then `prepare` runs `bun build.ts` (#97) to compile the `.ts` sources. The npm-registry tarball
+The `prepare` script installs production deps (`bun install --production --ignore-scripts`)
+then runs `bun build.ts` (#97) to compile the `.ts` sources. Git-URL installs require
+**bun on PATH**. The npm-registry tarball
 (when published) ships prebuilt and needs only node. Re-run the command to update.
 
 ### 3. Local Install (Current Branch — Dev Workflow)
@@ -129,7 +130,9 @@ bun is the repo's build tool and package manager. The toolchain:
 - **Install deps:** `bun install` (commits `bun.lock`, deletes `package-lock.json`)
 - **Local CLI link:** `./install-local` (build + `bun link`)
 
-Why `preinstall` exists in `package.json`: npm's git-dependency preparation runs `npm install`
-(which triggers `prepare`), but `prepare` (`bun build.ts`) needs `wcwidth` which hasn't been
-installed yet — a chicken-and-egg deadlock. `preinstall` breaks the cycle by running
-`bun install --production --ignore-scripts` first, suppressing recursive script execution.
+Why `prepare` guards with `[ -d node_modules/wcwidth ]`: npm's git-dependency preparation runs
+`npm install` (which triggers `prepare`), but `prepare` (`bun build.ts`) needs `wcwidth` which
+hasn't been installed yet — a chicken-and-egg deadlock. `prepare` checks for the dep first;
+if missing, runs `bun install --production --ignore-scripts` (suppresses recursive `prepare`).
+The `[ -f package.json ]` guard prevents the install step from running in a bare directory
+(e.g. global node_modules before package extraction).

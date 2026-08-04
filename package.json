@@ -30,8 +30,7 @@
   ],
   "scripts": {
     "build": "bun build.ts",
-    "preinstall": "bun install --production --ignore-scripts",
-    "prepare": "bun build.ts",
+    "prepare": "if [ -f package.json ] && [ ! -d node_modules/wcwidth ]; then bun install --production --ignore-scripts; fi && bun build.ts",
     "typecheck": "tsc --noEmit",
     "deploy:local": "bun unlink -g 2>/dev/null; bun link"
   },
