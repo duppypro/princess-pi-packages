@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ---
+# install-local — build and globally link the current branch's PPP CLI bins.
+# Run from the princess-pi-packages repo root. No guards: use whatever branch
+# you're on, dirty or clean — you asked for it.
+# ---
+set -euo pipefail
+
+echo "==> Building CLI bins (bun build.ts)..."
+npm run build
+
+echo "==> Linking to global node_modules..."
+npm link
+
+echo ""
+echo "Done. CLI bins from branch '$(git branch --show-current)' are now active:"
+echo "  merge, wtft, serve, yada/dedupwcount, patch-pi-widgets"
+echo ""
+echo "To also update Pi extensions from GitHub:  pi update --extensions"

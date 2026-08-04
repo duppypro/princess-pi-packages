@@ -30,6 +30,7 @@
   ],
   "scripts": {
     "build": "bun build.ts",
+    "preinstall": "bun install --production --ignore-scripts",
     "prepare": "bun build.ts",
     "typecheck": "tsc --noEmit",
     "deploy:local": "npm uninstall -g princess-pi-packages; npm link"
