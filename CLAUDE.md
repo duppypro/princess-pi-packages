@@ -97,10 +97,16 @@ pi -r -e ./      # Resume the last session with local packages
 ```bash
 pi install git:github.com/duppypro/princess-pi-packages@main
 ```
-**Claude Code / any shell** — the documented way to install CLI bins globally is
-`npm install -g github:duppypro/princess-pi-packages`, but **npm 10.x has a bug** where
-global git-URL installs create a symlink to a temp directory that gets cleaned up.
-Until this is fixed, use the local install flow below.
+**Claude Code / any shell (bun users)** — install CLI bins globally with bun:
+```bash
+bun install -g github:duppypro/princess-pi-packages
+```
+Ensure `~/.bun/bin` is on `$PATH`. The `prepare` script handles dep installation
+and building automatically. Re-run to update.
+
+**npm global install** (`npm install -g github:...`) is **broken on npm 10.x** —
+it creates a symlink to a temp directory that gets cleaned up, leaving dead links.
+Use `bun install -g` or the local install flow below instead.
 
 ### 3. Local Install (Primary Workflow)
 To install the CLI bins from your **local clone's current branch** (for development/testing
