@@ -33,7 +33,7 @@
     "preinstall": "bun install --production --ignore-scripts",
     "prepare": "bun build.ts",
     "typecheck": "tsc --noEmit",
-    "deploy:local": "npm uninstall -g princess-pi-packages; npm link"
+    "deploy:local": "bun unlink -g 2>/dev/null; bun link"
   },
   "dependencies": {
     "wcwidth": "^1.0.1"

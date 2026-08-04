@@ -100,13 +100,36 @@ makes this cwd-independent; pulls from the remote, not a local clone):
 ```bash
 npm install -g github:duppypro/princess-pi-packages
 ```
-All CLI bins (`merge`, `wtft`, `serve`, `yada`/`dedupwcount`, `wtft-daemon`) install as built `.mjs`
-via the `prepare` script (#97) — git-URL installs require **bun on PATH**; the npm-registry tarball
+All CLI bins (`merge`, `wtft`, `serve`, `yada`/`dedupwcount`, `wtft-daemon`) install as built `.mjs`.
+The `preinstall` script runs `bun install --production` (git-URL installs require **bun on PATH**),
+then `prepare` runs `bun build.ts` (#97) to compile the `.ts` sources. The npm-registry tarball
 (when published) ships prebuilt and needs only node. Re-run the command to update.
 
-### 3. Hot-Swapping & Updates
+### 3. Local Install (Current Branch — Dev Workflow)
+To install the CLI bins from your **local clone's current branch** (for development/testing
+without pushing to GitHub):
+```bash
+./install-local
+```
+Runs `bun run build` then `bun link` — the CLI bins on `$PATH` are symlinked to this repo's
+`bin/` directory. Use this when iterating on a feature branch and you want to test CLI tools
+immediately. No guards: builds whatever branch you're on, dirty or clean.
+
+### 4. Hot-Swapping & Updates
 When you make changes to files and push them, trigger a re-download and TUI compilation:
 ```bash
 pi update --extensions    # Force-fetch and compile from the remote Git main cache
 /reload                   # Inside the TUI: Hot-reload loaded extensions
 ```
+
+## 🐰 Bun Toolchain
+bun is the repo's build tool and package manager. The toolchain:
+- **Build:** `bun run build` → `bun build.ts` (Bun.build bundles `.ts` → `.mjs`)
+- **Typecheck:** `bun run typecheck` → `tsc --noEmit` (TS7 native)
+- **Install deps:** `bun install` (commits `bun.lock`, deletes `package-lock.json`)
+- **Local CLI link:** `./install-local` (build + `bun link`)
+
+Why `preinstall` exists in `package.json`: npm's git-dependency preparation runs `npm install`
+(which triggers `prepare`), but `prepare` (`bun build.ts`) needs `wcwidth` which hasn't been
+installed yet — a chicken-and-egg deadlock. `preinstall` breaks the cycle by running
+`bun install --production --ignore-scripts` first, suppressing recursive script execution.
