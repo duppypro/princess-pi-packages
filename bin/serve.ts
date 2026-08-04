@@ -100,9 +100,9 @@ function handleHelp(): void {
 async function handleUnpub(subdomain: string): Promise<void> {
 	try {
 		await unpublishSubdomain({ subdomain });
-		console.log(`🌐 Unpublished ${slug}.princess-pi.dev`);
+		console.log(`🌐 Unpublished ${subdomain}.princess-pi.dev`);
 	} catch (err) {
-		console.warn(`⚠️ Failed to unpublish ${slug}: ${(err as Error).message}`);
+		console.warn(`⚠️ Failed to unpublish ${subdomain}: ${(err as Error).message}`);
 	}
 }
 
@@ -244,7 +244,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 				// Publish the new slug to the existing server's port (#119)
 				try {
 					const emails = parseAclFile(targetDir);
-					const hostname = await publishSubdomain({ slug: overrideSubdomain, port: existingServer.port, emails, activeLabels });
+					const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
 					activeLabels.add(hostname.split(".")[0]);
 					console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`);
 				console.log(formatServerCard({ ...existingServer, url: `https://${hostname}/` }));
@@ -290,7 +290,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		if (subdomain) {
 			try {
 				const emails = parseAclFile(targetDir);
-				const hostname = await publishSubdomain({ slug: subdomain, port, emails, activeLabels });
+				const hostname = await publishSubdomain({ subdomain, port, emails, activeLabels });
 				activeLabels.add(hostname.split(".")[0]);
 				console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`);
 			} catch (err) {
@@ -333,7 +333,7 @@ async function run(): Promise<void> {
 	if (/^(--unpub|-U)(\s|$)/.test(trimmedArgs)) {
 		const slug = trimmedArgs.replace(/^(--unpub|-U)/, "").trim();
 		if (!slug) { console.log("Usage: --unpub <subdomain>"); return; }
-		return handleUnpub(subdomain);
+		return handleUnpub(slug);
 	}
 	return handleStart(trimmedArgs);
 }

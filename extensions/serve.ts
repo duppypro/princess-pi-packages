@@ -328,7 +328,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 					// Publish the new slug to the existing server's port (#119)
 					try {
 						const emails = parseAclFile(targetDir);
-						const hostname = await publishSubdomain({ slug: overrideSubdomain, port: existingServer.port, emails, activeLabels });
+						const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
 						activeLabels.add(hostname.split(".")[0]);
 						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.\n\n${formatServerCard({ ...existingServer, url: `https://${hostname}/` })}`, "info");
 					} catch (err) {
@@ -396,7 +396,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			if (subdomain) {
 				try {
 					const emails = parseAclFile(targetDir);
-					const hostname = await publishSubdomain({ slug: subdomain, port, emails, activeLabels });
+					const hostname = await publishSubdomain({ subdomain, port, emails, activeLabels });
 					activeLabels.add(hostname.split(".")[0]);
 					ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
 				} catch (err) {
