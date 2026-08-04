@@ -265,8 +265,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 		const isStatic = dirs.includes("--static") || dirs.includes("-s");
 		dirs = dirs.filter(d => d !== "--static" && d !== "-s");
 
-		// --- Phase 6B (#66): optional slug override. `/serve <dir> --pub <subdomain>` publishes at
-		// <subdomain>.princess-pi.dev instead of the repo-derived slug. One override names one
+		// --- Phase 6B (#66): optional subdomain override. `/serve <dir> --pub <subdomain>` publishes at
+		// <subdomain>.princess-pi.dev instead of the repo-derived subdomain. One override names one
 		// hostname, so it requires exactly one target dir.
 		let overrideSubdomain: string | null = null;
 		let pubIdx = dirs.indexOf("--pub");
@@ -325,7 +325,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			if (existingServer) {
 				if (overrideSubdomain) {
-					// Publish the new slug to the existing server's port (#119)
+					// Publish the new subdomain to the existing server's port (#119)
 					try {
 						const emails = parseAclFile(targetDir);
 						const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
@@ -359,7 +359,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			const port = startPort++;
 
-			// #66: publishing is opt-in via --pub. A slug ⟺ published to the edge; it flows to
+			// #66: publishing is opt-in via --pub. A subdomain ⟺ published to the edge; it flows to
 			// the runner's --subdomain (watcher target) AND the publish call. No --pub → local only.
 			const subdomain = overrideSubdomain; // null unless --pub given
 
@@ -428,9 +428,9 @@ export default function serveExtension(pi: ExtensionAPI) {
 	async function handleUnpub(subdomain: string, ctx: any): Promise<void> {
 		try {
 			await unpublishSubdomain({ subdomain });
-			ctx.ui.notify(`🌐 Unpublished ${slug}.princess-pi.dev`, "info");
+			ctx.ui.notify(`🌐 Unpublished ${subdomain}.princess-pi.dev`, "info");
 		} catch (err) {
-			ctx.ui.notify(`⚠️ Failed to unpublish ${slug}: ${(err as Error).message}`, "warning");
+			ctx.ui.notify(`⚠️ Failed to unpublish ${subdomain}: ${(err as Error).message}`, "warning");
 		}
 	}
 
@@ -456,7 +456,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		{ test: (a) => /^(--kill|--cancel|--off|-k)(\s|$)/.test(a), handler: handleKill },
 		{ test: (a) => /^(--unpub|-U)(\s|$)/.test(a), handler: (args, ctx) => {
 			const subdomain = args.replace(/^(--unpub|-U)/, "").trim();
-			if (!slug) { ctx.ui.notify("Usage: --unpub <subdomain>", "warning"); return; }
+			if (!subdomain) { ctx.ui.notify("Usage: --unpub <subdomain>", "warning"); return; }
 			return handleUnpub(subdomain, ctx);
 		}},
 	];

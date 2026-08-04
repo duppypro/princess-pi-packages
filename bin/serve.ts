@@ -164,7 +164,7 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 
 	// --- Phase 6B (#66): unpublish each killed sub-domain from the edge (ingress rule + Access
 	// app). Best-effort: a CF failure must not mask a successful local kill, so we warn and
-	// continue. Slugs dedup'd so two servers sharing a dir unpublish once.
+	// continue. Subdomains dedup'd so two servers sharing a dir unpublish once.
 	const killedSubdomains = [...new Set(killedList.map((k) => k.subdomain).filter((s): s is string => !!s))];
 	for (const subdomain of killedSubdomains) {
 		try {
@@ -182,8 +182,8 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	const force = dirs.includes("--force") || dirs.includes("-f");
 	dirs = dirs.filter((d) => d !== "--static" && d !== "-s" && d !== "--force" && d !== "-f");
 
-	// --- Phase 6B (#66): optional slug override. `serve <dir> --pub <subdomain>` publishes at
-	// <subdomain>.princess-pi.dev instead of the repo-derived slug (which leaks internal paths,
+	// --- Phase 6B (#66): optional subdomain override. `serve <dir> --pub <subdomain>` publishes at
+	// <subdomain>.princess-pi.dev instead of the repo-derived subdomain (which leaks internal paths,
 	// e.g. "rogue-savvy/frontend/dist"). One override can only name one hostname, so it
 	// requires exactly one target dir.
 	let overrideSubdomain: string | null = null;
@@ -241,7 +241,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		);
 		if (existingServer) {
 			if (overrideSubdomain) {
-				// Publish the new slug to the existing server's port (#119)
+				// Publish the new subdomain to the existing server's port (#119)
 				try {
 					const emails = parseAclFile(targetDir);
 					const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
@@ -266,7 +266,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		while (activeServers.some((s) => s.port === startPort)) startPort++;
 		const port = startPort++;
 
-		// #66: publishing is opt-in via --pub. A slug ⟺ this preview is published to the edge:
+		// #66: publishing is opt-in via --pub. A subdomain ⟺ this preview is published to the edge:
 		// it flows to the runner's --subdomain (live-ACL watcher target) AND the publish call, so
 		// publish/kill/unpublish/watch all key off the same condition. No --pub → local only.
 		const subdomain = overrideSubdomain; // null unless --pub given
@@ -331,9 +331,9 @@ async function run(): Promise<void> {
 	if (["--emoji", "--emojii", "--no-emoji", "--no-emojii"].includes(trimmedArgs)) return;
 	if (/^(--kill|--cancel|--off|-k)(\s|$)/.test(trimmedArgs)) return handleKill(trimmedArgs);
 	if (/^(--unpub|-U)(\s|$)/.test(trimmedArgs)) {
-		const slug = trimmedArgs.replace(/^(--unpub|-U)/, "").trim();
-		if (!slug) { console.log("Usage: --unpub <subdomain>"); return; }
-		return handleUnpub(slug);
+		const subdomain = trimmedArgs.replace(/^(--unpub|-U)/, "").trim();
+		if (!subdomain) { console.log("Usage: --unpub <subdomain>"); return; }
+		return handleUnpub(subdomain);
 	}
 	return handleStart(trimmedArgs);
 }

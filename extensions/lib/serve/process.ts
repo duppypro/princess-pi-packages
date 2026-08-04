@@ -45,7 +45,7 @@ export function discoverServers(): Promise<ServerInstance[]> {
 			const lines = stdout.split("\n").filter(l => l.trim().length > 0);
 			const ip = await resolveIp();
 
-			// Slug map for servers published after start (#119)
+			// Subdomain map for servers published after start (#119)
 			const subdomainMap = readSubdomainMap();
 
 			for (const line of lines) {
@@ -88,7 +88,7 @@ export function discoverServers(): Promise<ServerInstance[]> {
 				const subdomainMatch = line.match(/--subdomain\s+(\S+)/);
 				let subdomain = subdomainMatch ? subdomainMatch[1] : undefined;
 
-				// Check sub-domain map for slugs published after server start (#119)
+				// Check sub-domain map for subdomains published after server start (#119)
 				if (!subdomain) {
 					const mappedSubdomains = subdomainMap[String(port)];
 					if (mappedSubdomains && mappedSubdomains.length > 0) subdomain = mappedSubdomains[0];

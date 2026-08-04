@@ -41,7 +41,7 @@
     <p><strong>Reconciled:</strong> 2026-07-28 · Issue #119 · Supersedes <code>EXT_LIVE_SERVE.html</code> (folded in) and <code>SPEC_SERVE_LIST_FLAGS.md</code> (obsolete).</p>
 
     <h2>Overview</h2>
-    <p><code>/serve</code> spawns plain-HTTP development servers on loopback (<code>127.0.0.1</code>), with live-reload via Server-Sent Events and optional Cloudflare-Tunnel-gated public previews at <code>&lt;slug&gt;.princess-pi.dev</code>. No local SSL — the edge handles TLS termination. Available as a Pi extension (<code>/serve</code>) and a standalone CLI (<code>bin/serve.mjs</code>).</p>
+    <p><code>/serve</code> spawns plain-HTTP development servers on loopback (<code>127.0.0.1</code>), with live-reload via Server-Sent Events and optional Cloudflare-Tunnel-gated public previews at <code>&lt;subdomain&gt;.princess-pi.dev</code>. No local SSL — the edge handles TLS termination. Available as a Pi extension (<code>/serve</code>) and a standalone CLI (<code>bin/serve.mjs</code>).</p>
 
     <h2>Command Reference</h2>
     <div id="serve-cmd-reference" style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040;">
@@ -70,9 +70,9 @@
     </pre>
     <p>Killed variant shows Before/After health-check status instead of type + log path.</p>
 
-    <h2>Cloudflare Publishing (<code>--as &lt;slug&gt;</code>)</h2>
-    <p>Opt-in via <code>--as</code>. Publishes the server at <code>&lt;slug&gt;.princess-pi.dev</code> through Cloudflare Tunnel, gated by Cloudflare Access (email OTP). The <code>.serve-acl</code> file in the served directory controls the allow-list. Without <code>--as</code>, the server runs local-loopback only.</p>
-    <p><strong>Republishing:</strong> Running <code>serve &lt;dir&gt; --as &lt;new-slug&gt;</code> on an already-served directory publishes the new slug to the existing port — no new process spawned. Slug→port mappings persist in <code>~/.pi-certs/serve-slugs.json</code> so <code>--list</code> shows the public URL even for servers published after start.</p>
+    <h2>Cloudflare Publishing (<code>--as &lt;subdomain&gt;</code>)</h2>
+    <p>Opt-in via <code>--as</code>. Publishes the server at <code>&lt;subdomain&gt;.princess-pi.dev</code> through Cloudflare Tunnel, gated by Cloudflare Access (email OTP). The <code>.serve-acl</code> file in the served directory controls the allow-list. Without <code>--as</code>, the server runs local-loopback only.</p>
+    <p><strong>Republishing:</strong> Running <code>serve &lt;dir&gt; --as &lt;new-subdomain&gt;</code> on an already-served directory publishes the new subdomain to the existing port — no new process spawned. Subdomain→port mappings persist in <code>~/.pi-certs/serve-subdomains.json</code> so <code>--list</code> shows the public URL even for servers published after start.</p>
     <p>See <code>SPEC_SECURE_DYNAMIC_SERVE.html</code> for the historical NGINX/OAuth design (superseded) and the Cloudflare migration context.</p>
 
     <h2>Live-Reload Architecture</h2>
@@ -132,8 +132,8 @@
 
     <h2>Server Discovery & Lifecycle</h2>
     <ul>
-        <li><strong>Discovery:</strong> Scans <code>ps aux</code> for <code>http-server</code> and <code>run-live-server</code> processes. Reads <code>--slug</code> from process cmdline and <code>~/.pi-certs/serve-slugs.json</code> for slugs published after start.</li>
-        <li><strong>Kill:</strong> <code>--kill &lt;port|dir|all&gt;</code> sends SIGKILL via captured PID. Unpublishes Cloudflare ingress rules and Access apps. Cleans slug map.</li>
+        <li><strong>Discovery:</strong> Scans <code>ps aux</code> for <code>http-server</code> and <code>run-live-server</code> processes. Reads <code>--subdomain</code> from process cmdline and <code>~/.pi-certs/serve-subdomains.json</code> for subdomains published after start.</li>
+        <li><strong>Kill:</strong> <code>--kill &lt;port|dir|all&gt;</code> sends SIGKILL via captured PID. Unpublishes Cloudflare ingress rules and Access apps. Cleans subdomain map.</li>
         <li><strong>Orphan Reap:</strong> On every <code>serve</code> invocation, queries Cloudflare for tunnel ingress rules with no matching local process and removes them.</li>
         <li><strong>Session Shutdown:</strong> On Pi <code>/quit</code>, prints a table of active servers as a reminder. Servers remain running across sessions.</li>
     </ul>
@@ -145,7 +145,7 @@
     <p><code>bin/serve.mjs</code> is a standalone, Pi-independent port built with Bun. It reuses the same <code>extensions/lib/serve/</code> modules. Installed globally via:</p>
     <pre style="background: var(--box-bg); padding: 12px; border-radius: 6px; border: 1px solid #404040; overflow-x: auto; color: #f0f0f0; font-family: monospace;">npm install -g github:duppypro/princess-pi-packages</pre>
     <ul>
-        <li><strong>Supported:</strong> <code>[dirs...]</code>, <code>--static</code>/<code>-s</code>, <code>--list</code>/<code>-L</code>, <code>--kill</code>/<code>-k</code>, <code>--as &lt;slug&gt;</code>, <code>--help</code>/<code>-h</code>, <code>--version</code>, <code>--why</code>, <code>--force</code>/<code>-f</code> — identical behavior to the Pi extension.</li>
+        <li><strong>Supported:</strong> <code>[dirs...]</code>, <code>--static</code>/<code>-s</code>, <code>--list</code>/<code>-L</code>, <code>--kill</code>/<code>-k</code>, <code>--as &lt;subdomain&gt;</code>, <code>--help</code>/<code>-h</code>, <code>--version</code>, <code>--why</code>, <code>--force</code>/<code>-f</code> — identical behavior to the Pi extension.</li>
         <li><strong>Pi-only (accepted silently):</strong> <code>--emoji</code>/<code>--no-emoji</code> (terminal rendering hint).</li>
         <li><strong>Pi-only (notify):</strong> <code>--show</code>/<code>-S</code>, <code>--hide</code>/<code>-H</code> — no TUI widget in CLI.</li>
         <li><strong>CLI-only:</strong> <code>--force</code>/<code>-f</code> bypasses the <code>.env</code> secret warning (Pi prompts interactively instead).</li>
@@ -168,9 +168,9 @@
         <tr><td><code>extensions/serve.ts</code></td><td>Pi extension entry point — registers <code>/serve</code> command, routes flags to handlers</td></tr>
         <tr><td><code>bin/serve.ts</code></td><td>CLI entry point — standalone shell command, same logic as extension</td></tr>
         <tr><td><code>extensions/lib/serve/domain.ts</code></td><td>Types (<code>ServerInstance</code>, <code>KilledServerInstance</code>), <code>isInsideRepo</code> helper</td></tr>
-        <tr><td><code>extensions/lib/serve/process.ts</code></td><td>Server discovery (<code>ps aux</code> parsing), kill, health-check, slug-map integration</td></tr>
+        <tr><td><code>extensions/lib/serve/process.ts</code></td><td>Server discovery (<code>ps aux</code> parsing), kill, health-check, subdomain-map integration</td></tr>
         <tr><td><code>extensions/lib/serve/tui.ts</code></td><td>Formatters (table/card), widget rendering, box drawing, ANSI coloring</td></tr>
-        <tr><td><code>extensions/lib/serve/cloudflare.js</code></td><td>Cloudflare API: tunnel ingress rules, Access apps, slug-map persistence, orphan reaping</td></tr>
+        <tr><td><code>extensions/lib/serve/cloudflare.js</code></td><td>Cloudflare API: tunnel ingress rules, Access apps, subdomain-map persistence, orphan reaping</td></tr>
         <tr><td><code>extensions/lib/serve/run-live-server.js</code></td><td>Live-reload server process: HTTP, SSE, dependency graph, FS watching</td></tr>
         <tr><td><code>extensions/lib/serve/store.ts</code></td><td>Widget visibility config read/write</td></tr>
         <tr><td><code>docs/manifests/serve-cmd.json</code></td><td>Command manifest — drives <code>--help</code>, <code>--why</code>, and this page's reference section</td></tr>

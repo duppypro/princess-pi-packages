@@ -33,7 +33,7 @@ const LOCK_PATH = path.join(CONFIG_DIR, "tunnel-config.lock");
 const CF_API = "https://api.cloudflare.com/client/v4";
 const ZONE_SUFFIX = "princess-pi.dev";
 
-// Slug→port map persisted across restarts so discovery can show the public URL
+// Subdomain→port map persisted across restarts so discovery can show the public URL
 // even for servers that were published after start (#119).
 const SUBDOMAIN_MAP_PATH = path.join(os.homedir(), ".pi-certs", "serve-subdomains.json");
 
@@ -168,7 +168,7 @@ export function parseAclFile(targetDir) {
 }
 
 // ---
-// Slug → DNS label. Cloudflare hostname labels are a strict subset of what a client sub-domain can
+// Subdomain → DNS label. Cloudflare hostname labels are a strict subset of what a client sub-domain can
 // be (a path basename). Lowercase, non-[a-z0-9-] → '-', collapse repeats, trim leading/
 // trailing '-', cap at 63 chars (DNS label limit). Deterministic so the same dir always
 // maps to the same hostname across start/kill/reap.
@@ -309,7 +309,7 @@ function isPortLive(port) {
  * @returns {Promise<{ok:true} | {ok:false, reason:string}>}
  */
 async function checkLabelAvailable(cf, label, activeLabels) {
-	// (a) collision with a different active slug this run
+	// (a) collision with a different active subdomain this run
 	if (activeLabels && activeLabels.has(label)) {
 		return { ok: false, reason: `label "${label}" collides with another active sub-domain this run` };
 	}
@@ -490,7 +490,7 @@ export async function unpublishSubdomain({ subdomain }) {
  * Does NOT touch ingress. Used by the run-live-server watcher.
  * @param {{subdomain:string, emails:string[]}} args
  */
-export async function updateSubdomainAllowlist({ slug, emails }) {
+export async function updateSubdomainAllowlist({ subdomain, emails }) {
 	const cf = loadCfEnv();
 	const label = flattenSubdomainToLabel(subdomain);
 	return withLock(async () => { await upsertAccessApp(cf, label, emails); });
