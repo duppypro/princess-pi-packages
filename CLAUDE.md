@@ -25,9 +25,11 @@ This project contains custom extensions, skills, and documentation manifests for
 >
 > **Hard rule — generated `.mjs` bins are build artifacts, never edit manually:**
 > `bin/{serve,wtft,merge,wtft-daemon,yada}.mjs` are generated from their `.ts` counterparts via
-> `bun run build` (`build.ts`, Bun.build — #97). They are **gitignored** (not in the repo) and each
-> carries a `⚠️ GENERATED` banner. Always edit the `.ts` source, then rebuild. Exception:
-> `bin/patch-pi-widgets.mjs` is **handwritten source** (no `.ts` twin) — edit it directly.
+> `bun run build` (`build.ts`, Bun.build — #97). Each carries a `⚠️ GENERATED` banner.
+> Always edit the `.ts` source, then rebuild. They are **tracked in git** (committed) — required
+> because npm's git-dependency extraction (`pacote`) respects `.gitignore` and would omit them
+> from the GitHub tarball, making `npm install -g` fail to include CLI binaries.
+> Exception: `bin/patch-pi-widgets.mjs` is **handwritten source** (no `.ts` twin) — edit it directly.
 > Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
 > Type-checking is TS7 native (`bun run typecheck`); policy: fix code forward to satisfy TS7,
 > never pin an older TypeScript.
@@ -136,3 +138,7 @@ hasn't been installed yet — a chicken-and-egg deadlock. `prepare` checks for t
 if missing, runs `bun install --production --ignore-scripts` (suppresses recursive `prepare`).
 The `[ -f package.json ]` guard prevents the install step from running in a bare directory
 (e.g. global node_modules before package extraction).
+
+Note: `bin/*.mjs` must be **tracked in git** (not gitignored) — npm's git-dependency extractor
+(`pacote`) respects `.gitignore`, so gitignored bins would be missing from the installed package
+even after `prepare` builds them.
