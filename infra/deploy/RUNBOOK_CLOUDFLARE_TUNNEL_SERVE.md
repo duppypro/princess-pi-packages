@@ -232,7 +232,7 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
 > reviewer = princess-pi-bot)** added three fixes — F-A, F-B, F-C — folded in below.
 
 **Code (this repo — sources are `bin/serve.ts` + `extensions/lib/serve/*`; since #97 the
-generated `bin/serve.mjs` is untracked — build via `bun build.ts` / `npm run build`):**
+generated `bin/serve.mjs` is untracked — build via `bun build.ts`):**
 1. `bin/serve.ts` **and `extensions/serve.ts`** (the Pi-extension flavor — sweep catch #1,
    it duplicated the entire nginx path): remove the `parseAclFile → updateNginxAcls →
    updateNginxPort → reloadNginx` sequence from start and stop/`--kill`, plus the kill-path

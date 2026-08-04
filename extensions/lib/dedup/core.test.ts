@@ -1,5 +1,5 @@
 // Standalone test runner — no test framework dependency.
-// Run: npx tsx extensions/lib/dedup/core.test.ts
+// Run: bun run extensions/lib/dedup/core.test.ts
 import {
     normalizeTemplate,
     extractNumbers,

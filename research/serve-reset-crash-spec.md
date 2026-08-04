@@ -16,5 +16,5 @@ In `/extensions/lib/serve/process.ts`:
   - Add `res.on("error", () => {})` to catch stream errors.
 
 ## Verification Plan
-1. Compile using `npm run build`.
+1. Compile using `bun run build`.
 2. Verify that stopping servers or receiving connection resets does not trigger any unhandled exceptions in the Node process.

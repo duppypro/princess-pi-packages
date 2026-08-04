@@ -14,7 +14,7 @@
 > Kept below as the historical record + rollback reference.
 >
 > **Precondition (code before infra) — was satisfied before apply:** deploy the Phase 6A serve
-> build FIRST (`git fetch <bundle>` → merge/checkout → `npm run deploy:local`), so `serve` has
+> build FIRST (`git fetch <bundle>` → merge/checkout → `bun run deploy:local`), so `serve` has
 > stopped calling `sudo nginx -s reload` before the sudoers grant disappears. Verify:
 > `bash tests/serve-no-sudo-nginx.test.sh` on the VPS.
 

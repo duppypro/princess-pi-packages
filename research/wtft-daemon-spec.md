@@ -30,7 +30,7 @@ deduplicates by message.id (#54), and writes harness-agnostic classified
 output. All consumer paths (watch, non-watch) read the same tag file format.
 
 The daemon source is `bin/wtft-daemon.ts` — esbuild bundles it into
-`bin/wtft-daemon.mjs` as part of `npm run build`. Shared rendering functions
+`bin/wtft-daemon.mjs` as part of `bun run build`. Shared rendering functions
 live in `extensions/lib/wtft-shared.ts`.
 
 Consumers never parse raw session.jsonl (except as emergency fallback).

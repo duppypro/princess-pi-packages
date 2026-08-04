@@ -5,7 +5,7 @@
 // The live edge path (ingress upsert, Access app, reserved-label rejection against the real
 // zone, reap) is the VPS+laptop test in the runbook 6B Code Approved list — not unit-testable
 // without a Cloudflare account, so it is intentionally out of scope here.
-// Run: npx tsx tests/serve-66-cloudflare.test.ts
+// Run: bun run tests/serve-66-cloudflare.test.ts
 import * as assert from "node:assert";
 import * as fs from "node:fs";
 import * as os from "node:os";

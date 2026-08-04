@@ -9,7 +9,7 @@ import { runFilterChunked } from "./lib/dedup/io-chunked.js";
 
 // ---
 // Standalone pipe-filter mode
-// Invoked when the script is the entry point: tail -f app.log | npx tsx dedup.ts
+// Invoked when the script is the entry point: tail -f app.log | bun run dedup.ts
 // Uses the chunk-buffered stdin reader (extensions/lib/dedup/io-chunked.ts) —
 // see extensions/lib/dedup/benchmark.ts for why this replaced the original
 // readline-based reader (still kept in io-readline.ts as the benchmark baseline).
@@ -25,10 +25,10 @@ function runFilter(): void {
 
 export default function dedupExtension(pi: ExtensionAPI) {
     pi.registerCommand("dedup", {
-        description: "Stream log deduplicator — pipe logs through it: tail -f app.log | npx tsx extensions/dedup.ts",
+        description: "Stream log deduplicator — pipe logs through it: tail -f app.log | bun run extensions/dedup.ts",
         handler: async (_args, ctx) => {
             ctx.ui.notify(
-                "Run dedup as a shell pipe:\n  tail -f app.log | npx tsx extensions/dedup.ts",
+                "Run dedup as a shell pipe:\n  tail -f app.log | bun run extensions/dedup.ts",
                 "info"
             );
         },

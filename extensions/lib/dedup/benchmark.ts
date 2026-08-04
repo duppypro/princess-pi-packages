@@ -1,5 +1,5 @@
 // In-process benchmark: readline (baseline) vs chunk-buffered stdin reading.
-// Run: npx tsx extensions/lib/dedup/benchmark.ts
+// Run: bun run extensions/lib/dedup/benchmark.ts
 //
 // Unlike pi-dedup's benchmark.ts (which spawns a fresh node+tsx child process
 // per timed run), this drives both implementations inside the same process

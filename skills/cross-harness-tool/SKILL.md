@@ -46,10 +46,10 @@ If a tool relies heavily on shared TypeScript libraries (`extensions/lib/`), man
 npx esbuild bin/tool.ts --bundle --platform=node --format=esm --target=node18 --outfile=bin/tool.mjs
 ```
 **🚨 Gotchas (Learned in #9 and #10):**
-1. **The Compilation Ghost:** When you modify the shared TypeScript library (`extensions/lib/...`), the Pi extension will instantly pick up the changes via `/reload`. **However, the `.mjs` binary will not!** You must explicitly run `npm run build` to bake the changes into the `.mjs` file *before* you commit. If you forget, the global NPM package will deploy the stale logic. The `build.mjs` script automatically handles `esbuild` and duplicate import stripping.
+1. **The Compilation Ghost:** When you modify the shared TypeScript library (`extensions/lib/...`), the Pi extension will instantly pick up the changes via `/reload`. **However, the `.mjs` binary will not!** You must explicitly run `bun run build` to bake the changes into the `.mjs` file *before* you commit. If you forget, the global NPM package will deploy the stale logic. The `build.mjs` script automatically handles `esbuild` and duplicate import stripping.
 2. **Path Resolution:** If you use `--bundle`, any files spawned as child processes (like `run-live-server.js` in `/serve`) must **not** be bundled into the `.mjs` file, as they must remain discrete physical files on disk for `node:child_process` to target.
-3. **NPM Testing (`npm link` vs `npm install -g`):**
-   - When developing locally, `npm link` will symlink your repository's `bin/` folder to your global path.
+3. **Testing the CLI globally (`bun link` vs `npm install -g`):**
+   - When developing locally, `bun link` will symlink your repository's `bin/` folder to your global path.
    - However, your shell often caches the path to the old globally-installed binary. If you type `tool --help` and don't see your changes, you must run `hash -r` in bash to clear the path cache, or test using the explicit path `./bin/tool.mjs`.
    - **Never run `npm update` to pull changes from a Git URL.** NPM often fails to pull the latest `HEAD` commit from a Git URL during `npm update`. Always use `npm install -g github:duppypro/princess-pi-packages` to aggressively force NPM to fetch and overwrite the global symlink.
 

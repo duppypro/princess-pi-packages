@@ -26,7 +26,7 @@ In `bin/wtft.ts` (and compiled `bin/wtft.mjs`):
 ### Automated Verification
 Run existing tests:
 ```bash
-npm test
+bun test
 ```
 (Specifically checking for any test breakages).
 

@@ -17,5 +17,5 @@ Update the reference documentation:
 - `docs/SPEC_SECURE_DYNAMIC_SERVE.html`
 
 ## Verification Plan
-1. Compile the code using `npm run build`.
+1. Compile the code using `bun run build`.
 2. Verify that there are no remaining instances of `/preview/` in the modified source files.

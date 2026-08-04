@@ -3,7 +3,7 @@
 //   - buildNoDirHint: the no-directory agent-prompt suggestion + --list pointer
 // Discovery itself (ps aux parsing) needs live processes and is covered by the manual
 // Code Approved checks in the spec, not here.
-// Run: npx tsx tests/serve-117-list.test.ts
+// Run: bun run tests/serve-117-list.test.ts
 import * as assert from "node:assert";
 import * as path from "node:path";
 import { type ServerInstance } from "../extensions/lib/serve/domain.js";

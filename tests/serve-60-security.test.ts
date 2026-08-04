@@ -2,7 +2,7 @@
 //   F1 — directory-boundary traversal: "/a/bc".startsWith("/a/b") must NOT grant access,
 //        and a symlink inside the root must not serve targets outside the REAL root.
 //   F2 — directory-index reflection: crafted filenames / paths render HTML-escaped.
-// Run: npx tsx tests/serve-60-security.test.ts
+// Run: bun run tests/serve-60-security.test.ts
 import * as assert from "node:assert";
 import * as fs from "node:fs";
 import * as os from "node:os";

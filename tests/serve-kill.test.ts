@@ -1,6 +1,6 @@
 // Regression test for #39: `serve --kill` must actually terminate the process and must
 // fail loud (return false) when it cannot — never silently report success.
-// Run: npx tsx tests/serve-kill.test.ts
+// Run: bun run tests/serve-kill.test.ts
 import * as assert from "node:assert";
 import { spawn } from "node:child_process";
 import { killServerInstance, isProcessAlive, confirmProcessKilled } from "../extensions/lib/serve/process.js";

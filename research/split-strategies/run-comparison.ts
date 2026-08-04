@@ -1,4 +1,4 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env bun
 /**
  * @package princess-pi-packages
  * @research #52 sub-turn cost attribution experiment
