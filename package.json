@@ -23,11 +23,6 @@
       "./extensions"
     ]
   },
-  "files": [
-    "bin/",
-    "extensions/",
-    "skills/"
-  ],
   "scripts": {
     "build": "bun build.ts",
     "prepare": "if [ -f package.json ] && [ ! -d node_modules/wcwidth ]; then bun install --production --ignore-scripts; fi && bun build.ts",
