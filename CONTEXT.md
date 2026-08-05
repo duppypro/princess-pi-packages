@@ -41,7 +41,7 @@ A Cloudflare Tunnel ingress rule whose corresponding local server process no lon
 _Avoid_: Stale rule, dangling ingress, zombie
 
 **Reap**:
-The process of scanning Cloudflare Tunnel ingress rules and deleting any that point to ports with no matching local process. Best-effort — failure does not block serving.
+The process of scanning Cloudflare Tunnel ingress rules and deleting any that point to ports with no matching local process. Also cleans the local subdomain→port map and any stale advisory lock. Best-effort — failure does not block serving.
 _Avoid_: Cleanup, sweep, GC
 
 **Access application**:

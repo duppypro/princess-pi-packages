@@ -1094,8 +1094,16 @@ async function reapOrphans() {
   } catch {
     return [];
   }
+  try {
+    if (fs3.existsSync(LOCK_PATH2)) {
+      const st = fs3.statSync(LOCK_PATH2);
+      if (Date.now() - st.mtimeMs > LOCK_STALE_MS)
+        fs3.unlinkSync(LOCK_PATH2);
+    }
+  } catch {}
   return withLock(async () => {
     const reaped = [];
+    const deadPorts = new Set;
     const config = await getTunnelConfig(cf);
     const ingress = Array.isArray(config.ingress) ? config.ingress : [];
     let ownedHosts;
@@ -1123,6 +1131,7 @@ async function reapOrphans() {
       if (await isPortLive(port))
         continue;
       next = next.filter((r) => r.hostname !== rule.hostname);
+      deadPorts.add(port);
       const label = rule.hostname.endsWith(`.${ZONE_SUFFIX}`) ? rule.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
       if (label) {
         try {
@@ -1130,6 +1139,20 @@ async function reapOrphans() {
         } catch {}
       }
       reaped.push(rule.hostname);
+    }
+    if (deadPorts.size > 0) {
+      const map = readSubdomainMap2();
+      let changed = false;
+      for (const p of deadPorts) {
+        if (map[String(p)]) {
+          delete map[String(p)];
+          changed = true;
+        }
+      }
+      if (changed) {
+        fs3.mkdirSync(SERVE_CONFIG_DIR2, { recursive: true });
+        fs3.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
+      }
     }
     if (reaped.length) {
       if (!next.some((r) => !r.hostname))

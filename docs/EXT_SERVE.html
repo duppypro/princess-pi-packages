@@ -135,7 +135,7 @@
     <ul>
         <li><strong>Discovery:</strong> Scans <code>ps aux</code> for <code>http-server</code> and <code>run-live-server</code> processes. Reads <code>--subdomain</code> from process cmdline and <code>~/.config/princess-pi-packages/serve/subdomains.json</code> for subdomains published after start.</li>
         <li><strong>Kill:</strong> <code>--kill &lt;port|dir|all&gt;</code> sends SIGKILL via captured PID. Unpublishes Cloudflare ingress rules and Access apps. Cleans subdomain map.</li>
-        <li><strong>Orphan Reap:</strong> On every <code>serve</code> invocation, queries Cloudflare for tunnel ingress rules with no matching local process and removes them.</li>
+        <li><strong>Orphan Reap:</strong> On every <code>serve</code> invocation, queries Cloudflare for tunnel ingress rules with no matching local process and removes them. Also cleans the local subdomain→port map and any stale advisory lock from a crashed publish.</li>
         <li><strong>Session Shutdown:</strong> On Pi <code>/quit</code>, prints a table of active servers as a reminder. Servers remain running across sessions.</li>
     </ul>
 

@@ -501,6 +501,7 @@ export async function updateSubdomainAllowlist({ subdomain, emails }) {
  * Reap-on-start: delete any serve-owned edge entry whose loopback port is dead. Runs before
  * publishing new state so a crash-without-kill can't leave a stale allow-list live at the
  * edge. Only touches ingress rules pointing at 127.0.0.1 and Access apps named `serve <..>`.
+ * Also cleans the local subdomain map for dead ports and removes any stale tunnel lockfile.
  * KNOWN GAP (deferred, follow-up issue): nothing reaps between a crash and the next serve
  * run — no periodic/TTL GC yet.
  * @returns {Promise<string[]>} hostnames reaped
@@ -508,8 +509,18 @@ export async function updateSubdomainAllowlist({ subdomain, emails }) {
 export async function reapOrphans() {
 	let cf;
 	try { cf = loadCfEnv(); } catch { return []; } // no token → nothing to reap, stay quiet
+
+	// Clean stale advisory lock (crash while publishing)
+	try {
+		if (fs.existsSync(LOCK_PATH)) {
+			const st = fs.statSync(LOCK_PATH);
+			if (Date.now() - st.mtimeMs > LOCK_STALE_MS) fs.unlinkSync(LOCK_PATH);
+		}
+	} catch { /* best-effort */ }
+
 	return withLock(async () => {
 		const reaped = [];
+		const deadPorts = new Set();
 		const config = await getTunnelConfig(cf);
 		const ingress = Array.isArray(config.ingress) ? config.ingress : [];
 		// Serve-OWNED hostnames = those fronted by a `serve <label>` Access app. Reap only
@@ -534,10 +545,26 @@ export async function reapOrphans() {
 			const port = parseInt(rule.service.split(":").pop(), 10);
 			if (await isPortLive(port)) continue; // still serving — keep it
 			next = next.filter((r) => r.hostname !== rule.hostname);
+		deadPorts.add(port);
 			const label = rule.hostname.endsWith(`.${ZONE_SUFFIX}`) ? rule.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
 			if (label) { try { await deleteAccessApp(cf, label); } catch {} }
 			reaped.push(rule.hostname);
 		}
+
+		// Clean subdomain map — remove entries for every dead port so --list does not
+		// show a public URL for a server that no longer exists.
+		if (deadPorts.size > 0) {
+			const map = readSubdomainMap();
+			let changed = false;
+			for (const p of deadPorts) {
+				if (map[String(p)]) { delete map[String(p)]; changed = true; }
+			}
+			if (changed) {
+				fs.mkdirSync(SERVE_CONFIG_DIR, { recursive: true });
+				fs.writeFileSync(SUBDOMAIN_MAP_PATH, JSON.stringify(map), "utf8");
+			}
+		}
+
 		if (reaped.length) {
 			if (!next.some((r) => !r.hostname)) next.push({ service: "http_status:404" });
 			await putTunnelConfig(cf, { ...config, ingress: next });

@@ -332,7 +332,7 @@ function generateDirectoryIndex(dirPath, requestPath) {
 // --- Server Lifecycle Setup ---
 
 // Ensure log directory exists
-const logDir = path.join(os.homedir(), ".config", "pi-serve", "logs");
+const logDir = path.join(os.homedir(), ".config", "princess-pi-packages", "serve", "logs");
 if (!fs.existsSync(logDir)) {
 	try {
 		fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
