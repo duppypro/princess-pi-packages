@@ -65,14 +65,15 @@
     <pre>
 ┌─ ~/git-projects/119-serve-cleanup-sweep/research :8082 ──────┐
 │  https://p119-research.princess-pi.dev/                       │
-│  Live · logs: ~/.pi-certs/logs/port-8082-access.log           │
+│  Live · logs: ~/.config/princess-pi-packages/serve/logs/port-8082-access.log │
+│  ACL: docs/.serve-acl (2 emails)                              │
 └───────────────────────────────────────────────────────────────┘
     </pre>
     <p>Killed variant shows Before/After health-check status instead of type + log path.</p>
 
-    <h2>Cloudflare Publishing (<code>--as &lt;subdomain&gt;</code>)</h2>
-    <p>Opt-in via <code>--as</code>. Publishes the server at <code>&lt;subdomain&gt;.princess-pi.dev</code> through Cloudflare Tunnel, gated by Cloudflare Access (email OTP). The <code>.serve-acl</code> file in the served directory controls the allow-list. Without <code>--as</code>, the server runs local-loopback only.</p>
-    <p><strong>Republishing:</strong> Running <code>serve &lt;dir&gt; --as &lt;new-subdomain&gt;</code> on an already-served directory publishes the new subdomain to the existing port — no new process spawned. Subdomain→port mappings persist in <code>~/.pi-certs/serve-subdomains.json</code> so <code>--list</code> shows the public URL even for servers published after start.</p>
+    <h2>Cloudflare Publishing (<code>--pub &lt;subdomain&gt;</code>)</h2>
+    <p>Opt-in via <code>--pub</code>. Publishes the server at <code>&lt;subdomain&gt;.princess-pi.dev</code> through Cloudflare Tunnel, gated by Cloudflare Access (email OTP). The <code>.serve-acl</code> file in the served directory controls the allow-list. Without <code>--pub</code>, the server runs local-loopback only. <code>--as</code> is a legacy alias that still works — prefer <code>--pub</code> in new usage.</p>
+    <p><strong>Republishing:</strong> Running <code>serve &lt;dir&gt; --pub &lt;new-subdomain&gt;</code> on an already-served directory publishes the new subdomain to the existing port — no new process spawned. Subdomain→port mappings persist in <code>~/.config/princess-pi-packages/serve/subdomains.json</code> so <code>--list</code> shows the public URL even for servers published after start.</p>
     <p>See <code>SPEC_SECURE_DYNAMIC_SERVE.html</code> for the historical NGINX/OAuth design (superseded) and the Cloudflare migration context.</p>
 
     <h2>Live-Reload Architecture</h2>
@@ -132,7 +133,7 @@
 
     <h2>Server Discovery & Lifecycle</h2>
     <ul>
-        <li><strong>Discovery:</strong> Scans <code>ps aux</code> for <code>http-server</code> and <code>run-live-server</code> processes. Reads <code>--subdomain</code> from process cmdline and <code>~/.pi-certs/serve-subdomains.json</code> for subdomains published after start.</li>
+        <li><strong>Discovery:</strong> Scans <code>ps aux</code> for <code>http-server</code> and <code>run-live-server</code> processes. Reads <code>--subdomain</code> from process cmdline and <code>~/.config/princess-pi-packages/serve/subdomains.json</code> for subdomains published after start.</li>
         <li><strong>Kill:</strong> <code>--kill &lt;port|dir|all&gt;</code> sends SIGKILL via captured PID. Unpublishes Cloudflare ingress rules and Access apps. Cleans subdomain map.</li>
         <li><strong>Orphan Reap:</strong> On every <code>serve</code> invocation, queries Cloudflare for tunnel ingress rules with no matching local process and removes them.</li>
         <li><strong>Session Shutdown:</strong> On Pi <code>/quit</code>, prints a table of active servers as a reminder. Servers remain running across sessions.</li>
@@ -155,7 +156,7 @@
     <ul>
         <li><strong>Loopback only:</strong> All servers bind to <code>127.0.0.1</code>. Public access is gated exclusively through Cloudflare Tunnel → Access (email OTP).</li>
         <li><strong><code>.env</code> detection:</strong> Scans target directories for <code>.env</code> files and prompts for confirmation before serving. CLI requires <code>--force</code> to proceed.</li>
-        <li><strong>Access logging:</strong> Apache Common Log Format to <code>~/.pi-certs/logs/port-&lt;PORT&gt;-access.log</code>. Auto-rotates at 5MB (capped at 10MB total per server).</li>
+        <li><strong>Access logging:</strong> Apache Common Log Format to <code>~/.config/princess-pi-packages/serve/logs/port-&lt;PORT&gt;-access.log</code>. Auto-rotates at 5MB (capped at 10MB total per server).</li>
         <li><strong>No standing privilege:</strong> Cloudflare API token lives in <code>~/.config/princess-pi/cf.env</code> (0600). No sudo, no NGINX reloads, no filesystem ACL maps.</li>
     </ul>
 
@@ -175,9 +176,6 @@
         <tr><td><code>extensions/lib/serve/store.ts</code></td><td>Widget visibility config read/write</td></tr>
         <tr><td><code>docs/manifests/serve-cmd.json</code></td><td>Command manifest — drives <code>--help</code>, <code>--why</code>, and this page's reference section</td></tr>
     </table>
-
-    <h2>DeepSeek Surge Pricing Integration</h2>
-    <p>The <code>wtft</code> cost tracker detects DeepSeek peak hours (UTC 01:00–04:00 and 06:00–10:00) and applies a 2× multiplier to token costs. The 24h timeline bar shows orange surge segments. Individual bin rows with surge-priced interactions show their dollar amounts in orange (<code>\x1b[1;38;5;208m</code>) instead of white. See <code>extensions/lib/wtft-cost.ts</code> and <code>extensions/lib/wtft-renderer.ts</code>.</p>
 
     <script>
         fetch('manifests/serve-cmd.json')

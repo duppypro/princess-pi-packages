@@ -1,4 +1,6 @@
 import * as os from "node:os";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { ServerInstance, KilledServerInstance } from "./domain.js";
 import wcwidth from "wcwidth";
 
@@ -87,33 +89,54 @@ export function formatServerTable(servers: ServerInstance[]): string {
  *
  *   ┌─ ~/git-projects/rogue-savvy/frontend/dist :8080 ────────┐
  *   │  https://rogue-savvy.princess-pi.dev                     │
- *   │  Live · logs: ~/.pi-certs/logs/port-8080-access.log      │
- *   └──────────────────────────────────────────────────────────┘
+ *   │  Live · logs: ~/.config/princess-pi-packages/serve/logs/port-8080-access.log │
+ *   │  ACL: docs/.serve-acl (2 emails)                   │
+ *   └────────────────────────────────────────────────────┘
  */
 export function formatServerCard(server: ServerInstance): string {
 	const border = "\x1b[37m";
 	const header = `${homeRelative(server.dir)} :${server.port}`;
 	const typeColor = server.isLive ? "\x1b[32m" : "\x1b[33m";
 	const typeLabel = server.isLive ? "Live" : "Static";
-	const logPath = `~/.pi-certs/logs/port-${server.port}-access.log`;
+	const logPath = `~/.config/princess-pi-packages/serve/logs/port-${server.port}-access.log`;
 
 	const urlLine = `  \x1b[4m\x1b[34m${server.url}\x1b[0m`;
 	const infoLine = `  ${typeColor}${typeLabel}\x1b[0m · logs: \x1b[36m${logPath}\x1b[0m`;
 
+	// ACL line: show .serve-acl path + email count if the file exists
+	let aclLine: string | null = null;
+	const aclFilePath = path.join(server.dir, ".serve-acl");
+	try {
+		if (fs.existsSync(aclFilePath)) {
+			const content = fs.readFileSync(aclFilePath, "utf8");
+			const entries = content.split(/\r?\n/)
+				.map(l => { const h = l.indexOf("#"); return (h !== -1 ? l.substring(0, h) : l).trim(); })
+				.filter(l => l.length > 0);
+			const aclRelative = homeRelative(aclFilePath);
+			aclLine = `  ACL: ${aclRelative} (${entries.length} email${entries.length !== 1 ? "s" : ""})`;
+		}
+	} catch { /* file unreadable — skip the ACL line */ }
+
 	// Box inner-width: must fit longest content line AND the header (header needs
 	// at least 4 extra chars beyond its visual length for "┌─ " + " " + 1 dash).
-	const contentWidth = Math.max(getVisualLength(urlLine), getVisualLength(infoLine));
+	const contentWidth = Math.max(
+		getVisualLength(urlLine),
+		getVisualLength(infoLine),
+		aclLine ? getVisualLength(aclLine) : 0
+	);
 	const boxInner = Math.max(contentWidth, getVisualLength(header) + 4);
 
 	const headerDashes = "─".repeat(Math.max(1, boxInner - getVisualLength(header) - 3));
 	const bottomDashes = "─".repeat(boxInner);
 
-	return [
+	const lines = [
 		`${border}┌─ ${header} ${headerDashes}┐\x1b[0m`,
 		`${border}│\x1b[0m${padVisual(urlLine, boxInner)}${border}│\x1b[0m`,
 		`${border}│\x1b[0m${padVisual(infoLine, boxInner)}${border}│\x1b[0m`,
-		`${border}└${bottomDashes}┘\x1b[0m`,
-	].join("\n");
+	];
+	if (aclLine) lines.push(`${border}│\x1b[0m${padVisual(aclLine, boxInner)}${border}│\x1b[0m`);
+	lines.push(`${border}└${bottomDashes}┘\x1b[0m`);
+	return lines.join("\n");
 }
 
 /**

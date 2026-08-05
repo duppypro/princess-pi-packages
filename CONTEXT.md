@@ -17,7 +17,7 @@ A server instance running `npx http-server`. Serves files as-is — no injection
 _Avoid_: Production server, plain server
 
 **Sub-domain**:
-A short, URL-safe name that identifies a published preview. Passed via `--pub <subdomain>` (`--as` is a legacy synonym). The public URL is `https://<subdomain>.princess-pi.dev/`. Stored in the process cmdline (`--subdomain`) for servers started with `--pub`, and in `~/.pi-certs/serve-subdomains.json` for servers published after start.
+A short, URL-safe name that identifies a published preview. Passed via `--pub <subdomain>` (`--as` is a legacy synonym). The public URL is `https://<subdomain>.princess-pi.dev/`. Stored in the process cmdline (`--subdomain`) for servers started with `--pub`, and in `~/.config/princess-pi-packages/serve/subdomains.json` for servers published after start.
 _Avoid_: Slug, label, hostname, alias
 
 **Publish**:
@@ -33,7 +33,7 @@ Removing the Cloudflare ingress rule and Access application for a sub-domain. Do
 _Avoid_: Takedown, deregister, remove
 
 **Sub-domain map**:
-Persistence file at `~/.pi-certs/serve-subdomains.json` mapping port numbers to arrays of sub-domains. Written on publish, read during server discovery, cleaned on unpublish. Exists so `--list` can show the public URL for servers that were published after they started (no `--subdomain` in their process cmdline).
+Persistence file at `~/.config/princess-pi-packages/serve/subdomains.json` mapping port numbers to arrays of sub-domains. Written on publish, read during server discovery, cleaned on unpublish. Exists so `--list` can show the public URL for servers that were published after they started (no `--subdomain` in their process cmdline).
 _Avoid_: Port registry, sub-domain cache
 
 **Orphan**:

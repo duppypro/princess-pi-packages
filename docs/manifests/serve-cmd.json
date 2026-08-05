@@ -2,7 +2,7 @@
   "name": "serve",
   "version": "1.0.0",
   "tagline": "Secure HTTPS Server Utility",
-  "description": "Serves local directories on loopback HTTP. When published with --pub <subdomain>, the directory is gated behind Cloudflare Access at <subdomain>.princess-pi.dev. The Cloudflare account and domain are currently hardcoded — this tool assumes you're running on Princess Pi's VPS with her Cloudflare credentials. Logs HTTP access to ~/.pi-certs/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve CLI script from any shell.",
+  "description": "Serves local directories on loopback HTTP. When published with --pub <subdomain>, the directory is gated behind Cloudflare Access at <subdomain>.princess-pi.dev. The Cloudflare account and domain are currently hardcoded — this tool assumes you're running on Princess Pi's VPS with her Cloudflare credentials. Logs HTTP access to ~/.config/princess-pi-packages/serve/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve CLI script from any shell.",
   "examples": [
     { "args": "", "desc": "List servers running in this repo and suggest a prompt to find a servable dir (starts nothing)." },
     { "args": "dist/", "desc": "Serve dist/ on 8080." },

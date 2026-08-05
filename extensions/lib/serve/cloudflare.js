@@ -35,7 +35,8 @@ const ZONE_SUFFIX = "princess-pi.dev";
 
 // Subdomain→port map persisted across restarts so discovery can show the public URL
 // even for servers that were published after start (#119).
-const SUBDOMAIN_MAP_PATH = path.join(os.homedir(), ".pi-certs", "serve-subdomains.json");
+const SERVE_CONFIG_DIR = path.join(os.homedir(), ".config", "princess-pi-packages", "serve");
+const SUBDOMAIN_MAP_PATH = path.join(SERVE_CONFIG_DIR, "subdomains.json");
 
 export function readSubdomainMap() {
 	try {
@@ -51,7 +52,7 @@ function writeSubdomainMap(port, subdomain) {
 	const arr = map[String(port)] || [];
 	if (!arr.includes(subdomain)) arr.push(subdomain);
 	map[String(port)] = arr;
-	fs.mkdirSync(path.dirname(SUBDOMAIN_MAP_PATH), { recursive: true });
+	fs.mkdirSync(SERVE_CONFIG_DIR, { recursive: true });
 	fs.writeFileSync(SUBDOMAIN_MAP_PATH, JSON.stringify(map), "utf8");
 }
 
