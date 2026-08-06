@@ -1,144 +1,24 @@
-# Pi Packages Project Standard
+# Pi Packages
 
-## ⛔ HARD GATE — CHECK BRANCH BEFORE ANY EDIT
+Extensions, skills, and documentation manifests for the Princess-Pi Coding Agent.
 
-> **`git branch --show-current` MUST return `<issue#>-<slug>`, never `main`.**
->
-> If on `main`: create the branch NOW (`git checkout -b <issue#>-<slug>`) before editing any file.
-> If the commit you need is on `main` (e.g. after a merge cleanup): `git checkout -b <issue#>-<slug>`
-> and then `git branch -f main <commit>` to rewind main (you may need to be on a non-main branch first).
->
-> This applies to: bug fixes, features, spec updates, docs reconciliation — everything.
-> Naming: `<issue#>-<slug>` (e.g. `73-server-tool-use-cost`). Slugs are kebab-case, descriptive, short.
->
-> Claude Code enforces this via `block-edit-on-main.sh` PreToolUse hook.
-> Pi warns via `git-guardrails.ts` session_start notification.
+## ⛔ Hard Gates
 
-This project contains custom extensions, skills, and documentation manifests for the Princess-Pi Coding Agent.
+- **Never edit on `main`.** Always use `<issue#>-<slug>` branches (e.g. `73-server-tool-use-cost`).
+- **Never edit generated `.mjs` files.** Most `bin/*.mjs` are build artifacts from `.ts`
+  sources. Look for the `⚠️ GENERATED` banner. Edit the `.ts`, then `bun run build`.
+  Exception: `bin/patch-pi-widgets.mjs` is handwritten.
 
-## 📐 Repo conventions
+## Commands
 
-> **Repo goal — cross-harness tooling:** one implementation of each tool that works in **both Pi and
-> Claude Code** (CLI + Pi extension + optional TUI widget, one shared manifest). See the mission in
-> `README.md`. **To build or port a tool to this bar, follow the recipe in
-> `skills/cross-harness-tool/SKILL.md`.** Reference implementation: `merge` (`bin/merge.mjs`, #8).
->
-> **Hard rule — generated `.mjs` bins are build artifacts, never edit manually:**
-> `bin/{serve,wtft,merge,wtft-daemon,yada}.mjs` are generated from their `.ts` counterparts via
-> `bun run build` (`build.ts`, Bun.build — #97). Each carries a `⚠️ GENERATED` banner.
-> Always edit the `.ts` source, then rebuild. They are **tracked in git** (committed) — required
-> because npm's git-dependency extraction (`pacote`) respects `.gitignore` and would omit them
-> from the GitHub tarball, making `npm install -g` fail to include CLI binaries.
-> Exception: `bin/patch-pi-widgets.mjs` is **handwritten source** (no `.ts` twin) — edit it directly.
-> Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
-> Type-checking is TS7 native (`bun run typecheck`); policy: fix code forward to satisfy TS7,
-> never pin an older TypeScript.
->
-> **Step 5 commit-message rule (what `merge` actually validates, #100):** the subject line must
-> contain the word `approved` preceded by both `code` and a spec-word (`spec/specs/specification(s)`),
-> with no `not` anywhere before it. Case-insensitive, whole words, any phrasing — no fixed
-> "Step 5"/"Code and Spec Approved" phrase required (though the house style remains
-> `docs: Code and Spec Approved — <what> (#<issue>)`).
+| Purpose | Command |
+|---|---|
+| Install deps | `bun install` |
+| Build | `bun run build` |
+| Typecheck | `bun run typecheck` |
 
----
+## Conventions
 
-## 🛠️ Tech Stack & Directory Structure
-*   **Runtime**: Node.js (≥ 18). Pi extensions are `.ts`; standalone CLI bins are being standardized to plain ESM JavaScript (`.mjs`) — see the cross-harness convention below.
-*   **`extensions/`**: The raw `.ts` extension scripts loaded directly by the Pi Agent (e.g. `serve.ts`, `wtft.ts`, `smush.ts`). These remain the **typed twin** of any CLI bin.
-*   **`bin/`**: Standalone, Pi-independent CLI ports of extensions whose logic doesn't need the Pi runtime. Invokable from any shell, including Claude Code's `!` prefix — Claude Code has no extension-dispatch that bypasses the model the way Pi's `registerCommand` does, so the CLI is the practical zero-token substitute. Each command also gets a same-named wrapper script at the repo root (e.g. `./merge`) execing the bin.
-    *   **Cross-harness convention (why `.mjs`):** CLI bins should be **plain ESM JavaScript** with `#!/usr/bin/env node` — *not* `--experimental-strip-types` and *not* `npx tsx`. When installed globally for Claude (`npm install -g github:duppypro/princess-pi-packages`) the bin lives under `node_modules/`, where Node **refuses** type-stripping (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) and an `npx tsx` shebang forces a per-environment network fetch. Plain `.mjs` needs zero deps and no build step. **Reference implementations: `bin/merge.mjs`, `bin/serve.mjs`, `bin/wtft.mjs`.** As of #97 all five generated bins (including `yada`) are built to `.mjs` by `build.ts` at prepare/build time — no raw `.ts` bins remain.
-*   **`tests/`**: Dedicated permanent test suites.
-*   **`debug/`**: Ephemeral scripts for quick debugging (e.g., one-off log parsers).
-*   **`research/`**: Prototypes and longer-term experimental code.
-*   **`skills/`**: Standard markdown-based memory files and skill guides.
-*   **`docs/`**: Flattened user specifications (as `.html`) and documentation files.
-    *   `docs/manifests/`: Command reference definitions (`.json` files) parsed dynamically by the `/serve`, `/merge`, and `/wtft` extensions (and their `bin/` CLI counterparts, where one exists).
-
----
-
-## 📖 Manifest-Driven `--help` Convention
-Any command backed by a `docs/manifests/*-cmd.json` file (read by both the Pi extension and, where applicable, its `bin/` CLI port) renders its `--help` text in this fixed order:
-1.  **Title + tagline + description** (`name`, `tagline`, `description` fields).
-2.  **Examples first** — a short list of realistic invocations with mock parameters already filled in (`examples[].args` + `desc`), so a reader sees working commands before wading into flag definitions.
-3.  **Full flag enumeration last** (`usage[].flags` + `desc`).
-Manifest `examples`/`usage` entries store only the trailing arguments/flags (`args`/`flags`), never a hardcoded command name — the renderer prepends its own `invokedAs` (e.g. `/merge` for the Pi extension, `./merge` for the CLI), since the same manifest must render correctly under both invocation forms.
-
-### Manifest-Driven `--why` Convention (Standard Practice)
-Every tool (both Pi extension and CLI bin) must support a `--why` flag that answers "Why would I want to run this tool?" using user scenarios from the manifest. The `--why` flag:
-1.  **Renders from the manifest** — the `why` array in each `*-cmd.json` (same manifest-driven strategy as `--help`).
-2.  **Answers the user's question** with concrete scenarios: user problem → exact command(s) → expected result.
-3.  **Enumerates use cases thoroughly** but not exhaustively — enough to convey the tool's scope.
-4.  **Includes at least one anti-use-case** — a scenario where a user might think the tool helps but it does not (or does so poorly). Sets expectations.
-5.  **Closes with a pointer** — `Run <tool> --help for the full flag reference.`
-
-Manifest `why` entries have three fields:
-- `scenario` (string): The user's context/problem.
-- `commands` (string[]): One or more exact tool invocations to address it (omitting the tool name, which the renderer prepends).
-- `result` (string): What the end state looks like after running.
-
-For tools without manifests (e.g. `yada`, whose manifest port remains tracked in #31), `--why` is rendered inline.
-
-**Hard rule — every tool's `--help` must list `--why` as an available flag.** This applies to manifest-driven `--help` (add to `usage[]`), inline `printHelp()` (add a line), and Pi extension-only tools (add to inline help text). When creating any new command, both `--help` and `--why` are mandatory, and `--why` must appear in the `--help` output.
-
----
-
-## 🔄 Local Development & Testing Workflow
-To test changes to extensions in this repository locally:
-
-### 1. The Ephemeral Sandbox (Temporary Run)
-To run Pi with your local directory's extensions temporarily loaded without editing your global settings:
-```bash
-pi -e ./         # Start a new session with local packages
-pi -r -e ./      # Resume the last session with local packages
-```
-
-### 2. Global Install (From Remote Main)
-**Pi** — load extensions globally across any directory:
-```bash
-pi install git:github.com/duppypro/princess-pi-packages@main
-```
-**Claude Code / any shell (bun users)** — install CLI bins globally with bun:
-```bash
-bun install -g github:duppypro/princess-pi-packages
-```
-Ensure `~/.bun/bin` is on `$PATH`. The `prepare` script handles dep installation
-and building automatically. Re-run to update.
-
-**npm global install** (`npm install -g github:...`) is **broken on npm 10.x** —
-it creates a symlink to a temp directory that gets cleaned up, leaving dead links.
-Use `bun install -g` or the local install flow below instead.
-
-### 3. Local Install (Primary Workflow)
-To install the CLI bins from your **local clone's current branch** (for development/testing
-without pushing to GitHub):
-```bash
-./install-local
-```
-Runs `bun run build` then `bun link` — the CLI bins on `$PATH` are symlinked to this repo's
-`bin/` directory. Use this when iterating on a feature branch and you want to test CLI tools
-immediately. No guards: builds whatever branch you're on, dirty or clean.
-
-### 4. Hot-Swapping & Updates
-When you make changes to files and push them, trigger a re-download and TUI compilation:
-```bash
-pi update --extensions    # Force-fetch and compile from the remote Git main cache
-/reload                   # Inside the TUI: Hot-reload loaded extensions
-```
-
-## 🐰 Bun Toolchain
-bun is the repo's build tool and package manager. The toolchain:
-- **Build:** `bun run build` → `bun build.ts` (Bun.build bundles `.ts` → `.mjs`)
-- **Typecheck:** `bun run typecheck` → `tsc --noEmit` (TS7 native)
-- **Install deps:** `bun install` (commits `bun.lock`, deletes `package-lock.json`)
-- **Local CLI link:** `./install-local` (build + `bun link`)
-
-Why `prepare` guards with `[ -d node_modules/wcwidth ]`: npm's git-dependency preparation runs
-`npm install` (which triggers `prepare`), but `prepare` (`bun build.ts`) needs `wcwidth` which
-hasn't been installed yet — a chicken-and-egg deadlock. `prepare` checks for the dep first;
-if missing, runs `bun install --production --ignore-scripts` (suppresses recursive `prepare`).
-The `[ -f package.json ]` guard prevents the install step from running in a bare directory
-(e.g. global node_modules before package extraction).
-
-Note: `bin/*.mjs` must be **tracked in git** (not gitignored) — npm's git-dependency extractor
-(`pacote`) respects `.gitignore`, so gitignored bins would be missing from the installed package
-even after `prepare` builds them.
+- [Tool conventions](docs/agents/tool-conventions.md) — manifest-driven `--help`/`--why`, cross-harness architecture
+- [Development workflow](docs/agents/dev-workflow.md) — local testing, install methods, hot-swapping
+- [Build & toolchain](docs/agents/build-and-toolchain.md) — `.mjs` generation rules, test expectations
