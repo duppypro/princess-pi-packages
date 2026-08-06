@@ -1071,7 +1071,7 @@ function classifyInteraction(interaction) {
       if (!normalized)
         continue;
       const lower = normalized.toLowerCase().trim();
-      if (/\bclaude\b/.test(lower)) {
+      if (/(?:^|\s)claude(?:\s+-|\s*\||\s*$)/.test(lower)) {
         isAgents = true;
       } else if (lower === "git" || lower.startsWith("git ")) {
         isGit = true;
