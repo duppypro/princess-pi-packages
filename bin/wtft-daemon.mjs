@@ -1262,7 +1262,7 @@ function serializeClassified(interaction) {
   return JSON.stringify(line) + `
 `;
 }
-var WTFT_TAGGER_VERSION = "2.5.3";
+var WTFT_TAGGER_VERSION = "2.5.4";
 function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   const split = splitOverheadCost(interaction, prevCtxTokens);
   if (!split)
