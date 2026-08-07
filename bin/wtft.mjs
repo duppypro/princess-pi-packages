@@ -4062,6 +4062,14 @@ async function main() {
     console.log(`\x1B[33mDaemon started on session ${sessionName.slice(0, 12)}… — no data yet. Try again in a moment.\x1B[0m`);
     process.exit(0);
   }
+  const subagentFiles = discoverSubagentSessionFiles(finalSessionPath);
+  if (subagentFiles.length > 0) {
+    const subInteractions = loadSubagentInteractions(subagentFiles);
+    if (subInteractions.length > 0) {
+      interactions = [...interactions, ...subInteractions];
+      interactions.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    }
+  }
   const config = readConfig("wtft");
   const disabledEmoji = isEmojiDisabled();
   const sessionInterval = typeof config.interval === "string" ? config.interval : undefined;
