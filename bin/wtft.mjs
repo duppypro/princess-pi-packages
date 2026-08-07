@@ -895,6 +895,7 @@ function parseSessionFile(filePath) {
       } catch {}
     }
   } catch {}
+  attributeClaudeSubAgentCosts(interactions);
   return interactions;
 }
 function deduplicateInteractions(interactions) {
@@ -4067,7 +4068,6 @@ async function main() {
       interactions.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
     }
   }
-  attributeClaudeSubAgentCosts(interactions);
   const config = readConfig("wtft");
   const disabledEmoji = isEmojiDisabled();
   const sessionInterval = typeof config.interval === "string" ? config.interval : undefined;
