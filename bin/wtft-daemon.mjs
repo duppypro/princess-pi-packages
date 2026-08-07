@@ -1009,6 +1009,63 @@ function classifyInteraction(interaction) {
     return "prompt";
   return "other";
 }
+var MAX_SUBAGENT_DEPTH = 5;
+function discoverSubagentSessionFiles(sessionPath, maxDepth = MAX_SUBAGENT_DEPTH) {
+  const files = [];
+  const sessionDir = path.dirname(sessionPath);
+  const sessionBase = path.basename(sessionPath, ".jsonl");
+  const ccBaseDir = path.join(sessionDir, sessionBase, "subagents");
+  if (fs.existsSync(ccBaseDir)) {
+    walkSubagentDir(ccBaseDir, 1, maxDepth, files);
+  }
+  let mainSessionId;
+  try {
+    const mainHeader = JSON.parse(fs.readFileSync(sessionPath, "utf8").split(`
+`)[0]);
+    if (mainHeader.type === "session")
+      mainSessionId = mainHeader.id;
+  } catch {}
+  if (mainSessionId) {
+    try {
+      for (const f of fs.readdirSync(sessionDir)) {
+        if (!f.endsWith(".jsonl"))
+          continue;
+        const fullPath = path.join(sessionDir, f);
+        if (fullPath === sessionPath)
+          continue;
+        if (files.includes(fullPath))
+          continue;
+        try {
+          const header = JSON.parse(fs.readFileSync(fullPath, "utf8").split(`
+`)[0]);
+          if (header.type === "session" && header.parentSession === mainSessionId) {
+            files.push(fullPath);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+  return files;
+}
+function walkSubagentDir(dir, depth, maxDepth, files) {
+  if (depth > maxDepth)
+    return;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const fullPath = path.join(dir, f);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          if (f === "subagents" || f === "ns" || f.startsWith("agent-")) {
+            walkSubagentDir(fullPath, depth + (f === "subagents" || f === "ns" ? 1 : 0), maxDepth, files);
+          }
+        } else if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
+          files.push(fullPath);
+        }
+      } catch {}
+    }
+  } catch {}
+}
 var CLAUDE_SUBAGENT_WINDOW_MS = 15000;
 function extractCwdFromBashCommand(cmd) {
   const firstLine = cmd.split(`
@@ -1382,53 +1439,66 @@ function hasClaudeCommand(interaction) {
     return /(?:^|\s)claude(?:\s+-|\s*\||\s*$)/.test(normalized.toLowerCase());
   });
 }
-function scanForClaudeSubAgents() {
-  if (pendingClaudeCommands.length === 0)
-    return;
-  const stillPending = [];
+function scanForSubAgents() {
   let wroteAny = false;
-  for (const item of pendingClaudeCommands) {
-    const interaction = item.interaction;
-    let cwd = null;
-    for (const cmd of interaction.commands) {
-      cwd = extractCwdFromBashCommand(cmd);
-      if (cwd)
-        break;
+  if (pendingClaudeCommands.length > 0) {
+    const stillPending = [];
+    for (const item of pendingClaudeCommands) {
+      const interaction = item.interaction;
+      let cwd = null;
+      for (const cmd of interaction.commands) {
+        cwd = extractCwdFromBashCommand(cmd);
+        if (cwd)
+          break;
+      }
+      if (!cwd)
+        continue;
+      const files = discoverClaudeSubAgentSessionFiles(cwd, interaction.timestamp);
+      if (files.length === 0) {
+        stillPending.push(item);
+        continue;
+      }
+      for (const file of files) {
+        const sessionId = path2.basename(file, ".jsonl");
+        if (discoveredClaudeSessions.has(sessionId))
+          continue;
+        discoveredClaudeSessions.add(sessionId);
+        wroteAny = writeSessionToTagFile(file) || wroteAny;
+      }
     }
-    if (!cwd)
-      continue;
-    const files = discoverClaudeSubAgentSessionFiles(cwd, interaction.timestamp);
-    if (files.length === 0) {
-      stillPending.push(item);
-      continue;
-    }
-    for (const file of files) {
+    pendingClaudeCommands.length = 0;
+    if (stillPending.length > 0)
+      pendingClaudeCommands.push(...stillPending);
+  }
+  const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
+  if (taskAgentFiles.length > 0) {
+    for (const file of taskAgentFiles) {
       const sessionId = path2.basename(file, ".jsonl");
       if (discoveredClaudeSessions.has(sessionId))
         continue;
       discoveredClaudeSessions.add(sessionId);
-      try {
-        const subInteractions = parseSessionFile(file);
-        const deduped = deduplicateInteractions(subInteractions);
-        let batch = "";
-        for (const si of deduped) {
-          batch += serializeClassified(si);
-        }
-        if (batch) {
-          fs2.appendFileSync(tagPath, batch);
-          wroteAny = true;
-        }
-      } catch {}
+      wroteAny = writeSessionToTagFile(file) || wroteAny;
     }
-  }
-  pendingClaudeCommands.length = 0;
-  if (stillPending.length > 0) {
-    pendingClaudeCommands.push(...stillPending);
   }
   if (wroteAny) {
     lastWriteMs = Date.now();
     idleStartMs = 0;
   }
+}
+function writeSessionToTagFile(file) {
+  try {
+    const subInteractions = parseSessionFile(file);
+    const deduped = deduplicateInteractions(subInteractions);
+    let batch = "";
+    for (const si of deduped) {
+      batch += serializeClassified(si);
+    }
+    if (batch) {
+      fs2.appendFileSync(tagPath, batch);
+      return true;
+    }
+  } catch {}
+  return false;
 }
 function parseNewLines(filePath) {
   const interactions = [];
@@ -2009,7 +2079,7 @@ Log parser mode:
       if (pendingItems.length > 0 && now - lastWriteMs >= POLL_MS) {
         flushPending();
       }
-      scanForClaudeSubAgents();
+      scanForSubAgents();
       if (pendingItems.length === 0) {
         if (idleStartMs === 0)
           idleStartMs = now;
