@@ -455,7 +455,7 @@ var init_help = () => {};
 
 // bin/wtft.ts
 import * as fs6 from "node:fs";
-import * as os4 from "node:os";
+import * as os5 from "node:os";
 import * as path6 from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -617,6 +617,7 @@ function calculateClaudeCost(model, usage, timestamp) {
 // extensions/lib/wtft-parser.ts
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 var TOOL_CATEGORY_MAP = {
   task: "agents",
   agent: "agents",
@@ -1161,6 +1162,115 @@ function loadSubagentInteractions(subagentFiles, parseFn = parseSessionFile, cla
     } catch {}
   }
   return interactions;
+}
+var CLAUDE_SUBAGENT_WINDOW_MS = 15000;
+function extractCwdFromBashCommand(cmd) {
+  const firstLine = cmd.split(`
+`)[0].trim();
+  const m = firstLine.match(/^cd\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/);
+  if (!m)
+    return null;
+  return m[1] || m[2] || m[3] || null;
+}
+function cwdToClaudeProjectSlug(cwd) {
+  return cwd.replace(/\//g, "-");
+}
+function discoverClaudeSubAgentSessionFiles(cwd, parentTimestamp, windowMs = CLAUDE_SUBAGENT_WINDOW_MS) {
+  const slug = cwdToClaudeProjectSlug(cwd);
+  const projectDir = path.join(os.homedir(), ".claude", "projects", slug);
+  if (!fs.existsSync(projectDir))
+    return [];
+  const files = [];
+  const tsWindowStart = parentTimestamp - windowMs;
+  const tsWindowEnd = parentTimestamp + windowMs;
+  try {
+    for (const f of fs.readdirSync(projectDir)) {
+      if (!f.endsWith(".jsonl"))
+        continue;
+      const fullPath = path.join(projectDir, f);
+      try {
+        const head = fs.readFileSync(fullPath, "utf8").split(`
+`).slice(0, 10);
+        let ts;
+        for (const line of head) {
+          if (!line.trim())
+            continue;
+          try {
+            const entry = JSON.parse(line);
+            ts = entry.timestamp || entry.createdAt || entry.startTime;
+            if (ts)
+              break;
+          } catch {}
+        }
+        if (!ts)
+          continue;
+        const tsMs = new Date(ts).getTime();
+        if (tsMs >= tsWindowStart && tsMs <= tsWindowEnd) {
+          files.push(fullPath);
+        }
+      } catch {}
+    }
+  } catch {}
+  return files;
+}
+function interactionHasClaudeCommand(interaction) {
+  return interaction.commands.some((cmd) => {
+    const normalized = normalizeCommand(cmd);
+    if (!normalized)
+      return false;
+    return /(?:^|\s)claude(?:\s+-|\s*\||\s*$)/.test(normalized.toLowerCase());
+  });
+}
+function attributeClaudeSubAgentCosts(interactions) {
+  const seenSessionIds = new Set;
+  for (const interaction of interactions) {
+    if (!interactionHasClaudeCommand(interaction))
+      continue;
+    let cwd = null;
+    for (const cmd of interaction.commands) {
+      cwd = extractCwdFromBashCommand(cmd);
+      if (cwd)
+        break;
+    }
+    if (!cwd)
+      continue;
+    const subAgentFiles = discoverClaudeSubAgentSessionFiles(cwd, interaction.timestamp);
+    let totalInput = 0;
+    let totalOutput = 0;
+    let totalCacheRead = 0;
+    let totalCacheWrite = 0;
+    let totalReasoning = 0;
+    let totalCost = 0;
+    const sessionIds = [];
+    for (const file of subAgentFiles) {
+      const sessionId = path.basename(file, ".jsonl");
+      if (seenSessionIds.has(sessionId))
+        continue;
+      seenSessionIds.add(sessionId);
+      sessionIds.push(sessionId);
+      try {
+        const subInteractions = parseSessionFile(file);
+        const deduped = deduplicateInteractions(subInteractions);
+        for (const si of deduped) {
+          totalInput += si.inputTokens || 0;
+          totalOutput += si.outputTokens || 0;
+          totalCacheRead += si.cacheReadTokens || 0;
+          totalCacheWrite += si.cacheWriteTokens || 0;
+          totalReasoning += si.reasoningTokens || 0;
+          totalCost += si.cost || 0;
+        }
+      } catch {}
+    }
+    if (sessionIds.length > 0) {
+      interaction.inputTokens += totalInput;
+      interaction.outputTokens += totalOutput;
+      interaction.cacheReadTokens += totalCacheRead;
+      interaction.cacheWriteTokens += totalCacheWrite;
+      interaction.reasoningTokens += totalReasoning;
+      interaction.cost += totalCost;
+      interaction.claudeSubAgentSessionIds = sessionIds;
+    }
+  }
 }
 // extensions/lib/wtft-renderer.ts
 var import_wcwidth = __toESM(require_wcwidth(), 1);
@@ -2381,7 +2491,7 @@ Compaction: ${compactionCount} event(s), ${formatTokenCount(totalCompacted)} tot
 // extensions/lib/wtft-daemon-lib.ts
 import * as path2 from "node:path";
 import * as fs2 from "node:fs";
-import * as os from "node:os";
+import * as os2 from "node:os";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 
@@ -2578,7 +2688,7 @@ function getTagPath(sessionPath) {
 }
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
-  return path2.join(os.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  return path2.join(os2.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 }
 var IDLE_THRESHOLD_MS = 122000;
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1000;
@@ -3114,7 +3224,7 @@ import { execSync as execSync3 } from "node:child_process";
 
 // extensions/lib/config.ts
 import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync3, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir as homedir2 } from "node:os";
 import { dirname as dirname3, join as join3 } from "node:path";
 var CONFIG_DIR = "princess-pi-packages";
 var OLD_CONFIG_DIR = "princess-pi";
@@ -3178,7 +3288,7 @@ function walkUpConfigs(toolName, startDir) {
 }
 function loadConfig(toolName, defaults) {
   const merged = { ...defaults };
-  const xdgHome = process.env.XDG_CONFIG_HOME || join3(homedir(), ".config");
+  const xdgHome = process.env.XDG_CONFIG_HOME || join3(homedir2(), ".config");
   let globalConfig = tryReadConfig(join3(xdgHome, CONFIG_DIR, `${toolName}.json`));
   if (!globalConfig) {
     globalConfig = tryReadConfig(join3(xdgHome, OLD_CONFIG_DIR, `${toolName}.json`));
@@ -3198,16 +3308,16 @@ function readConfig(toolName) {
 // extensions/lib/session-selector.ts
 import * as fs3 from "node:fs";
 import * as path4 from "node:path";
-import * as os3 from "node:os";
+import * as os4 from "node:os";
 
 // extensions/lib/session-path-shortener.ts
 import * as path3 from "node:path";
-import * as os2 from "node:os";
+import * as os3 from "node:os";
 function buildDisplayPath(filename, dirSlug, harness) {
   const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
   const uuidTail = uuidMatch ? uuidMatch[1] : "";
   const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
-  const homeDir = os2.homedir();
+  const homeDir = os3.homedir();
   const userName = path3.basename(homeDir);
   const knownPrefix = `home-${userName}-git-projects`;
   const compactPrefix = `home-${userName}-g-p`;
@@ -3266,9 +3376,9 @@ function formatRelativeTime(ts) {
 // extensions/lib/session-selector.ts
 var TAGGER_VERSION = "2.3.8";
 function discoverSessions(harness = "auto", cwdOverride) {
-  const piSessionsDir = path4.join(os3.homedir(), ".pi", "agent", "sessions");
+  const piSessionsDir = path4.join(os4.homedir(), ".pi", "agent", "sessions");
   let claudeSessionsDirs = [];
-  const claudeProjectsDir = path4.join(os3.homedir(), ".claude", "projects");
+  const claudeProjectsDir = path4.join(os4.homedir(), ".claude", "projects");
   if (fs3.existsSync(claudeProjectsDir)) {
     const resolvedCwd = cwdOverride ? path4.resolve(cwdOverride) : process.cwd();
     const cwdSlug = resolvedCwd.replace(/[/\\]/g, "-");
@@ -3764,7 +3874,7 @@ if (opts.hasTokens)
   unit = "tokens";
 if (opts.hasCost)
   unit = "cost";
-var WARN_LOG = path6.join(os4.homedir(), ".local", "state", "wtft", "reap.log");
+var WARN_LOG = path6.join(os5.homedir(), ".local", "state", "wtft", "reap.log");
 function showReapWarnings() {
   try {
     if (!fs6.existsSync(WARN_LOG))
@@ -3957,6 +4067,7 @@ async function main() {
       interactions.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
     }
   }
+  attributeClaudeSubAgentCosts(interactions);
   const config = readConfig("wtft");
   const disabledEmoji = isEmojiDisabled();
   const sessionInterval = typeof config.interval === "string" ? config.interval : undefined;
@@ -4057,6 +4168,7 @@ export {
   calculateServerToolCost,
   calculateClaudeCost,
   buildWtftLines,
+  attributeClaudeSubAgentCosts,
   WTFT_TAGGER_VERSION,
   MODEL_PRICING,
   IDLE_THRESHOLD_MS,
