@@ -1227,6 +1227,8 @@ function attributeClaudeSubAgentCosts(interactions) {
   for (const interaction of interactions) {
     if (!interactionHasClaudeCommand(interaction))
       continue;
+    if (interaction.claudeSubAgentSessionIds)
+      continue;
     let cwd = null;
     for (const cmd of interaction.commands) {
       cwd = extractCwdFromBashCommand(cmd);
@@ -4068,6 +4070,7 @@ async function main() {
       interactions.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
     }
   }
+  attributeClaudeSubAgentCosts(interactions);
   const config = readConfig("wtft");
   const disabledEmoji = isEmojiDisabled();
   const sessionInterval = typeof config.interval === "string" ? config.interval : undefined;
