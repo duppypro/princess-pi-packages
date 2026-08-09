@@ -1874,12 +1874,16 @@ function buildWtftLines(interactions, defaultSettings, opts) {
   const binMap = new Map;
   let totalSessionCost = 0;
   let turnIndex = 0;
+  const cacheMissBins = new Set;
   const ALL_CATEGORIES = CATEGORY_ORDER;
   for (const interaction of interactions) {
     turnIndex++;
     const classification = classifyInteraction(interaction);
     const { key, label, dateStr } = getBinInfo(interaction.timestamp, intervalConfig, turnIndex, tz);
     totalSessionCost += interaction.cost;
+    if (interaction.cacheReadTokens === 0 && interaction.cacheWriteTokens > 0) {
+      cacheMissBins.add(key);
+    }
     let bin = binMap.get(key);
     if (!bin) {
       const costs = {};
@@ -1907,26 +1911,6 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     }
   }
   const sortedBins = Array.from(binMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map((entry) => entry[1]);
-  const cacheExpiryBins = new Set;
-  if (intervalConfig.type !== "turns") {
-    const sortedInteractions = [...interactions].sort((a, b) => a.timestamp - b.timestamp);
-    let latestExpiry = null;
-    for (const ix of sortedInteractions) {
-      const ts = new Date(ix.timestamp).getTime();
-      if (latestExpiry !== null && ts > latestExpiry) {
-        const { key } = getBinInfo(ix.timestamp, intervalConfig, 0, tz);
-        cacheExpiryBins.add(key);
-        latestExpiry = null;
-      }
-      if (ix.cacheTtl) {
-        const ttlMs = ix.cacheTtl === "1h" ? 3600000 : 300000;
-        const expiry = ts + ttlMs;
-        if (latestExpiry === null || expiry > latestExpiry) {
-          latestExpiry = expiry;
-        }
-      }
-    }
-  }
   if (mode === "cumulative") {
     if (unit === "tokens") {
       for (const bin of sortedBins) {
@@ -2151,8 +2135,8 @@ function buildWtftLines(interactions, defaultSettings, opts) {
     if (showTicks && i > 0 && bin.dateStr !== displayedBins[i - 1].dateStr) {
       widgetLines.push(`\x1B[90m${buildDividerLine(formatMmmDdStr(bin.dateStr))}\x1B[0m`);
     }
-    if (bin.key && cacheExpiryBins.has(bin.key)) {
-      widgetLines.push(`\x1B[90m${buildDividerLine("Cache Expired")}\x1B[0m`);
+    if (bin.key && cacheMissBins.has(bin.key)) {
+      widgetLines.push(`\x1B[90m${buildDividerLine("Cache Miss")}\x1B[0m`);
     }
     const labelPart = padString(bin.label, labelWidth);
     const surgeActive = bin.surgePriced === true;
@@ -3984,6 +3968,10 @@ async function main() {
   if (opts.showVersion) {
     console.log(renderWtftVersion(manifestPath));
     return;
+  }
+  if (opts.pager) {
+    console.error("❌ Error: -p/--pager is a Pi TUI overlay and is not available in the CLI. Pipe to a pager instead: wtft … | less -R");
+    process.exit(1);
   }
   if (opts.daemonList || opts.daemonCleanup || opts.daemonRestart || opts.daemonStop) {
     const daemonPath = path7.join(daemonDir, "wtft-daemon.mjs");
