@@ -31,13 +31,16 @@ import * as os from "node:os";
  *
  * @param filename - The session file name (e.g. "2026-07-01_session_abc12345.jsonl")
  * @param dirSlug - The directory slug (e.g. "--home-user--git-projects-project--" or "home-user-git-projects-project")
- * @param harness - "pi" or "claude-code" — affects slug wrapping and date prefix extraction
+ * @param harness - harness id. "pi" gets `--`-wrapped slugs and a date prefix;
+ *   every other harness (including ones added later, #156) gets the generic
+ *   single-dash treatment — which is why this is a plain string, not a union:
+ *   adding a harness must not require editing this shared file.
  * @returns Compact display string (e.g. "~/g-p/project/2026-07-01...abc1")
  */
 export function buildDisplayPath(
 	filename: string,
 	dirSlug: string,
-	harness: "pi" | "claude-code"
+	harness: string
 ): string {
 	// UUID tail: extract last 4 hex chars before .jsonl
 	const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);

@@ -388,9 +388,9 @@ __export(exports_help, {
   renderWhy: () => renderWhy,
   renderHelp: () => renderHelp
 });
-import * as fs5 from "node:fs";
+import * as fs9 from "node:fs";
 function renderHelp(manifestPath, invokedAs) {
-  const manifestStr = fs5.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs9.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let helpText = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -415,7 +415,7 @@ function renderHelp(manifestPath, invokedAs) {
   return helpText;
 }
 function renderWhy(manifestPath, invokedAs) {
-  const manifestStr = fs5.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs9.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -454,9 +454,9 @@ function renderWhy(manifestPath, invokedAs) {
 var init_help = () => {};
 
 // bin/wtft.ts
-import * as fs7 from "node:fs";
-import * as os5 from "node:os";
-import * as path7 from "node:path";
+import * as fs11 from "node:fs";
+import * as os6 from "node:os";
+import * as path10 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/wtft-cost.ts
@@ -667,9 +667,648 @@ function loadUserPricing(filePath = getUserPricingPath()) {
   }
 }
 // extensions/lib/wtft-parser.ts
-import * as path2 from "node:path";
+import * as path6 from "node:path";
+import * as fs6 from "node:fs";
+import * as os4 from "node:os";
+
+// extensions/lib/harness/registry.ts
+import * as fs5 from "node:fs";
+import * as path5 from "node:path";
+import { homedir as homedir5 } from "node:os";
+import { pathToFileURL } from "node:url";
+
+// extensions/lib/harness/claude-code/discovery.ts
+import * as fs3 from "node:fs";
+import * as path3 from "node:path";
+import * as os2 from "node:os";
+
+// extensions/lib/harness/session-cwd.ts
 import * as fs2 from "node:fs";
+var TAIL_WINDOWS = [8 * 1024, 64 * 1024, 512 * 1024];
+var cwdCache = new Map;
+var readCount = 0;
+function readSlice(file, start, len) {
+  const fd = fs2.openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(len);
+    fs2.readSync(fd, buf, 0, len, start);
+    readCount++;
+    return buf.toString("utf8");
+  } finally {
+    fs2.closeSync(fd);
+  }
+}
+function scanBackwardsForCwd(text, partialFirstLine) {
+  const lines = text.split(`
+`);
+  if (partialFirstLine)
+    lines.shift();
+  for (let i = lines.length - 1;i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line)
+      continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry && typeof entry.cwd === "string" && entry.cwd)
+        return entry.cwd;
+    } catch {}
+  }
+  return null;
+}
+function resolveLastCwd(filePath, knownStat) {
+  let stat;
+  try {
+    stat = knownStat || fs2.statSync(filePath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size === 0)
+    return null;
+  const key = `${filePath}:${stat.mtimeMs}:${stat.size}`;
+  const cached = cwdCache.get(key);
+  if (cached !== undefined)
+    return cached;
+  let result = null;
+  for (const window of TAIL_WINDOWS) {
+    const start = Math.max(0, stat.size - window);
+    const len = stat.size - start;
+    if (len <= 0)
+      break;
+    let text;
+    try {
+      text = readSlice(filePath, start, len);
+    } catch {
+      break;
+    }
+    result = scanBackwardsForCwd(text, start > 0);
+    if (result)
+      break;
+    if (start === 0)
+      break;
+  }
+  cwdCache.set(key, result);
+  return result;
+}
+function cwdToSlug(cwd) {
+  return cwd.replace(/[/\\]/g, "-");
+}
+
+// extensions/lib/session-path-shortener.ts
+import * as path2 from "node:path";
 import * as os from "node:os";
+function buildDisplayPath(filename, dirSlug, harness) {
+  const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
+  const uuidTail = uuidMatch ? uuidMatch[1] : "";
+  const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
+  const homeDir = os.homedir();
+  const userName = path2.basename(homeDir);
+  const knownPrefix = `home-${userName}-git-projects`;
+  const compactPrefix = `home-${userName}-g-p`;
+  if (slug.startsWith(knownPrefix + "-")) {
+    const projectName = slug.slice(knownPrefix.length + 1);
+    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
+    const pathStr = `~/g-p/${projectName}`;
+    return appendTail(pathStr, datePrefix2, uuidTail);
+  }
+  if (slug.startsWith(compactPrefix + "-")) {
+    const projectName = slug.slice(compactPrefix.length + 1);
+    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
+    const pathStr = `~/g-p/${projectName}`;
+    return appendTail(pathStr, datePrefix2, uuidTail);
+  }
+  const cleanedSlug = slug.replace(/-/g, "/");
+  const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
+  return appendTail(cleanedSlug, datePrefix, uuidTail);
+}
+function extractDatePrefix(filename) {
+  const match = filename.match(/^(\d{4}-\d{2}-\d{2}[^_]*)/);
+  return match ? match[1] : "";
+}
+function appendTail(base, datePrefix, uuidTail) {
+  if (datePrefix && uuidTail) {
+    return `${base}/${datePrefix}...${uuidTail}`;
+  }
+  if (datePrefix) {
+    return `${base}/${datePrefix}`;
+  }
+  if (uuidTail) {
+    return `${base}/...${uuidTail}`;
+  }
+  return base;
+}
+function formatRelativeTime(ts) {
+  const diffMs = Date.now() - ts;
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60)
+    return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60)
+    return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24)
+    return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 30)
+    return `${diffDay}d ago`;
+  const diffMo = Math.floor(diffDay / 30);
+  if (diffMo < 12)
+    return `${diffMo}mo ago`;
+  return `${Math.floor(diffDay / 365)}y ago`;
+}
+
+// extensions/lib/harness/claude-code/discovery.ts
+var ID = "claude-code";
+var SKIP_DIRS = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
+function projectsDir() {
+  return path3.join(os2.homedir(), ".claude", "projects");
+}
+function sessionIdOf(file) {
+  return path3.basename(file).replace(/\.jsonl$/i, "");
+}
+function collect(dir, projectSlug, out) {
+  let entries;
+  try {
+    entries = fs3.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = path3.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS.has(entry.name))
+        collect(full, projectSlug, out);
+    } else if (entry.name.endsWith(".jsonl")) {
+      out.push(full);
+    }
+  }
+}
+function toCandidate(file, projectSlug) {
+  let stat;
+  try {
+    stat = fs3.statSync(file);
+  } catch {
+    return null;
+  }
+  const name = path3.basename(file);
+  return {
+    path: file,
+    harness: ID,
+    timestamp: stat.mtimeMs,
+    name,
+    displayPath: buildDisplayPath(name, projectSlug, ID)
+  };
+}
+var discovery = {
+  id: ID,
+  label: "Claude",
+  discover(targetCwd) {
+    const root = projectsDir();
+    if (!fs3.existsSync(root))
+      return [];
+    const target = path3.resolve(targetCwd || process.cwd());
+    const targetSlug = cwdToSlug(target);
+    let projectDirs;
+    try {
+      projectDirs = fs3.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      return [];
+    }
+    const bySessionId = new Map;
+    for (const slug of projectDirs) {
+      const physicalMatch = slug === targetSlug;
+      const files = [];
+      collect(path3.join(root, slug), slug, files);
+      for (const file of files) {
+        if (!physicalMatch && resolveLastCwd(file) !== target)
+          continue;
+        const candidate = toCandidate(file, slug);
+        if (!candidate)
+          continue;
+        const id = sessionIdOf(file);
+        const existing = bySessionId.get(id);
+        if (!existing || candidate.timestamp > existing.timestamp) {
+          bySessionId.set(id, candidate);
+        }
+      }
+    }
+    return [...bySessionId.values()];
+  },
+  resolveSessionById(sessionId) {
+    const root = projectsDir();
+    if (!fs3.existsSync(root))
+      return null;
+    const wanted = sessionId.replace(/\.jsonl$/i, "");
+    let best = null;
+    let projectDirs;
+    try {
+      projectDirs = fs3.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      return null;
+    }
+    for (const slug of projectDirs) {
+      const files = [];
+      collect(path3.join(root, slug), slug, files);
+      for (const file of files) {
+        if (sessionIdOf(file) !== wanted)
+          continue;
+        try {
+          const mtimeMs = fs3.statSync(file).mtimeMs;
+          if (!best || mtimeMs > best.mtimeMs)
+            best = { path: file, mtimeMs };
+        } catch {}
+      }
+    }
+    return best ? best.path : null;
+  }
+};
+
+// extensions/lib/harness/claude-code/parse.ts
+var ID2 = "claude-code";
+var INTERRUPT_PREFIX = "[Request interrupted by user";
+function normalizeUsage(usage) {
+  const u = usage || {};
+  return {
+    input_tokens: u.input_tokens || 0,
+    output_tokens: u.output_tokens || 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+    cache_read_input_tokens: u.cache_read_input_tokens || 0,
+    cache_creation: u.cache_creation || null,
+    reasoning_tokens: u.reasoning_tokens || 0,
+    server_tool_use: u.server_tool_use || null,
+    iterations: Array.isArray(u.iterations) ? u.iterations.length : undefined,
+    nativeCost: null
+  };
+}
+var parse = {
+  id: ID2,
+  matchAssistant(entry) {
+    if (!entry || entry.type !== "assistant")
+      return null;
+    const message = entry.message;
+    if (!message || message.role !== "assistant")
+      return null;
+    return {
+      content: Array.isArray(message.content) ? message.content : [],
+      messageId: message.id,
+      requestId: entry.requestId,
+      model: message.model,
+      timestamp: message.timestamp || entry.timestamp,
+      isSidechain: entry.isSidechain === true,
+      usage: normalizeUsage(message.usage)
+    };
+  },
+  readBlock(block) {
+    if (!block)
+      return null;
+    if (block.type === "text")
+      return { kind: "text", text: block.text };
+    if (block.type === "thinking")
+      return { kind: "text", text: block.thinking };
+    if (block.type !== "tool_use")
+      return null;
+    const name = (block.name || "").toLowerCase();
+    const args = block.input || {};
+    const files = [];
+    const commands = [];
+    let handled = true;
+    if (name === "read" || name === "view" || name === "glob" || name === "ls") {
+      const p = args.file_path || args.path || args.directory || args.target;
+      if (p)
+        files.push({ path: p, action: "read" });
+    } else if (name === "edit" || name === "write" || name === "replace") {
+      const p = args.file_path || args.path || args.target;
+      if (p)
+        files.push({ path: p, action: "write" });
+    } else if (name === "notebookedit") {
+      if (args.notebook_path)
+        files.push({ path: args.notebook_path, action: "write" });
+    } else if (name === "bash" || name === "run") {
+      if (args.command)
+        commands.push(args.command);
+    } else {
+      handled = false;
+    }
+    return { kind: "tool", name, handled, files, commands };
+  },
+  readControlEntry(entry) {
+    if (!entry)
+      return null;
+    if (entry.isCompactSummary === true)
+      return { kind: "after-compaction" };
+    if (entry.type === "user") {
+      const c = entry.message?.content;
+      const hit = typeof c === "string" ? c.includes(INTERRUPT_PREFIX) : Array.isArray(c) && c.some((b) => b?.type === "text" && typeof b.text === "string" && b.text.includes(INTERRUPT_PREFIX));
+      if (hit)
+        return { kind: "interrupt" };
+    }
+    return null;
+  }
+};
+
+// extensions/lib/harness/pi/discovery.ts
+import * as fs4 from "node:fs";
+import * as path4 from "node:path";
+import * as os3 from "node:os";
+var ID3 = "pi";
+var SKIP_DIRS2 = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
+function sessionsDir() {
+  return path4.join(os3.homedir(), ".pi", "agent", "sessions");
+}
+function sessionIdOf2(file) {
+  return path4.basename(file).replace(/\.jsonl$/i, "");
+}
+function collect2(dir, out) {
+  let entries;
+  try {
+    entries = fs4.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = path4.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS2.has(entry.name))
+        collect2(full, out);
+    } else if (entry.name.endsWith(".jsonl")) {
+      out.push(full);
+    }
+  }
+}
+function toCandidate2(file, projectSlug) {
+  let stat;
+  try {
+    stat = fs4.statSync(file);
+  } catch {
+    return null;
+  }
+  const name = path4.basename(file);
+  return {
+    path: file,
+    harness: ID3,
+    timestamp: stat.mtimeMs,
+    name,
+    displayPath: buildDisplayPath(name, projectSlug, ID3)
+  };
+}
+var discovery2 = {
+  id: ID3,
+  label: "Pi",
+  discover(targetCwd) {
+    const root = sessionsDir();
+    if (!fs4.existsSync(root))
+      return [];
+    const target = targetCwd ? path4.resolve(targetCwd) : null;
+    const targetSlug = target ? cwdToSlug(target) : null;
+    let projectDirs;
+    try {
+      projectDirs = fs4.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      return [];
+    }
+    const bySessionId = new Map;
+    for (const slug of projectDirs) {
+      const physicalMatch = targetSlug === null || slug.includes(targetSlug);
+      const files = [];
+      collect2(path4.join(root, slug), files);
+      for (const file of files) {
+        if (!physicalMatch && (target === null || resolveLastCwd(file) !== target))
+          continue;
+        const candidate = toCandidate2(file, slug);
+        if (!candidate)
+          continue;
+        const id = sessionIdOf2(file);
+        const existing = bySessionId.get(id);
+        if (!existing || candidate.timestamp > existing.timestamp) {
+          bySessionId.set(id, candidate);
+        }
+      }
+    }
+    return [...bySessionId.values()];
+  },
+  resolveSessionById(sessionId) {
+    const root = sessionsDir();
+    if (!fs4.existsSync(root))
+      return null;
+    const wanted = sessionId.replace(/\.jsonl$/i, "");
+    const files = [];
+    collect2(root, files);
+    let best = null;
+    for (const file of files) {
+      if (sessionIdOf2(file) !== wanted)
+        continue;
+      try {
+        const mtimeMs = fs4.statSync(file).mtimeMs;
+        if (!best || mtimeMs > best.mtimeMs)
+          best = { path: file, mtimeMs };
+      } catch {}
+    }
+    return best ? best.path : null;
+  }
+};
+
+// extensions/lib/harness/pi/parse.ts
+var ID4 = "pi";
+function normalizeUsage2(usage) {
+  const u = usage || {};
+  const nativeCost = u.cost?.total;
+  return {
+    input_tokens: u.input_tokens ?? u.input ?? 0,
+    output_tokens: u.output_tokens ?? u.output ?? 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens ?? u.cacheWrite ?? 0,
+    cache_read_input_tokens: u.cache_read_input_tokens ?? u.cacheRead ?? 0,
+    cache_creation: u.cache_creation || null,
+    reasoning_tokens: u.reasoning_tokens ?? u.reasoning ?? 0,
+    server_tool_use: u.server_tool_use || null,
+    iterations: Array.isArray(u.iterations) ? u.iterations.length : undefined,
+    nativeCost: nativeCost === undefined || nativeCost === null ? null : nativeCost
+  };
+}
+var parse2 = {
+  id: ID4,
+  matchAssistant(entry) {
+    if (!entry || entry.type !== "message")
+      return null;
+    const message = entry.message;
+    if (!message || message.role !== "assistant")
+      return null;
+    return {
+      content: Array.isArray(message.content) ? message.content : [],
+      messageId: message.id,
+      requestId: entry.requestId,
+      model: message.model,
+      timestamp: message.timestamp || entry.timestamp,
+      isSidechain: entry.isSidechain === true,
+      usage: normalizeUsage2(message.usage)
+    };
+  },
+  readBlock(block) {
+    if (!block)
+      return null;
+    if (block.type === "text")
+      return { kind: "text", text: block.text };
+    if (block.type === "thinking")
+      return { kind: "text", text: block.thinking };
+    if (block.type !== "toolCall")
+      return null;
+    const name = (block.name || "").toLowerCase();
+    const args = block.arguments || {};
+    const files = [];
+    const commands = [];
+    let handled = true;
+    if (name === "read") {
+      if (args.path)
+        files.push({ path: args.path, action: "read" });
+    } else if (name === "write" || name === "edit") {
+      if (args.path)
+        files.push({ path: args.path, action: "write" });
+    } else if (name === "bash") {
+      if (args.command)
+        commands.push(args.command);
+    } else {
+      handled = false;
+    }
+    return { kind: "tool", name, handled, files, commands };
+  },
+  readControlEntry(entry) {
+    if (!entry)
+      return null;
+    if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
+      return { kind: "thinking-level", level: entry.thinkingLevel };
+    }
+    if (entry.type === "model_change" && entry.modelId) {
+      return { kind: "model", modelId: entry.modelId };
+    }
+    if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
+      return { kind: "compaction", tokensBefore: entry.tokensBefore };
+    }
+    return null;
+  }
+};
+
+// extensions/lib/harness/builtins.generated.ts
+var BUILTIN_HARNESSES = {
+  "claude-code": { discovery, parse },
+  pi: { discovery: discovery2, parse: parse2 }
+};
+
+// extensions/lib/harness/registry.ts
+function getHarnessConfigPath() {
+  const xdgHome = process.env.XDG_CONFIG_HOME || path5.join(homedir5(), ".config");
+  return path5.join(xdgHome, "princess-pi-packages", "wtft-harnesses.json");
+}
+function loadHarnessConfig(filePath = getHarnessConfigPath()) {
+  try {
+    if (!fs5.existsSync(filePath))
+      return {};
+    const parsed = JSON.parse(fs5.readFileSync(filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
+    const out = {};
+    for (const [id, entry] of Object.entries(parsed)) {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        out[id] = entry;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+function expandHome(p) {
+  if (p === "~")
+    return homedir5();
+  if (p.startsWith("~/") || p.startsWith("~\\"))
+    return path5.join(homedir5(), p.slice(2));
+  return p;
+}
+var externals = new Map;
+var disabled = new Set;
+var configCache = null;
+var harnessesCache = null;
+var adaptersCache = null;
+function config() {
+  if (configCache === null) {
+    configCache = loadHarnessConfig();
+    disabled = new Set(Object.entries(configCache).filter(([, e]) => e.enabled === false).map(([id]) => id));
+  }
+  return configCache;
+}
+function resetHarnessRegistry() {
+  configCache = null;
+  disabled = new Set;
+  externals.clear();
+  harnessesCache = null;
+  adaptersCache = null;
+}
+async function loadExternalHarnesses(filePath = getHarnessConfigPath()) {
+  resetHarnessRegistry();
+  configCache = loadHarnessConfig(filePath);
+  harnessesCache = null;
+  adaptersCache = null;
+  disabled = new Set(Object.entries(configCache).filter(([, e]) => e.enabled === false).map(([id]) => id));
+  const loaded = [];
+  for (const [id, entry] of Object.entries(configCache)) {
+    if (BUILTIN_HARNESSES[id])
+      continue;
+    if (entry.enabled === false)
+      continue;
+    if (!entry.discovery || !entry.parse)
+      continue;
+    try {
+      const discoveryMod = await import(pathToFileURL(path5.resolve(expandHome(entry.discovery))).href);
+      const parseMod = await import(pathToFileURL(path5.resolve(expandHome(entry.parse))).href);
+      const discovery3 = discoveryMod.discovery || discoveryMod.default;
+      const parse3 = parseMod.parse || parseMod.default;
+      if (!discovery3 || !parse3)
+        throw new Error("module exports no discovery/parse");
+      if (entry.label)
+        discovery3.label = entry.label;
+      externals.set(id, { id, discovery: discovery3, parse: parse3 });
+      harnessesCache = null;
+      adaptersCache = null;
+      loaded.push(id);
+    } catch (err) {
+      process.stderr.write(`wtft: harness '${id}' failed to load: ${err instanceof Error ? err.message : String(err)}
+`);
+    }
+  }
+  return loaded;
+}
+function getHarnesses() {
+  if (harnessesCache)
+    return harnessesCache;
+  config();
+  const out = [];
+  for (const [id, mods] of Object.entries(BUILTIN_HARNESSES)) {
+    if (disabled.has(id))
+      continue;
+    const cfg = configCache?.[id];
+    if (cfg?.label)
+      mods.discovery.label = cfg.label;
+    out.push({ id, discovery: mods.discovery, parse: mods.parse });
+  }
+  for (const [id, harness] of externals) {
+    if (disabled.has(id))
+      continue;
+    out.push(harness);
+  }
+  harnessesCache = out;
+  return out;
+}
+function getHarness(id) {
+  return getHarnesses().find((h) => h.id === id) || null;
+}
+function getDiscoveries() {
+  return getHarnesses().map((h) => h.discovery);
+}
+function getParseAdapters() {
+  if (adaptersCache)
+    return adaptersCache;
+  adaptersCache = getHarnesses().map((h) => h.parse);
+  return adaptersCache;
+}
+
+// extensions/lib/wtft-parser.ts
 var TOOL_CATEGORY_MAP = {
   task: "agents",
   agent: "agents",
@@ -733,137 +1372,136 @@ function extractFilesFromBashCommand(command, files) {
 function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore, afterCompaction, currentModel) {
   if (!entry)
     return null;
-  const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
-  const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
-  if (isPiSchema || isClaudeSchema) {
-    const assistantMsg = entry.message;
-    const effectiveModel = assistantMsg.model || currentModel || "";
-    let timestampStr = assistantMsg.timestamp || entry.timestamp;
-    let timestamp = 0;
-    if (typeof timestampStr === "string") {
-      timestamp = new Date(timestampStr).getTime();
-    } else if (typeof timestampStr === "number") {
-      timestamp = timestampStr;
+  let turn = null;
+  for (const adapter of getParseAdapters()) {
+    turn = adapter.matchAssistant(entry);
+    if (turn) {
+      return buildInteraction(turn, adapter, thinkingLevel, compactionTokensBefore, afterCompaction, currentModel);
     }
-    let cost = 0;
-    const usage = assistantMsg.usage || {};
-    const piCost = usage.cost?.total;
-    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0 || (usage.reasoning_tokens || usage.reasoning || 0) > 0;
-    if (piCost !== undefined && piCost !== null && !(piCost === 0 && hasTokens)) {
-      cost = piCost;
-    } else if (effectiveModel && hasTokens) {
-      const normalizedUsage = {
-        input_tokens: usage.input_tokens ?? usage.input ?? 0,
-        output_tokens: usage.output_tokens ?? usage.output ?? 0,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
-        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
-        cache_creation: usage.cache_creation || null,
-        reasoning_tokens: usage.reasoning_tokens ?? usage.reasoning ?? 0
-      };
-      cost = calculateClaudeCost(effectiveModel, normalizedUsage, timestamp);
-    }
-    const cacheCreation = usage.cache_creation || {};
-    const cacheTtl = (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? "1h" : (cacheCreation.ephemeral_5m_input_tokens || 0) > 0 ? "5m" : undefined;
-    const cacheMiss = (usage.cache_read_input_tokens || 0) === 0 && (usage.cache_creation_input_tokens || 0) > 0 ? true : undefined;
-    const serverToolRequests = usage.server_tool_use || {};
-    const serverToolCost = calculateServerToolCost(effectiveModel, serverToolRequests.web_search_requests || 0, serverToolRequests.web_fetch_requests || 0);
-    const surgePriced = effectiveModel.toLowerCase().includes("deepseek") ? getDeepSeekPeakMultiplier(timestamp) > 1 : undefined;
-    const files = [];
-    const commands = [];
-    const texts = [];
-    const toolCats = new Set;
-    let unrecognizedTool = false;
-    if (Array.isArray(assistantMsg.content)) {
-      for (const block of assistantMsg.content) {
-        if (block.type === "text") {
-          texts.push(block.text);
-        } else if (block.type === "thinking") {
-          texts.push(block.thinking);
-        } else if (block.type === "toolCall") {
-          const name = (block.name || "").toLowerCase();
-          const args = block.arguments || {};
-          if (name === "read") {
-            if (args.path)
-              files.push({ path: args.path, action: "read" });
-          } else if (name === "write" || name === "edit") {
-            if (args.path)
-              files.push({ path: args.path, action: "write" });
-          } else if (name === "bash") {
-            if (args.command) {
-              commands.push(args.command);
-              extractFilesFromBashCommand(args.command, files);
-            }
-          } else if (!mapToolToCategory(name, toolCats)) {
-            unrecognizedTool = true;
-          }
-        } else if (block.type === "tool_use") {
-          const name = (block.name || "").toLowerCase();
-          const args = block.input || {};
-          if (name === "read" || name === "view" || name === "glob" || name === "ls") {
-            const p = args.file_path || args.path || args.directory || args.target;
-            if (p)
-              files.push({ path: p, action: "read" });
-          } else if (name === "edit" || name === "write" || name === "replace") {
-            const p = args.file_path || args.path || args.target;
-            if (p)
-              files.push({ path: p, action: "write" });
-          } else if (name === "notebookedit") {
-            if (args.notebook_path)
-              files.push({ path: args.notebook_path, action: "write" });
-          } else if (name === "bash" || name === "run") {
-            if (args.command) {
-              commands.push(args.command);
-              extractFilesFromBashCommand(args.command, files);
-            }
-          } else if (!mapToolToCategory(name, toolCats)) {
-            unrecognizedTool = true;
-          }
-        }
-      }
-    }
-    return {
-      timestamp,
-      cost,
-      messageId: assistantMsg.id,
-      requestId: entry.requestId,
-      model: effectiveModel || undefined,
-      inputTokens: usage.input_tokens || usage.input || 0,
-      outputTokens: usage.output_tokens || usage.output || 0,
-      cacheReadTokens: usage.cache_read_input_tokens || usage.cacheRead || 0,
-      cacheWriteTokens: usage.cache_creation_input_tokens || usage.cacheWrite || 0,
-      reasoningTokens: usage.reasoning || 0,
-      webSearchRequests: serverToolRequests.web_search_requests || 0,
-      webFetchRequests: serverToolRequests.web_fetch_requests || 0,
-      serverToolCost,
-      surgePriced,
-      thinkingLevel,
-      compactionTokensBefore,
-      cacheTtl,
-      cacheMiss,
-      afterCompaction: afterCompaction || compactionTokensBefore !== undefined || undefined,
-      cacheWrite1hTokens: (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? cacheCreation.ephemeral_1h_input_tokens : undefined,
-      iterations: Array.isArray(usage.iterations) ? usage.iterations.length : undefined,
-      isSidechain: entry.isSidechain === true || undefined,
-      files,
-      commands,
-      texts,
-      toolCats: toolCats.size > 0 ? [...toolCats] : undefined,
-      unrecognizedTool: unrecognizedTool || undefined
-    };
   }
   return null;
 }
-var INTERRUPT_PREFIX = "[Request interrupted by user";
-function isInterruptMarker(entry) {
-  if (!entry || entry.type !== "user")
-    return false;
-  const c = entry.message?.content;
-  if (typeof c === "string")
-    return c.includes(INTERRUPT_PREFIX);
-  if (Array.isArray(c)) {
-    return c.some((b) => b?.type === "text" && typeof b.text === "string" && b.text.includes(INTERRUPT_PREFIX));
+function buildInteraction(turn, adapter, thinkingLevel, compactionTokensBefore, afterCompaction, currentModel) {
+  const usage = turn.usage;
+  const effectiveModel = turn.model || currentModel || "";
+  let timestamp = 0;
+  if (typeof turn.timestamp === "string") {
+    timestamp = new Date(turn.timestamp).getTime();
+  } else if (typeof turn.timestamp === "number") {
+    timestamp = turn.timestamp;
   }
-  return false;
+  const hasTokens = usage.input_tokens > 0 || usage.output_tokens > 0 || usage.cache_read_input_tokens > 0 || usage.cache_creation_input_tokens > 0 || usage.reasoning_tokens > 0;
+  let cost = 0;
+  const nativeCost = usage.nativeCost;
+  if (nativeCost !== null && !(nativeCost === 0 && hasTokens)) {
+    cost = nativeCost;
+  } else if (effectiveModel && hasTokens) {
+    cost = calculateClaudeCost(effectiveModel, {
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens,
+      cache_read_input_tokens: usage.cache_read_input_tokens,
+      cache_creation: usage.cache_creation,
+      reasoning_tokens: usage.reasoning_tokens
+    }, timestamp);
+  }
+  const cacheCreation = usage.cache_creation || {};
+  const cacheTtl = (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? "1h" : (cacheCreation.ephemeral_5m_input_tokens || 0) > 0 ? "5m" : undefined;
+  const cacheMiss = usage.cache_read_input_tokens === 0 && usage.cache_creation_input_tokens > 0 ? true : undefined;
+  const serverToolRequests = usage.server_tool_use || {};
+  const serverToolCost = calculateServerToolCost(effectiveModel, serverToolRequests.web_search_requests || 0, serverToolRequests.web_fetch_requests || 0);
+  const surgePriced = effectiveModel.toLowerCase().includes("deepseek") ? getDeepSeekPeakMultiplier(timestamp) > 1 : undefined;
+  const files = [];
+  const commands = [];
+  const texts = [];
+  const toolCats = new Set;
+  let unrecognizedTool = false;
+  for (const rawBlock of turn.content) {
+    const block = adapter.readBlock(rawBlock);
+    if (!block)
+      continue;
+    if (block.kind === "text") {
+      texts.push(block.text);
+      continue;
+    }
+    if (block.files.length > 0)
+      files.push(...block.files);
+    for (const command of block.commands) {
+      commands.push(command);
+      extractFilesFromBashCommand(command, files);
+    }
+    if (!block.handled && !mapToolToCategory(block.name, toolCats)) {
+      unrecognizedTool = true;
+    }
+  }
+  return {
+    timestamp,
+    cost,
+    messageId: turn.messageId,
+    requestId: turn.requestId,
+    model: effectiveModel || undefined,
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadTokens: usage.cache_read_input_tokens,
+    cacheWriteTokens: usage.cache_creation_input_tokens,
+    reasoningTokens: usage.reasoning_tokens,
+    webSearchRequests: serverToolRequests.web_search_requests || 0,
+    webFetchRequests: serverToolRequests.web_fetch_requests || 0,
+    serverToolCost,
+    surgePriced,
+    thinkingLevel,
+    compactionTokensBefore,
+    cacheTtl,
+    cacheMiss,
+    afterCompaction: afterCompaction || compactionTokensBefore !== undefined || undefined,
+    cacheWrite1hTokens: (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? cacheCreation.ephemeral_1h_input_tokens : undefined,
+    iterations: usage.iterations,
+    isSidechain: turn.isSidechain || undefined,
+    files,
+    commands,
+    texts,
+    toolCats: toolCats.size > 0 ? [...toolCats] : undefined,
+    unrecognizedTool: unrecognizedTool || undefined
+  };
+}
+function isInterruptMarker(entry) {
+  return readControlEntry(entry)?.kind === "interrupt";
+}
+function readControlEntry(entry) {
+  if (!entry)
+    return null;
+  for (const adapter of getParseAdapters()) {
+    const signal = adapter.readControlEntry(entry);
+    if (signal)
+      return signal;
+  }
+  return null;
+}
+function newParseStreamState() {
+  return { afterCompaction: false };
+}
+function applyControlEntry(entry, state, onInterrupt) {
+  const signal = readControlEntry(entry);
+  if (!signal)
+    return false;
+  switch (signal.kind) {
+    case "thinking-level":
+      state.thinkingLevel = signal.level;
+      break;
+    case "model":
+      state.model = signal.modelId;
+      break;
+    case "compaction":
+      state.compactionTokensBefore = signal.tokensBefore;
+      break;
+    case "after-compaction":
+      state.afterCompaction = true;
+      break;
+    case "interrupt":
+      onInterrupt();
+      break;
+  }
+  return true;
 }
 function splitOverheadCost(interaction, prevCtxTokens) {
   const cw = interaction.cacheWriteTokens;
@@ -907,44 +1545,26 @@ function splitOverheadCost(interaction, prevCtxTokens) {
 }
 function parseSessionFile(filePath) {
   const interactions = [];
-  let currentThinkingLevel;
-  let currentModel;
-  let lastCompactionTokensBefore;
-  let pendingAfterCompaction = false;
+  const state = newParseStreamState();
   try {
-    const content = fs2.readFileSync(filePath, "utf8");
+    const content = fs6.readFileSync(filePath, "utf8");
     for (const line of content.split(`
 `)) {
       if (!line.trim())
         continue;
       try {
         const entry = JSON.parse(line);
-        if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
-          currentThinkingLevel = entry.thinkingLevel;
-          continue;
-        }
-        if (entry.type === "model_change" && entry.modelId) {
-          currentModel = entry.modelId;
-          continue;
-        }
-        if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
-          lastCompactionTokensBefore = entry.tokensBefore;
-          continue;
-        }
-        if (entry.isCompactSummary === true) {
-          pendingAfterCompaction = true;
-          continue;
-        }
-        if (isInterruptMarker(entry)) {
+        const isControl = applyControlEntry(entry, state, () => {
           if (interactions.length > 0)
             interactions[interactions.length - 1].interrupted = true;
+        });
+        if (isControl)
           continue;
-        }
-        const interaction = parseEntryToInteraction(entry, currentThinkingLevel, lastCompactionTokensBefore, pendingAfterCompaction, currentModel);
+        const interaction = parseEntryToInteraction(entry, state.thinkingLevel, state.compactionTokensBefore, state.afterCompaction, state.model);
         if (interaction) {
           interactions.push(interaction);
-          lastCompactionTokensBefore = undefined;
-          pendingAfterCompaction = false;
+          state.compactionTokensBefore = undefined;
+          state.afterCompaction = false;
         }
       } catch {}
     }
@@ -1058,14 +1678,14 @@ function classifyInteraction(interaction) {
     const norm = f.path.replace(/\\/g, "/");
     let category = null;
     if (norm.includes("node_modules/")) {
-      if (path2.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
+      if (path6.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
         category = "research";
       } else {
         category = "code";
       }
     } else if (norm.startsWith("docs/research/") || norm.includes("/docs/research/")) {
       category = "plan";
-    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path2.extname(norm).toLowerCase() === ".md") {
+    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path6.extname(norm).toLowerCase() === ".md") {
       category = "spec";
     } else if (norm.startsWith("tests/") || norm.includes("/tests/")) {
       category = "tests";
@@ -1074,7 +1694,7 @@ function classifyInteraction(interaction) {
     } else if (norm.startsWith(".pi/extensions/") || norm.includes("/.pi/extensions/") || norm.startsWith("extensions/") || norm.includes("/extensions/") || norm.startsWith("src/") || norm.includes("/src/") || norm.startsWith("public/") || norm.includes("/public/") || norm.startsWith("bin/") || norm.includes("/bin/") || norm.startsWith("debug/") || norm.includes("/debug/")) {
       category = "code";
     } else {
-      const ext = path2.extname(norm).toLowerCase();
+      const ext = path6.extname(norm).toLowerCase();
       if ([".ts", ".js", ".mjs", ".json", ".jsonl", ".css", ".tsx", ".jsx", ".py", ".rs", ".go", ".sh", ".yml", ".yaml", ".sql", ".txt"].includes(ext) || norm.endsWith(".gitignore") || norm.endsWith(".dockerignore")) {
         category = "code";
       } else if (ext === "") {
@@ -1150,31 +1770,31 @@ function classifyInteraction(interaction) {
 var MAX_SUBAGENT_DEPTH = 5;
 function discoverSubagentSessionFiles(sessionPath, maxDepth = MAX_SUBAGENT_DEPTH) {
   const files = [];
-  const sessionDir = path2.dirname(sessionPath);
-  const sessionBase = path2.basename(sessionPath, ".jsonl");
-  const ccBaseDir = path2.join(sessionDir, sessionBase, "subagents");
-  if (fs2.existsSync(ccBaseDir)) {
+  const sessionDir = path6.dirname(sessionPath);
+  const sessionBase = path6.basename(sessionPath, ".jsonl");
+  const ccBaseDir = path6.join(sessionDir, sessionBase, "subagents");
+  if (fs6.existsSync(ccBaseDir)) {
     walkSubagentDir(ccBaseDir, 1, maxDepth, files);
   }
   let mainSessionId;
   try {
-    const mainHeader = JSON.parse(fs2.readFileSync(sessionPath, "utf8").split(`
+    const mainHeader = JSON.parse(fs6.readFileSync(sessionPath, "utf8").split(`
 `)[0]);
     if (mainHeader.type === "session")
       mainSessionId = mainHeader.id;
   } catch {}
   if (mainSessionId) {
     try {
-      for (const f of fs2.readdirSync(sessionDir)) {
+      for (const f of fs6.readdirSync(sessionDir)) {
         if (!f.endsWith(".jsonl"))
           continue;
-        const fullPath = path2.join(sessionDir, f);
+        const fullPath = path6.join(sessionDir, f);
         if (fullPath === sessionPath)
           continue;
         if (files.includes(fullPath))
           continue;
         try {
-          const header = JSON.parse(fs2.readFileSync(fullPath, "utf8").split(`
+          const header = JSON.parse(fs6.readFileSync(fullPath, "utf8").split(`
 `)[0]);
           if (header.type === "session" && header.parentSession === mainSessionId) {
             files.push(fullPath);
@@ -1189,10 +1809,10 @@ function walkSubagentDir(dir, depth, maxDepth, files) {
   if (depth > maxDepth)
     return;
   try {
-    for (const f of fs2.readdirSync(dir)) {
-      const fullPath = path2.join(dir, f);
+    for (const f of fs6.readdirSync(dir)) {
+      const fullPath = path6.join(dir, f);
       try {
-        const stat = fs2.statSync(fullPath);
+        const stat = fs6.statSync(fullPath);
         if (stat.isDirectory()) {
           if (f !== "wtft-tags") {
             walkSubagentDir(fullPath, depth + (f === "subagents" || f === "ns" ? 1 : 0), maxDepth, files);
@@ -1232,19 +1852,19 @@ function cwdToClaudeProjectSlug(cwd) {
 }
 function discoverClaudeSubAgentSessionFiles(cwd, parentTimestamp, windowMs = CLAUDE_SUBAGENT_WINDOW_MS) {
   const slug = cwdToClaudeProjectSlug(cwd);
-  const projectDir = path2.join(os.homedir(), ".claude", "projects", slug);
-  if (!fs2.existsSync(projectDir))
+  const projectDir = path6.join(os4.homedir(), ".claude", "projects", slug);
+  if (!fs6.existsSync(projectDir))
     return [];
   const files = [];
   const tsWindowStart = parentTimestamp - windowMs;
   const tsWindowEnd = parentTimestamp + windowMs;
   try {
-    for (const f of fs2.readdirSync(projectDir)) {
+    for (const f of fs6.readdirSync(projectDir)) {
       if (!f.endsWith(".jsonl"))
         continue;
-      const fullPath = path2.join(projectDir, f);
+      const fullPath = path6.join(projectDir, f);
       try {
-        const head = fs2.readFileSync(fullPath, "utf8").split(`
+        const head = fs6.readFileSync(fullPath, "utf8").split(`
 `).slice(0, 10);
         let ts;
         for (const line of head) {
@@ -1300,7 +1920,7 @@ function attributeClaudeSubAgentCosts(interactions) {
     let totalCost = 0;
     const sessionIds = [];
     for (const file of subAgentFiles) {
-      const sessionId = path2.basename(file, ".jsonl");
+      const sessionId = path6.basename(file, ".jsonl");
       if (seenSessionIds.has(sessionId))
         continue;
       seenSessionIds.add(sessionId);
@@ -1490,11 +2110,11 @@ function getIsoWeekAndMonday(parts) {
     mondayDay: mondayDate.getUTCDate()
   };
 }
-function getBinInfo(timestamp, config, turnIndex, tz) {
+function getBinInfo(timestamp, config2, turnIndex, tz) {
   const parts = getZonedParts(timestamp, tz);
   const pad = (n) => String(n).padStart(2, "0");
   const dateStr = `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
-  const { size, unit, type } = config;
+  const { size, unit, type } = config2;
   if (type === "turns") {
     const binEnd = Math.ceil(turnIndex / size) * size;
     return { key: `turn:${String(binEnd).padStart(6, "0")}`, label: `${binEnd}t`, dateStr };
@@ -2538,9 +3158,9 @@ Compaction: ${compactionCount} event(s), ${formatTokenCount(totalCompacted)} tot
   return out;
 }
 // extensions/lib/wtft-daemon-lib.ts
-import * as path3 from "node:path";
-import * as fs3 from "node:fs";
-import * as os2 from "node:os";
+import * as path7 from "node:path";
+import * as fs7 from "node:fs";
+import * as os5 from "node:os";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 
@@ -2665,7 +3285,7 @@ function classifiedToInteraction(obj) {
 function readClassifiedTagFile(tagPath) {
   const interactions = [];
   try {
-    const content = fs3.readFileSync(tagPath, "utf8");
+    const content = fs7.readFileSync(tagPath, "utf8");
     for (const line of content.split(`
 `)) {
       if (!line.trim())
@@ -2714,34 +3334,56 @@ function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   };
   return serializeClassified(remainder) + serializeClassified(overheadLine);
 }
+function findSiblingTagPath(sessionPath) {
+  const sessionBase = path7.basename(sessionPath);
+  const wanted = sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
+  const projectsRoot = path7.dirname(path7.dirname(sessionPath));
+  let best = null;
+  try {
+    for (const slug of fs7.readdirSync(projectsRoot)) {
+      const candidate = path7.join(projectsRoot, slug, "wtft-tags", wanted);
+      try {
+        const stat = fs7.statSync(candidate);
+        if (!stat.isFile())
+          continue;
+        if (!best || stat.mtimeMs > best.mtimeMs)
+          best = { path: candidate, mtimeMs: stat.mtimeMs };
+      } catch {}
+    }
+  } catch {}
+  return best ? best.path : null;
+}
 function getTagPath(sessionPath) {
-  const sessionDir = path3.dirname(sessionPath);
-  const sessionBase = path3.basename(sessionPath);
-  const tagsDir = path3.join(sessionDir, "wtft-tags");
-  const defaultPath = path3.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  const sessionDir = path7.dirname(sessionPath);
+  const sessionBase = path7.basename(sessionPath);
+  const tagsDir = path7.join(sessionDir, "wtft-tags");
+  const defaultPath = path7.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  let newest = null;
   try {
     const prefix = sessionBase + ".wtft-tag.v";
-    let newest = null;
-    for (const f of fs3.readdirSync(tagsDir)) {
+    for (const f of fs7.readdirSync(tagsDir)) {
       if (!f.startsWith(prefix) || !f.endsWith(".jsonl"))
         continue;
-      const full = path3.join(tagsDir, f);
+      const full = path7.join(tagsDir, f);
       if (full === defaultPath)
         return defaultPath;
       try {
-        const mtimeMs = fs3.statSync(full).mtimeMs;
+        const mtimeMs = fs7.statSync(full).mtimeMs;
         if (!newest || mtimeMs > newest.mtimeMs)
           newest = { path: full, mtimeMs };
       } catch {}
     }
-    if (newest)
-      return newest.path;
   } catch {}
+  const sibling = findSiblingTagPath(sessionPath);
+  if (sibling)
+    return sibling;
+  if (newest)
+    return newest.path;
   return defaultPath;
 }
 function getDaemonPidPath(sessionPath) {
-  const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
-  return path3.join(os2.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  const sessionHash = createHash("sha256").update(path7.basename(sessionPath)).digest("hex").slice(0, 12);
+  return path7.join(os5.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 }
 var IDLE_THRESHOLD_MS = 122000;
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1000;
@@ -2800,7 +3442,7 @@ function renderDaemonStatus(status, restarting = false) {
 }
 function getModelFromSessionFile(sessionPath) {
   try {
-    const content = fs3.readFileSync(sessionPath, "utf8");
+    const content = fs7.readFileSync(sessionPath, "utf8");
     const lines = content.split(`
 `);
     for (let i = lines.length - 1;i >= 0; i--) {
@@ -2826,7 +3468,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   let pidAlive = false;
   try {
-    const pid = parseInt(fs3.readFileSync(pidPath, "utf8").trim(), 10);
+    const pid = parseInt(fs7.readFileSync(pidPath, "utf8").trim(), 10);
     if (pid > 0) {
       try {
         process.kill(pid, 0);
@@ -2836,12 +3478,12 @@ function checkDaemonHealth(sessionPath, tagPath) {
   } catch {}
   if (pidAlive) {
     try {
-      const stat = fs3.statSync(tagPath);
+      const stat = fs7.statSync(tagPath);
       if (stat.size > 0) {
-        const fd = fs3.openSync(tagPath, "r");
+        const fd = fs7.openSync(tagPath, "r");
         const buf = Buffer.alloc(Math.min(stat.size, 8192));
-        fs3.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - 8192));
-        fs3.closeSync(fd);
+        fs7.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - 8192));
+        fs7.closeSync(fd);
         const lines = buf.toString("utf8").split(`
 `);
         let lastModel;
@@ -2887,7 +3529,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
         }
         {
           try {
-            const sessionStat = fs3.statSync(sessionPath);
+            const sessionStat = fs7.statSync(sessionPath);
             const sessionIdleMs = Date.now() - sessionStat.mtimeMs;
             if (sessionIdleMs >= IDLE_THRESHOLD_MS) {
               if (!lastModel)
@@ -2903,12 +3545,12 @@ function checkDaemonHealth(sessionPath, tagPath) {
   }
   let lastHbMs = 0;
   try {
-    const stat = fs3.statSync(tagPath);
+    const stat = fs7.statSync(tagPath);
     const readStart = Math.max(0, stat.size - 8192);
-    const fd = fs3.openSync(tagPath, "r");
+    const fd = fs7.openSync(tagPath, "r");
     const buf = Buffer.alloc(stat.size - readStart);
-    fs3.readSync(fd, buf, 0, buf.length, readStart);
-    fs3.closeSync(fd);
+    fs7.readSync(fd, buf, 0, buf.length, readStart);
+    fs7.closeSync(fd);
     const lines = buf.toString("utf8").split(`
 `);
     for (let i = lines.length - 1;i >= 0; i--) {
@@ -2936,14 +3578,14 @@ function checkDaemonHealth(sessionPath, tagPath) {
 function restartDaemon(sessionPath, daemonPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   try {
-    const pid = parseInt(fs3.readFileSync(pidPath, "utf8").trim(), 10);
+    const pid = parseInt(fs7.readFileSync(pidPath, "utf8").trim(), 10);
     if (pid > 0) {
       try {
         process.kill(pid, "SIGTERM");
       } catch {}
     }
     try {
-      fs3.unlinkSync(pidPath);
+      fs7.unlinkSync(pidPath);
     } catch {}
   } catch {}
   try {
@@ -3024,7 +3666,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const health = checkDaemonHealth(sessionPath, tagPath);
     if (!health.alive) {
       try {
-        const tagStat = fs3.statSync(tagPath);
+        const tagStat = fs7.statSync(tagPath);
         if (Date.now() - tagStat.mtimeMs < 2000 && tagStat.size > 0)
           return;
       } catch {}
@@ -3080,7 +3722,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let allInteractions = readClassifiedTagFile(tagPath);
   let lastReadOffset = 0;
   try {
-    lastReadOffset = fs3.statSync(tagPath).size;
+    lastReadOffset = fs7.statSync(tagPath).size;
   } catch {}
   let sessionInterval;
   let sessionLimit;
@@ -3088,7 +3730,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let sessionShowTicks;
   let sessionTimezone;
   try {
-    const sessionContent = fs3.readFileSync(sessionPath, "utf8");
+    const sessionContent = fs7.readFileSync(sessionPath, "utf8");
     for (const line of sessionContent.split(`
 `)) {
       if (!line.trim())
@@ -3200,16 +3842,16 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   });
   let watcher = null;
   const startWatching = () => {
-    watcher = fs3.watch(tagPath, (eventType) => {
+    watcher = fs7.watch(tagPath, (eventType) => {
       if (eventType !== "change")
         return;
       try {
-        const stat = fs3.statSync(tagPath);
+        const stat = fs7.statSync(tagPath);
         if (stat.size > lastReadOffset) {
-          const fd = fs3.openSync(tagPath, "r");
+          const fd = fs7.openSync(tagPath, "r");
           const buf = Buffer.alloc(stat.size - lastReadOffset);
-          fs3.readSync(fd, buf, 0, buf.length, lastReadOffset);
-          fs3.closeSync(fd);
+          fs7.readSync(fd, buf, 0, buf.length, lastReadOffset);
+          fs7.closeSync(fd);
           lastReadOffset = stat.size;
           const newContent = buf.toString("utf8");
           const lines = newContent.split(`
@@ -3245,7 +3887,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         try {
           lastReadOffset = 0;
           allInteractions = readClassifiedTagFile(tagPath);
-          lastReadOffset = fs3.statSync(tagPath).size;
+          lastReadOffset = fs7.statSync(tagPath).size;
           needsRedraw = true;
           render();
           resetWatchdog();
@@ -3254,10 +3896,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     });
   };
   const fileWaitStart = Date.now();
-  while (!fs3.existsSync(tagPath) && Date.now() - fileWaitStart < 5000) {
+  while (!fs7.existsSync(tagPath) && Date.now() - fileWaitStart < 5000) {
     await new Promise((r) => setTimeout(r, 250));
   }
-  if (fs3.existsSync(tagPath)) {
+  if (fs7.existsSync(tagPath)) {
     startWatching();
   } else {
     console.error("❌ Log parser did not create tag file within 5s. Is wtft-daemon installed?");
@@ -3276,19 +3918,19 @@ async function watchTagFile(sessionPath, tagPath, settings) {
 import { execSync as execSync3 } from "node:child_process";
 
 // extensions/lib/config.ts
-import { existsSync as existsSync4, mkdirSync, readFileSync as readFileSync4, writeFileSync } from "node:fs";
-import { homedir as homedir3 } from "node:os";
-import { dirname as dirname3, join as join4 } from "node:path";
+import { existsSync as existsSync7, mkdirSync, readFileSync as readFileSync5, writeFileSync } from "node:fs";
+import { homedir as homedir7 } from "node:os";
+import { dirname as dirname3, join as join7 } from "node:path";
 var CONFIG_DIR = "princess-pi-packages";
 var OLD_CONFIG_DIR = "princess-pi";
 function stripJsonComments(json) {
   return json.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 function tryReadConfig(filePath) {
-  if (!existsSync4(filePath))
+  if (!existsSync7(filePath))
     return null;
   try {
-    const raw = readFileSync4(filePath, "utf8");
+    const raw = readFileSync5(filePath, "utf8");
     const stripped = stripJsonComments(raw);
     const parsed = JSON.parse(stripped);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
@@ -3326,12 +3968,12 @@ function walkUpConfigs(toolName, startDir) {
   const results = [];
   let dir = startDir;
   while (true) {
-    let config = tryReadConfig(join4(dir, `.${CONFIG_DIR}`, `${toolName}.json`));
-    if (!config) {
-      config = tryReadConfig(join4(dir, `.${OLD_CONFIG_DIR}`, `${toolName}.json`));
+    let config2 = tryReadConfig(join7(dir, `.${CONFIG_DIR}`, `${toolName}.json`));
+    if (!config2) {
+      config2 = tryReadConfig(join7(dir, `.${OLD_CONFIG_DIR}`, `${toolName}.json`));
     }
-    if (config)
-      results.push(config);
+    if (config2)
+      results.push(config2);
     const parent = dirname3(dir);
     if (parent === dir || parent === "/")
       break;
@@ -3341,10 +3983,10 @@ function walkUpConfigs(toolName, startDir) {
 }
 function loadConfig(toolName, defaults) {
   const merged = { ...defaults };
-  const xdgHome = process.env.XDG_CONFIG_HOME || join4(homedir3(), ".config");
-  let globalConfig = tryReadConfig(join4(xdgHome, CONFIG_DIR, `${toolName}.json`));
+  const xdgHome = process.env.XDG_CONFIG_HOME || join7(homedir7(), ".config");
+  let globalConfig = tryReadConfig(join7(xdgHome, CONFIG_DIR, `${toolName}.json`));
   if (!globalConfig) {
-    globalConfig = tryReadConfig(join4(xdgHome, OLD_CONFIG_DIR, `${toolName}.json`));
+    globalConfig = tryReadConfig(join7(xdgHome, OLD_CONFIG_DIR, `${toolName}.json`));
   }
   if (globalConfig)
     deepMerge(merged, globalConfig);
@@ -3359,141 +4001,25 @@ function readConfig(toolName) {
 }
 
 // extensions/lib/session-selector.ts
-import * as fs4 from "node:fs";
-import * as path5 from "node:path";
-import * as os4 from "node:os";
-
-// extensions/lib/session-path-shortener.ts
-import * as path4 from "node:path";
-import * as os3 from "node:os";
-function buildDisplayPath(filename, dirSlug, harness) {
-  const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
-  const uuidTail = uuidMatch ? uuidMatch[1] : "";
-  const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
-  const homeDir = os3.homedir();
-  const userName = path4.basename(homeDir);
-  const knownPrefix = `home-${userName}-git-projects`;
-  const compactPrefix = `home-${userName}-g-p`;
-  if (slug.startsWith(knownPrefix + "-")) {
-    const projectName = slug.slice(knownPrefix.length + 1);
-    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
-    const pathStr = `~/g-p/${projectName}`;
-    return appendTail(pathStr, datePrefix2, uuidTail);
-  }
-  if (slug.startsWith(compactPrefix + "-")) {
-    const projectName = slug.slice(compactPrefix.length + 1);
-    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
-    const pathStr = `~/g-p/${projectName}`;
-    return appendTail(pathStr, datePrefix2, uuidTail);
-  }
-  const cleanedSlug = slug.replace(/-/g, "/");
-  const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
-  return appendTail(cleanedSlug, datePrefix, uuidTail);
-}
-function extractDatePrefix(filename) {
-  const match = filename.match(/^(\d{4}-\d{2}-\d{2}[^_]*)/);
-  return match ? match[1] : "";
-}
-function appendTail(base, datePrefix, uuidTail) {
-  if (datePrefix && uuidTail) {
-    return `${base}/${datePrefix}...${uuidTail}`;
-  }
-  if (datePrefix) {
-    return `${base}/${datePrefix}`;
-  }
-  if (uuidTail) {
-    return `${base}/...${uuidTail}`;
-  }
-  return base;
-}
-function formatRelativeTime(ts) {
-  const diffMs = Date.now() - ts;
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60)
-    return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60)
-    return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24)
-    return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 30)
-    return `${diffDay}d ago`;
-  const diffMo = Math.floor(diffDay / 30);
-  if (diffMo < 12)
-    return `${diffMo}mo ago`;
-  return `${Math.floor(diffDay / 365)}y ago`;
-}
-
-// extensions/lib/session-selector.ts
+import * as fs8 from "node:fs";
+import * as path8 from "node:path";
 var TAGGER_VERSION = "2.3.8";
 function discoverSessions(harness = "auto", cwdOverride) {
-  const piSessionsDir = path5.join(os4.homedir(), ".pi", "agent", "sessions");
-  let claudeSessionsDirs = [];
-  const claudeProjectsDir = path5.join(os4.homedir(), ".claude", "projects");
-  if (fs4.existsSync(claudeProjectsDir)) {
-    const resolvedCwd = cwdOverride ? path5.resolve(cwdOverride) : process.cwd();
-    const cwdSlug = resolvedCwd.replace(/[/\\]/g, "-");
-    const sessionsSubdir = path5.join(claudeProjectsDir, cwdSlug, "sessions");
-    const directDir = path5.join(claudeProjectsDir, cwdSlug);
-    if (fs4.existsSync(sessionsSubdir))
-      claudeSessionsDirs.push(sessionsSubdir);
-    if (fs4.existsSync(directDir))
-      claudeSessionsDirs.push(directDir);
-  }
+  const targets = harness === "auto" ? getDiscoveries() : [getHarness(harness)?.discovery].filter((d) => !!d);
   const candidates = [];
-  const walk = (dir, type) => {
-    const files = fs4.readdirSync(dir);
-    for (const f of files) {
-      const fullPath = path5.join(dir, f);
-      const stat = fs4.statSync(fullPath);
-      if (stat.isDirectory()) {
-        if (f !== "subagents" && f !== "tool-results" && f !== "memory" && f !== "wtft-tags") {
-          walk(fullPath, type);
-        }
-      } else if (f.endsWith(".jsonl")) {
-        let slug;
-        if (type === "pi") {
-          slug = path5.basename(dir);
-        } else {
-          const base = path5.basename(dir);
-          slug = base === "sessions" ? path5.basename(path5.dirname(dir)) : base;
-        }
-        candidates.push({
-          path: fullPath,
-          harness: type,
-          timestamp: stat.mtimeMs,
-          name: f,
-          displayPath: buildDisplayPath(f, slug, type)
-        });
-      }
-    }
-  };
-  const piCwdSlug = cwdOverride ? path5.resolve(cwdOverride).replace(/[/\\]/g, "-") : null;
-  try {
-    if (harness === "auto" || harness === "pi") {
-      if (fs4.existsSync(piSessionsDir)) {
-        if (piCwdSlug) {
-          const entries = fs4.readdirSync(piSessionsDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.isDirectory() && entry.name.includes(piCwdSlug)) {
-              walk(path5.join(piSessionsDir, entry.name), "pi");
-            }
-          }
-        } else {
-          walk(piSessionsDir, "pi");
-        }
-      }
-    }
-    if (harness === "auto" || harness === "claude-code") {
-      for (const dir of claudeSessionsDirs) {
-        if (fs4.existsSync(dir))
-          walk(dir, "claude-code");
-      }
-    }
-  } catch {}
+  for (const discovery3 of targets) {
+    try {
+      candidates.push(...discovery3.discover(cwdOverride ?? null));
+    } catch {}
+  }
   return candidates.sort((a, b) => b.timestamp - a.timestamp);
+}
+function harnessLabel(id) {
+  for (const h of getHarnesses()) {
+    if (h.id === id)
+      return h.discovery.label;
+  }
+  return id;
 }
 function compareVersions(a, b) {
   const ap = a.split(".").map(Number);
@@ -3506,18 +4032,18 @@ function compareVersions(a, b) {
   return 0;
 }
 function getSessionSummary(sessionPath) {
-  const sessionDir = path5.dirname(sessionPath);
-  const sessionBase = path5.basename(sessionPath);
-  const tagsDir = path5.join(sessionDir, "wtft-tags");
-  let tagPath = path5.join(tagsDir, sessionBase + `.wtft-tag.v${TAGGER_VERSION}.jsonl`);
+  const sessionDir = path8.dirname(sessionPath);
+  const sessionBase = path8.basename(sessionPath);
+  const tagsDir = path8.join(sessionDir, "wtft-tags");
+  let tagPath = path8.join(tagsDir, sessionBase + `.wtft-tag.v${TAGGER_VERSION}.jsonl`);
   let tagVersion = TAGGER_VERSION;
-  if (!fs4.existsSync(tagPath)) {
+  if (!fs8.existsSync(tagPath)) {
     try {
-      const files = fs4.readdirSync(tagsDir);
+      const files = fs8.readdirSync(tagsDir);
       const prefix = sessionBase + ".wtft-tag.v";
       const matches = files.filter((f) => f.startsWith(prefix) && f.endsWith(".jsonl")).map((f) => {
         const v = f.slice(prefix.length, -".jsonl".length);
-        return { path: path5.join(tagsDir, f), version: v };
+        return { path: path8.join(tagsDir, f), version: v };
       }).sort((a, b) => compareVersions(b.version, a.version));
       if (matches.length > 0) {
         tagPath = matches[0].path;
@@ -3525,9 +4051,9 @@ function getSessionSummary(sessionPath) {
       }
     } catch {}
   }
-  if (fs4.existsSync(tagPath)) {
+  if (fs8.existsSync(tagPath)) {
     try {
-      const content = fs4.readFileSync(tagPath, "utf8");
+      const content = fs8.readFileSync(tagPath, "utf8");
       const lines = content.split(`
 `);
       let cost = 0;
@@ -3549,7 +4075,7 @@ function getSessionSummary(sessionPath) {
   }
   let rawLines = null;
   try {
-    const raw = fs4.readFileSync(sessionPath, "utf8");
+    const raw = fs8.readFileSync(sessionPath, "utf8");
     rawLines = raw.split(`
 `).filter((l) => l.trim()).length;
   } catch {}
@@ -3573,7 +4099,7 @@ function formatTagSuffix(stats) {
   return `\x1B[90mv${stats.tagVersion}\x1B[0m`;
 }
 async function selectSessionPrompt(candidates) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve4) => {
     if (!process.stdout.isTTY) {
       console.log(`\x1B[90mNon-interactive environment detected. Defaulting to newest session [1]:\x1B[0m`);
       const maxPathLen2 = Math.max(...candidates.slice(0, 5).map((c) => c.displayPath.length), 10);
@@ -3581,15 +4107,15 @@ async function selectSessionPrompt(candidates) {
         const c = candidates[i];
         const stats = getSessionSummary(c.path);
         const relTime = formatRelativeTime(c.timestamp);
-        const harnessLabel = c.harness === "claude-code" ? "Claude" : "Pi";
+        const label = harnessLabel(c.harness);
         const costStr = formatCostOrUnknown(stats).replace(/\x1b\[[0-9;]*m/g, "");
         const turnStr = formatTurnsOrLines(stats);
         const tagStr = formatTagSuffix(stats).replace(/\x1b\[[0-9;]*m/g, "");
-        console.log(`  [${i + 1}] ${c.displayPath.padEnd(maxPathLen2)}  ${costStr}  ${turnStr}  [${harnessLabel.padEnd(6)}]  ${relTime.padEnd(6)}  ${tagStr}`);
+        console.log(`  [${i + 1}] ${c.displayPath.padEnd(maxPathLen2)}  ${costStr}  ${turnStr}  [${label.padEnd(6)}]  ${relTime.padEnd(6)}  ${tagStr}`);
       }
       console.log(`\x1B[90mRun 'wtft -s <substring>' to target a specific session by path or basename filter.\x1B[0m
 `);
-      resolve2(candidates[0].path);
+      resolve4(candidates[0].path);
       return;
     }
     let selectedIndex = 0;
@@ -3615,11 +4141,11 @@ async function selectSessionPrompt(candidates) {
         const prefix = isSelected ? "\x1B[36m\x1B[1m > \x1B[0m" : "   ";
         const highlight = isSelected ? "\x1B[1m\x1B[36m" : "";
         const reset = isSelected ? "\x1B[0m" : "";
-        const harnessLabel = c.harness === "claude-code" ? "Claude" : "Pi";
+        const label = harnessLabel(c.harness);
         const costStr = formatCostOrUnknown(stats);
         const turnStr = formatTurnsOrLines(stats);
         const tagStr = formatTagSuffix(stats);
-        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  ${turnStr}  [${harnessLabel.padEnd(6)}]  \x1B[90m${relTime.padEnd(6)}\x1B[0m  ${tagStr}
+        out += `${prefix}${highlight}${c.displayPath.padEnd(maxPathLen)}${reset}  ${costStr}  ${turnStr}  [${label.padEnd(6)}]  \x1B[90m${relTime.padEnd(6)}\x1B[0m  ${tagStr}
 `;
       }
       const cols = process.stdout.columns || 80;
@@ -3638,7 +4164,7 @@ async function selectSessionPrompt(candidates) {
         clearPreviousLines(lastLineCount);
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
-        resolve2(selectedPath);
+        resolve4(selectedPath);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
         clearPreviousLines(lastLineCount);
@@ -3658,8 +4184,8 @@ async function selectSessionPrompt(candidates) {
 }
 
 // extensions/lib/wtft-cli-shared.ts
-import * as fs6 from "node:fs";
-import * as path6 from "node:path";
+import * as fs10 from "node:fs";
+import * as path9 from "node:path";
 import { spawn as spawn2 } from "node:child_process";
 function parseWtftCliArgs(argv) {
   let showHelp = false;
@@ -3868,7 +4394,7 @@ function parseWtftCliArgs(argv) {
   };
 }
 function spawnWtftDaemon(sessionPath, daemonDir) {
-  const daemonPath = path6.join(daemonDir, "wtft-daemon.mjs");
+  const daemonPath = path9.join(daemonDir, "wtft-daemon.mjs");
   try {
     const child = spawn2(process.execPath, [daemonPath, "--session", sessionPath], {
       detached: true,
@@ -3881,11 +4407,11 @@ function spawnWtftDaemon(sessionPath, daemonDir) {
   }
 }
 function isEmojiDisabled() {
-  const config = readConfig("wtft");
-  return typeof config.disabledEmoji === "boolean" ? config.disabledEmoji : false;
+  const config2 = readConfig("wtft");
+  return typeof config2.disabledEmoji === "boolean" ? config2.disabledEmoji : false;
 }
 function renderWtftHelp(manifestPath, invokedAs) {
-  const manifestStr = fs6.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs10.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -3913,26 +4439,26 @@ async function renderWtftWhy(manifestPath, invokedAs) {
   return renderWhy2(manifestPath, invokedAs);
 }
 function renderWtftVersion(manifestPath) {
-  const manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf8"));
+  const manifest = JSON.parse(fs10.readFileSync(manifestPath, "utf8"));
   return `${manifest.name} ${manifest.version}`;
 }
 
 // bin/wtft.ts
 var cfg = loadConfig("wtft", { interval: "1h", limit: 100, mode: "cumulative" });
-var manifestPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-var daemonDir = path7.dirname(fileURLToPath(import.meta.url));
+var manifestPath = path10.join(path10.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+var daemonDir = path10.dirname(fileURLToPath(import.meta.url));
 var opts = parseWtftCliArgs(process.argv.slice(2));
 var unit = cfg.tokens ? "tokens" : "cost";
 if (opts.hasTokens)
   unit = "tokens";
 if (opts.hasCost)
   unit = "cost";
-var WARN_LOG = path7.join(os5.homedir(), ".local", "state", "wtft", "reap.log");
+var WARN_LOG = path10.join(os6.homedir(), ".local", "state", "wtft", "reap.log");
 function showReapWarnings() {
   try {
-    if (!fs7.existsSync(WARN_LOG))
+    if (!fs11.existsSync(WARN_LOG))
       return;
-    const content = fs7.readFileSync(WARN_LOG, "utf8").trim();
+    const content = fs11.readFileSync(WARN_LOG, "utf8").trim();
     if (!content)
       return;
     const lines = content.split(`
@@ -3957,12 +4483,13 @@ function showReapWarnings() {
     console.error(`\x1B[33m└──────────────────────────────────────────────────────\x1B[0m
 `);
     try {
-      fs7.truncateSync(WARN_LOG, 0);
+      fs11.truncateSync(WARN_LOG, 0);
     } catch (_) {}
   } catch (_) {}
 }
 async function main() {
   loadUserPricing();
+  await loadExternalHarnesses();
   if (opts.showHelp) {
     console.log(renderWtftHelp(manifestPath, "wtft"));
     return;
@@ -3980,7 +4507,7 @@ async function main() {
     process.exit(1);
   }
   if (opts.daemonList || opts.daemonCleanup || opts.daemonRestart || opts.daemonStop) {
-    const daemonPath = path7.join(daemonDir, "wtft-daemon.mjs");
+    const daemonPath = path10.join(daemonDir, "wtft-daemon.mjs");
     const daemonArgs = [daemonPath];
     if (opts.daemonList)
       daemonArgs.push("--list");
@@ -4008,7 +4535,7 @@ async function main() {
   const candidates = discoverSessions(opts.harnessOption, opts.cwdOverride);
   let finalSessionPath = "";
   if (opts.targetSession) {
-    if (fs7.existsSync(opts.targetSession)) {
+    if (fs11.existsSync(opts.targetSession)) {
       finalSessionPath = opts.targetSession;
     } else {
       const filter = opts.targetSession.toLowerCase();
@@ -4032,7 +4559,7 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !fs7.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !fs11.existsSync(finalSessionPath)) {
     console.error("❌ Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
@@ -4040,38 +4567,38 @@ async function main() {
     const forceTagPath = getTagPath(finalSessionPath);
     const forcePidPath = getDaemonPidPath(finalSessionPath);
     try {
-      const pid = parseInt(fs7.readFileSync(forcePidPath, "utf8").trim(), 10);
+      const pid = parseInt(fs11.readFileSync(forcePidPath, "utf8").trim(), 10);
       if (pid > 0) {
         try {
           process.kill(pid, "SIGTERM");
         } catch {}
       }
       try {
-        fs7.unlinkSync(forcePidPath);
+        fs11.unlinkSync(forcePidPath);
       } catch {}
     } catch {}
-    const forceTagsDir = path7.dirname(forceTagPath);
-    const forceSessionBase = path7.basename(finalSessionPath);
+    const forceTagsDir = path10.dirname(forceTagPath);
+    const forceSessionBase = path10.basename(finalSessionPath);
     try {
-      for (const f of fs7.readdirSync(forceTagsDir)) {
+      for (const f of fs11.readdirSync(forceTagsDir)) {
         if (f.startsWith(forceSessionBase + ".wtft-tag.v") && f.endsWith(".jsonl")) {
-          fs7.unlinkSync(path7.join(forceTagsDir, f));
+          fs11.unlinkSync(path10.join(forceTagsDir, f));
         }
       }
     } catch {}
-    console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path7.basename(finalSessionPath)}\x1B[0m`);
+    console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path10.basename(finalSessionPath)}\x1B[0m`);
   }
   if (opts.showWatch) {
-    const sessionDir2 = path7.dirname(finalSessionPath);
-    const sessionBase2 = path7.basename(finalSessionPath);
-    const tagsDir2 = path7.join(sessionDir2, "wtft-tags");
-    const tagPath2 = path7.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-    const daemonPath = path7.join(daemonDir, "wtft-daemon.mjs");
+    const sessionDir2 = path10.dirname(finalSessionPath);
+    const sessionBase2 = path10.basename(finalSessionPath);
+    const tagsDir2 = path10.join(sessionDir2, "wtft-tags");
+    const tagPath2 = path10.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+    const daemonPath = path10.join(daemonDir, "wtft-daemon.mjs");
     if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
       console.error(`\x1B[31m❌ Failed to start log parser daemon: ${daemonPath}\x1B[0m`);
       process.exit(1);
     }
-    await new Promise((resolve2) => setTimeout(resolve2, 500));
+    await new Promise((resolve4) => setTimeout(resolve4, 500));
     await watchTagFile(finalSessionPath, tagPath2, {
       interval: opts.hasInterval ? opts.interval : "1h",
       limit: opts.hasLimit ? opts.limit : 100,
@@ -4089,22 +4616,22 @@ async function main() {
     });
     return;
   }
-  const sessionDir = path7.dirname(finalSessionPath);
-  const sessionBase = path7.basename(finalSessionPath);
-  const tagsDir = path7.join(sessionDir, "wtft-tags");
-  const tagPath = path7.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  const sessionDir = path10.dirname(finalSessionPath);
+  const sessionBase = path10.basename(finalSessionPath);
+  const tagsDir = path10.join(sessionDir, "wtft-tags");
+  const tagPath = path10.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
   if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
-    console.error(`\x1B[31m❌ wtft-daemon not found at ${path7.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
+    console.error(`\x1B[31m❌ wtft-daemon not found at ${path10.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
     process.exit(1);
   }
   let interactions = [];
-  if (fs7.existsSync(tagPath)) {
+  if (fs11.existsSync(tagPath)) {
     interactions = readClassifiedTagFile(tagPath);
   }
   if (interactions.length === 0) {
     const tagWaitStart = Date.now();
     while (Date.now() - tagWaitStart < 1400) {
-      if (fs7.existsSync(tagPath)) {
+      if (fs11.existsSync(tagPath)) {
         interactions = readClassifiedTagFile(tagPath);
         if (interactions.length > 0)
           break;
@@ -4113,17 +4640,17 @@ async function main() {
     }
   }
   if (interactions.length === 0) {
-    const sessionName = path7.basename(finalSessionPath).replace(/.jsonl$/, "");
+    const sessionName = path10.basename(finalSessionPath).replace(/.jsonl$/, "");
     console.log(`\x1B[33mDaemon started on session ${sessionName.slice(0, 12)}… — no data yet. Try again in a moment.\x1B[0m`);
     process.exit(0);
   }
-  const config = readConfig("wtft");
+  const config2 = readConfig("wtft");
   const disabledEmoji = isEmojiDisabled();
-  const sessionInterval = typeof config.interval === "string" ? config.interval : undefined;
-  const sessionLimit = typeof config.limit === "number" ? config.limit : undefined;
-  const sessionMode = config.mode === "cumulative" || config.mode === "bucket" ? config.mode : undefined;
-  const sessionShowTicks = typeof config.showTicks === "boolean" ? config.showTicks : undefined;
-  const sessionTimezone = typeof config.timezone === "string" ? config.timezone : undefined;
+  const sessionInterval = typeof config2.interval === "string" ? config2.interval : undefined;
+  const sessionLimit = typeof config2.limit === "number" ? config2.limit : undefined;
+  const sessionMode = config2.mode === "cumulative" || config2.mode === "bucket" ? config2.mode : undefined;
+  const sessionShowTicks = typeof config2.showTicks === "boolean" ? config2.showTicks : undefined;
+  const sessionTimezone = typeof config2.timezone === "string" ? config2.timezone : undefined;
   showReapWarnings();
   const termColumns = getTerminalWidth();
   let pad = opts.hasPad ? opts.pad : 1;
@@ -4152,7 +4679,7 @@ async function main() {
     mode: finalMode,
     timezone: finalTimezone,
     disabledEmoji,
-    sessionNameSuffix: path7.basename(finalSessionPath),
+    sessionNameSuffix: path10.basename(finalSessionPath),
     unit
   });
   if (!outputLines) {

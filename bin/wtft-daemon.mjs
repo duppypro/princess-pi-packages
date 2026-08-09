@@ -369,9 +369,9 @@ var require_wcwidth = __commonJS((exports, module) => {
 });
 
 // bin/wtft-daemon.ts
-import * as fs3 from "node:fs";
-import * as path3 from "node:path";
-import * as os2 from "node:os";
+import * as fs8 from "node:fs";
+import * as path8 from "node:path";
+import * as os5 from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -575,9 +575,626 @@ function loadUserPricing(filePath = getUserPricingPath()) {
   }
 }
 // extensions/lib/wtft-parser.ts
-import * as path2 from "node:path";
+import * as path6 from "node:path";
+import * as fs6 from "node:fs";
+import * as os4 from "node:os";
+
+// extensions/lib/harness/registry.ts
+import * as fs5 from "node:fs";
+import * as path5 from "node:path";
+import { homedir as homedir5 } from "node:os";
+import { pathToFileURL } from "node:url";
+
+// extensions/lib/harness/claude-code/discovery.ts
+import * as fs3 from "node:fs";
+import * as path3 from "node:path";
+import * as os2 from "node:os";
+
+// extensions/lib/harness/session-cwd.ts
 import * as fs2 from "node:fs";
+var TAIL_WINDOWS = [8 * 1024, 64 * 1024, 512 * 1024];
+var cwdCache = new Map;
+var readCount = 0;
+function readSlice(file, start, len) {
+  const fd = fs2.openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(len);
+    fs2.readSync(fd, buf, 0, len, start);
+    readCount++;
+    return buf.toString("utf8");
+  } finally {
+    fs2.closeSync(fd);
+  }
+}
+function scanBackwardsForCwd(text, partialFirstLine) {
+  const lines = text.split(`
+`);
+  if (partialFirstLine)
+    lines.shift();
+  for (let i = lines.length - 1;i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line)
+      continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry && typeof entry.cwd === "string" && entry.cwd)
+        return entry.cwd;
+    } catch {}
+  }
+  return null;
+}
+function resolveLastCwd(filePath, knownStat) {
+  let stat;
+  try {
+    stat = knownStat || fs2.statSync(filePath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size === 0)
+    return null;
+  const key = `${filePath}:${stat.mtimeMs}:${stat.size}`;
+  const cached = cwdCache.get(key);
+  if (cached !== undefined)
+    return cached;
+  let result = null;
+  for (const window of TAIL_WINDOWS) {
+    const start = Math.max(0, stat.size - window);
+    const len = stat.size - start;
+    if (len <= 0)
+      break;
+    let text;
+    try {
+      text = readSlice(filePath, start, len);
+    } catch {
+      break;
+    }
+    result = scanBackwardsForCwd(text, start > 0);
+    if (result)
+      break;
+    if (start === 0)
+      break;
+  }
+  cwdCache.set(key, result);
+  return result;
+}
+function cwdToSlug(cwd) {
+  return cwd.replace(/[/\\]/g, "-");
+}
+
+// extensions/lib/session-path-shortener.ts
+import * as path2 from "node:path";
 import * as os from "node:os";
+function buildDisplayPath(filename, dirSlug, harness) {
+  const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
+  const uuidTail = uuidMatch ? uuidMatch[1] : "";
+  const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
+  const homeDir = os.homedir();
+  const userName = path2.basename(homeDir);
+  const knownPrefix = `home-${userName}-git-projects`;
+  const compactPrefix = `home-${userName}-g-p`;
+  if (slug.startsWith(knownPrefix + "-")) {
+    const projectName = slug.slice(knownPrefix.length + 1);
+    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
+    const pathStr = `~/g-p/${projectName}`;
+    return appendTail(pathStr, datePrefix2, uuidTail);
+  }
+  if (slug.startsWith(compactPrefix + "-")) {
+    const projectName = slug.slice(compactPrefix.length + 1);
+    const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
+    const pathStr = `~/g-p/${projectName}`;
+    return appendTail(pathStr, datePrefix2, uuidTail);
+  }
+  const cleanedSlug = slug.replace(/-/g, "/");
+  const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
+  return appendTail(cleanedSlug, datePrefix, uuidTail);
+}
+function extractDatePrefix(filename) {
+  const match = filename.match(/^(\d{4}-\d{2}-\d{2}[^_]*)/);
+  return match ? match[1] : "";
+}
+function appendTail(base, datePrefix, uuidTail) {
+  if (datePrefix && uuidTail) {
+    return `${base}/${datePrefix}...${uuidTail}`;
+  }
+  if (datePrefix) {
+    return `${base}/${datePrefix}`;
+  }
+  if (uuidTail) {
+    return `${base}/...${uuidTail}`;
+  }
+  return base;
+}
+
+// extensions/lib/harness/claude-code/discovery.ts
+var ID = "claude-code";
+var SKIP_DIRS = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
+function projectsDir() {
+  return path3.join(os2.homedir(), ".claude", "projects");
+}
+function sessionIdOf(file) {
+  return path3.basename(file).replace(/\.jsonl$/i, "");
+}
+function collect(dir, projectSlug, out) {
+  let entries;
+  try {
+    entries = fs3.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = path3.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS.has(entry.name))
+        collect(full, projectSlug, out);
+    } else if (entry.name.endsWith(".jsonl")) {
+      out.push(full);
+    }
+  }
+}
+function toCandidate(file, projectSlug) {
+  let stat;
+  try {
+    stat = fs3.statSync(file);
+  } catch {
+    return null;
+  }
+  const name = path3.basename(file);
+  return {
+    path: file,
+    harness: ID,
+    timestamp: stat.mtimeMs,
+    name,
+    displayPath: buildDisplayPath(name, projectSlug, ID)
+  };
+}
+var discovery = {
+  id: ID,
+  label: "Claude",
+  discover(targetCwd) {
+    const root = projectsDir();
+    if (!fs3.existsSync(root))
+      return [];
+    const target = path3.resolve(targetCwd || process.cwd());
+    const targetSlug = cwdToSlug(target);
+    let projectDirs;
+    try {
+      projectDirs = fs3.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      return [];
+    }
+    const bySessionId = new Map;
+    for (const slug of projectDirs) {
+      const physicalMatch = slug === targetSlug;
+      const files = [];
+      collect(path3.join(root, slug), slug, files);
+      for (const file of files) {
+        if (!physicalMatch && resolveLastCwd(file) !== target)
+          continue;
+        const candidate = toCandidate(file, slug);
+        if (!candidate)
+          continue;
+        const id = sessionIdOf(file);
+        const existing = bySessionId.get(id);
+        if (!existing || candidate.timestamp > existing.timestamp) {
+          bySessionId.set(id, candidate);
+        }
+      }
+    }
+    return [...bySessionId.values()];
+  },
+  resolveSessionById(sessionId) {
+    const root = projectsDir();
+    if (!fs3.existsSync(root))
+      return null;
+    const wanted = sessionId.replace(/\.jsonl$/i, "");
+    let best = null;
+    let projectDirs;
+    try {
+      projectDirs = fs3.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      return null;
+    }
+    for (const slug of projectDirs) {
+      const files = [];
+      collect(path3.join(root, slug), slug, files);
+      for (const file of files) {
+        if (sessionIdOf(file) !== wanted)
+          continue;
+        try {
+          const mtimeMs = fs3.statSync(file).mtimeMs;
+          if (!best || mtimeMs > best.mtimeMs)
+            best = { path: file, mtimeMs };
+        } catch {}
+      }
+    }
+    return best ? best.path : null;
+  }
+};
+
+// extensions/lib/harness/claude-code/parse.ts
+var ID2 = "claude-code";
+var INTERRUPT_PREFIX = "[Request interrupted by user";
+function normalizeUsage(usage) {
+  const u = usage || {};
+  return {
+    input_tokens: u.input_tokens || 0,
+    output_tokens: u.output_tokens || 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+    cache_read_input_tokens: u.cache_read_input_tokens || 0,
+    cache_creation: u.cache_creation || null,
+    reasoning_tokens: u.reasoning_tokens || 0,
+    server_tool_use: u.server_tool_use || null,
+    iterations: Array.isArray(u.iterations) ? u.iterations.length : undefined,
+    nativeCost: null
+  };
+}
+var parse = {
+  id: ID2,
+  matchAssistant(entry) {
+    if (!entry || entry.type !== "assistant")
+      return null;
+    const message = entry.message;
+    if (!message || message.role !== "assistant")
+      return null;
+    return {
+      content: Array.isArray(message.content) ? message.content : [],
+      messageId: message.id,
+      requestId: entry.requestId,
+      model: message.model,
+      timestamp: message.timestamp || entry.timestamp,
+      isSidechain: entry.isSidechain === true,
+      usage: normalizeUsage(message.usage)
+    };
+  },
+  readBlock(block) {
+    if (!block)
+      return null;
+    if (block.type === "text")
+      return { kind: "text", text: block.text };
+    if (block.type === "thinking")
+      return { kind: "text", text: block.thinking };
+    if (block.type !== "tool_use")
+      return null;
+    const name = (block.name || "").toLowerCase();
+    const args = block.input || {};
+    const files = [];
+    const commands = [];
+    let handled = true;
+    if (name === "read" || name === "view" || name === "glob" || name === "ls") {
+      const p = args.file_path || args.path || args.directory || args.target;
+      if (p)
+        files.push({ path: p, action: "read" });
+    } else if (name === "edit" || name === "write" || name === "replace") {
+      const p = args.file_path || args.path || args.target;
+      if (p)
+        files.push({ path: p, action: "write" });
+    } else if (name === "notebookedit") {
+      if (args.notebook_path)
+        files.push({ path: args.notebook_path, action: "write" });
+    } else if (name === "bash" || name === "run") {
+      if (args.command)
+        commands.push(args.command);
+    } else {
+      handled = false;
+    }
+    return { kind: "tool", name, handled, files, commands };
+  },
+  readControlEntry(entry) {
+    if (!entry)
+      return null;
+    if (entry.isCompactSummary === true)
+      return { kind: "after-compaction" };
+    if (entry.type === "user") {
+      const c = entry.message?.content;
+      const hit = typeof c === "string" ? c.includes(INTERRUPT_PREFIX) : Array.isArray(c) && c.some((b) => b?.type === "text" && typeof b.text === "string" && b.text.includes(INTERRUPT_PREFIX));
+      if (hit)
+        return { kind: "interrupt" };
+    }
+    return null;
+  }
+};
+
+// extensions/lib/harness/pi/discovery.ts
+import * as fs4 from "node:fs";
+import * as path4 from "node:path";
+import * as os3 from "node:os";
+var ID3 = "pi";
+var SKIP_DIRS2 = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
+function sessionsDir() {
+  return path4.join(os3.homedir(), ".pi", "agent", "sessions");
+}
+function sessionIdOf2(file) {
+  return path4.basename(file).replace(/\.jsonl$/i, "");
+}
+function collect2(dir, out) {
+  let entries;
+  try {
+    entries = fs4.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = path4.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS2.has(entry.name))
+        collect2(full, out);
+    } else if (entry.name.endsWith(".jsonl")) {
+      out.push(full);
+    }
+  }
+}
+function toCandidate2(file, projectSlug) {
+  let stat;
+  try {
+    stat = fs4.statSync(file);
+  } catch {
+    return null;
+  }
+  const name = path4.basename(file);
+  return {
+    path: file,
+    harness: ID3,
+    timestamp: stat.mtimeMs,
+    name,
+    displayPath: buildDisplayPath(name, projectSlug, ID3)
+  };
+}
+var discovery2 = {
+  id: ID3,
+  label: "Pi",
+  discover(targetCwd) {
+    const root = sessionsDir();
+    if (!fs4.existsSync(root))
+      return [];
+    const target = targetCwd ? path4.resolve(targetCwd) : null;
+    const targetSlug = target ? cwdToSlug(target) : null;
+    let projectDirs;
+    try {
+      projectDirs = fs4.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      return [];
+    }
+    const bySessionId = new Map;
+    for (const slug of projectDirs) {
+      const physicalMatch = targetSlug === null || slug.includes(targetSlug);
+      const files = [];
+      collect2(path4.join(root, slug), files);
+      for (const file of files) {
+        if (!physicalMatch && (target === null || resolveLastCwd(file) !== target))
+          continue;
+        const candidate = toCandidate2(file, slug);
+        if (!candidate)
+          continue;
+        const id = sessionIdOf2(file);
+        const existing = bySessionId.get(id);
+        if (!existing || candidate.timestamp > existing.timestamp) {
+          bySessionId.set(id, candidate);
+        }
+      }
+    }
+    return [...bySessionId.values()];
+  },
+  resolveSessionById(sessionId) {
+    const root = sessionsDir();
+    if (!fs4.existsSync(root))
+      return null;
+    const wanted = sessionId.replace(/\.jsonl$/i, "");
+    const files = [];
+    collect2(root, files);
+    let best = null;
+    for (const file of files) {
+      if (sessionIdOf2(file) !== wanted)
+        continue;
+      try {
+        const mtimeMs = fs4.statSync(file).mtimeMs;
+        if (!best || mtimeMs > best.mtimeMs)
+          best = { path: file, mtimeMs };
+      } catch {}
+    }
+    return best ? best.path : null;
+  }
+};
+
+// extensions/lib/harness/pi/parse.ts
+var ID4 = "pi";
+function normalizeUsage2(usage) {
+  const u = usage || {};
+  const nativeCost = u.cost?.total;
+  return {
+    input_tokens: u.input_tokens ?? u.input ?? 0,
+    output_tokens: u.output_tokens ?? u.output ?? 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens ?? u.cacheWrite ?? 0,
+    cache_read_input_tokens: u.cache_read_input_tokens ?? u.cacheRead ?? 0,
+    cache_creation: u.cache_creation || null,
+    reasoning_tokens: u.reasoning_tokens ?? u.reasoning ?? 0,
+    server_tool_use: u.server_tool_use || null,
+    iterations: Array.isArray(u.iterations) ? u.iterations.length : undefined,
+    nativeCost: nativeCost === undefined || nativeCost === null ? null : nativeCost
+  };
+}
+var parse2 = {
+  id: ID4,
+  matchAssistant(entry) {
+    if (!entry || entry.type !== "message")
+      return null;
+    const message = entry.message;
+    if (!message || message.role !== "assistant")
+      return null;
+    return {
+      content: Array.isArray(message.content) ? message.content : [],
+      messageId: message.id,
+      requestId: entry.requestId,
+      model: message.model,
+      timestamp: message.timestamp || entry.timestamp,
+      isSidechain: entry.isSidechain === true,
+      usage: normalizeUsage2(message.usage)
+    };
+  },
+  readBlock(block) {
+    if (!block)
+      return null;
+    if (block.type === "text")
+      return { kind: "text", text: block.text };
+    if (block.type === "thinking")
+      return { kind: "text", text: block.thinking };
+    if (block.type !== "toolCall")
+      return null;
+    const name = (block.name || "").toLowerCase();
+    const args = block.arguments || {};
+    const files = [];
+    const commands = [];
+    let handled = true;
+    if (name === "read") {
+      if (args.path)
+        files.push({ path: args.path, action: "read" });
+    } else if (name === "write" || name === "edit") {
+      if (args.path)
+        files.push({ path: args.path, action: "write" });
+    } else if (name === "bash") {
+      if (args.command)
+        commands.push(args.command);
+    } else {
+      handled = false;
+    }
+    return { kind: "tool", name, handled, files, commands };
+  },
+  readControlEntry(entry) {
+    if (!entry)
+      return null;
+    if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
+      return { kind: "thinking-level", level: entry.thinkingLevel };
+    }
+    if (entry.type === "model_change" && entry.modelId) {
+      return { kind: "model", modelId: entry.modelId };
+    }
+    if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
+      return { kind: "compaction", tokensBefore: entry.tokensBefore };
+    }
+    return null;
+  }
+};
+
+// extensions/lib/harness/builtins.generated.ts
+var BUILTIN_HARNESSES = {
+  "claude-code": { discovery, parse },
+  pi: { discovery: discovery2, parse: parse2 }
+};
+
+// extensions/lib/harness/registry.ts
+function getHarnessConfigPath() {
+  const xdgHome = process.env.XDG_CONFIG_HOME || path5.join(homedir5(), ".config");
+  return path5.join(xdgHome, "princess-pi-packages", "wtft-harnesses.json");
+}
+function loadHarnessConfig(filePath = getHarnessConfigPath()) {
+  try {
+    if (!fs5.existsSync(filePath))
+      return {};
+    const parsed = JSON.parse(fs5.readFileSync(filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
+    const out = {};
+    for (const [id, entry] of Object.entries(parsed)) {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        out[id] = entry;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+function expandHome(p) {
+  if (p === "~")
+    return homedir5();
+  if (p.startsWith("~/") || p.startsWith("~\\"))
+    return path5.join(homedir5(), p.slice(2));
+  return p;
+}
+var externals = new Map;
+var disabled = new Set;
+var configCache = null;
+var harnessesCache = null;
+var adaptersCache = null;
+function config() {
+  if (configCache === null) {
+    configCache = loadHarnessConfig();
+    disabled = new Set(Object.entries(configCache).filter(([, e]) => e.enabled === false).map(([id]) => id));
+  }
+  return configCache;
+}
+function resetHarnessRegistry() {
+  configCache = null;
+  disabled = new Set;
+  externals.clear();
+  harnessesCache = null;
+  adaptersCache = null;
+}
+async function loadExternalHarnesses(filePath = getHarnessConfigPath()) {
+  resetHarnessRegistry();
+  configCache = loadHarnessConfig(filePath);
+  harnessesCache = null;
+  adaptersCache = null;
+  disabled = new Set(Object.entries(configCache).filter(([, e]) => e.enabled === false).map(([id]) => id));
+  const loaded = [];
+  for (const [id, entry] of Object.entries(configCache)) {
+    if (BUILTIN_HARNESSES[id])
+      continue;
+    if (entry.enabled === false)
+      continue;
+    if (!entry.discovery || !entry.parse)
+      continue;
+    try {
+      const discoveryMod = await import(pathToFileURL(path5.resolve(expandHome(entry.discovery))).href);
+      const parseMod = await import(pathToFileURL(path5.resolve(expandHome(entry.parse))).href);
+      const discovery3 = discoveryMod.discovery || discoveryMod.default;
+      const parse3 = parseMod.parse || parseMod.default;
+      if (!discovery3 || !parse3)
+        throw new Error("module exports no discovery/parse");
+      if (entry.label)
+        discovery3.label = entry.label;
+      externals.set(id, { id, discovery: discovery3, parse: parse3 });
+      harnessesCache = null;
+      adaptersCache = null;
+      loaded.push(id);
+    } catch (err) {
+      process.stderr.write(`wtft: harness '${id}' failed to load: ${err instanceof Error ? err.message : String(err)}
+`);
+    }
+  }
+  return loaded;
+}
+function getHarnesses() {
+  if (harnessesCache)
+    return harnessesCache;
+  config();
+  const out = [];
+  for (const [id, mods] of Object.entries(BUILTIN_HARNESSES)) {
+    if (disabled.has(id))
+      continue;
+    const cfg = configCache?.[id];
+    if (cfg?.label)
+      mods.discovery.label = cfg.label;
+    out.push({ id, discovery: mods.discovery, parse: mods.parse });
+  }
+  for (const [id, harness] of externals) {
+    if (disabled.has(id))
+      continue;
+    out.push(harness);
+  }
+  harnessesCache = out;
+  return out;
+}
+function getDiscoveries() {
+  return getHarnesses().map((h) => h.discovery);
+}
+function getParseAdapters() {
+  if (adaptersCache)
+    return adaptersCache;
+  adaptersCache = getHarnesses().map((h) => h.parse);
+  return adaptersCache;
+}
+
+// extensions/lib/wtft-parser.ts
 var TOOL_CATEGORY_MAP = {
   task: "agents",
   agent: "agents",
@@ -641,137 +1258,133 @@ function extractFilesFromBashCommand(command, files) {
 function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore, afterCompaction, currentModel) {
   if (!entry)
     return null;
-  const isPiSchema = entry.type === "message" && entry.message && entry.message.role === "assistant";
-  const isClaudeSchema = entry.type === "assistant" && entry.message && entry.message.role === "assistant";
-  if (isPiSchema || isClaudeSchema) {
-    const assistantMsg = entry.message;
-    const effectiveModel = assistantMsg.model || currentModel || "";
-    let timestampStr = assistantMsg.timestamp || entry.timestamp;
-    let timestamp = 0;
-    if (typeof timestampStr === "string") {
-      timestamp = new Date(timestampStr).getTime();
-    } else if (typeof timestampStr === "number") {
-      timestamp = timestampStr;
+  let turn = null;
+  for (const adapter of getParseAdapters()) {
+    turn = adapter.matchAssistant(entry);
+    if (turn) {
+      return buildInteraction(turn, adapter, thinkingLevel, compactionTokensBefore, afterCompaction, currentModel);
     }
-    let cost = 0;
-    const usage = assistantMsg.usage || {};
-    const piCost = usage.cost?.total;
-    const hasTokens = (usage.input_tokens || usage.input || 0) > 0 || (usage.output_tokens || usage.output || 0) > 0 || (usage.cache_read_input_tokens || usage.cacheRead || 0) > 0 || (usage.cache_creation_input_tokens || usage.cacheWrite || 0) > 0 || (usage.reasoning_tokens || usage.reasoning || 0) > 0;
-    if (piCost !== undefined && piCost !== null && !(piCost === 0 && hasTokens)) {
-      cost = piCost;
-    } else if (effectiveModel && hasTokens) {
-      const normalizedUsage = {
-        input_tokens: usage.input_tokens ?? usage.input ?? 0,
-        output_tokens: usage.output_tokens ?? usage.output ?? 0,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? usage.cacheWrite ?? 0,
-        cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cacheRead ?? 0,
-        cache_creation: usage.cache_creation || null,
-        reasoning_tokens: usage.reasoning_tokens ?? usage.reasoning ?? 0
-      };
-      cost = calculateClaudeCost(effectiveModel, normalizedUsage, timestamp);
-    }
-    const cacheCreation = usage.cache_creation || {};
-    const cacheTtl = (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? "1h" : (cacheCreation.ephemeral_5m_input_tokens || 0) > 0 ? "5m" : undefined;
-    const cacheMiss = (usage.cache_read_input_tokens || 0) === 0 && (usage.cache_creation_input_tokens || 0) > 0 ? true : undefined;
-    const serverToolRequests = usage.server_tool_use || {};
-    const serverToolCost = calculateServerToolCost(effectiveModel, serverToolRequests.web_search_requests || 0, serverToolRequests.web_fetch_requests || 0);
-    const surgePriced = effectiveModel.toLowerCase().includes("deepseek") ? getDeepSeekPeakMultiplier(timestamp) > 1 : undefined;
-    const files = [];
-    const commands = [];
-    const texts = [];
-    const toolCats = new Set;
-    let unrecognizedTool = false;
-    if (Array.isArray(assistantMsg.content)) {
-      for (const block of assistantMsg.content) {
-        if (block.type === "text") {
-          texts.push(block.text);
-        } else if (block.type === "thinking") {
-          texts.push(block.thinking);
-        } else if (block.type === "toolCall") {
-          const name = (block.name || "").toLowerCase();
-          const args = block.arguments || {};
-          if (name === "read") {
-            if (args.path)
-              files.push({ path: args.path, action: "read" });
-          } else if (name === "write" || name === "edit") {
-            if (args.path)
-              files.push({ path: args.path, action: "write" });
-          } else if (name === "bash") {
-            if (args.command) {
-              commands.push(args.command);
-              extractFilesFromBashCommand(args.command, files);
-            }
-          } else if (!mapToolToCategory(name, toolCats)) {
-            unrecognizedTool = true;
-          }
-        } else if (block.type === "tool_use") {
-          const name = (block.name || "").toLowerCase();
-          const args = block.input || {};
-          if (name === "read" || name === "view" || name === "glob" || name === "ls") {
-            const p = args.file_path || args.path || args.directory || args.target;
-            if (p)
-              files.push({ path: p, action: "read" });
-          } else if (name === "edit" || name === "write" || name === "replace") {
-            const p = args.file_path || args.path || args.target;
-            if (p)
-              files.push({ path: p, action: "write" });
-          } else if (name === "notebookedit") {
-            if (args.notebook_path)
-              files.push({ path: args.notebook_path, action: "write" });
-          } else if (name === "bash" || name === "run") {
-            if (args.command) {
-              commands.push(args.command);
-              extractFilesFromBashCommand(args.command, files);
-            }
-          } else if (!mapToolToCategory(name, toolCats)) {
-            unrecognizedTool = true;
-          }
-        }
-      }
-    }
-    return {
-      timestamp,
-      cost,
-      messageId: assistantMsg.id,
-      requestId: entry.requestId,
-      model: effectiveModel || undefined,
-      inputTokens: usage.input_tokens || usage.input || 0,
-      outputTokens: usage.output_tokens || usage.output || 0,
-      cacheReadTokens: usage.cache_read_input_tokens || usage.cacheRead || 0,
-      cacheWriteTokens: usage.cache_creation_input_tokens || usage.cacheWrite || 0,
-      reasoningTokens: usage.reasoning || 0,
-      webSearchRequests: serverToolRequests.web_search_requests || 0,
-      webFetchRequests: serverToolRequests.web_fetch_requests || 0,
-      serverToolCost,
-      surgePriced,
-      thinkingLevel,
-      compactionTokensBefore,
-      cacheTtl,
-      cacheMiss,
-      afterCompaction: afterCompaction || compactionTokensBefore !== undefined || undefined,
-      cacheWrite1hTokens: (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? cacheCreation.ephemeral_1h_input_tokens : undefined,
-      iterations: Array.isArray(usage.iterations) ? usage.iterations.length : undefined,
-      isSidechain: entry.isSidechain === true || undefined,
-      files,
-      commands,
-      texts,
-      toolCats: toolCats.size > 0 ? [...toolCats] : undefined,
-      unrecognizedTool: unrecognizedTool || undefined
-    };
   }
   return null;
 }
-var INTERRUPT_PREFIX = "[Request interrupted by user";
-function isInterruptMarker(entry) {
-  if (!entry || entry.type !== "user")
-    return false;
-  const c = entry.message?.content;
-  if (typeof c === "string")
-    return c.includes(INTERRUPT_PREFIX);
-  if (Array.isArray(c)) {
-    return c.some((b) => b?.type === "text" && typeof b.text === "string" && b.text.includes(INTERRUPT_PREFIX));
+function buildInteraction(turn, adapter, thinkingLevel, compactionTokensBefore, afterCompaction, currentModel) {
+  const usage = turn.usage;
+  const effectiveModel = turn.model || currentModel || "";
+  let timestamp = 0;
+  if (typeof turn.timestamp === "string") {
+    timestamp = new Date(turn.timestamp).getTime();
+  } else if (typeof turn.timestamp === "number") {
+    timestamp = turn.timestamp;
   }
-  return false;
+  const hasTokens = usage.input_tokens > 0 || usage.output_tokens > 0 || usage.cache_read_input_tokens > 0 || usage.cache_creation_input_tokens > 0 || usage.reasoning_tokens > 0;
+  let cost = 0;
+  const nativeCost = usage.nativeCost;
+  if (nativeCost !== null && !(nativeCost === 0 && hasTokens)) {
+    cost = nativeCost;
+  } else if (effectiveModel && hasTokens) {
+    cost = calculateClaudeCost(effectiveModel, {
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens,
+      cache_read_input_tokens: usage.cache_read_input_tokens,
+      cache_creation: usage.cache_creation,
+      reasoning_tokens: usage.reasoning_tokens
+    }, timestamp);
+  }
+  const cacheCreation = usage.cache_creation || {};
+  const cacheTtl = (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? "1h" : (cacheCreation.ephemeral_5m_input_tokens || 0) > 0 ? "5m" : undefined;
+  const cacheMiss = usage.cache_read_input_tokens === 0 && usage.cache_creation_input_tokens > 0 ? true : undefined;
+  const serverToolRequests = usage.server_tool_use || {};
+  const serverToolCost = calculateServerToolCost(effectiveModel, serverToolRequests.web_search_requests || 0, serverToolRequests.web_fetch_requests || 0);
+  const surgePriced = effectiveModel.toLowerCase().includes("deepseek") ? getDeepSeekPeakMultiplier(timestamp) > 1 : undefined;
+  const files = [];
+  const commands = [];
+  const texts = [];
+  const toolCats = new Set;
+  let unrecognizedTool = false;
+  for (const rawBlock of turn.content) {
+    const block = adapter.readBlock(rawBlock);
+    if (!block)
+      continue;
+    if (block.kind === "text") {
+      texts.push(block.text);
+      continue;
+    }
+    if (block.files.length > 0)
+      files.push(...block.files);
+    for (const command of block.commands) {
+      commands.push(command);
+      extractFilesFromBashCommand(command, files);
+    }
+    if (!block.handled && !mapToolToCategory(block.name, toolCats)) {
+      unrecognizedTool = true;
+    }
+  }
+  return {
+    timestamp,
+    cost,
+    messageId: turn.messageId,
+    requestId: turn.requestId,
+    model: effectiveModel || undefined,
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadTokens: usage.cache_read_input_tokens,
+    cacheWriteTokens: usage.cache_creation_input_tokens,
+    reasoningTokens: usage.reasoning_tokens,
+    webSearchRequests: serverToolRequests.web_search_requests || 0,
+    webFetchRequests: serverToolRequests.web_fetch_requests || 0,
+    serverToolCost,
+    surgePriced,
+    thinkingLevel,
+    compactionTokensBefore,
+    cacheTtl,
+    cacheMiss,
+    afterCompaction: afterCompaction || compactionTokensBefore !== undefined || undefined,
+    cacheWrite1hTokens: (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? cacheCreation.ephemeral_1h_input_tokens : undefined,
+    iterations: usage.iterations,
+    isSidechain: turn.isSidechain || undefined,
+    files,
+    commands,
+    texts,
+    toolCats: toolCats.size > 0 ? [...toolCats] : undefined,
+    unrecognizedTool: unrecognizedTool || undefined
+  };
+}
+function readControlEntry(entry) {
+  if (!entry)
+    return null;
+  for (const adapter of getParseAdapters()) {
+    const signal = adapter.readControlEntry(entry);
+    if (signal)
+      return signal;
+  }
+  return null;
+}
+function newParseStreamState() {
+  return { afterCompaction: false };
+}
+function applyControlEntry(entry, state, onInterrupt) {
+  const signal = readControlEntry(entry);
+  if (!signal)
+    return false;
+  switch (signal.kind) {
+    case "thinking-level":
+      state.thinkingLevel = signal.level;
+      break;
+    case "model":
+      state.model = signal.modelId;
+      break;
+    case "compaction":
+      state.compactionTokensBefore = signal.tokensBefore;
+      break;
+    case "after-compaction":
+      state.afterCompaction = true;
+      break;
+    case "interrupt":
+      onInterrupt();
+      break;
+  }
+  return true;
 }
 function splitOverheadCost(interaction, prevCtxTokens) {
   const cw = interaction.cacheWriteTokens;
@@ -815,44 +1428,26 @@ function splitOverheadCost(interaction, prevCtxTokens) {
 }
 function parseSessionFile(filePath) {
   const interactions = [];
-  let currentThinkingLevel;
-  let currentModel;
-  let lastCompactionTokensBefore;
-  let pendingAfterCompaction = false;
+  const state = newParseStreamState();
   try {
-    const content = fs2.readFileSync(filePath, "utf8");
+    const content = fs6.readFileSync(filePath, "utf8");
     for (const line of content.split(`
 `)) {
       if (!line.trim())
         continue;
       try {
         const entry = JSON.parse(line);
-        if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
-          currentThinkingLevel = entry.thinkingLevel;
-          continue;
-        }
-        if (entry.type === "model_change" && entry.modelId) {
-          currentModel = entry.modelId;
-          continue;
-        }
-        if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
-          lastCompactionTokensBefore = entry.tokensBefore;
-          continue;
-        }
-        if (entry.isCompactSummary === true) {
-          pendingAfterCompaction = true;
-          continue;
-        }
-        if (isInterruptMarker(entry)) {
+        const isControl = applyControlEntry(entry, state, () => {
           if (interactions.length > 0)
             interactions[interactions.length - 1].interrupted = true;
+        });
+        if (isControl)
           continue;
-        }
-        const interaction = parseEntryToInteraction(entry, currentThinkingLevel, lastCompactionTokensBefore, pendingAfterCompaction, currentModel);
+        const interaction = parseEntryToInteraction(entry, state.thinkingLevel, state.compactionTokensBefore, state.afterCompaction, state.model);
         if (interaction) {
           interactions.push(interaction);
-          lastCompactionTokensBefore = undefined;
-          pendingAfterCompaction = false;
+          state.compactionTokensBefore = undefined;
+          state.afterCompaction = false;
         }
       } catch {}
     }
@@ -966,14 +1561,14 @@ function classifyInteraction(interaction) {
     const norm = f.path.replace(/\\/g, "/");
     let category = null;
     if (norm.includes("node_modules/")) {
-      if (path2.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
+      if (path6.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
         category = "research";
       } else {
         category = "code";
       }
     } else if (norm.startsWith("docs/research/") || norm.includes("/docs/research/")) {
       category = "plan";
-    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path2.extname(norm).toLowerCase() === ".md") {
+    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path6.extname(norm).toLowerCase() === ".md") {
       category = "spec";
     } else if (norm.startsWith("tests/") || norm.includes("/tests/")) {
       category = "tests";
@@ -982,7 +1577,7 @@ function classifyInteraction(interaction) {
     } else if (norm.startsWith(".pi/extensions/") || norm.includes("/.pi/extensions/") || norm.startsWith("extensions/") || norm.includes("/extensions/") || norm.startsWith("src/") || norm.includes("/src/") || norm.startsWith("public/") || norm.includes("/public/") || norm.startsWith("bin/") || norm.includes("/bin/") || norm.startsWith("debug/") || norm.includes("/debug/")) {
       category = "code";
     } else {
-      const ext = path2.extname(norm).toLowerCase();
+      const ext = path6.extname(norm).toLowerCase();
       if ([".ts", ".js", ".mjs", ".json", ".jsonl", ".css", ".tsx", ".jsx", ".py", ".rs", ".go", ".sh", ".yml", ".yaml", ".sql", ".txt"].includes(ext) || norm.endsWith(".gitignore") || norm.endsWith(".dockerignore")) {
         category = "code";
       } else if (ext === "") {
@@ -1058,31 +1653,31 @@ function classifyInteraction(interaction) {
 var MAX_SUBAGENT_DEPTH = 5;
 function discoverSubagentSessionFiles(sessionPath, maxDepth = MAX_SUBAGENT_DEPTH) {
   const files = [];
-  const sessionDir = path2.dirname(sessionPath);
-  const sessionBase = path2.basename(sessionPath, ".jsonl");
-  const ccBaseDir = path2.join(sessionDir, sessionBase, "subagents");
-  if (fs2.existsSync(ccBaseDir)) {
+  const sessionDir = path6.dirname(sessionPath);
+  const sessionBase = path6.basename(sessionPath, ".jsonl");
+  const ccBaseDir = path6.join(sessionDir, sessionBase, "subagents");
+  if (fs6.existsSync(ccBaseDir)) {
     walkSubagentDir(ccBaseDir, 1, maxDepth, files);
   }
   let mainSessionId;
   try {
-    const mainHeader = JSON.parse(fs2.readFileSync(sessionPath, "utf8").split(`
+    const mainHeader = JSON.parse(fs6.readFileSync(sessionPath, "utf8").split(`
 `)[0]);
     if (mainHeader.type === "session")
       mainSessionId = mainHeader.id;
   } catch {}
   if (mainSessionId) {
     try {
-      for (const f of fs2.readdirSync(sessionDir)) {
+      for (const f of fs6.readdirSync(sessionDir)) {
         if (!f.endsWith(".jsonl"))
           continue;
-        const fullPath = path2.join(sessionDir, f);
+        const fullPath = path6.join(sessionDir, f);
         if (fullPath === sessionPath)
           continue;
         if (files.includes(fullPath))
           continue;
         try {
-          const header = JSON.parse(fs2.readFileSync(fullPath, "utf8").split(`
+          const header = JSON.parse(fs6.readFileSync(fullPath, "utf8").split(`
 `)[0]);
           if (header.type === "session" && header.parentSession === mainSessionId) {
             files.push(fullPath);
@@ -1097,10 +1692,10 @@ function walkSubagentDir(dir, depth, maxDepth, files) {
   if (depth > maxDepth)
     return;
   try {
-    for (const f of fs2.readdirSync(dir)) {
-      const fullPath = path2.join(dir, f);
+    for (const f of fs6.readdirSync(dir)) {
+      const fullPath = path6.join(dir, f);
       try {
-        const stat = fs2.statSync(fullPath);
+        const stat = fs6.statSync(fullPath);
         if (stat.isDirectory()) {
           if (f !== "wtft-tags") {
             walkSubagentDir(fullPath, depth + (f === "subagents" || f === "ns" ? 1 : 0), maxDepth, files);
@@ -1126,19 +1721,19 @@ function cwdToClaudeProjectSlug(cwd) {
 }
 function discoverClaudeSubAgentSessionFiles(cwd, parentTimestamp, windowMs = CLAUDE_SUBAGENT_WINDOW_MS) {
   const slug = cwdToClaudeProjectSlug(cwd);
-  const projectDir = path2.join(os.homedir(), ".claude", "projects", slug);
-  if (!fs2.existsSync(projectDir))
+  const projectDir = path6.join(os4.homedir(), ".claude", "projects", slug);
+  if (!fs6.existsSync(projectDir))
     return [];
   const files = [];
   const tsWindowStart = parentTimestamp - windowMs;
   const tsWindowEnd = parentTimestamp + windowMs;
   try {
-    for (const f of fs2.readdirSync(projectDir)) {
+    for (const f of fs6.readdirSync(projectDir)) {
       if (!f.endsWith(".jsonl"))
         continue;
-      const fullPath = path2.join(projectDir, f);
+      const fullPath = path6.join(projectDir, f);
       try {
-        const head = fs2.readFileSync(fullPath, "utf8").split(`
+        const head = fs6.readFileSync(fullPath, "utf8").split(`
 `).slice(0, 10);
         let ts;
         for (const line of head) {
@@ -1194,7 +1789,7 @@ function attributeClaudeSubAgentCosts(interactions) {
     let totalCost = 0;
     const sessionIds = [];
     for (const file of subAgentFiles) {
-      const sessionId = path2.basename(file, ".jsonl");
+      const sessionId = path6.basename(file, ".jsonl");
       if (seenSessionIds.has(sessionId))
         continue;
       seenSessionIds.add(sessionId);
@@ -1262,6 +1857,8 @@ var SEMANTIC_GROUPS = {
   }
 };
 // extensions/lib/wtft-daemon-lib.ts
+import * as path7 from "node:path";
+import * as fs7 from "node:fs";
 function serializeClassified(interaction) {
   const cost = Number(interaction.cost.toFixed(6));
   const line = {
@@ -1342,6 +1939,43 @@ function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   };
   return serializeClassified(remainder) + serializeClassified(overheadLine);
 }
+function findSiblingTagPath(sessionPath) {
+  const sessionBase = path7.basename(sessionPath);
+  const wanted = sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
+  const projectsRoot = path7.dirname(path7.dirname(sessionPath));
+  let best = null;
+  try {
+    for (const slug of fs7.readdirSync(projectsRoot)) {
+      const candidate = path7.join(projectsRoot, slug, "wtft-tags", wanted);
+      try {
+        const stat = fs7.statSync(candidate);
+        if (!stat.isFile())
+          continue;
+        if (!best || stat.mtimeMs > best.mtimeMs)
+          best = { path: candidate, mtimeMs: stat.mtimeMs };
+      } catch {}
+    }
+  } catch {}
+  return best ? best.path : null;
+}
+function getCurrentVersionTagPath(sessionPath) {
+  const sessionBase = path7.basename(sessionPath);
+  const own = path7.join(path7.dirname(sessionPath), "wtft-tags", sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  if (fs7.existsSync(own))
+    return own;
+  return findSiblingTagPath(sessionPath) || own;
+}
+function resolveMovedSession(sessionPath) {
+  const sessionId = path7.basename(sessionPath).replace(/\.jsonl$/i, "");
+  for (const discovery3 of getDiscoveries()) {
+    try {
+      const found = discovery3.resolveSessionById(sessionId);
+      if (found && found !== sessionPath && fs7.existsSync(found))
+        return found;
+    } catch {}
+  }
+  return null;
+}
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1000;
 // bin/wtft-daemon.ts
 var TAG_SUFFIX = `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
@@ -1356,10 +1990,7 @@ var lastActivityMs = Date.now();
 var startupTime = Date.now();
 var pendingItems = [];
 var idleStartMs = 0;
-var currentThinkingLevel;
-var currentModel;
-var lastCompactionTokensBefore;
-var pendingAfterCompaction = false;
+var streamState = newParseStreamState();
 var stampInterruptOnPending = false;
 var prevCtxTokens = 0;
 var running = true;
@@ -1372,18 +2003,18 @@ function shutdown(reason) {
   running = false;
   let ownsLease = false;
   try {
-    ownsLease = fs3.readFileSync(pidPath, "utf8").trim() === String(process.pid);
+    ownsLease = fs8.readFileSync(pidPath, "utf8").trim() === String(process.pid);
   } catch (_) {}
   if (ownsLease) {
     flushPending();
     try {
-      if (fs3.existsSync(tagPath)) {
-        fs3.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + `
+      if (fs8.existsSync(tagPath)) {
+        fs8.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + `
 `);
       }
     } catch (_) {}
     try {
-      fs3.unlinkSync(pidPath);
+      fs8.unlinkSync(pidPath);
     } catch (_) {}
   }
   process.exit(0);
@@ -1395,12 +2026,12 @@ function upsertHeartbeat(now) {
   try {
     const hbLine = JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + `
 `;
-    const stat = fs3.statSync(tagPath);
+    const stat = fs8.statSync(tagPath);
     if (stat.size === 0) {
-      fs3.appendFileSync(tagPath, hbLine);
+      fs8.appendFileSync(tagPath, hbLine);
       return;
     }
-    const fd = fs3.openSync(tagPath, "r+");
+    const fd = fs8.openSync(tagPath, "r+");
     const CHUNK = 512;
     let searchOffset = stat.size;
     let tail = "";
@@ -1409,7 +2040,7 @@ function upsertHeartbeat(now) {
       const readSize = Math.min(CHUNK, searchOffset);
       searchOffset -= readSize;
       const buf = Buffer.alloc(readSize);
-      fs3.readSync(fd, buf, 0, readSize, searchOffset);
+      fs8.readSync(fd, buf, 0, readSize, searchOffset);
       tail = buf.toString("utf8") + tail;
       lastNl = tail.lastIndexOf(`
 `);
@@ -1432,13 +2063,13 @@ function upsertHeartbeat(now) {
     } catch (_) {}
     if (isHb) {
       const truncAt = searchOffset + lastLineStart;
-      fs3.ftruncateSync(fd, truncAt);
+      fs8.ftruncateSync(fd, truncAt);
     }
-    fs3.appendFileSync(tagPath, hbLine);
-    fs3.closeSync(fd);
+    fs8.appendFileSync(tagPath, hbLine);
+    fs8.closeSync(fd);
   } catch (_) {
     try {
-      fs3.appendFileSync(tagPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + `
+      fs8.appendFileSync(tagPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + `
 `);
     } catch (_2) {}
   }
@@ -1449,8 +2080,8 @@ function flushPending() {
   const batch = pendingItems.map((it) => serializeClassifiedWithOverheadSplit(it.interaction, it.prevCtx)).join("");
   pendingItems = [];
   try {
-    fs3.appendFileSync(tagPath, batch);
-    fs3.appendFileSync(tagPath, JSON.stringify({ _meta: { offset: lastSize } }) + `
+    fs8.appendFileSync(tagPath, batch);
+    fs8.appendFileSync(tagPath, JSON.stringify({ _meta: { offset: lastSize } }) + `
 `);
     idleStartMs = 0;
   } catch (err) {
@@ -1508,7 +2139,7 @@ function scanForSubAgents() {
         continue;
       }
       for (const file of files) {
-        const sessionId = path3.basename(file, ".jsonl");
+        const sessionId = path8.basename(file, ".jsonl");
         if (discoveredClaudeSessions.has(sessionId))
           continue;
         discoveredClaudeSessions.add(sessionId);
@@ -1522,7 +2153,7 @@ function scanForSubAgents() {
   const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
   if (taskAgentFiles.length > 0) {
     for (const file of taskAgentFiles) {
-      const sessionId = path3.basename(file, ".jsonl");
+      const sessionId = path8.basename(file, ".jsonl");
       if (discoveredClaudeSessions.has(sessionId))
         continue;
       discoveredClaudeSessions.add(sessionId);
@@ -1543,7 +2174,7 @@ function writeSessionToTagFile(file) {
       batch += serializeClassified(si);
     }
     if (batch) {
-      fs3.appendFileSync(tagPath, batch);
+      fs8.appendFileSync(tagPath, batch);
       return true;
     }
   } catch {}
@@ -1552,7 +2183,7 @@ function writeSessionToTagFile(file) {
 function parseNewLines(filePath) {
   const interactions = [];
   try {
-    const stat = fs3.statSync(filePath);
+    const stat = fs8.statSync(filePath);
     const currentSize = stat.size;
     if (currentSize < lastSize) {
       if (process.env.WTFT_DAEMON_DEBUG) {
@@ -1563,10 +2194,10 @@ function parseNewLines(filePath) {
     }
     if (currentSize <= lastSize)
       return interactions;
-    const fd = fs3.openSync(filePath, "r");
+    const fd = fs8.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - lastSize);
-    fs3.readSync(fd, buf, 0, buf.length, lastSize);
-    fs3.closeSync(fd);
+    fs8.readSync(fd, buf, 0, buf.length, lastSize);
+    fs8.closeSync(fd);
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
     const lines = newContent.split(`
@@ -1576,35 +2207,20 @@ function parseNewLines(filePath) {
         continue;
       try {
         const entry = JSON.parse(line);
-        if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
-          currentThinkingLevel = entry.thinkingLevel;
-          continue;
-        }
-        if (entry.type === "model_change" && entry.modelId) {
-          currentModel = entry.modelId;
-          continue;
-        }
-        if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
-          lastCompactionTokensBefore = entry.tokensBefore;
-          continue;
-        }
-        if (entry.isCompactSummary === true) {
-          pendingAfterCompaction = true;
-          continue;
-        }
-        if (isInterruptMarker(entry)) {
+        const isControl = applyControlEntry(entry, streamState, () => {
           if (interactions.length > 0) {
             interactions[interactions.length - 1].interrupted = true;
           } else {
             stampInterruptOnPending = true;
           }
+        });
+        if (isControl)
           continue;
-        }
-        const interaction = parseEntryToInteraction(entry, currentThinkingLevel, lastCompactionTokensBefore, pendingAfterCompaction, currentModel);
+        const interaction = parseEntryToInteraction(entry, streamState.thinkingLevel, streamState.compactionTokensBefore, streamState.afterCompaction, streamState.model);
         if (interaction) {
           interactions.push(interaction);
-          lastCompactionTokensBefore = undefined;
-          pendingAfterCompaction = false;
+          streamState.compactionTokensBefore = undefined;
+          streamState.afterCompaction = false;
         }
       } catch (_) {}
     }
@@ -1613,14 +2229,14 @@ function parseNewLines(filePath) {
 }
 function readLastMetaOffset(tagPath2) {
   try {
-    const stat = fs3.statSync(tagPath2);
+    const stat = fs8.statSync(tagPath2);
     if (stat.size === 0)
       return null;
     const readStart = Math.max(0, stat.size - 8192);
-    const fd = fs3.openSync(tagPath2, "r");
+    const fd = fs8.openSync(tagPath2, "r");
     const buf = Buffer.alloc(stat.size - readStart);
-    fs3.readSync(fd, buf, 0, buf.length, readStart);
-    fs3.closeSync(fd);
+    fs8.readSync(fd, buf, 0, buf.length, readStart);
+    fs8.closeSync(fd);
     const lines = buf.toString("utf8").split(`
 `);
     for (let i = lines.length - 1;i >= 0; i--) {
@@ -1639,23 +2255,39 @@ function readLastMetaOffset(tagPath2) {
   } catch {}
   return null;
 }
-var WARN_LOG_DIR = path3.join(os2.homedir(), ".local", "state", "wtft");
-var WARN_LOG = path3.join(WARN_LOG_DIR, "reap.log");
+function followMovedSession() {
+  const moved = resolveMovedSession(sessionPath);
+  if (!moved)
+    return false;
+  if (process.env.WTFT_DAEMON_DEBUG) {
+    process.stderr.write(`[wtft-log-parser] session moved: ${sessionPath} -> ${moved}
+`);
+  }
+  sessionPath = moved;
+  return true;
+}
+function sessionIsGone(sessionCmdlinePath) {
+  if (fs8.existsSync(sessionCmdlinePath))
+    return false;
+  return resolveMovedSession(sessionCmdlinePath) === null;
+}
+var WARN_LOG_DIR = path8.join(os5.homedir(), ".local", "state", "wtft");
+var WARN_LOG = path8.join(WARN_LOG_DIR, "reap.log");
 var TAG_SIZE_WARN = 1e6;
 var HB_RATIO_WARN = 0.9;
 var ZERO_INTERACTIONS_AGE = 3600000;
 function reapAndWarn() {
-  const pidDir = os2.tmpdir();
+  const pidDir = os5.tmpdir();
   let pidFiles = [];
   try {
-    pidFiles = fs3.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
+    pidFiles = fs8.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
   } catch (_) {}
   const warnings = [];
   for (const pidFile of pidFiles) {
-    const fullPath = path3.join(pidDir, pidFile);
+    const fullPath = path8.join(pidDir, pidFile);
     let pid = 0;
     try {
-      pid = parseInt(fs3.readFileSync(fullPath, "utf8").trim(), 10);
+      pid = parseInt(fs8.readFileSync(fullPath, "utf8").trim(), 10);
     } catch (_) {
       continue;
     }
@@ -1668,7 +2300,7 @@ function reapAndWarn() {
     } catch (_) {}
     let sessionFound = null;
     try {
-      const cmdline = fs3.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      const cmdline = fs8.readFileSync(`/proc/${pid}/cmdline`, "utf8");
       const args = cmdline.split("\x00");
       const sessIdx = args.indexOf("--session");
       if (sessIdx >= 0 && sessIdx + 1 < args.length) {
@@ -1677,14 +2309,14 @@ function reapAndWarn() {
     } catch (_) {}
     if (!alive) {
       try {
-        fs3.unlinkSync(fullPath);
+        fs8.unlinkSync(fullPath);
       } catch (_) {}
       continue;
     }
-    if (sessionFound && !fs3.existsSync(sessionFound)) {
+    if (sessionFound && sessionIsGone(sessionFound)) {
       process.kill(pid, "SIGTERM");
       try {
-        fs3.unlinkSync(fullPath);
+        fs8.unlinkSync(fullPath);
       } catch (_) {}
       warnings.push(`[${new Date().toISOString()}] KILLED PID ${pid}: session gone — ${sessionFound}`);
       continue;
@@ -1692,20 +2324,20 @@ function reapAndWarn() {
     if (sessionFound) {
       let tagFound = null;
       try {
-        const tagsDir = path3.join(path3.dirname(sessionFound), "wtft-tags");
-        const sessBase = path3.basename(sessionFound);
+        const tagsDir = path8.join(path8.dirname(sessionFound), "wtft-tags");
+        const sessBase = path8.basename(sessionFound);
         const prefix = sessBase + ".wtft-tag.v";
-        for (const f of fs3.readdirSync(tagsDir)) {
+        for (const f of fs8.readdirSync(tagsDir)) {
           if (f.startsWith(prefix)) {
-            tagFound = path3.join(tagsDir, f);
+            tagFound = path8.join(tagsDir, f);
             break;
           }
         }
       } catch (_) {}
       if (tagFound) {
         try {
-          const stat = fs3.statSync(tagFound);
-          const content = fs3.readFileSync(tagFound, "utf8");
+          const stat = fs8.statSync(tagFound);
+          const content = fs8.readFileSync(tagFound, "utf8");
           const lines = content.trim().split(`
 `);
           const hbLines = lines.filter((l) => l.includes('"_hb"') && !l.includes('"stop"'));
@@ -1744,14 +2376,14 @@ function reapAndWarn() {
     }
   }
   try {
-    const tmpEntries = fs3.readdirSync(os2.tmpdir());
+    const tmpEntries = fs8.readdirSync(os5.tmpdir());
     const liveSessions = new Set;
     for (const pidFile of pidFiles) {
       try {
-        const fullPath = path3.join(pidDir, pidFile);
-        const pid = parseInt(fs3.readFileSync(fullPath, "utf8").trim(), 10);
+        const fullPath = path8.join(pidDir, pidFile);
+        const pid = parseInt(fs8.readFileSync(fullPath, "utf8").trim(), 10);
         if (pid > 0) {
-          const cmdline = fs3.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+          const cmdline = fs8.readFileSync(`/proc/${pid}/cmdline`, "utf8");
           const args = cmdline.split("\x00");
           const sessIdx = args.indexOf("--session");
           if (sessIdx >= 0 && sessIdx + 1 < args.length) {
@@ -1763,10 +2395,10 @@ function reapAndWarn() {
     for (const entry of tmpEntries) {
       if (!entry.startsWith("wtft-"))
         continue;
-      const fullDir = path3.join(os2.tmpdir(), entry);
+      const fullDir = path8.join(os5.tmpdir(), entry);
       let isDir = false;
       try {
-        isDir = fs3.statSync(fullDir).isDirectory();
+        isDir = fs8.statSync(fullDir).isDirectory();
       } catch (_) {
         continue;
       }
@@ -1775,7 +2407,7 @@ function reapAndWarn() {
       const claimed = [...liveSessions].some((s) => s.startsWith(fullDir));
       if (!claimed) {
         try {
-          const mtime = fs3.statSync(fullDir).mtimeMs;
+          const mtime = fs8.statSync(fullDir).mtimeMs;
           if (Date.now() - mtime > 3600000) {
             warnings.push(`[${new Date().toISOString()}] WARN: stale fixture dir with no owning daemon — ${fullDir}`);
           }
@@ -1785,8 +2417,8 @@ function reapAndWarn() {
   } catch (_) {}
   if (warnings.length > 0) {
     try {
-      fs3.mkdirSync(WARN_LOG_DIR, { recursive: true });
-      fs3.appendFileSync(WARN_LOG, warnings.join(`
+      fs8.mkdirSync(WARN_LOG_DIR, { recursive: true });
+      fs8.appendFileSync(WARN_LOG, warnings.join(`
 `) + `
 `);
     } catch (_) {}
@@ -1795,8 +2427,8 @@ function reapAndWarn() {
 function initClassified() {
   let hasData = false;
   try {
-    fs3.accessSync(tagPath);
-    const tagContent = fs3.readFileSync(tagPath, "utf8");
+    fs8.accessSync(tagPath);
+    const tagContent = fs8.readFileSync(tagPath, "utf8");
     hasData = tagContent.split(`
 `).some((l) => l.trim() && !l.includes('"_hb"') && !l.includes('"_meta"'));
     if (hasData) {
@@ -1805,13 +2437,13 @@ function initClassified() {
         lastSize = metaOffset;
       } else {
         try {
-          fs3.truncateSync(tagPath, 0);
+          fs8.truncateSync(tagPath, 0);
         } catch {}
         lastSize = 0;
       }
     } else {
       try {
-        fs3.truncateSync(tagPath, 0);
+        fs8.truncateSync(tagPath, 0);
       } catch {}
       lastSize = 0;
     }
@@ -1819,12 +2451,13 @@ function initClassified() {
     lastSize = 0;
   }
   const startNow = Date.now();
-  fs3.appendFileSync(tagPath, JSON.stringify({ _hb: { first: startNow, last: startNow } }) + `
+  fs8.appendFileSync(tagPath, JSON.stringify({ _hb: { first: startNow, last: startNow } }) + `
 `);
   idleStartMs = startNow;
 }
-function main() {
+async function main() {
   loadUserPricing();
+  await loadExternalHarnesses();
   let showList = false;
   let showCleanup = false;
   let showRestart = false;
@@ -1861,17 +2494,17 @@ Log parser mode:
     }
   }
   if (showList || showCleanup || showRestart || stopSession) {
-    const pidDir = os2.tmpdir();
+    const pidDir = os5.tmpdir();
     let pidFiles = [];
     try {
-      pidFiles = fs3.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
+      pidFiles = fs8.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
     } catch (_) {}
     let found = 0;
     for (const pidFile of pidFiles) {
-      const fullPath = path3.join(pidDir, pidFile);
+      const fullPath = path8.join(pidDir, pidFile);
       let pid = 0;
       try {
-        pid = parseInt(fs3.readFileSync(fullPath, "utf8").trim(), 10);
+        pid = parseInt(fs8.readFileSync(fullPath, "utf8").trim(), 10);
       } catch (_) {
         continue;
       }
@@ -1885,7 +2518,7 @@ Log parser mode:
       let sessionFound = null;
       let tagMtime = 0;
       try {
-        const cmdline = fs3.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+        const cmdline = fs8.readFileSync(`/proc/${pid}/cmdline`, "utf8");
         const args = cmdline.split("\x00");
         const sessIdx = args.indexOf("--session");
         if (sessIdx >= 0 && sessIdx + 1 < args.length) {
@@ -1895,12 +2528,12 @@ Log parser mode:
       let taggerVersion = "?";
       if (sessionFound) {
         try {
-          const tagsDir2 = path3.join(path3.dirname(sessionFound), "wtft-tags");
-          const sessBase = path3.basename(sessionFound);
+          const tagsDir2 = path8.join(path8.dirname(sessionFound), "wtft-tags");
+          const sessBase = path8.basename(sessionFound);
           const prefix2 = sessBase + ".wtft-tag.v";
-          for (const f of fs3.readdirSync(tagsDir2)) {
+          for (const f of fs8.readdirSync(tagsDir2)) {
             if (f.startsWith(prefix2)) {
-              tagMtime = fs3.statSync(path3.join(tagsDir2, f)).mtimeMs;
+              tagMtime = fs8.statSync(path8.join(tagsDir2, f)).mtimeMs;
               taggerVersion = f.slice(prefix2.length, f.length - 6);
               break;
             }
@@ -1912,7 +2545,7 @@ Log parser mode:
           process.kill(pid, "SIGTERM");
         }
         try {
-          fs3.unlinkSync(fullPath);
+          fs8.unlinkSync(fullPath);
         } catch (_) {}
         if (sessionFound) {
           try {
@@ -1930,14 +2563,14 @@ Log parser mode:
       if (showCleanup) {
         if (!alive) {
           try {
-            fs3.unlinkSync(fullPath);
+            fs8.unlinkSync(fullPath);
           } catch (_) {}
           continue;
         }
-        if (sessionFound && !fs3.existsSync(sessionFound)) {
+        if (sessionFound && sessionIsGone(sessionFound)) {
           process.kill(pid, "SIGTERM");
           try {
-            fs3.unlinkSync(fullPath);
+            fs8.unlinkSync(fullPath);
           } catch (_) {}
           console.log(`Cleaned up: PID ${pid} — session gone: ${sessionFound}`);
           found++;
@@ -1949,7 +2582,7 @@ Log parser mode:
           process.kill(pid, "SIGTERM");
         }
         try {
-          fs3.unlinkSync(fullPath);
+          fs8.unlinkSync(fullPath);
         } catch (_) {}
         console.log(`Stopped: PID ${pid} — ${sessionFound}`);
         found++;
@@ -1996,21 +2629,20 @@ Log parser mode:
 `);
     process.exit(1);
   }
-  const sessionDir = path3.dirname(sessionPath);
-  const sessionBase = path3.basename(sessionPath);
-  const tagsDir = path3.join(sessionDir, "wtft-tags");
+  const sessionBase = path8.basename(sessionPath);
+  tagPath = getCurrentVersionTagPath(sessionPath);
+  const tagsDir = path8.dirname(tagPath);
   try {
-    fs3.mkdirSync(tagsDir, { recursive: true });
+    fs8.mkdirSync(tagsDir, { recursive: true });
   } catch (_) {}
-  tagPath = path3.join(tagsDir, sessionBase + TAG_SUFFIX);
-  const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
-  pidPath = path3.join(os2.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  const sessionHash = createHash("sha256").update(sessionBase).digest("hex").slice(0, 12);
+  pidPath = path8.join(os5.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
   const prefix = sessionBase + ".wtft-tag.v";
   let claimedByTakeover = false;
   try {
-    for (const f of fs3.readdirSync(tagsDir)) {
+    for (const f of fs8.readdirSync(tagsDir)) {
       if (f.indexOf(prefix) === 0 && f !== sessionBase + TAG_SUFFIX) {
-        fs3.writeFileSync(pidPath, String(process.pid));
+        fs8.writeFileSync(pidPath, String(process.pid));
         claimedByTakeover = true;
         break;
       }
@@ -2022,39 +2654,39 @@ Log parser mode:
   if (!claimedByTakeover) {
     let fd;
     try {
-      fd = fs3.openSync(pidPath, "wx");
-      fs3.writeSync(fd, String(process.pid));
-      fs3.closeSync(fd);
+      fd = fs8.openSync(pidPath, "wx");
+      fs8.writeSync(fd, String(process.pid));
+      fs8.closeSync(fd);
     } catch (_) {
       try {
-        const existingPid = parseInt(fs3.readFileSync(pidPath, "utf8").trim(), 10);
+        const existingPid = parseInt(fs8.readFileSync(pidPath, "utf8").trim(), 10);
         if (existingPid > 0) {
           try {
             process.kill(existingPid, 0);
             process.exit(0);
           } catch (_2) {
-            fs3.unlinkSync(pidPath);
-            fd = fs3.openSync(pidPath, "wx");
-            fs3.writeSync(fd, String(process.pid));
-            fs3.closeSync(fd);
+            fs8.unlinkSync(pidPath);
+            fd = fs8.openSync(pidPath, "wx");
+            fs8.writeSync(fd, String(process.pid));
+            fs8.closeSync(fd);
           }
         }
       } catch (_3) {
         try {
-          fs3.unlinkSync(pidPath);
+          fs8.unlinkSync(pidPath);
         } catch (_4) {}
-        fd = fs3.openSync(pidPath, "wx");
-        fs3.writeSync(fd, String(process.pid));
-        fs3.closeSync(fd);
+        fd = fs8.openSync(pidPath, "wx");
+        fs8.writeSync(fd, String(process.pid));
+        fs8.closeSync(fd);
       }
     }
   }
   const sweepOldTagFiles = () => {
     try {
-      for (const f of fs3.readdirSync(tagsDir)) {
+      for (const f of fs8.readdirSync(tagsDir)) {
         if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
           try {
-            fs3.unlinkSync(path3.join(tagsDir, f));
+            fs8.unlinkSync(path8.join(tagsDir, f));
           } catch (_) {}
           if (process.env.WTFT_DAEMON_DEBUG) {
             process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}
@@ -2081,7 +2713,7 @@ Log parser mode:
     if (!running)
       return;
     try {
-      if (fs3.readFileSync(pidPath, "utf8").trim() !== String(process.pid)) {
+      if (fs8.readFileSync(pidPath, "utf8").trim() !== String(process.pid)) {
         running = false;
         process.exit(0);
       }
@@ -2089,10 +2721,12 @@ Log parser mode:
       running = false;
       process.exit(0);
     }
-    if (!fs3.existsSync(sessionPath)) {
+    if (!fs8.existsSync(sessionPath)) {
       if (sessionExisted) {
-        shutdown("session removed");
-        return;
+        if (!followMovedSession()) {
+          shutdown("session removed");
+          return;
+        }
       }
       const now = Date.now();
       if (idleStartMs === 0)
@@ -2144,7 +2778,7 @@ Log parser mode:
         shutdown("idle timeout");
         return;
       }
-      if (!fs3.existsSync(sessionPath)) {
+      if (!fs8.existsSync(sessionPath) && !followMovedSession()) {
         shutdown("session removed");
         return;
       }
@@ -2158,4 +2792,8 @@ Log parser mode:
   };
   loop();
 }
-main();
+main().catch((err) => {
+  process.stderr.write(`wtft-daemon: ${err instanceof Error ? err.stack || err.message : String(err)}
+`);
+  process.exit(1);
+});
