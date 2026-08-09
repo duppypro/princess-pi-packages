@@ -709,7 +709,7 @@ function appendTail(base, datePrefix, uuidTail) {
 var ID = "claude-code";
 var SKIP_DIRS = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
 function projectsDir() {
-  return path3.join(os2.homedir(), ".claude", "projects");
+  return process.env.WTFT_CLAUDE_PROJECTS_DIR || path3.join(os2.homedir(), ".claude", "projects");
 }
 function sessionIdOf(file) {
   return path3.basename(file).replace(/\.jsonl$/i, "");
@@ -901,7 +901,7 @@ import * as os3 from "node:os";
 var ID3 = "pi";
 var SKIP_DIRS2 = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
 function sessionsDir() {
-  return path4.join(os3.homedir(), ".pi", "agent", "sessions");
+  return process.env.WTFT_PI_SESSIONS_DIR || path4.join(os3.homedir(), ".pi", "agent", "sessions");
 }
 function sessionIdOf2(file) {
   return path4.basename(file).replace(/\.jsonl$/i, "");
@@ -2001,6 +2001,10 @@ function shutdown(reason) {
   if (!running)
     return;
   running = false;
+  if (process.env.WTFT_DAEMON_DEBUG) {
+    process.stderr.write(`[wtft-log-parser] shutdown: ${reason}
+`);
+  }
   let ownsLease = false;
   try {
     ownsLease = fs8.readFileSync(pidPath, "utf8").trim() === String(process.pid);

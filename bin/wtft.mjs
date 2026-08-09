@@ -687,6 +687,13 @@ import * as fs2 from "node:fs";
 var TAIL_WINDOWS = [8 * 1024, 64 * 1024, 512 * 1024];
 var cwdCache = new Map;
 var readCount = 0;
+function getCwdReadCount() {
+  return readCount;
+}
+function resetCwdCache() {
+  cwdCache.clear();
+  readCount = 0;
+}
 function readSlice(file, start, len) {
   const fd = fs2.openSync(file, "r");
   try {
@@ -820,7 +827,7 @@ function formatRelativeTime(ts) {
 var ID = "claude-code";
 var SKIP_DIRS = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
 function projectsDir() {
-  return path3.join(os2.homedir(), ".claude", "projects");
+  return process.env.WTFT_CLAUDE_PROJECTS_DIR || path3.join(os2.homedir(), ".claude", "projects");
 }
 function sessionIdOf(file) {
   return path3.basename(file).replace(/\.jsonl$/i, "");
@@ -1012,7 +1019,7 @@ import * as os3 from "node:os";
 var ID3 = "pi";
 var SKIP_DIRS2 = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
 function sessionsDir() {
-  return path4.join(os3.homedir(), ".pi", "agent", "sessions");
+  return process.env.WTFT_PI_SESSIONS_DIR || path4.join(os3.homedir(), ".pi", "agent", "sessions");
 }
 function sessionIdOf2(file) {
   return path4.basename(file).replace(/\.jsonl$/i, "");
@@ -1273,6 +1280,12 @@ async function loadExternalHarnesses(filePath = getHarnessConfigPath()) {
     }
   }
   return loaded;
+}
+function registerHarness(harness) {
+  externals.set(harness.id, harness);
+  disabled.delete(harness.id);
+  harnessesCache = null;
+  adaptersCache = null;
 }
 function getHarnesses() {
   if (harnessesCache)
@@ -3381,9 +3394,27 @@ function getTagPath(sessionPath) {
     return newest.path;
   return defaultPath;
 }
+function getCurrentVersionTagPath(sessionPath) {
+  const sessionBase = path7.basename(sessionPath);
+  const own = path7.join(path7.dirname(sessionPath), "wtft-tags", sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  if (fs7.existsSync(own))
+    return own;
+  return findSiblingTagPath(sessionPath) || own;
+}
 function getDaemonPidPath(sessionPath) {
   const sessionHash = createHash("sha256").update(path7.basename(sessionPath)).digest("hex").slice(0, 12);
   return path7.join(os5.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+}
+function resolveMovedSession(sessionPath) {
+  const sessionId = path7.basename(sessionPath).replace(/\.jsonl$/i, "");
+  for (const discovery3 of getDiscoveries()) {
+    try {
+      const found = discovery3.resolveSessionById(sessionId);
+      if (found && found !== sessionPath && fs7.existsSync(found))
+        return found;
+    } catch {}
+  }
+  return null;
 }
 var IDLE_THRESHOLD_MS = 122000;
 var IDLE_EXIT_MS = 24 * 60 * 60 * 1000;
@@ -4731,25 +4762,44 @@ export {
   serializeClassifiedWithOverheadSplit,
   serializeClassified,
   resolveTieredRates,
+  resolveMovedSession,
+  resolveLastCwd,
+  resetHarnessRegistry,
+  resetCwdCache,
   renderHalfBlockBar,
+  registerHarness,
+  readControlEntry,
   readClassifiedTagFile,
   parseSessionFile,
   parseInterval,
   parseEntryToInteraction,
+  newParseStreamState,
   lookupModelPricing,
   loadUserPricing,
   loadSubagentInteractions,
+  loadHarnessConfig,
+  loadExternalHarnesses,
   isModelPriced,
   isInterruptMarker,
+  harnessLabel,
   halfSlotCountsToArray,
   getUserPricingPath,
   getTerminalWidth,
   getTagPath,
+  getParseAdapters,
+  getHarnesses,
+  getHarnessConfigPath,
+  getHarness,
+  getDiscoveries,
   getDaemonPidPath,
+  getCwdReadCount,
+  getCurrentVersionTagPath,
   getBinInfo,
   distributeHalfSlots,
   discoverSubagentSessionFiles,
+  discoverSessions,
   deduplicateInteractions,
+  cwdToSlug,
   classifyInteraction,
   classifiedToInteraction,
   checkDaemonHealth,
@@ -4758,6 +4808,7 @@ export {
   buildWtftLines,
   attributeClaudeSubAgentCosts,
   applyUserPricing,
+  applyControlEntry,
   WTFT_TAGGER_VERSION,
   MODEL_PRICING,
   IDLE_THRESHOLD_MS,
