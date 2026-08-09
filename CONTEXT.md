@@ -4,6 +4,11 @@ Multi-tool repo for the Princess Pi coding agent: development server, cost track
 
 ## Language — Serve
 
+> **Companion:** `princess-pi-brain/vps-tenancy/vps-tenancy-glossary.md` owns the VPS *deployment*
+> vocabulary (Tenant, Zone, Gate, Job, Lane, Release dir, State root). **This file is authoritative
+> for the `serve` tool's own internals; that one for deployment meaning.** Where they touched, four
+> terms have been sharpened — see "Rulings from the tenancy glossary" at the end of this section.
+
 **Server instance**:
 A running process that serves a local directory on a loopback port. Discovered by parsing `ps aux` for `run-live-server` or `http-server` processes.
 _Avoid_: Service, daemon, listener
@@ -79,3 +84,33 @@ _Avoid_: List view, grid, rows
 **Widget**:
 The Pi TUI panel that displays the server table below the editor. Registered as `serve-ports`. Visible/hidden via `--show` / `--hide` (Pi only). Updated on session start, on a 4-second tick, and after every serve/kill operation.
 _Avoid_: Panel, sidebar, status bar
+
+### Rulings from the tenancy glossary
+
+Four `_Avoid_` entries above were written before the VPS gained long-running systemd tenants. None
+are reversed — each is **narrowed**, because the avoided word turned out to have one legitimate home.
+Source: `princess-pi-brain/vps-tenancy/vps-tenancy-glossary.md` (2026-08-09).
+
+**Service** — *Server instance* avoids it, correctly. Narrowed: **Service** is reserved for a
+systemd-supervised long-running process (`kind = "service"` in a tenant manifest). A static tenant is
+never a service; a service is never a "server instance." The word is not banned, it is *spoken for*.
+
+**Gate** — *Access application* avoids it, correctly. Narrowed: **Gate** is the declared *policy*
+(`"access"` or `"public"`); the **Access application** is the Cloudflare *resource* implementing
+`gate = "access"`. A public tenant has a gate and no Access application. Never use "gate" for the
+Cloudflare object.
+
+**Slug** — *Sub-domain* avoids it, correctly, **but only for the URL label.** A generated URL-safe
+string used for a filename, directory, article path segment or id **may still be called a slug** —
+that is its correct general sense. Test: ask what the string *identifies*. A tenant at the edge →
+sub-domain. Anything else → slug is fine.
+
+**Origin** — here it means the loopback service behind the edge. In any repo serving browsers it is
+the CORS sense: scheme + host + port of the calling page. Both are load-bearing. **In deployment
+prose say "loopback service"** and reserve bare *origin* for CORS.
+
+> **Known bug this vocabulary exposes.** *Server instance* is defined as "discovered by parsing
+> `ps aux` for `run-live-server` or `http-server`." A **service tenant** matches neither, so `Reap`
+> classifies it as an `Orphan` and the next `serve` invocation silently unpublishes it. Latent only
+> until the first service tenant deploys. Tracked as **princess-pi-brain #9**; the other three
+> tenancy gaps are **#10**. Both fixes land in this repo.
