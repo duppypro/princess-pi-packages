@@ -672,6 +672,7 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore, a
     }
     const cacheCreation = usage.cache_creation || {};
     const cacheTtl = (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? "1h" : (cacheCreation.ephemeral_5m_input_tokens || 0) > 0 ? "5m" : undefined;
+    const cacheMiss = (usage.cache_read_input_tokens || 0) === 0 && (usage.cache_creation_input_tokens || 0) > 0 ? true : undefined;
     const serverToolRequests = usage.server_tool_use || {};
     const serverToolCost = calculateServerToolCost(effectiveModel, serverToolRequests.web_search_requests || 0, serverToolRequests.web_fetch_requests || 0);
     const surgePriced = effectiveModel.toLowerCase().includes("deepseek") ? getDeepSeekPeakMultiplier(timestamp) > 1 : undefined;
@@ -746,6 +747,7 @@ function parseEntryToInteraction(entry, thinkingLevel, compactionTokensBefore, a
       thinkingLevel,
       compactionTokensBefore,
       cacheTtl,
+      cacheMiss,
       afterCompaction: afterCompaction || compactionTokensBefore !== undefined || undefined,
       cacheWrite1hTokens: (cacheCreation.ephemeral_1h_input_tokens || 0) > 0 ? cacheCreation.ephemeral_1h_input_tokens : undefined,
       iterations: Array.isArray(usage.iterations) ? usage.iterations.length : undefined,
@@ -1299,6 +1301,8 @@ function serializeClassified(interaction) {
     line.ut = 1;
   if (interaction.cacheTtl)
     line.ttl = interaction.cacheTtl;
+  if (interaction.cacheMiss)
+    line.miss = 1;
   if (interaction.interrupted)
     line.ir = 1;
   if (interaction.surgePriced)
@@ -1306,7 +1310,7 @@ function serializeClassified(interaction) {
   return JSON.stringify(line) + `
 `;
 }
-var WTFT_TAGGER_VERSION = "2.6.1";
+var WTFT_TAGGER_VERSION = "2.7.0";
 function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   const split = splitOverheadCost(interaction, prevCtxTokens);
   if (!split)
@@ -1326,6 +1330,7 @@ function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: interaction.cacheWriteTokens,
+    cacheMiss: undefined,
     reasoningTokens: 0,
     webSearchRequests: 0,
     webFetchRequests: 0,
