@@ -1939,7 +1939,13 @@ function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   };
   return serializeClassified(remainder) + serializeClassified(overheadLine);
 }
+var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+function isSessionIdBasename(sessionPath) {
+  return UUID_RE.test(path7.basename(sessionPath));
+}
 function findSiblingTagPath(sessionPath) {
+  if (!isSessionIdBasename(sessionPath))
+    return null;
   const sessionBase = path7.basename(sessionPath);
   const wanted = sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
   const projectsRoot = path7.dirname(path7.dirname(sessionPath));
@@ -2639,7 +2645,7 @@ Log parser mode:
   try {
     fs8.mkdirSync(tagsDir, { recursive: true });
   } catch (_) {}
-  const sessionHash = createHash("sha256").update(sessionBase).digest("hex").slice(0, 12);
+  const sessionHash = createHash("sha256").update(isSessionIdBasename(sessionPath) ? sessionBase : sessionPath).digest("hex").slice(0, 12);
   pidPath = path8.join(os5.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
   const prefix = sessionBase + ".wtft-tag.v";
   let claimedByTakeover = false;

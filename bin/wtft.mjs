@@ -3347,7 +3347,13 @@ function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   };
   return serializeClassified(remainder) + serializeClassified(overheadLine);
 }
+var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+function isSessionIdBasename(sessionPath) {
+  return UUID_RE.test(path7.basename(sessionPath));
+}
 function findSiblingTagPath(sessionPath) {
+  if (!isSessionIdBasename(sessionPath))
+    return null;
   const sessionBase = path7.basename(sessionPath);
   const wanted = sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
   const projectsRoot = path7.dirname(path7.dirname(sessionPath));
@@ -3402,7 +3408,8 @@ function getCurrentVersionTagPath(sessionPath) {
   return findSiblingTagPath(sessionPath) || own;
 }
 function getDaemonPidPath(sessionPath) {
-  const sessionHash = createHash("sha256").update(path7.basename(sessionPath)).digest("hex").slice(0, 12);
+  const key = isSessionIdBasename(sessionPath) ? path7.basename(sessionPath) : sessionPath;
+  const sessionHash = createHash("sha256").update(key).digest("hex").slice(0, 12);
   return path7.join(os5.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 }
 function resolveMovedSession(sessionPath) {
@@ -4779,6 +4786,7 @@ export {
   loadSubagentInteractions,
   loadHarnessConfig,
   loadExternalHarnesses,
+  isSessionIdBasename,
   isModelPriced,
   isInterruptMarker,
   harnessLabel,
