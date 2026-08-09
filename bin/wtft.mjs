@@ -635,7 +635,8 @@ function calculateClaudeCost(model, usage, timestamp) {
   const cw1h = cc.ephemeral_1h_input_tokens ?? 0;
   const cwFlat = Math.max(0, (usage.cache_creation_input_tokens || 0) - cw5m - cw1h);
   if (registryPricing) {
-    cacheWriteCost = cw5m * (cacheWritePrice / 1e6) + cw1h * (cacheWritePrice * 2 / 1e6) + cwFlat * (cacheWritePrice / 1e6);
+    const cw1hPrice = cacheWritePrice === 0 ? 0 : inputPrice * 2;
+    cacheWriteCost = cw5m * (cacheWritePrice / 1e6) + cw1h * (cw1hPrice / 1e6) + cwFlat * (cacheWritePrice / 1e6);
   } else if (m.includes("deepseek")) {
     cacheWriteCost = 0;
   } else {
@@ -2692,7 +2693,7 @@ function readClassifiedTagFile(tagPath) {
   } catch {}
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.6.0";
+var WTFT_TAGGER_VERSION = "2.6.1";
 function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   const split = splitOverheadCost(interaction, prevCtxTokens);
   if (!split)
