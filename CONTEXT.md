@@ -89,7 +89,8 @@ _Avoid_: Panel, sidebar, status bar
 
 Four `_Avoid_` entries above were written before the VPS gained long-running systemd tenants. None
 are reversed — each is **narrowed**, because the avoided word turned out to have one legitimate home.
-Source: `princess-pi-brain/vps-tenancy/vps-tenancy-glossary.md` (2026-08-09).
+Source: `princess-pi-brain/vps-tenancy/vps-tenancy-glossary.md` @ `78ccd6c`, 2026-08-09. If this
+disagrees with brain, brain wins — the sha is here so `git log` in brain answers "is this stale."
 
 **Service** — *Server instance* avoids it, correctly. Narrowed: **Service** is reserved for a
 systemd-supervised long-running process (`kind = "service"` in a tenant manifest). A static tenant is
