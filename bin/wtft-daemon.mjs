@@ -369,8 +369,8 @@ var require_wcwidth = __commonJS((exports, module) => {
 });
 
 // bin/wtft-daemon.ts
-import * as fs2 from "node:fs";
-import * as path2 from "node:path";
+import * as fs3 from "node:fs";
+import * as path3 from "node:path";
 import * as os2 from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -397,6 +397,18 @@ function getDeepSeekPeakMultiplier(timestamp) {
   return 1;
 }
 var MODEL_PRICING = {
+  "claude-fable-5": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  "claude-mythos-5": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4-6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4-1": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
   "deepseek-v4-pro": { input: 1.74, output: 3.48, cacheRead: 0.0145, cacheWrite: 0 },
   "gpt-5.4": {
@@ -458,6 +470,16 @@ function resolveTieredRates(pricing, usage) {
     }
   }
   return rates;
+}
+function applyUserPricing(overrides) {
+  for (const [key, pricing] of Object.entries(overrides)) {
+    if (!pricing || typeof pricing !== "object")
+      continue;
+    const { input, output, cacheRead, cacheWrite } = pricing;
+    if ([input, output, cacheRead, cacheWrite].some((v) => typeof v !== "number" || !isFinite(v)))
+      continue;
+    MODEL_PRICING[key.toLowerCase().trim()] = pricing;
+  }
 }
 function lookupModelPricing(model) {
   if (!model)
@@ -530,9 +552,30 @@ function calculateClaudeCost(model, usage, timestamp) {
   const cost = (usage.input_tokens || 0) * (inputPrice / 1e6) + (usage.output_tokens || 0) * (outputPrice / 1e6) + (usage.reasoning_tokens || usage.reasoning || 0) * (outputPrice / 1e6) + cacheWriteCost + (usage.cache_read_input_tokens || 0) * (cacheReadPrice / 1e6);
   return cost;
 }
-// extensions/lib/wtft-parser.ts
-import * as path from "node:path";
+// extensions/lib/wtft-pricing-config.ts
 import * as fs from "node:fs";
+import * as path from "node:path";
+import { homedir } from "node:os";
+function getUserPricingPath() {
+  const xdgHome = process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
+  return path.join(xdgHome, "princess-pi-packages", "wtft-pricing.json");
+}
+function loadUserPricing(filePath = getUserPricingPath()) {
+  try {
+    if (!fs.existsSync(filePath))
+      return null;
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return null;
+    applyUserPricing(parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+// extensions/lib/wtft-parser.ts
+import * as path2 from "node:path";
+import * as fs2 from "node:fs";
 import * as os from "node:os";
 var TOOL_CATEGORY_MAP = {
   task: "agents",
@@ -774,7 +817,7 @@ function parseSessionFile(filePath) {
   let lastCompactionTokensBefore;
   let pendingAfterCompaction = false;
   try {
-    const content = fs.readFileSync(filePath, "utf8");
+    const content = fs2.readFileSync(filePath, "utf8");
     for (const line of content.split(`
 `)) {
       if (!line.trim())
@@ -920,14 +963,14 @@ function classifyInteraction(interaction) {
     const norm = f.path.replace(/\\/g, "/");
     let category = null;
     if (norm.includes("node_modules/")) {
-      if (path.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
+      if (path2.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
         category = "research";
       } else {
         category = "code";
       }
     } else if (norm.startsWith("docs/research/") || norm.includes("/docs/research/")) {
       category = "plan";
-    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path.extname(norm).toLowerCase() === ".md") {
+    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path2.extname(norm).toLowerCase() === ".md") {
       category = "spec";
     } else if (norm.startsWith("tests/") || norm.includes("/tests/")) {
       category = "tests";
@@ -936,7 +979,7 @@ function classifyInteraction(interaction) {
     } else if (norm.startsWith(".pi/extensions/") || norm.includes("/.pi/extensions/") || norm.startsWith("extensions/") || norm.includes("/extensions/") || norm.startsWith("src/") || norm.includes("/src/") || norm.startsWith("public/") || norm.includes("/public/") || norm.startsWith("bin/") || norm.includes("/bin/") || norm.startsWith("debug/") || norm.includes("/debug/")) {
       category = "code";
     } else {
-      const ext = path.extname(norm).toLowerCase();
+      const ext = path2.extname(norm).toLowerCase();
       if ([".ts", ".js", ".mjs", ".json", ".jsonl", ".css", ".tsx", ".jsx", ".py", ".rs", ".go", ".sh", ".yml", ".yaml", ".sql", ".txt"].includes(ext) || norm.endsWith(".gitignore") || norm.endsWith(".dockerignore")) {
         category = "code";
       } else if (ext === "") {
@@ -1012,31 +1055,31 @@ function classifyInteraction(interaction) {
 var MAX_SUBAGENT_DEPTH = 5;
 function discoverSubagentSessionFiles(sessionPath, maxDepth = MAX_SUBAGENT_DEPTH) {
   const files = [];
-  const sessionDir = path.dirname(sessionPath);
-  const sessionBase = path.basename(sessionPath, ".jsonl");
-  const ccBaseDir = path.join(sessionDir, sessionBase, "subagents");
-  if (fs.existsSync(ccBaseDir)) {
+  const sessionDir = path2.dirname(sessionPath);
+  const sessionBase = path2.basename(sessionPath, ".jsonl");
+  const ccBaseDir = path2.join(sessionDir, sessionBase, "subagents");
+  if (fs2.existsSync(ccBaseDir)) {
     walkSubagentDir(ccBaseDir, 1, maxDepth, files);
   }
   let mainSessionId;
   try {
-    const mainHeader = JSON.parse(fs.readFileSync(sessionPath, "utf8").split(`
+    const mainHeader = JSON.parse(fs2.readFileSync(sessionPath, "utf8").split(`
 `)[0]);
     if (mainHeader.type === "session")
       mainSessionId = mainHeader.id;
   } catch {}
   if (mainSessionId) {
     try {
-      for (const f of fs.readdirSync(sessionDir)) {
+      for (const f of fs2.readdirSync(sessionDir)) {
         if (!f.endsWith(".jsonl"))
           continue;
-        const fullPath = path.join(sessionDir, f);
+        const fullPath = path2.join(sessionDir, f);
         if (fullPath === sessionPath)
           continue;
         if (files.includes(fullPath))
           continue;
         try {
-          const header = JSON.parse(fs.readFileSync(fullPath, "utf8").split(`
+          const header = JSON.parse(fs2.readFileSync(fullPath, "utf8").split(`
 `)[0]);
           if (header.type === "session" && header.parentSession === mainSessionId) {
             files.push(fullPath);
@@ -1051,12 +1094,12 @@ function walkSubagentDir(dir, depth, maxDepth, files) {
   if (depth > maxDepth)
     return;
   try {
-    for (const f of fs.readdirSync(dir)) {
-      const fullPath = path.join(dir, f);
+    for (const f of fs2.readdirSync(dir)) {
+      const fullPath = path2.join(dir, f);
       try {
-        const stat = fs.statSync(fullPath);
+        const stat = fs2.statSync(fullPath);
         if (stat.isDirectory()) {
-          if (f === "subagents" || f === "ns" || f.startsWith("agent-")) {
+          if (f !== "wtft-tags") {
             walkSubagentDir(fullPath, depth + (f === "subagents" || f === "ns" ? 1 : 0), maxDepth, files);
           }
         } else if (f.startsWith("agent-") && f.endsWith(".jsonl")) {
@@ -1080,19 +1123,19 @@ function cwdToClaudeProjectSlug(cwd) {
 }
 function discoverClaudeSubAgentSessionFiles(cwd, parentTimestamp, windowMs = CLAUDE_SUBAGENT_WINDOW_MS) {
   const slug = cwdToClaudeProjectSlug(cwd);
-  const projectDir = path.join(os.homedir(), ".claude", "projects", slug);
-  if (!fs.existsSync(projectDir))
+  const projectDir = path2.join(os.homedir(), ".claude", "projects", slug);
+  if (!fs2.existsSync(projectDir))
     return [];
   const files = [];
   const tsWindowStart = parentTimestamp - windowMs;
   const tsWindowEnd = parentTimestamp + windowMs;
   try {
-    for (const f of fs.readdirSync(projectDir)) {
+    for (const f of fs2.readdirSync(projectDir)) {
       if (!f.endsWith(".jsonl"))
         continue;
-      const fullPath = path.join(projectDir, f);
+      const fullPath = path2.join(projectDir, f);
       try {
-        const head = fs.readFileSync(fullPath, "utf8").split(`
+        const head = fs2.readFileSync(fullPath, "utf8").split(`
 `).slice(0, 10);
         let ts;
         for (const line of head) {
@@ -1148,7 +1191,7 @@ function attributeClaudeSubAgentCosts(interactions) {
     let totalCost = 0;
     const sessionIds = [];
     for (const file of subAgentFiles) {
-      const sessionId = path.basename(file, ".jsonl");
+      const sessionId = path2.basename(file, ".jsonl");
       if (seenSessionIds.has(sessionId))
         continue;
       seenSessionIds.add(sessionId);
@@ -1262,7 +1305,7 @@ function serializeClassified(interaction) {
   return JSON.stringify(line) + `
 `;
 }
-var WTFT_TAGGER_VERSION = "2.5.4";
+var WTFT_TAGGER_VERSION = "2.6.0";
 function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   const split = splitOverheadCost(interaction, prevCtxTokens);
   if (!split)
@@ -1323,18 +1366,18 @@ function shutdown(reason) {
   running = false;
   let ownsLease = false;
   try {
-    ownsLease = fs2.readFileSync(pidPath, "utf8").trim() === String(process.pid);
+    ownsLease = fs3.readFileSync(pidPath, "utf8").trim() === String(process.pid);
   } catch (_) {}
   if (ownsLease) {
     flushPending();
     try {
-      if (fs2.existsSync(tagPath)) {
-        fs2.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + `
+      if (fs3.existsSync(tagPath)) {
+        fs3.appendFileSync(tagPath, JSON.stringify({ _hb: "stop" }) + `
 `);
       }
     } catch (_) {}
     try {
-      fs2.unlinkSync(pidPath);
+      fs3.unlinkSync(pidPath);
     } catch (_) {}
   }
   process.exit(0);
@@ -1346,12 +1389,12 @@ function upsertHeartbeat(now) {
   try {
     const hbLine = JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + `
 `;
-    const stat = fs2.statSync(tagPath);
+    const stat = fs3.statSync(tagPath);
     if (stat.size === 0) {
-      fs2.appendFileSync(tagPath, hbLine);
+      fs3.appendFileSync(tagPath, hbLine);
       return;
     }
-    const fd = fs2.openSync(tagPath, "r+");
+    const fd = fs3.openSync(tagPath, "r+");
     const CHUNK = 512;
     let searchOffset = stat.size;
     let tail = "";
@@ -1360,7 +1403,7 @@ function upsertHeartbeat(now) {
       const readSize = Math.min(CHUNK, searchOffset);
       searchOffset -= readSize;
       const buf = Buffer.alloc(readSize);
-      fs2.readSync(fd, buf, 0, readSize, searchOffset);
+      fs3.readSync(fd, buf, 0, readSize, searchOffset);
       tail = buf.toString("utf8") + tail;
       lastNl = tail.lastIndexOf(`
 `);
@@ -1383,13 +1426,13 @@ function upsertHeartbeat(now) {
     } catch (_) {}
     if (isHb) {
       const truncAt = searchOffset + lastLineStart;
-      fs2.ftruncateSync(fd, truncAt);
+      fs3.ftruncateSync(fd, truncAt);
     }
-    fs2.appendFileSync(tagPath, hbLine);
-    fs2.closeSync(fd);
+    fs3.appendFileSync(tagPath, hbLine);
+    fs3.closeSync(fd);
   } catch (_) {
     try {
-      fs2.appendFileSync(tagPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + `
+      fs3.appendFileSync(tagPath, JSON.stringify({ _hb: { first: idleStartMs, last: now } }) + `
 `);
     } catch (_2) {}
   }
@@ -1400,8 +1443,8 @@ function flushPending() {
   const batch = pendingItems.map((it) => serializeClassifiedWithOverheadSplit(it.interaction, it.prevCtx)).join("");
   pendingItems = [];
   try {
-    fs2.appendFileSync(tagPath, batch);
-    fs2.appendFileSync(tagPath, JSON.stringify({ _meta: { offset: lastSize } }) + `
+    fs3.appendFileSync(tagPath, batch);
+    fs3.appendFileSync(tagPath, JSON.stringify({ _meta: { offset: lastSize } }) + `
 `);
     idleStartMs = 0;
   } catch (err) {
@@ -1459,7 +1502,7 @@ function scanForSubAgents() {
         continue;
       }
       for (const file of files) {
-        const sessionId = path2.basename(file, ".jsonl");
+        const sessionId = path3.basename(file, ".jsonl");
         if (discoveredClaudeSessions.has(sessionId))
           continue;
         discoveredClaudeSessions.add(sessionId);
@@ -1473,7 +1516,7 @@ function scanForSubAgents() {
   const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
   if (taskAgentFiles.length > 0) {
     for (const file of taskAgentFiles) {
-      const sessionId = path2.basename(file, ".jsonl");
+      const sessionId = path3.basename(file, ".jsonl");
       if (discoveredClaudeSessions.has(sessionId))
         continue;
       discoveredClaudeSessions.add(sessionId);
@@ -1494,7 +1537,7 @@ function writeSessionToTagFile(file) {
       batch += serializeClassified(si);
     }
     if (batch) {
-      fs2.appendFileSync(tagPath, batch);
+      fs3.appendFileSync(tagPath, batch);
       return true;
     }
   } catch {}
@@ -1503,7 +1546,7 @@ function writeSessionToTagFile(file) {
 function parseNewLines(filePath) {
   const interactions = [];
   try {
-    const stat = fs2.statSync(filePath);
+    const stat = fs3.statSync(filePath);
     const currentSize = stat.size;
     if (currentSize < lastSize) {
       if (process.env.WTFT_DAEMON_DEBUG) {
@@ -1514,10 +1557,10 @@ function parseNewLines(filePath) {
     }
     if (currentSize <= lastSize)
       return interactions;
-    const fd = fs2.openSync(filePath, "r");
+    const fd = fs3.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - lastSize);
-    fs2.readSync(fd, buf, 0, buf.length, lastSize);
-    fs2.closeSync(fd);
+    fs3.readSync(fd, buf, 0, buf.length, lastSize);
+    fs3.closeSync(fd);
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
     const lines = newContent.split(`
@@ -1564,14 +1607,14 @@ function parseNewLines(filePath) {
 }
 function readLastMetaOffset(tagPath2) {
   try {
-    const stat = fs2.statSync(tagPath2);
+    const stat = fs3.statSync(tagPath2);
     if (stat.size === 0)
       return null;
     const readStart = Math.max(0, stat.size - 8192);
-    const fd = fs2.openSync(tagPath2, "r");
+    const fd = fs3.openSync(tagPath2, "r");
     const buf = Buffer.alloc(stat.size - readStart);
-    fs2.readSync(fd, buf, 0, buf.length, readStart);
-    fs2.closeSync(fd);
+    fs3.readSync(fd, buf, 0, buf.length, readStart);
+    fs3.closeSync(fd);
     const lines = buf.toString("utf8").split(`
 `);
     for (let i = lines.length - 1;i >= 0; i--) {
@@ -1590,8 +1633,8 @@ function readLastMetaOffset(tagPath2) {
   } catch {}
   return null;
 }
-var WARN_LOG_DIR = path2.join(os2.homedir(), ".local", "state", "wtft");
-var WARN_LOG = path2.join(WARN_LOG_DIR, "reap.log");
+var WARN_LOG_DIR = path3.join(os2.homedir(), ".local", "state", "wtft");
+var WARN_LOG = path3.join(WARN_LOG_DIR, "reap.log");
 var TAG_SIZE_WARN = 1e6;
 var HB_RATIO_WARN = 0.9;
 var ZERO_INTERACTIONS_AGE = 3600000;
@@ -1599,14 +1642,14 @@ function reapAndWarn() {
   const pidDir = os2.tmpdir();
   let pidFiles = [];
   try {
-    pidFiles = fs2.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
+    pidFiles = fs3.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
   } catch (_) {}
   const warnings = [];
   for (const pidFile of pidFiles) {
-    const fullPath = path2.join(pidDir, pidFile);
+    const fullPath = path3.join(pidDir, pidFile);
     let pid = 0;
     try {
-      pid = parseInt(fs2.readFileSync(fullPath, "utf8").trim(), 10);
+      pid = parseInt(fs3.readFileSync(fullPath, "utf8").trim(), 10);
     } catch (_) {
       continue;
     }
@@ -1619,7 +1662,7 @@ function reapAndWarn() {
     } catch (_) {}
     let sessionFound = null;
     try {
-      const cmdline = fs2.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      const cmdline = fs3.readFileSync(`/proc/${pid}/cmdline`, "utf8");
       const args = cmdline.split("\x00");
       const sessIdx = args.indexOf("--session");
       if (sessIdx >= 0 && sessIdx + 1 < args.length) {
@@ -1628,14 +1671,14 @@ function reapAndWarn() {
     } catch (_) {}
     if (!alive) {
       try {
-        fs2.unlinkSync(fullPath);
+        fs3.unlinkSync(fullPath);
       } catch (_) {}
       continue;
     }
-    if (sessionFound && !fs2.existsSync(sessionFound)) {
+    if (sessionFound && !fs3.existsSync(sessionFound)) {
       process.kill(pid, "SIGTERM");
       try {
-        fs2.unlinkSync(fullPath);
+        fs3.unlinkSync(fullPath);
       } catch (_) {}
       warnings.push(`[${new Date().toISOString()}] KILLED PID ${pid}: session gone — ${sessionFound}`);
       continue;
@@ -1643,20 +1686,20 @@ function reapAndWarn() {
     if (sessionFound) {
       let tagFound = null;
       try {
-        const tagsDir = path2.join(path2.dirname(sessionFound), "wtft-tags");
-        const sessBase = path2.basename(sessionFound);
+        const tagsDir = path3.join(path3.dirname(sessionFound), "wtft-tags");
+        const sessBase = path3.basename(sessionFound);
         const prefix = sessBase + ".wtft-tag.v";
-        for (const f of fs2.readdirSync(tagsDir)) {
+        for (const f of fs3.readdirSync(tagsDir)) {
           if (f.startsWith(prefix)) {
-            tagFound = path2.join(tagsDir, f);
+            tagFound = path3.join(tagsDir, f);
             break;
           }
         }
       } catch (_) {}
       if (tagFound) {
         try {
-          const stat = fs2.statSync(tagFound);
-          const content = fs2.readFileSync(tagFound, "utf8");
+          const stat = fs3.statSync(tagFound);
+          const content = fs3.readFileSync(tagFound, "utf8");
           const lines = content.trim().split(`
 `);
           const hbLines = lines.filter((l) => l.includes('"_hb"') && !l.includes('"stop"'));
@@ -1695,14 +1738,14 @@ function reapAndWarn() {
     }
   }
   try {
-    const tmpEntries = fs2.readdirSync(os2.tmpdir());
+    const tmpEntries = fs3.readdirSync(os2.tmpdir());
     const liveSessions = new Set;
     for (const pidFile of pidFiles) {
       try {
-        const fullPath = path2.join(pidDir, pidFile);
-        const pid = parseInt(fs2.readFileSync(fullPath, "utf8").trim(), 10);
+        const fullPath = path3.join(pidDir, pidFile);
+        const pid = parseInt(fs3.readFileSync(fullPath, "utf8").trim(), 10);
         if (pid > 0) {
-          const cmdline = fs2.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+          const cmdline = fs3.readFileSync(`/proc/${pid}/cmdline`, "utf8");
           const args = cmdline.split("\x00");
           const sessIdx = args.indexOf("--session");
           if (sessIdx >= 0 && sessIdx + 1 < args.length) {
@@ -1714,10 +1757,10 @@ function reapAndWarn() {
     for (const entry of tmpEntries) {
       if (!entry.startsWith("wtft-"))
         continue;
-      const fullDir = path2.join(os2.tmpdir(), entry);
+      const fullDir = path3.join(os2.tmpdir(), entry);
       let isDir = false;
       try {
-        isDir = fs2.statSync(fullDir).isDirectory();
+        isDir = fs3.statSync(fullDir).isDirectory();
       } catch (_) {
         continue;
       }
@@ -1726,7 +1769,7 @@ function reapAndWarn() {
       const claimed = [...liveSessions].some((s) => s.startsWith(fullDir));
       if (!claimed) {
         try {
-          const mtime = fs2.statSync(fullDir).mtimeMs;
+          const mtime = fs3.statSync(fullDir).mtimeMs;
           if (Date.now() - mtime > 3600000) {
             warnings.push(`[${new Date().toISOString()}] WARN: stale fixture dir with no owning daemon — ${fullDir}`);
           }
@@ -1736,8 +1779,8 @@ function reapAndWarn() {
   } catch (_) {}
   if (warnings.length > 0) {
     try {
-      fs2.mkdirSync(WARN_LOG_DIR, { recursive: true });
-      fs2.appendFileSync(WARN_LOG, warnings.join(`
+      fs3.mkdirSync(WARN_LOG_DIR, { recursive: true });
+      fs3.appendFileSync(WARN_LOG, warnings.join(`
 `) + `
 `);
     } catch (_) {}
@@ -1746,8 +1789,8 @@ function reapAndWarn() {
 function initClassified() {
   let hasData = false;
   try {
-    fs2.accessSync(tagPath);
-    const tagContent = fs2.readFileSync(tagPath, "utf8");
+    fs3.accessSync(tagPath);
+    const tagContent = fs3.readFileSync(tagPath, "utf8");
     hasData = tagContent.split(`
 `).some((l) => l.trim() && !l.includes('"_hb"') && !l.includes('"_meta"'));
     if (hasData) {
@@ -1756,13 +1799,13 @@ function initClassified() {
         lastSize = metaOffset;
       } else {
         try {
-          fs2.truncateSync(tagPath, 0);
+          fs3.truncateSync(tagPath, 0);
         } catch {}
         lastSize = 0;
       }
     } else {
       try {
-        fs2.truncateSync(tagPath, 0);
+        fs3.truncateSync(tagPath, 0);
       } catch {}
       lastSize = 0;
     }
@@ -1770,11 +1813,12 @@ function initClassified() {
     lastSize = 0;
   }
   const startNow = Date.now();
-  fs2.appendFileSync(tagPath, JSON.stringify({ _hb: { first: startNow, last: startNow } }) + `
+  fs3.appendFileSync(tagPath, JSON.stringify({ _hb: { first: startNow, last: startNow } }) + `
 `);
   idleStartMs = startNow;
 }
 function main() {
+  loadUserPricing();
   let showList = false;
   let showCleanup = false;
   let showRestart = false;
@@ -1814,14 +1858,14 @@ Log parser mode:
     const pidDir = os2.tmpdir();
     let pidFiles = [];
     try {
-      pidFiles = fs2.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
+      pidFiles = fs3.readdirSync(pidDir).filter((f) => f.startsWith("wtft-daemon-") && f.endsWith(".pid"));
     } catch (_) {}
     let found = 0;
     for (const pidFile of pidFiles) {
-      const fullPath = path2.join(pidDir, pidFile);
+      const fullPath = path3.join(pidDir, pidFile);
       let pid = 0;
       try {
-        pid = parseInt(fs2.readFileSync(fullPath, "utf8").trim(), 10);
+        pid = parseInt(fs3.readFileSync(fullPath, "utf8").trim(), 10);
       } catch (_) {
         continue;
       }
@@ -1835,7 +1879,7 @@ Log parser mode:
       let sessionFound = null;
       let tagMtime = 0;
       try {
-        const cmdline = fs2.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+        const cmdline = fs3.readFileSync(`/proc/${pid}/cmdline`, "utf8");
         const args = cmdline.split("\x00");
         const sessIdx = args.indexOf("--session");
         if (sessIdx >= 0 && sessIdx + 1 < args.length) {
@@ -1845,12 +1889,12 @@ Log parser mode:
       let taggerVersion = "?";
       if (sessionFound) {
         try {
-          const tagsDir2 = path2.join(path2.dirname(sessionFound), "wtft-tags");
-          const sessBase = path2.basename(sessionFound);
+          const tagsDir2 = path3.join(path3.dirname(sessionFound), "wtft-tags");
+          const sessBase = path3.basename(sessionFound);
           const prefix2 = sessBase + ".wtft-tag.v";
-          for (const f of fs2.readdirSync(tagsDir2)) {
+          for (const f of fs3.readdirSync(tagsDir2)) {
             if (f.startsWith(prefix2)) {
-              tagMtime = fs2.statSync(path2.join(tagsDir2, f)).mtimeMs;
+              tagMtime = fs3.statSync(path3.join(tagsDir2, f)).mtimeMs;
               taggerVersion = f.slice(prefix2.length, f.length - 6);
               break;
             }
@@ -1862,7 +1906,7 @@ Log parser mode:
           process.kill(pid, "SIGTERM");
         }
         try {
-          fs2.unlinkSync(fullPath);
+          fs3.unlinkSync(fullPath);
         } catch (_) {}
         if (sessionFound) {
           try {
@@ -1880,14 +1924,14 @@ Log parser mode:
       if (showCleanup) {
         if (!alive) {
           try {
-            fs2.unlinkSync(fullPath);
+            fs3.unlinkSync(fullPath);
           } catch (_) {}
           continue;
         }
-        if (sessionFound && !fs2.existsSync(sessionFound)) {
+        if (sessionFound && !fs3.existsSync(sessionFound)) {
           process.kill(pid, "SIGTERM");
           try {
-            fs2.unlinkSync(fullPath);
+            fs3.unlinkSync(fullPath);
           } catch (_) {}
           console.log(`Cleaned up: PID ${pid} — session gone: ${sessionFound}`);
           found++;
@@ -1899,7 +1943,7 @@ Log parser mode:
           process.kill(pid, "SIGTERM");
         }
         try {
-          fs2.unlinkSync(fullPath);
+          fs3.unlinkSync(fullPath);
         } catch (_) {}
         console.log(`Stopped: PID ${pid} — ${sessionFound}`);
         found++;
@@ -1946,21 +1990,21 @@ Log parser mode:
 `);
     process.exit(1);
   }
-  const sessionDir = path2.dirname(sessionPath);
-  const sessionBase = path2.basename(sessionPath);
-  const tagsDir = path2.join(sessionDir, "wtft-tags");
+  const sessionDir = path3.dirname(sessionPath);
+  const sessionBase = path3.basename(sessionPath);
+  const tagsDir = path3.join(sessionDir, "wtft-tags");
   try {
-    fs2.mkdirSync(tagsDir, { recursive: true });
+    fs3.mkdirSync(tagsDir, { recursive: true });
   } catch (_) {}
-  tagPath = path2.join(tagsDir, sessionBase + TAG_SUFFIX);
+  tagPath = path3.join(tagsDir, sessionBase + TAG_SUFFIX);
   const sessionHash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 12);
-  pidPath = path2.join(os2.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  pidPath = path3.join(os2.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
   const prefix = sessionBase + ".wtft-tag.v";
   let claimedByTakeover = false;
   try {
-    for (const f of fs2.readdirSync(tagsDir)) {
+    for (const f of fs3.readdirSync(tagsDir)) {
       if (f.indexOf(prefix) === 0 && f !== sessionBase + TAG_SUFFIX) {
-        fs2.writeFileSync(pidPath, String(process.pid));
+        fs3.writeFileSync(pidPath, String(process.pid));
         claimedByTakeover = true;
         break;
       }
@@ -1972,39 +2016,39 @@ Log parser mode:
   if (!claimedByTakeover) {
     let fd;
     try {
-      fd = fs2.openSync(pidPath, "wx");
-      fs2.writeSync(fd, String(process.pid));
-      fs2.closeSync(fd);
+      fd = fs3.openSync(pidPath, "wx");
+      fs3.writeSync(fd, String(process.pid));
+      fs3.closeSync(fd);
     } catch (_) {
       try {
-        const existingPid = parseInt(fs2.readFileSync(pidPath, "utf8").trim(), 10);
+        const existingPid = parseInt(fs3.readFileSync(pidPath, "utf8").trim(), 10);
         if (existingPid > 0) {
           try {
             process.kill(existingPid, 0);
             process.exit(0);
           } catch (_2) {
-            fs2.unlinkSync(pidPath);
-            fd = fs2.openSync(pidPath, "wx");
-            fs2.writeSync(fd, String(process.pid));
-            fs2.closeSync(fd);
+            fs3.unlinkSync(pidPath);
+            fd = fs3.openSync(pidPath, "wx");
+            fs3.writeSync(fd, String(process.pid));
+            fs3.closeSync(fd);
           }
         }
       } catch (_3) {
         try {
-          fs2.unlinkSync(pidPath);
+          fs3.unlinkSync(pidPath);
         } catch (_4) {}
-        fd = fs2.openSync(pidPath, "wx");
-        fs2.writeSync(fd, String(process.pid));
-        fs2.closeSync(fd);
+        fd = fs3.openSync(pidPath, "wx");
+        fs3.writeSync(fd, String(process.pid));
+        fs3.closeSync(fd);
       }
     }
   }
   const sweepOldTagFiles = () => {
     try {
-      for (const f of fs2.readdirSync(tagsDir)) {
+      for (const f of fs3.readdirSync(tagsDir)) {
         if (f.startsWith(prefix) && f !== sessionBase + TAG_SUFFIX) {
           try {
-            fs2.unlinkSync(path2.join(tagsDir, f));
+            fs3.unlinkSync(path3.join(tagsDir, f));
           } catch (_) {}
           if (process.env.WTFT_DAEMON_DEBUG) {
             process.stderr.write(`[wtft-log-parser] removed stale tag file: ${f}
@@ -2031,7 +2075,7 @@ Log parser mode:
     if (!running)
       return;
     try {
-      if (fs2.readFileSync(pidPath, "utf8").trim() !== String(process.pid)) {
+      if (fs3.readFileSync(pidPath, "utf8").trim() !== String(process.pid)) {
         running = false;
         process.exit(0);
       }
@@ -2039,7 +2083,7 @@ Log parser mode:
       running = false;
       process.exit(0);
     }
-    if (!fs2.existsSync(sessionPath)) {
+    if (!fs3.existsSync(sessionPath)) {
       if (sessionExisted) {
         shutdown("session removed");
         return;
@@ -2094,7 +2138,7 @@ Log parser mode:
         shutdown("idle timeout");
         return;
       }
-      if (!fs2.existsSync(sessionPath)) {
+      if (!fs3.existsSync(sessionPath)) {
         shutdown("session removed");
         return;
       }
