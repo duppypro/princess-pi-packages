@@ -10,6 +10,11 @@ sessions/
 *.log
 tmp/
 
+# Claude Code session worktrees are machine-local workspaces, never repo content.
+# Only worktrees/ — NOT the whole .claude/ tree, so project-level Claude config
+# (.claude/settings.json, skills/, agents/) can still be committed if we ever want to.
+.claude/worktrees/
+
 # oauth2-proxy live secrets (real cfg holds client_secret/cookie_secret) — keep only .example
 infra/deploy/oauth2-proxy-live-serve.cfg
 
