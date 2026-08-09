@@ -85,5 +85,7 @@ This is a **separate** decision from the runbook, blocks nothing, and would get 
 if pursued. Recorded here only so the option isn't lost.
 
 ## Related
+- `WHY_NOT_PANGOLIN.md` — sibling road-not-taken (self-hosted Traefik+WireGuard perimeter,
+  declined 2026-08-08 to keep the VPS outbound-only).
 - `RUNBOOK_CLOUDFLARE_TUNNEL_SERVE.md` — the design this validates (Roads not taken).
 - `cloudflare-platform-decision` note; issues #32, #38, #59, #33, #37.

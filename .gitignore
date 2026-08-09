@@ -18,3 +18,6 @@ infra/deploy/oauth2-proxy-live-serve.cfg
 # (pacote respects .gitignore; gitignored bins would be missing from the tarball).
 # NEVER EDIT THESE BY HAND — edit the .ts source, then bun run build.
 # bin/patch-pi-widgets.mjs is handwritten source, not generated.
+
+# Local Claude Code worktrees (session workspaces, never tracked)
+.claude/worktrees/
