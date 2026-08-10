@@ -150,6 +150,13 @@ already established: code, variable and file names, inline comments, terse opera
 (`Cleaned up 3 daemons.`), and secondary explanations. The long form teaches what it does; the
 short form is what you call it once you know. Neither is a synonym to be swapped freely — pick by
 whether the reader needs teaching.
+
+*Tie-break, when "first mention" is ambiguous.* Scope it to **the surface a reader sees in one
+screen**, not to the file. A `--help` block whose header already says "Log parser daemon" has
+established the referent, so its flag lines say "daemon". A manifest `desc` string is
+independently addressable — `--why` and per-flag lookups render it with no header above it — so
+each one carries the full form itself. Same rule, opposite outcomes, because the unit of reading
+differs.
 _Avoid_: bare "log parser" (always promote to "log parser daemon"), watcher, background process,
 session parser
 
