@@ -2,7 +2,7 @@
 
 **Issue:** #158
 **Branch:** `158-one-test-runner`
-**State:** Spec Draft
+**State:** Spec Approved (Duppy, 2026-08-09)
 
 ---
 
@@ -252,6 +252,14 @@ published latest from `@earendil-works`, the harness owner and therefore the ext
 owner. Resolution: **`devDependencies` at the `latest` dist-tag**, not a caret pin — see §4.2
 for why `^0.84.1` would have frozen the repo inside 0.84.x. Not a stub: a stub would drift
 from the real API, which is the opposite of the stated intent.
+
+**4. Scope expansion into production code (flagged, not asked).** RC-5's fix touches
+`extensions/lib/config.ts` — production code, and a behaviour change for anyone with
+`XDG_CONFIG_HOME` set (writes move from `~/.config` to the XDG root, matching where reads
+already came from). It is kept in this issue rather than split out because runner isolation
+is a claim this repo cannot honestly make while the write path ignores XDG: without it, §4.1
+is documentation of a protection that does not exist. No impact on this machine, where
+`XDG_CONFIG_HOME` is unset and both paths resolve to `~/.config` either way.
 
 ## 7. Coverage still missing, named
 
