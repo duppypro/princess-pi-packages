@@ -9,6 +9,12 @@
     "moduleResolution": "nodenext",
     "strict": true,
     "noEmit": true,
+    // allowJs (#168): extensions/lib/serve/cloudflare.js is the one genuinely-.js module the CLIs
+    // import — every other `./x.js` specifier resolves to a real .ts under nodenext. Without this,
+    // both its consumers took it as `any`, leaving the Cloudflare DNS + access-allowlist path
+    // entirely unchecked. checkJs stays at its default false on purpose: the scope is typing the
+    // CONSUMERS in bin/, not retroactively checking a file never written as TypeScript.
+    "allowJs": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "types": ["node"]
