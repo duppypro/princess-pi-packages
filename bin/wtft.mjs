@@ -489,7 +489,21 @@ var MODEL_PRICING = {
   "claude-opus-4-6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   "claude-opus-4-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   "claude-opus-4-1": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-sonnet-5": {
+    input: 3,
+    output: 15,
+    cacheRead: 0.3,
+    cacheWrite: 3.75,
+    dateTiers: [
+      {
+        effectiveBefore: 1788220800000,
+        input: 2,
+        output: 10,
+        cacheRead: 0.2,
+        cacheWrite: 2.5
+      }
+    ]
+  },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -531,14 +545,29 @@ var MODEL_PRICING = {
     tiers: [{ inputTokensAbove: 272000, input: 2.5, output: 11.25, cacheRead: 0.25, cacheWrite: 3.13 }]
   }
 };
-function resolveTieredRates(pricing, usage) {
+function resolveTieredRates(pricing, usage, timestamp) {
   const totalInput = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-  let rates = {
+  let base = {
     input: pricing.input,
     output: pricing.output,
     cacheRead: pricing.cacheRead,
     cacheWrite: pricing.cacheWrite
   };
+  if (pricing.dateTiers && timestamp) {
+    const sortedByEarliestCutoff = [...pricing.dateTiers].sort((a, b) => a.effectiveBefore - b.effectiveBefore);
+    for (const dateTier of sortedByEarliestCutoff) {
+      if (timestamp < dateTier.effectiveBefore) {
+        base = {
+          input: dateTier.input,
+          output: dateTier.output,
+          cacheRead: dateTier.cacheRead,
+          cacheWrite: dateTier.cacheWrite
+        };
+        break;
+      }
+    }
+  }
+  let rates = { ...base };
   if (pricing.tiers) {
     const sorted = [...pricing.tiers].sort((a, b) => b.inputTokensAbove - a.inputTokensAbove);
     for (const tier of sorted) {
@@ -595,7 +624,7 @@ function calculateClaudeCost(model, usage, timestamp) {
   const m = (model || "").toLowerCase();
   const registryPricing = lookupModelPricing(model);
   if (registryPricing) {
-    const rates = resolveTieredRates(registryPricing, usage);
+    const rates = resolveTieredRates(registryPricing, usage, timestamp);
     if (m.includes("deepseek")) {
       const peak = getDeepSeekPeakMultiplier(timestamp);
       rates.input *= peak;
@@ -3315,7 +3344,7 @@ function readClassifiedTagFile(tagPath) {
   } catch {}
   return interactions;
 }
-var WTFT_TAGGER_VERSION = "2.7.0";
+var WTFT_TAGGER_VERSION = "2.7.1";
 function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
   const split = splitOverheadCost(interaction, prevCtxTokens);
   if (!split)
