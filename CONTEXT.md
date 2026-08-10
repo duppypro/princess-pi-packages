@@ -118,14 +118,22 @@ prose say "loopback service"** and reserve bare *origin* for CORS.
 
 ## Language — WTFT
 
-> **Daemon vs. log parser — resolved.** These named the same thing in two layers: `daemon`
-> throughout the code (131× in `extensions/lib/wtft-daemon-lib.ts`, 12 filenames), `log parser`
-> only in user-facing text (5× `docs/manifests/wtft-cmd.json`, 8× `docs/EXT_WTFT.html`, 68×
-> repo-wide including generated `.mjs` mirrors). **Daemon wins** — see the `Daemon` entry below.
-> Renaming the surviving `log parser` mentions to match is tracked as
-> [#165](https://github.com/duppypro/princess-pi-packages/issues/165); it touches doc/manifest
-> content, not code, so it gets its own 5-step cycle rather than landing with this glossary
-> section. See `docs/spec-160-161-162-wtft-spec-surfaces.md` §4.1 for the full count table.
+> **Daemon vs. log parser — two registers, not a winner.** These named the same thing in two
+> layers: `daemon` throughout the code (131× in `extensions/lib/wtft-daemon-lib.ts`, 12 filenames),
+> `log parser` in user-facing text and, as it turned out, in 28 runtime strings and comments too.
+> The first ruling (#162, 2026-08-09) picked **daemon** outright and put `log parser` on the
+> `_Avoid_` list. **Reversed 2026-08-10** by Duppy: a single word could not serve both a reader
+> meeting the process for the first time and a variable name. The standing ruling is the
+> two-register rule in the `Daemon` entry below — **"log parser daemon"** to explain, **"daemon"**
+> to refer. What stayed from the first ruling: bare **"log parser"** is still avoided.
+>
+> *Why the reversal is worth recording.* The original count was taken over docs only, so the
+> ruling was made against 13 occurrences when the real surface was 69. `wtft --cleanup` printing
+> `Cleaned up 0 log parser(s).` — a runtime string no issue's scope had covered — is what exposed
+> both the miscount and the fact that one word was doing two jobs. The sweep is
+> [#165](https://github.com/duppypro/princess-pi-packages/issues/165). See
+> `docs/spec-160-161-162-wtft-spec-surfaces.md` §4.1 for the original count table and its
+> correction.
 
 **Daemon**:
 The persistent background process (`bin/wtft-daemon.ts` / `wtft-daemon.mjs`, driven by
@@ -134,7 +142,30 @@ interaction, and writes pre-computed entries to a tag file so the CLI and Pi wid
 re-parse the whole log on every read. Spawned on `session_start`, auto-revived on idle-timeout
 death, auto-replaced on a version bump. Health is exposed via `checkDaemonHealth()` and rendered
 via `renderDaemonStatus()`.
-_Avoid_: Log parser, watcher, background process, session parser
+
+*Two registers, one concept.* Say **"log parser daemon"** in high-level user-facing prose — doc
+headings, the first mention in any `--help` or manifest description, anywhere a reader is meeting
+the process for the first time. Say **"daemon"** as the shorthand everywhere the referent is
+already established: code, variable and file names, inline comments, terse operational output
+(`Cleaned up 3 daemons.`), and secondary explanations. The long form teaches what it does; the
+short form is what you call it once you know. Neither is a synonym to be swapped freely — pick by
+whether the reader needs teaching.
+
+*Tie-break, when "first mention" is ambiguous.* Scope it to **the surface a reader sees in one
+screen**, not to the file. A `--help` block whose header already says "Log parser daemon" has
+established the referent, so its flag lines say "daemon". A manifest `desc` string is
+independently addressable — `--why` and per-flag lookups render it with no header above it — so
+each one carries the full form itself. Same rule, opposite outcomes, because the unit of reading
+differs.
+
+*When the long form does not fit.* Fixed-width surfaces — ASCII box diagrams, aligned help
+columns, the title-line status indicator — take the shorthand, and the surrounding prose does the
+teaching. Never widen a box or truncate a word to force the long form in. `wtft-daemon` in a
+diagram needs no gloss at all when the section heading above it already says "Log parser daemon";
+the parenthetical `(log parser)` that used to sit there existed only to bridge two unreconciled
+names, and reconciling them retired it.
+_Avoid_: bare "log parser" (always promote to "log parser daemon"), watcher, background process,
+session parser
 
 **Interval**:
 The user-specified size+unit that decides how interactions are grouped — the `-i, --interval`
