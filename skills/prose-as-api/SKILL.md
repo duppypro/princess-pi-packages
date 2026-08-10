@@ -79,12 +79,18 @@ well-known argv flag, an env var the process sets — not a better substring.
 
 Start mechanical and cheap. These seeds over-match by design; judgement happens on the hits.
 
-```bash
-# Error-message matching — the single most common instance
-rg -n --pcre2 '\.(message|stderr|stdout|output|reason|body|text)\b[^\n]{0,40}\.(includes|match|indexOf|startsWith|endsWith|search|test)\('
+Add `--glob '!node_modules' --glob '!*.mjs'` (or your generated-output equivalent), and exclude
+`tests/` on the first pass — test assertions are the dominant false positive and are usually fine
+(see *Not findings*).
 
-# Equality against a prose-shaped literal (internal space, plain words)
-rg -n --pcre2 '[=!]==\s*["`][a-z][a-z ]{6,}["`]'
+```bash
+# Equality against a prose-shaped literal. The space is MANDATORY — that is what
+# separates a sentence from an enum token. Without it this matches every
+# `=== "cumulative"` in the repo and the signal drowns.
+rg -n --pcre2 '[=!]==\s*["`][a-z]+ [a-z ]+["`]'
+
+# Error/output message matching — the most common instance
+rg -n --pcre2 '\.(message|stderr|stdout|output|reason|body|text)\b[^\n]{0,40}\.(includes|match|indexOf|startsWith|endsWith|search|test)\('
 
 # Regex literals that are sentences
 rg -n --pcre2 '/[a-z]+ [a-z]+[a-z ]*/[gimsu]*\.test\('
@@ -93,15 +99,24 @@ rg -n --pcre2 '/[a-z]+ [a-z]+[a-z ]*/[gimsu]*\.test\('
 rg -n --pcre2 '(execSync|exec|spawnSync|\$\()[^\n]*\|[^\n]*(grep|awk|sed)\b'
 rg -n 'grep -q'
 
-# Structured mode available but unused — flag the call, then check the man page
-rg -n --pcre2 '\b(git (status|log|diff|branch)|docker|kubectl|systemctl|npm|gh)\b(?![^\n]*(--porcelain|--json|-z|--format|--quiet))'
+# Structured mode available but unused. Keep the exclusion list HONEST — every
+# declared-format flag belongs in it or the seed reports contracts as violations.
+rg -n --pcre2 '\b(git (status|log|diff|branch)|docker|kubectl|systemctl|npm|gh)\b(?![^\n]*(--porcelain|--json|-z|--format|--pretty|--show-current|--quiet|--property))'
 
 # HTTP: body text standing in for status
 rg -n --pcre2 '(res|response|r)\.(text|body)[^\n]{0,30}\.(includes|match)\('
 ```
 
-Then read each hit and apply the audit question. Most hits are innocent (assertions on help text,
-logging, tests). The skill's value is the few that are not.
+**Calibrate before trusting a seed.** Both of the seeds above carry a comment because the first
+run of this skill against `princess-pi-packages` found each of them broken in opposite directions:
+the equality seed had no mandatory space and returned 20 hits, 19 of them single-word enum
+comparisons; the structured-mode seed omitted `--show-current` and `--pretty` and so reported five
+correct, contract-using `git` calls as findings. A seed that over-reports gets muted, which is
+worse than not running it. If a seed's hit list is mostly noise, fix the seed and say so in the
+report — that is a finding about the audit, not a failure of it.
+
+Then read each hit and apply the audit question. Most surviving hits are still innocent. The
+skill's value is the few that are not.
 
 ---
 
