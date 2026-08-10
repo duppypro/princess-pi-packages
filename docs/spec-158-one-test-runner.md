@@ -289,4 +289,31 @@ is documentation of a protection that does not exist. No impact on this machine,
 | **Leaked `/tmp/wtft-*` fixture dirs.** `wtft-title-layout` *does* `rmSync` its fixture; a lingering daemon recreates `wtft-tags/` inside it afterwards. 12 found on this machine. | Daemon lifecycle bug, not a test bug. |
 | **Parallel suite execution.** | Several suites spawn daemons, bind ports, and share `/tmp` fixture paths. Serial (~40s total) until those are isolated. |
 
+---
+
+## 9. Reconciliation record (Step 5)
+
+Blast radius: every source file this branch touched — `extensions/lib/config.ts`,
+`extensions/lib/wtft-renderer.ts`, `package.json`, `CLAUDE.md` — and every readable
+artifact asserting behaviour about anything in them. Produced by hand; the
+`spec-reconcile` skill was written from this run.
+
+| Artifact | Claim | Contradicted by | Test-covered? | Action |
+|---|---|---|---|---|
+| `wtft-renderer.ts:694` (docstring) | timeline renders `(---◆---)` | clock faces, `☀️` at noon, moon bookends — `:744` | ✅ `wtft-title-layout` | Fixed, `ce3c51d` |
+| `tests/wtft-title-layout.test.ts` (header) | `◆` is the timeline invariant | same | ✅ same suite | Fixed, `ce3c51d` |
+| `docs/manifests/wtft-cmd.json:114` | `--interval <size><m\|h\|d\|w>` | `parseInterval` also accepts `t`/`turn`/`turns` — `wtft-renderer.ts:157` | ✅ `wtft-issue-121` | Filed **#160** — manifest copy, out of this branch's scope |
+| `config.ts` (`getConfigPaths` docstring) | global path is `~/.config/...` | now resolves via `xdgConfigHome()` — `:119` | ✅ `config-persistence` | Fixed, `e0d8f20` |
+| `docs/agents/build-and-toolchain.md`, `CLAUDE.md` | no test command documented | `bun run test` is the declared runner | ✅ V1–V3 | Fixed, `ce3c51d` / `e0d8f20` |
+| This spec, §5 and §8 | "`7t` is an **invalid** interval unit" | `parseInterval` accepts it — `wtft-renderer.ts:157` | ✅ `wtft-issue-121` | Corrected, `7656373` — the claim came from `--help`, not the parser |
+| `docs/EXT_WTFT.html` | flag reference | none possible — it `fetch`es the same manifest the CLI reads (`:317`) | n/a | Tier-1 shared source. Structure gap filed **#161** |
+| `CONTEXT.md` | — | no `Language — WTFT` section exists; only `Language — Serve` | n/a | Gap recorded, filed **#162**. Not papered over with invented terms |
+
+Zero contradictions left standing in this branch. Three are carried as filed issues rather
+than fixed here, because each needs its own 5-step cycle: #160 edits a manifest, #161
+restructures a doc, #162 requires domain-modeling judgment about vocabulary.
+
+No row is marked `reconciled-against-untested` — every behavioural claim corrected here had
+a test behind the code it now matches.
+
 — 👑π🐱 Princess Pi
