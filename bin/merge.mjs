@@ -3,13 +3,19 @@
 // Edits are overwritten on every build/prepare. Edit the .ts source instead.
 
 // bin/merge.ts
-import * as path from "node:path";
+import * as fs3 from "node:fs";
+import * as path2 from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/merge/core.ts
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as path from "node:path";
+
+class BuildFailureError extends Error {
+  buildFailure = true;
+}
 function isStep5ApprovedMessage(commitMsg) {
   const subject = (commitMsg.split(`
 `)[0] || "").toLowerCase();
@@ -32,7 +38,57 @@ function isStep5ApprovedMessage(commitMsg) {
   return false;
 }
 var STEP5_RULE_TEXT = `A Step 5 subject line needs the word 'approved' preceded by both 'code' and 'spec' (or 'specification'), with no 'not' before it — e.g. "docs: Code and Spec Approved — <what> (#<issue>)".`;
-async function cleanupBranch(currentBranch, cwd, logger, autoCleanup = false) {
+function hasBuildScript(cwd) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
+    return typeof pkg?.scripts?.build === "string" && pkg.scripts.build.trim() !== "";
+  } catch {
+    return false;
+  }
+}
+function haveBun() {
+  try {
+    execSync("bun --version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function rebuildArtifacts(cwd, targetHash, logger, opts) {
+  if (opts.skipBuild) {
+    logger.info("⏭️  Skipping post-merge rebuild (--no-build).");
+    return;
+  }
+  if (!hasBuildScript(cwd)) {
+    logger.info("⏭️  No 'build' script in package.json — nothing to regenerate.");
+    return;
+  }
+  if (!haveBun()) {
+    logger.info("⏭️  bun not found on PATH — skipping post-merge rebuild. If this repo tracks built output, it may now be stale.");
+    return;
+  }
+  logger.info("\uD83D\uDD28 Rebuilding tracked artifacts after the merge...");
+  try {
+    execSync("bun run build", { cwd, stdio: "ignore" });
+  } catch (err) {
+    const detail = err?.stderr?.toString?.() || err?.message || String(err);
+    throw new BuildFailureError(`The merged tree does not build, so it was NOT pushed.
+` + `The merge commit exists locally in ${cwd} — nothing is lost.
+` + `Fix the build there and push, or undo the merge commit if you prefer.
+` + `Underlying error:
+${detail}`);
+  }
+  const delta = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
+  if (delta === "") {
+    logger.info("✅ Build output already current — no rebuild commit needed.");
+    return;
+  }
+  execSync("git add -A", { cwd, stdio: "ignore" });
+  execSync(`git commit -m "build: regenerate tracked artifacts after merging ${targetHash.substring(0, 7)} (#177) \uD83D\uDC51π\uD83D\uDC31"`, { cwd, stdio: "ignore" });
+  logger.info(`✅ Rebuilt artifacts committed:
+${delta}`);
+}
+async function cleanupBranch(currentBranch, cwd, logger, autoCleanup = false, mainCwd = "") {
   const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
   if (status !== "") {
     logger.info(`
@@ -71,26 +127,53 @@ ${diffStat}`);
    git push origin --delete ${currentBranch}`);
     return;
   }
+  const inWorktreeLayout = !!mainCwd && mainCwd !== cwd;
+  if (inWorktreeLayout) {
+    logger.info(`\uD83D\uDD00 Detaching this worktree from '${currentBranch}' (main stays checked out at ${mainCwd})...`);
+    execSync("git checkout --detach main", { cwd, stdio: "ignore" });
+  } else {
+    logger.info(`\uD83D\uDD00 Switching to 'main' and deleting local branch '${currentBranch}'...`);
+    execSync("git checkout main", { cwd, stdio: "ignore" });
+  }
+  try {
+    execSync(`git branch -d ${currentBranch}`, { cwd, stdio: "ignore" });
+    logger.info(`✅ Local branch '${currentBranch}' deleted.`);
+  } catch (err) {
+    const msg = err?.stderr || err?.message || String(err);
+    logger.error(`⚠️  Failed to delete local branch '${currentBranch}': ${String(msg).trim()}`);
+    logger.info(`\uD83D\uDCA1 Remote branch 'origin/${currentBranch}' was left in place, so nothing is half-deleted. Re-run cleanup once resolved.`);
+    return;
+  }
   logger.info(`\uD83D\uDCE1 Deleting remote branch 'origin/${currentBranch}'...`);
   try {
     execSync(`git push origin --delete ${currentBranch}`, { cwd, stdio: "ignore" });
     logger.info(`✅ Remote branch 'origin/${currentBranch}' deleted.`);
   } catch (err) {
     const msg = err?.stderr || err?.message || String(err);
-    logger.error(`⚠️  Failed to delete remote branch: ${msg.trim()}`);
+    logger.error(`⚠️  Failed to delete remote branch: ${String(msg).trim()}`);
+    logger.info(`\uD83D\uDCA1 Local branch is already gone; finish with: git push origin --delete ${currentBranch}`);
   }
-  logger.info(`\uD83D\uDD00 Switching to 'main' and deleting local branch '${currentBranch}'...`);
-  execSync("git checkout main", { cwd, stdio: "ignore" });
+  if (inWorktreeLayout) {
+    logger.info(`\uD83D\uDCAA Ready for the next task! This worktree is on a detached HEAD at 'main'.`);
+    logger.info(`\uD83D\uDCA1 The worktree itself is still here — removing it is a manual step: git worktree remove ${cwd}`);
+  } else {
+    logger.info(`\uD83D\uDCAA Ready for the next task! You are on branch 'main'.`);
+  }
+}
+async function cleanupBranchBestEffort(currentBranch, cwd, logger, autoCleanup, mainCwd) {
   try {
-    execSync(`git branch -D ${currentBranch}`, { cwd, stdio: "ignore" });
-    logger.info(`✅ Local branch '${currentBranch}' deleted.`);
+    await cleanupBranch(currentBranch, cwd, logger, autoCleanup, mainCwd);
   } catch (err) {
     const msg = err?.stderr || err?.message || String(err);
-    logger.error(`⚠️  Failed to delete local branch: ${msg.trim()}`);
+    logger.error(`
+⚠️  Branch cleanup failed — but the merge itself succeeded and was pushed.`);
+    logger.error(`   ${String(msg).trim()}`);
+    logger.info(`\uD83D\uDCA1 Nothing needs undoing. Clean up by hand when convenient:
+   git branch -d ${currentBranch}
+   git push origin --delete ${currentBranch}`);
   }
-  logger.info(`\uD83D\uDCAA Ready for the next task! You are on branch 'main'.`);
 }
-async function runMerge(argsList, logger, autoCleanup = false) {
+async function runMerge(argsList, logger, autoCleanup = false, opts = {}) {
   logger.info("\uD83D\uDD04 Running merge validation checks...");
   const currentCwd = process.cwd();
   const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: currentCwd, encoding: "utf8" }).trim();
@@ -195,11 +278,11 @@ ${mainStatus}`);
     execSync("git pull --ff-only origin main", { cwd: mainCwd, stdio: "ignore" });
     logger.info(`\uD83D\uDD00 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`);
     execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
+    rebuildArtifacts(mainCwd, targetHash, logger, opts);
     logger.info("\uD83D\uDCE1 Pushing merged 'main' branch to origin...");
     execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
     logger.info(`\uD83C\uDF89 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-    logger.info(`\uD83D\uDCAA Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
-    await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
+    await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, mainCwd);
   } else {
     logger.info("\uD83E\uDEB5 No dedicated 'main' worktree found — using in-place single-checkout merge.");
     try {
@@ -218,9 +301,12 @@ ${mainStatus}`);
       }
       logger.info(`\uD83D\uDD00 Merging target commit ${targetHash.substring(0, 7)} into 'main'...`);
       execSync(`git merge ${targetHash}`, { cwd: currentCwd, stdio: "ignore" });
+      rebuildArtifacts(currentCwd, targetHash, logger, opts);
       logger.info("\uD83D\uDCE1 Pushing merged 'main' branch to origin...");
       execSync("git push origin main", { cwd: currentCwd, stdio: "ignore" });
     } catch (mergeErr) {
+      if (mergeErr?.buildFailure)
+        throw mergeErr;
       try {
         execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" });
       } catch {}
@@ -235,8 +321,7 @@ ${detail}`);
       } catch {}
     }
     logger.info(`\uD83C\uDF89 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-    logger.info(`\uD83D\uDCAA Ready for the next task! You are on branch '${currentBranch}'.`);
-    await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
+    await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, "");
   }
 }
 
@@ -306,12 +391,25 @@ function renderWhy(manifestPath, invokedAs) {
 }
 
 // bin/merge.ts
+function manifestFile() {
+  return path2.join(path2.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "merge-cmd.json");
+}
 async function run() {
   const argsList = process.argv.slice(2).filter(Boolean);
+  if (argsList.includes("--version")) {
+    try {
+      const manifest = JSON.parse(fs3.readFileSync(manifestFile(), "utf8"));
+      console.log(`${manifest.name} ${manifest.version}`);
+    } catch (err) {
+      console.error(`⚠️ Failed to load merge command manifest: ${err}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (argsList.includes("-h") || argsList.includes("--help")) {
     try {
-      const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-      const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
+      const scriptDir = path2.dirname(fileURLToPath(import.meta.url));
+      const manifestPath = path2.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
       const helpText = renderHelp(manifestPath, "merge");
       console.log(helpText);
     } catch (err) {
@@ -322,8 +420,8 @@ async function run() {
   }
   if (argsList.includes("--why")) {
     try {
-      const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-      const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
+      const scriptDir = path2.dirname(fileURLToPath(import.meta.url));
+      const manifestPath = path2.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
       const whyText = renderWhy(manifestPath, "merge");
       console.log(whyText);
     } catch (err) {
@@ -333,7 +431,8 @@ async function run() {
     return;
   }
   const autoCleanup = argsList.includes("--cleanup");
-  const filteredArgs = argsList.filter((a) => a !== "--cleanup");
+  const skipBuild = argsList.includes("--no-build");
+  const filteredArgs = argsList.filter((a) => a !== "--cleanup" && a !== "--no-build");
   try {
     await runMerge(filteredArgs, {
       info: (msg) => console.log(msg),
@@ -351,10 +450,11 @@ async function run() {
           });
         });
       }
-    }, autoCleanup);
+    }, autoCleanup, { skipBuild });
   } catch (err) {
     const errMsg = err?.message || String(err);
-    console.error(`❌ Merge Aborted:
+    const banner = err?.buildFailure ? "❌ Merge not pushed:" : "❌ Merge Aborted:";
+    console.error(`${banner}
 ${errMsg}`);
     process.exitCode = 1;
   }

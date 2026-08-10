@@ -1,10 +1,29 @@
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as path from "node:path";
 
 export interface MergeLogger {
 	info(msg: string): void;
 	error(msg: string): void;
 	prompt(question: string): Promise<boolean>;
+}
+
+export interface MergeOptions {
+	/** Skip the post-merge artifact rebuild (#177). */
+	skipBuild?: boolean;
+}
+
+/**
+ * A merge that landed locally but whose rebuild failed, so it was not pushed.
+ *
+ * Tagged rather than thrown as a plain Error because the in-place merge path
+ * wraps its own failures in "merge failed and was rolled back" — which would be
+ * false here twice over: the merge succeeded, and nothing was rolled back. That
+ * is the same class of lie as #143.3, and it must not be reintroduced by the
+ * #177 fix in the same commit that removes it.
+ */
+export class BuildFailureError extends Error {
+	readonly buildFailure = true;
 }
 
 // ---
@@ -39,10 +58,102 @@ const STEP5_RULE_TEXT =
 	"A Step 5 subject line needs the word 'approved' preceded by both 'code' and 'spec' (or 'specification'), with no 'not' before it — e.g. \"docs: Code and Spec Approved — <what> (#<issue>)\".";
 
 // ---
-// Post-merge branch cleanup: check cleanliness, prompt to delete, switch to main.
-// Called after a successful merge+push, while still on the feature branch.
+// Post-merge artifact rebuild (#177).
+//
+// This repo tracks generated bin/*.mjs on purpose (.gitignore: required for
+// `npm install -g` from a git URL). Two branches touching DIFFERENT bundled
+// sources each commit a correct artifact for their own tree; the merge of the
+// two bundles to something neither committed, so main lands stale with a clean
+// `git status`. #159's staleness gate makes that visible; this closes it.
+//
+// Runs after the merge and BEFORE the push, so one push carries both. Building
+// after the push would need a second push and would leave a window where
+// origin/main is stale.
+//
+// Stays generic — merge is not a princess-pi-packages-only tool. A build runs
+// only where there is one to run; a repo without a build script has nothing to
+// regenerate, which is not an error.
 // ---
-async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLogger, autoCleanup = false): Promise<void> {
+function hasBuildScript(cwd: string): boolean {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
+		return typeof pkg?.scripts?.build === "string" && pkg.scripts.build.trim() !== "";
+	} catch {
+		return false;
+	}
+}
+
+function haveBun(): boolean {
+	try {
+		execSync("bun --version", { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Rebuild tracked artifacts in `cwd` and commit any delta. Throws when the build
+ * itself fails — the caller must not push a tree that does not build.
+ */
+function rebuildArtifacts(cwd: string, targetHash: string, logger: MergeLogger, opts: MergeOptions): void {
+	if (opts.skipBuild) {
+		logger.info("⏭️  Skipping post-merge rebuild (--no-build).");
+		return;
+	}
+	if (!hasBuildScript(cwd)) {
+		logger.info("⏭️  No 'build' script in package.json — nothing to regenerate.");
+		return;
+	}
+	if (!haveBun()) {
+		logger.info("⏭️  bun not found on PATH — skipping post-merge rebuild. If this repo tracks built output, it may now be stale.");
+		return;
+	}
+
+	logger.info("🔨 Rebuilding tracked artifacts after the merge...");
+	try {
+		execSync("bun run build", { cwd, stdio: "ignore" });
+	} catch (err: any) {
+		const detail = err?.stderr?.toString?.() || err?.message || String(err);
+		throw new BuildFailureError(
+			`The merged tree does not build, so it was NOT pushed.\n` +
+			`The merge commit exists locally in ${cwd} — nothing is lost.\n` +
+			`Fix the build there and push, or undo the merge commit if you prefer.\n` +
+			`Underlying error:\n${detail}`
+		);
+	}
+
+	const delta = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
+	if (delta === "") {
+		logger.info("✅ Build output already current — no rebuild commit needed.");
+		return;
+	}
+
+	// A separate commit, not an amend: it keeps "what the merge did" and "what the
+	// build did" independently auditable, which matters because build output can
+	// change for reasons unrelated to the source (#172).
+	execSync("git add -A", { cwd, stdio: "ignore" });
+	execSync(`git commit -m "build: regenerate tracked artifacts after merging ${targetHash.substring(0, 7)} (#177) 👑π🐱"`, { cwd, stdio: "ignore" });
+	logger.info(`✅ Rebuilt artifacts committed:\n${delta}`);
+}
+
+// ---
+// Post-merge branch cleanup: check cleanliness, prompt to delete, retire the branch.
+// Called after a successful merge+push, while still on the feature branch.
+//
+// Worktree-aware since #143. When a dedicated main worktree exists, this worktree
+// CANNOT switch to main — git refuses to check out a branch already checked out
+// elsewhere, so the old unconditional `git checkout main` could never succeed in
+// the layout this repo now standardises on. Detaching instead is legal, because a
+// detached HEAD does not claim the branch, which then frees `git branch -d`.
+//
+// Ordering is local-first on purpose (#143.2). The old order deleted the REMOTE
+// branch first, so the failure above left remote-gone/local-present — the state
+// that later makes `git branch -d` report "not merged to upstream" against an
+// upstream that no longer exists. Local-first leaves remote-present/local-gone
+// on failure, which is inert and re-runnable.
+// ---
+async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLogger, autoCleanup = false, mainCwd = ""): Promise<void> {
 	const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
 
 	if (status !== "") {
@@ -75,30 +186,69 @@ async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLo
 		return;
 	}
 
-	// Delete remote branch first, then local
+	// --- Local first (#143.2): nothing is deleted remotely until the local branch is gone.
+	const inWorktreeLayout = !!mainCwd && mainCwd !== cwd;
+	if (inWorktreeLayout) {
+		// `main` is checked out in the main clone, so this worktree cannot take it.
+		// Detaching onto main's commit releases the feature branch without claiming main.
+		logger.info(`🔀 Detaching this worktree from '${currentBranch}' (main stays checked out at ${mainCwd})...`);
+		execSync("git checkout --detach main", { cwd, stdio: "ignore" });
+	} else {
+		logger.info(`🔀 Switching to 'main' and deleting local branch '${currentBranch}'...`);
+		execSync("git checkout main", { cwd, stdio: "ignore" });
+	}
+
+	// -d, not -D (#143.4): the ancestor check above already proved this branch is in
+	// origin/main, and HEAD now sits on a commit containing it. Force would only hide
+	// the case where that check was wrong.
+	try {
+		execSync(`git branch -d ${currentBranch}`, { cwd, stdio: "ignore" });
+		logger.info(`✅ Local branch '${currentBranch}' deleted.`);
+	} catch (err: any) {
+		const msg = err?.stderr || err?.message || String(err);
+		logger.error(`⚠️  Failed to delete local branch '${currentBranch}': ${String(msg).trim()}`);
+		logger.info(`💡 Remote branch 'origin/${currentBranch}' was left in place, so nothing is half-deleted. Re-run cleanup once resolved.`);
+		return;
+	}
+
 	logger.info(`📡 Deleting remote branch 'origin/${currentBranch}'...`);
 	try {
 		execSync(`git push origin --delete ${currentBranch}`, { cwd, stdio: "ignore" });
 		logger.info(`✅ Remote branch 'origin/${currentBranch}' deleted.`);
 	} catch (err: any) {
 		const msg = err?.stderr || err?.message || String(err);
-		logger.error(`⚠️  Failed to delete remote branch: ${msg.trim()}`);
+		logger.error(`⚠️  Failed to delete remote branch: ${String(msg).trim()}`);
+		logger.info(`💡 Local branch is already gone; finish with: git push origin --delete ${currentBranch}`);
 	}
 
-	logger.info(`🔀 Switching to 'main' and deleting local branch '${currentBranch}'...`);
-	execSync("git checkout main", { cwd, stdio: "ignore" });
-	try {
-		execSync(`git branch -D ${currentBranch}`, { cwd, stdio: "ignore" });
-		logger.info(`✅ Local branch '${currentBranch}' deleted.`);
-	} catch (err: any) {
-		const msg = err?.stderr || err?.message || String(err);
-		logger.error(`⚠️  Failed to delete local branch: ${msg.trim()}`);
+	if (inWorktreeLayout) {
+		logger.info(`💪 Ready for the next task! This worktree is on a detached HEAD at 'main'.`);
+		logger.info(`💡 The worktree itself is still here — removing it is a manual step: git worktree remove ${cwd}`);
+	} else {
+		logger.info(`💪 Ready for the next task! You are on branch 'main'.`);
 	}
-
-	logger.info(`💪 Ready for the next task! You are on branch 'main'.`);
 }
 
-export async function runMerge(argsList: string[], logger: MergeLogger, autoCleanup = false): Promise<void> {
+/**
+ * Run cleanup without letting it fail the merge (#143.3).
+ *
+ * `bin/merge.ts` prints "❌ Merge Aborted" for any throw out of runMerge. Cleanup
+ * happens AFTER the merge landed and was pushed, so a throw from here used to
+ * report a successful merge as a failure — telling the user to undo work that
+ * actually succeeded. Cleanup is best-effort by construction.
+ */
+async function cleanupBranchBestEffort(currentBranch: string, cwd: string, logger: MergeLogger, autoCleanup: boolean, mainCwd: string): Promise<void> {
+	try {
+		await cleanupBranch(currentBranch, cwd, logger, autoCleanup, mainCwd);
+	} catch (err: any) {
+		const msg = err?.stderr || err?.message || String(err);
+		logger.error(`\n⚠️  Branch cleanup failed — but the merge itself succeeded and was pushed.`);
+		logger.error(`   ${String(msg).trim()}`);
+		logger.info(`💡 Nothing needs undoing. Clean up by hand when convenient:\n   git branch -d ${currentBranch}\n   git push origin --delete ${currentBranch}`);
+	}
+}
+
+export async function runMerge(argsList: string[], logger: MergeLogger, autoCleanup = false, opts: MergeOptions = {}): Promise<void> {
 	logger.info("🔄 Running merge validation checks...");
 
 	const currentCwd = process.cwd();
@@ -212,11 +362,12 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 		execSync("git pull --ff-only origin main", { cwd: mainCwd, stdio: "ignore" });
 		logger.info(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`);
 		execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
+		// Rebuild BEFORE the push so a single push carries the merge and its artifacts (#177).
+		rebuildArtifacts(mainCwd, targetHash, logger, opts);
 		logger.info("📡 Pushing merged 'main' branch to origin...");
 		execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
 		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-		logger.info(`💪 Ready for the next task! You are in worktree '${currentCwd}' on branch '${currentBranch}'.`);
-		await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
+		await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, mainCwd);
 	} else {
 		logger.info("🪵 No dedicated 'main' worktree found — using in-place single-checkout merge.");
 		try {
@@ -235,9 +386,14 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 			}
 			logger.info(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main'...`);
 			execSync(`git merge ${targetHash}`, { cwd: currentCwd, stdio: "ignore" });
+			// Rebuild BEFORE the push so a single push carries the merge and its artifacts (#177).
+			rebuildArtifacts(currentCwd, targetHash, logger, opts);
 			logger.info("📡 Pushing merged 'main' branch to origin...");
 			execSync("git push origin main", { cwd: currentCwd, stdio: "ignore" });
 		} catch (mergeErr: any) {
+			// A build failure is not a merge failure — the merge landed, nothing was
+			// rolled back, and only the push was withheld. Let it through untouched.
+			if (mergeErr?.buildFailure) throw mergeErr;
 			try { execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" }); } catch { /* not mid-merge */ }
 			const detail = mergeErr?.message || String(mergeErr);
 			throw new Error(
@@ -249,7 +405,6 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 			try { execSync(`git checkout ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" }); } catch { /* best-effort */ }
 		}
 		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-		logger.info(`💪 Ready for the next task! You are on branch '${currentBranch}'.`);
-		await cleanupBranch(currentBranch, currentCwd, logger, autoCleanup);
+		await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, "");
 	}
 }

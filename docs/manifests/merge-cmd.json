@@ -30,6 +30,7 @@
     { "flags": "-h, --help", "desc": "Display this help information." },
     { "flags": "--version", "desc": "Display this tool's version." },
     { "flags": "--why", "desc": "Explain why you'd run this tool, with user scenarios and anti-use-cases." },
-    { "flags": "--cleanup", "desc": "Skip branch-cleanup prompt — auto-delete the feature branch (local + remote) and switch to main after a successful merge, assuming worktree is clean." }
+    { "flags": "--cleanup", "desc": "Skip branch-cleanup prompt — auto-delete the feature branch (local + remote) after a successful merge, assuming the worktree is clean. In a single checkout this also switches you to main; in a worktree layout it detaches this worktree at main instead, because main is checked out in the main clone." },
+    { "flags": "--no-build", "desc": "Skip the post-merge rebuild of tracked build artifacts. By default, when the repo has a 'build' script and bun is on PATH, merge rebuilds after merging and commits any delta before pushing — merging two branches that touch different bundled sources yields output neither branch committed." }
   ]
 }
