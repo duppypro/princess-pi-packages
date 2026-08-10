@@ -4,7 +4,7 @@
 **Branch:** `163-backtest-spec-reconcile`
 **Base:** `main` @ `ad91cdc`
 **Fixture SHA:** `9b2a16e` (`main` before the #158 work landed)
-**State:** Spec Draft (2026-08-10)
+**State:** Code Draft, ready for test (2026-08-10) — backtest run, skill fixed, §9 carries the record
 
 ---
 
@@ -265,12 +265,161 @@ Every criterion is checkable by a third party from the artifacts in this branch.
 V2 is the one that matters most. F1 and F3 are `◆` greps; a skill can surface both and
 still be useless, because the drift that actually bit this repo (#160) is an omission.
 
-## 8. Open follow-ups
+## 8. Follow-ups this issue found but did not fix
 
-_(filled at Step 4/5)_
+| Finding | Why not here |
+|---|---|
+| **~30 further doc/code contradictions across the wtft surface**, returned by the auditors alongside the fixtures. Five spot-verified at HEAD: `--limit` default documented as 10 vs 100 in code; `-w/--width` documented and parsed but never read by the CLI; a `/wtft -t America/New_York` example for a flag `wtft-cli-shared.ts:74` calls "intentionally NOT supported"; "9 work types" vs 14 in `CATEGORY_ORDER`; a `mixed` category that exists only in the doc. | Filed **#167**. Splits at least three ways — a manifest pass (overlaps #160), an `EXT_WTFT.html` rewrite (overlaps #161), and a `config.ts` docstring pass with a possible real bug behind it. Each wants its own 5-step cycle |
+| **`CONTEXT.md` still has no `Language — WTFT` section.** Both round-2 auditors reported the gap and invented nothing, which is the specified behaviour. | Already filed as **#162**; requires domain-modeling judgment, not reconcile |
+| **Building in a worktree rewrites tracked `.mjs` bundle paths.** `node_modules` is a symlink into the main clone, so Bun records `../../../princess-pi-packages/node_modules/...` in bundle comments — four lines per bundle, in three of five artifacts. Committing that from a worktree would poison the artifacts for everyone else. | Not this issue's subject. Worked around by restoring the bundles; see §9's note. Bun also strips comments, so the docstring fixes here need no bundle change at all |
+| **The `'ending'` surge badge may be unreachable** (`wtft-renderer.ts:680` returns `'surge'` for any minute inside the window). | A *code* finding, and §5 is explicit that reconcile does not brake on those. Included in #167 for triage |
 
 ## 9. Backtest record
 
-_(filled at Step 3 — see the Code Draft commit)_
+Run 2026-08-10. Corpus: `git archive 9b2a16e` into a tmpdir — never a worktree, so it
+cannot be committed to by accident and does not appear in `git worktree list`.
+
+**Fresh context was implemented as separate `claude -p` processes**, not in-session
+sub-agents: this session has no agent-dispatch tool. That is a *stricter* reading of §4
+than the skill assumed — a separate process cannot inherit the orchestrator's assumptions
+even accidentally — but it is a deviation from the literal wording and is recorded as one.
+Model: `opus` on every auditor, per §4's "keep the strong model for auditing".
+
+### Round 1 — the skill exactly as written during #158
+
+Prompts: `research/spec-reconcile-backtest/prompts/round1-as-written/`.
+Output: `research/spec-reconcile-backtest/runs/round1-as-written/`.
+
+| Auditor | Scope given |
+|---|---|
+| A1 | `wtft-renderer.ts` + manifest + `EXT_WTFT.html` + `README.md` — the faithful §1/§2 configuration |
+| A2 | `wtft-renderer.ts`, **symbol-scoped to the edited symbol only** — a deliberate control for the §1 scope rule, which the skill forbids |
+| A3 | `tests/wtft-title-layout.test.ts` + manifest + `EXT_WTFT.html` |
+| A4 | `extensions/lib/config.ts` + `build-and-toolchain.md` + `CLAUDE.md` + manifest |
+
+| Fixture | Surfaced? | By | Evidence |
+|---|---|---|---|
+| **F1** `◆` docstring | ❌ **missed** | — | A1 returned 21 findings including six other docstring rows (`:87`, `:764`, `:19`, `:143`, `:1169`) and never reached `:695`. A2 found it immediately, but A2 is the forbidden control, so it does not count |
+| **F2** manifest omission | ✅ | A1 #9, A3 | A1: "manifest:114 / html:58 `-i <size><m\|h\|d\|w>` → also accepts `Nt`, `Nturn`, `Nturns` (`:157`…)". A3 reached it independently via `wtft-cli-shared.ts:206` |
+| **F3** test header | ❌ **missed** | — | A3 audited the header and found *two other* drifts in it (`:6` watch case, `:11` legend) but not the `◆` invariant on `:10` |
+| **F4** control | ✅ | A1 #19 | "`:143-149` JSDoc for a `.jsonl` file parser (`@param filePath`) sits on `parseInterval` (`:150`)" |
+
+**Score under the skill as written: 2 of 4. The pass criterion failed.** A2's F1 hit is
+excluded deliberately — counting a configuration the skill tells you not to use would be
+fixing the score instead of the skill.
+
+Note what round 1 *did* prove: **F2, the fixture the issue called hardest, was the one
+that worked.** Both #158 drifts and #160 were omissions, and the "silent on / partial"
+clause reached all of them, twice, from two different auditors. The failures were
+elsewhere.
+
+### Diagnosis — which clause failed, per V9
+
+**F1 — lost to triage, not to blindness.** A1 was given a 1683-line file plus three doc
+artifacts under §4's `Under 400 words` cap. It found more contradictions than the cap
+could hold, so it grouped them by theme and ranked them — and a single stale docstring
+lost to taxonomy and flag errors. A2, same model, same prompt body, *narrower artifact
+set*, surfaced F1 with two quotes and five additional partial-claim findings. The variable
+is scope width against an output budget, not capability.
+
+> Failing clauses: §4 `Under 400 words`, and §1's silence on how wide one auditor's
+> artifact set may be.
+
+**F3 — the auditor was pointed at the wrong authority.** §4's template opens `Read <source
+file>. Then read <artifacts>.` When the changed file *is* a test, that makes the test the
+source of truth. At the corpus SHA the header (`:10`) and the assertions (`:130`, `:135`)
+both say `◆` — they rotted together and agree perfectly. Audited against itself, the file
+contains no contradiction at all. §2 correctly lists test header comments as an artifact
+class; §5 says "the code is the authority" without ever excluding test code.
+
+> Failing clauses: §4's template framing, and §5's unqualified "code".
+
+**Also found: §2 Tier 3 was unreachable.** The skill devotes a tier to checking
+user-facing strings against the glossary's `_Avoid_` lists, and no audit prompt mentions
+the glossary. No auditor performed the check in round 1, and none could have. A described
+check that no prompt implements does not exist.
+
+### Fixes applied to the skill
+
+| Fix | Section | Reaches |
+|---|---|---|
+| Cap replaced with "One line per finding. Do NOT triage, rank, or summarise — if there are forty, list forty… there is no length limit" | §4 | F1 |
+| "Sweep the source file's own docstrings and banner comments **in file order** and account for each one" | §4 | F1, F4 |
+| "A docstring that sits above the wrong symbol — or that TypeScript will attach to a different symbol than the author intended — is a finding" | §4 | the #158 mis-paste |
+| Granularity rule: one auditor per file is the *floor*; a long triaged list means **re-run narrowed**; themed grouping is a symptom, not a service | §1 | F1 |
+| Test-file prompt variant: "`<test file>` is an ARTIFACT, not an authority… a header comment and an assertion that agree with each other but not with the production code are **two findings, not zero**" | §4 | F3 |
+| "'The code' means **production code**. A test file is an artifact — never the authority" | §5 | F3 |
+| Glossary clause added to the prompt template, plus a note that Tier 3 stops existing in any variant that drops it | §4, §2 | Tier 3 |
+| "The orchestrator assembles the table; auditors return findings, not tables" | §6 | output shape |
+| Re-audit rationale rewritten around #158's mis-paste — step 4 of the loop is what catches a fix landed in the wrong place | §3 | convergence |
+| Sync-direction header: the repo copy is the source of truth | top | durability |
+
+### Round 2 — corrected prompts, same corpus, same model
+
+Prompts: `research/spec-reconcile-backtest/prompts/round2-fixed/`.
+Output: `research/spec-reconcile-backtest/runs/round2-fixed/`.
+
+| Fixture | Surfaced? | By | Evidence |
+|---|---|---|---|
+| **F1** | ✅ | B1 #104 | "no `◆` diamond and no surrounding parentheses are ever emitted; `:736` renders clock-face/`☀️`/`─` and `:748` wraps the body in moon emoji" |
+| **F2** | ✅ | B1 #52, B3 #11 | "`-i, --interval <size><m\|h\|d\|w>` (:114) — `wtft-renderer.ts:157` also accepts `<n>t`, `<n>turn`, `<n>turns`… a reader concludes turn intervals are unsupported" |
+| **F3** | ✅ | B3 #1 | "`Invariant: the SURGE timeline (---◆---) MUST be on the title row` (line 10) — `wtft-renderer.ts:736`… `◆` appears nowhere in the renderer" |
+| **F4** | ✅ | B1 #89 | "**misattached**: the very next symbol is `export function parseInterval`… so IDE hover shows this docstring for the interval parser" |
+
+**4 of 4.** Both fixed prompts also returned findings neither the issue nor #158 had:
+
+- **B1 #103** — the *corrected* `buildTimelineString` docstring from #158 is **misattached
+  on `main` today**: `MOON_PHASES`, `SYNODIC_MONTH_MS`, `REF_NEW_MOON` and `getMoonPhase`
+  sit between it and the function, so TypeScript binds it to the moon-phase array and the
+  function ships undocumented. #158 fixed the *text* and broke the *binding*, and its
+  hand-run reconciliation could not see it because it re-read what it had just written.
+- **B3 #3** — `tests/wtft-title-layout.test.ts:140` passes **vacuously**: it searches rows
+  2+ for a glyph nothing emits, so it cannot fail regardless of layout. Stale-invariant rot
+  one layer below the header comment.
+
+### The reconciliation table for this run (§6 shape)
+
+Assembled by the orchestrator from auditor findings, per the §6 fix.
+
+| Artifact | Claim | Contradicted by | Covered by a test? | Action |
+|---|---|---|---|---|
+| `wtft-renderer.ts:143-149` (docstring) | `parseInterval` parses a `.jsonl` session file, `@param filePath` | takes a string, returns `IntervalConfig`, reads no file — `:150-162` | ✅ `wtft-issue-121.test.ts` | **Fixed in this commit** — rewritten to document both accepted shapes and the silent `1h` fallback |
+| `wtft-renderer.ts` (docstring for `buildTimelineString`) | binds to the function | four declarations intervene; binds to `MOON_PHASES` | ✅ `wtft-title-layout.test.ts` (behaviour) / ❌ the *binding* | **Fixed in this commit** — moved adjacent, with a `#163` note saying why. Binding now gated by `tests/spec-163-spec-reconcile.test.ts` |
+| `docs/manifests/wtft-cmd.json:114` | `--interval <size><m\|h\|d\|w>` | `parseInterval` also accepts `t`/`turn`/`turns` — `:157` | ✅ `wtft-issue-121.test.ts` | Already filed **#160** — manifest copy, out of this branch's scope |
+| `~/.claude/skills/spec-reconcile/SKILL.md` | authoritative copy of the skill | no history, no diff, reachable only via dotfiles sync | n/a | **Fixed** — vendored to `skills/spec-reconcile/SKILL.md` as source of truth; deploy copy synced after a `.bak`; drift gated by V11 |
+| `SKILL.md` §7 | "Run the skill against that branch" (never run) | never executed; scored 2 of 4 when it finally was | ✅ this record + `tests/spec-163-spec-reconcile.test.ts` | **Fixed** — §7 now records the measured result and points at the re-runnable harness |
+| `SKILL.md` §2 Tier 3 | user-facing strings are checked against the glossary | no prompt implemented the check | `reconciled-against-untested` | **Fixed** — glossary clause added to the §4 template. Nothing tests that an auditor *acts* on it beyond round 2's output |
+| `CONTEXT.md` | — | no `Language — WTFT` section; only `Language — Serve` | n/a | Gap recorded; already filed **#162**. Both round-2 auditors said so explicitly and invented no terms |
+| ~30 further wtft doc claims | see §8 | auditor output in `runs/` | mostly untested | Filed **#167**, with 5 spot-verified at HEAD |
+| `bin/*.mjs` | tracked bundles | rebuilt paths differ under a worktree symlink | n/a | Restored, not committed. Bun strips comments, so no bundle change was warranted |
+
+One row carries `reconciled-against-untested`, and it is honest: the glossary clause is
+prose in a prompt, and nothing verifies that an auditor obeys it beyond this run's output.
+
+Zero contradictions left standing: two fixed here, four fixed as artifacts of this issue,
+three carried as filed issues (#160, #162, #167) with reasons.
+
+### Verification criteria — status at Code Draft
+
+| # | Status |
+|---|---|
+| V1 F1 surfaced | ✅ round 2 (B1 #104). ❌ round 1 — the finding, diagnosed above |
+| V2 **F2 surfaced** | ✅ **both rounds**, and the clause is named: "silent on / partial" reached it, file-level scope put the renderer in range. The symbol-scoped control (A2) missed it, confirming §1 is load-bearing |
+| V3 F3 surfaced | ✅ round 2 (B3 #1). ❌ round 1 — the finding, diagnosed above |
+| V4 F4 recorded | ✅ surfaced in both rounds (A1 #19, B1 #89) |
+| V5 §6 table | ✅ above. Skill amended: the orchestrator builds it, auditors return findings |
+| V6 coverage honesty | ✅ one row marked `reconciled-against-untested`; no row blank |
+| V7 fix not report | ✅ two fixed in-branch, four fixed as artifacts, three filed (#160, #162, #167) |
+| V8 glossary gap | ✅ both round-2 auditors reported no WTFT section and invented nothing; one explicitly declined to apply Serve's `_Avoid_` list to wtft |
+| V9 miss handling | ✅ two misses, each with its failing clause named, each answered with a skill edit. No fixture softened |
+| V10 sync direction | ✅ `diff` empty; `~/.claude/skills/spec-reconcile/SKILL.md.2026-08-10T10-45-54Z.bak` exists |
+| V11 corpus gate | ⏳ `tests/spec-163-spec-reconcile.test.ts` written, **not yet run** — Step 3 commits pre-test by design |
+| V12 build hygiene | ✅ `bun run build` clean (validated 2 SKILL.md files); `bun run typecheck` shows exactly the 2 known `TS7016` |
+
+**The headline: the skill as written scored 2 of 4, and both misses were in the audit
+prompt rather than in the ideas.** §1's file-level scope rule and §4's "silent on /
+partial" clause — the two things #158 was least sure about — were the two that worked.
+The failures were a word cap nobody thought was load-bearing, and an unexamined assumption
+that "the code is the authority" needs no qualification when the changed file is a test.
 
 — 👑π🐱 Princess Pi
