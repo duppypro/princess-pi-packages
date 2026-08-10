@@ -5,6 +5,10 @@ description: Audit code for state inferred by matching human-facing prose — su
 
 # Prose as API
 
+> **Where this file lives.** The copy in `princess-pi-packages/skills/prose-as-api/SKILL.md` is
+> the **source of truth**. `~/.claude/skills/prose-as-api/SKILL.md` is a **deploy copy** — edit the
+> repo copy, then copy it out. Never the reverse; the dotfile has no history to lose.
+
 **The rule.** A message written to be read by a human is not an API. Match on it and you have
 created an undeclared interface with no stability promise — the producer can reword, retone,
 rewrap, translate, or colorize it and will never call that a breaking change. Your control flow
