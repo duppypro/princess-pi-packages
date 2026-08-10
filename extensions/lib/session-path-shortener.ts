@@ -25,6 +25,9 @@ import * as os from "node:os";
  *
  * Transformations:
  *   - `/home/<user>/git-projects/<project>` → `~/g-p/<project>` (known prefix compaction)
+ *   - a `<project>` that is a git worktree checkout → `<repo>/w/<branch>` (#145;
+ *     see `compactWorktreeProject`). Applies only inside the two known
+ *     `~/git-projects` prefixes — a generic slug is never rewritten this way.
  *   - Generic slugs have hyphens replaced with slashes for path-like display
  *   - UUID tail extracted (first 4 hex chars from `([a-f0-9]{4}).jsonl`)
  *   - Pi date prefix extracted from `YYYY-MM-DD_...` filenames
