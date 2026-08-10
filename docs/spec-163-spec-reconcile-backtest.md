@@ -4,7 +4,8 @@
 **Branch:** `163-backtest-spec-reconcile`
 **Base:** `main` @ `ad91cdc`
 **Fixture SHA:** `9b2a16e` (`main` before the #158 work landed)
-**State:** Code Draft, ready for test (2026-08-10) — backtest run, skill fixed, §9 carries the record
+**State:** Spec Approved (2026-08-10) — backtest run, skill fixed, §9 carries the record; V1-V10
+independently re-verified against the run transcripts and issue tracker before approval (see §10)
 
 ---
 
@@ -421,5 +422,37 @@ prompt rather than in the ideas.** §1's file-level scope rule and §4's "silent
 partial" clause — the two things #158 was least sure about — were the two that worked.
 The failures were a word cap nobody thought was load-bearing, and an unexamined assumption
 that "the code is the authority" needs no qualification when the changed file is a test.
+
+## 10. Spec Approved — independent re-verification
+
+Duppy delegated approval on this issue; the check below is not a rubber stamp. Every
+citation in §9 that names a run file and a finding number (e.g. "B1 #104", "A1 #9") was
+re-opened and the quoted text confirmed to be exactly what that auditor returned — not
+paraphrased. `CONTEXT.md` at `9b2a16e` was independently re-read for V8 (one section,
+`## Language — Serve`, no WTFT section — confirmed). Issues #160, #162, #167 were
+independently confirmed open on the tracker for V7. This closes the "raw agent output"
+risk the drafting agent flagged in its own open questions — the citations are load-bearing,
+not decorative.
+
+**Two things this pass found and disposed of, neither a spec change:**
+
+- **A tracked `node_modules` symlink** landed by accident in the Spec Draft commit
+  (`0cf5c7c`) — `git add -A` picked it up because `.gitignore`'s `node_modules/` pattern
+  matches directories, not a symlink of that name. Main does not track `node_modules` at
+  all. Untracked in a standalone `chore:` commit ahead of this one; zero spec or code
+  content changed.
+- **V10's "repo copy vs deploy copy" assertion is host-state-dependent by design, not by
+  oversight** — the drafting agent's second open question. Read the suite: it only compares
+  when `~/.claude/skills/spec-reconcile/SKILL.md` exists, and skips (not fails) when it
+  does not. That is the correct shape for a gate whose failure mode is "the two copies
+  forked on a machine that has both" — it must not fail CI or a fresh clone that never had
+  the deploy copy. Confirmed as intended; no change needed.
+
+V11 and V12's checkmarks in §9 are the drafting agent's Code Draft self-report, made before
+the suite had ever run once (correct, per the pre-test rule) — they are re-verified for
+real, from the runner's own output, at Code Approved. The remaining open questions (Tier 2
+artifact enumeration is still orchestrator judgment; #167's ~30 findings are mostly
+unverified raw output) are accurately scoped as future work, not gaps in *this* issue's
+V1-V12, and are left as recorded.
 
 — 👑π🐱 Princess Pi
