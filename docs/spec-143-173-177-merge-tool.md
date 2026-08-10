@@ -2,7 +2,7 @@
 
 **Issues:** #143, #173, #177
 **Branch:** `143-173-177-merge-tool`
-**State:** Spec Approved
+**State:** Code Approved
 
 ---
 
@@ -218,3 +218,51 @@ that fails only on `branch -d`; V14 commits a `build.js` that exits non-zero. Bo
 control flow rather than asserting on source text — the ordering fix in #143.2 is only meaningful if
 something actually fails at the right moment, and a test that read the source for statement order
 would pass against code that never ran.
+
+---
+
+## 8. Result
+
+`bun run test` → **52 suites, 52 passed, 0 failed**. `bun run typecheck` → exit 0.
+`tests/merge-worktree-cleanup.test.ts` → **46 checks, all passing**, covering V1–V14.
+
+### The fixture that proved the tool correct by proving the bug absent
+
+Worth recording, because it nearly shipped as a passing test of nothing.
+
+The first #177 fixture built its artifact as a plain concatenation of the sources. Two branches each
+edited a different source; the merge was expected to leave a stale bundle. It did not — and the test
+failed with `Build output already current — no rebuild commit needed`.
+
+That result was correct. A concatenation is a **pure line-wise function of its inputs**, so git's
+3-way merge reconstructs exactly what a fresh build would produce. There is no staleness to fix, and
+a fixture built that way can only ever demonstrate that the rebuild step is unnecessary.
+
+What makes real bundles go stale is the part that is *not* line-wise: derived globals — module
+counts, tables of contents, ordering, identifier numbering. The corrected fixture adds a
+`// modules: N` header. Two branches that each ADD a source both change it `2 → 3` and write the
+byte-identical line, so git merges it **silently**, while the truth after the merge is `4`. Stale
+artifact, clean `git status`, no conflict. That is #177 exactly, and V9 now asserts the header reads
+`4` where an unrebuilt merge would leave `3`.
+
+The general lesson, and the reason this is in the spec rather than a code comment: **a fixture that
+cannot exhibit the bug will pass against a tool that does nothing.** The first version would have
+gone green the moment the rebuild step was deleted.
+
+### Ordering is asserted, not assumed
+
+V10 originally checked only that the rebuild *appeared* in the output. It now asserts the rebuild is
+reported at a lower index than the push line, because "rebuild before push" is the whole design
+claim — a rebuild after the push would need a second push and would leave a window where
+`origin/main` is stale. Presence and order are different assertions and only one of them is the spec.
+
+### Corrections found by running it
+
+- **V4** compared `feature-x` against `origin/main` *after* `--cleanup` deleted that branch, so the
+  ref no longer resolved. The hash is now captured before cleanup — an obvious hazard in hindsight,
+  and only visible once the cleanup actually worked.
+- **V8** asserted the merge-success wording against the outer best-effort handler, but the injected
+  failure lands in the inner local-delete path, which reported the failure without ever saying the
+  merge was fine. Fixed in the **code**, not the test: that path now prints
+  `✅ The merge itself succeeded and was pushed — nothing needs undoing.` A user who sees a cleanup
+  warning should never have to infer that their merge survived.
