@@ -3891,7 +3891,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
     }
   } catch {}
   if (lastHbMs === 0) {
-    return { alive: false, reason: "log parser not found" };
+    return { alive: false, reason: "daemon not found" };
   }
   const d = new Date(lastHbMs);
   const hh = String(d.getHours()).padStart(2, "0");
@@ -4226,7 +4226,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   if (fs8.existsSync(tagPath)) {
     startWatching();
   } else {
-    console.error("❌ Log parser did not create tag file within 5s. Is wtft-daemon installed?");
+    console.error("❌ Log parser daemon did not create tag file within 5s. Is wtft-daemon installed?");
     console.error(`   Expected: ${tagPath}`);
     process.exit(1);
   }

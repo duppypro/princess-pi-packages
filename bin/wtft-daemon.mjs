@@ -2708,16 +2708,16 @@ async function main() {
     } else if (arg === "--stop") {
       stopSession = process.argv[++i];
     } else if (arg === "--help" || arg === "-h") {
-      console.log(`wtft-daemon — Session log parser for WTFT
+      console.log(`wtft-daemon — Log parser daemon for WTFT
 Usage: wtft-daemon --session <path> [--debug]
 
 Management:
-  --list, -l            List all running log parsers (session, PID, idle time)
-  --cleanup             Kill log parsers whose source session no longer exists
-  --restart             Kill all running log parsers (fresh spawn on next wtft)
-  --stop <session>      Stop log parser for a specific session path
+  --list, -l            List all running daemons (session, PID, idle time)
+  --cleanup             Kill daemons whose source session no longer exists
+  --restart             Kill all running daemons (fresh spawn on next wtft)
+  --stop <session>      Stop the daemon for a specific session path
 
-Log parser mode:
+Daemon mode:
   -s, --session <path>  Path to session.jsonl to watch
   --debug               Enable debug logging to stderr
   -h, --help            Show this help`);
@@ -2789,7 +2789,7 @@ Log parser mode:
             child.unref();
           } catch (_2) {}
         }
-        console.log(`Restarted: PID ${pid} → fresh log parser for ${sessionFound || "(unknown)"}`);
+        console.log(`Restarted: PID ${pid} → fresh daemon for ${sessionFound || "(unknown)"}`);
         found++;
         continue;
       }
@@ -2839,16 +2839,16 @@ Log parser mode:
       }
     }
     if (showRestart) {
-      console.log(`Restarted ${found} log parser(s). Run wtft to spawn fresh instances.`);
+      console.log(`Restarted ${found} daemon(s). Run wtft to spawn fresh instances.`);
     }
     if (showCleanup) {
-      console.log(`Cleaned up ${found} log parser(s).`);
+      console.log(`Cleaned up ${found} daemon(s).`);
     }
     if (showList && found === 0) {
-      console.log("No log parser processes found.");
+      console.log("No daemon processes found.");
     }
     if (stopSession && found === 0) {
-      console.log(`No log parser found for: ${stopSession}`);
+      console.log(`No daemon found for: ${stopSession}`);
     }
     process.exit(0);
   }

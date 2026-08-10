@@ -93,24 +93,53 @@ if (wtftMatch) {
 		`"Overhead vs. waste vs. compaction" trio is pinned`
 	);
 
+	// An entry runs from its own "**Term**:" header to the next one (or the section end).
+	// Paragraph-splitting on blank lines was the earlier approach; it broke the moment an
+	// entry grew internal structure — the Daemon entry now carries a two-register rule and a
+	// tie-break as separate paragraphs, and its _Avoid_ line no longer shares a paragraph
+	// with its header. Slicing header-to-header lets entries be as structured as they need
+	// to be without the test mistaking the shape for a missing _Avoid_ list.
+	function entryFor(term: string): string | undefined {
+		const headers = [...wtftSection.matchAll(/^\*\*.+:$/gm)];
+		const i = headers.findIndex(h => h[0].startsWith(`**${term}**:`));
+		if (i === -1) return undefined;
+		const end = i + 1 < headers.length ? headers[i + 1].index! : wtftSection.length;
+		return wtftSection.slice(headers[i].index!, end);
+	}
+
 	// ---
 	// TEST 3: the daemon/log-parser ruling is resolved, not left open
 	// ---
 	console.log("\n--- TEST 3: daemon vs. log parser ruling is resolved one way ---");
 
-	const daemonParagraph = wtftSection.split(/\n\n+/).find(p => p.startsWith("**Daemon**:"));
-	check(!!daemonParagraph, `"Daemon" entry exists as its own paragraph`);
-	if (daemonParagraph) {
+	const daemonEntry = entryFor("Daemon");
+	check(!!daemonEntry, `"Daemon" entry exists`);
+	if (daemonEntry) {
+		// The ruling reversed on 2026-08-10 (#162, #165): the original "daemon wins outright"
+		// became a two-register rule. What survived the reversal is that bare "log parser" is
+		// still avoided — so this assertion holds across both rulings, but for a new reason.
 		check(
-			/_Avoid_:.*log parser/is.test(daemonParagraph),
-			`"Daemon"'s _Avoid_ list includes "log parser" — the ruling from #162 (measured: daemon dominates code/filenames, log parser survives only in user-facing text)`
+			/_Avoid_:[\s\S]*log parser/i.test(daemonEntry),
+			`"Daemon"'s _Avoid_ list still calls out bare "log parser" — the one part of #162's ruling that survived the 2026-08-10 reversal`
+		);
+		// Both registers must be named, or the entry has silently collapsed back to a
+		// one-word ruling and the reversal has been undone by drift.
+		check(
+			/log parser daemon/i.test(daemonEntry),
+			`"Daemon" entry names "log parser daemon" as the user-facing long form (#165 two-register rule)`
+		);
+		check(
+			/shorthand/i.test(daemonEntry),
+			`"Daemon" entry sanctions a shorthand register rather than banning the long form outright (#165)`
 		);
 	}
 
-	// The reverse must NOT exist — there must be no "**Log parser**:" header competing with Daemon.
+	// There must be no standalone "**Log parser**:" header competing with Daemon. The
+	// two-register rule (#165) is one concept rendered two ways, not two concepts — a
+	// second entry would re-create exactly the split this glossary section resolved.
 	check(
 		!/^\*\*Log [Pp]arser\*\*:/m.test(wtftSection),
-		`No competing "Log parser" glossary entry exists — the ruling picked one winner, not both`
+		`No competing "Log parser" glossary entry exists — one concept with two registers, not two terms`
 	);
 
 	// ---
