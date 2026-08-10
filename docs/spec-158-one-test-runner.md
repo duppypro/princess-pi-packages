@@ -1,4 +1,4 @@
-# Spec 158 — One declared test runner, and the five things hiding behind "the tests fail"
+# Spec 158 — One declared test runner, and the six things hiding behind "the tests fail"
 
 **Issue:** #158
 **Branch:** `158-one-test-runner`
@@ -24,8 +24,10 @@ That last row is the finding the issue did not have, and it inverts the recommen
 
 ## 2. Root causes, corrected
 
-The issue named four root causes. Measurement splits the fourth in two and adds a fifth
-that outranks all of them.
+The issue named four root causes. Measurement splits the fourth in two, adds RC-0 ahead of
+all of them, and — during spec review — turned up RC-5 underneath RC-4a's fix. Counts below
+(42 suites, "3 of 42") describe `main` @ `9b2a16e` as measured; the branch ends at 43 with
+`config-persistence` added.
 
 ### RC-0 (new, and the reason "declare `bun test`" is not enough) — plain scripts kill the in-process runner
 
@@ -199,36 +201,39 @@ share `/tmp` fixture paths. Serial is the honest default until those are isolate
 
 ### Deliberately not in scope
 
-- The 2 standing `TS7016` errors on `extensions/lib/serve/cloudflare.js` (needs a `.d.ts`
-  or a `.ts` port — separate issue).
-- Rewriting the 5 `.js` → `.ts` test specifiers. Under the declared runner they resolve
-  correctly. Changing them is a follow-up worth doing only alongside a decision about
-  whether `extensions/lib/serve/*.js` stays JavaScript.
-- Suite-leaked `/tmp/wtft-*` fixture dirs. `wtft-title-layout` *does* `rmSync` its fixture;
-  a lingering daemon recreates `wtft-tags/` inside it afterwards. Real, but a daemon
-  lifecycle bug, not a test-runner bug. 12 such dirs were found on this machine.
-- `wtft-daemon-lifecycle` — fixed by #157, passes on `main` today.
+`wtft-daemon-lifecycle` — fixed by #157, passes on `main` today. Everything else set aside
+is listed with its reason in §8.
 
 ---
 
-## 5. Spec gate — how this is verified
+## 5. Spec gate — verified
 
-The success condition is a single command and a single number.
+The success condition is a single command and a single number. Results below are from the
+Code Approved commit `562f24f`, run against the code at `e0d8f20`.
 
-| # | Check | Expected |
-|---|---|---|
-| V1 | `bun run test` | All 43 suites PASS, exit 0 |
-| V2 | `bun run test` suite count | Reports **43** suites, not 3 — guards RC-0 from regressing |
-| V3 | `bun run test wtft-title` | Runs only matching suites, exit 0 |
-| V4 | With `"tokens": true` set in the real user config, `bun run test wtft-auto-fit wtft-title-layout` | PASS — proves RC-4a hermeticity holds |
-| V5 | Deliberately break one assertion in one suite, run `bun run test` | Exit non-zero, that suite listed FAIL, others still reported |
-| V6 | `bun run typecheck` | No new errors beyond the 2 known `TS7016` on `cloudflare.js` |
-| V7 | `bun run build` | Succeeds; no generated `.mjs` edited by hand |
-| V8 | `md5sum ~/.config/princess-pi-packages/wtft.json` before and after a full `bun run test` | **Identical** — the suite cannot mutate real settings (RC-5) |
-| V9 | Parent shell `XDG_CONFIG_HOME` before and after a run; `/tmp/pp-test-config-*` count | Unset before and after; 0 dirs left behind — no env or filesystem leak |
+| # | Check | Expected | Result |
+|---|---|---|---|
+| V1 | `bun run test` | All 43 suites PASS, exit 0 | ✅ 43 passed, 0 failed |
+| V2 | `bun run test` suite count | Reports **43**, not 3 — guards RC-0 | ✅ 43 (bare `bun test` still stops at 3) |
+| V3 | `bun run test <filter>` | Runs only matching suites, exit 0 | ✅ 1 suite matched, exit 0 |
+| V4 | The two config-sensitive suites, standalone under the real user config, **no** runner isolation | PASS — proves RC-4a is fixed at the call site, not just papered over | ✅ all three exit 0 |
+| V5 | Deliberate failing probe suite | Exit non-zero, that suite FAIL, others still reported | ✅ exit 1; 2 PASS + 1 FAIL, output dumped |
+| V6 | `bun run typecheck` | No new errors beyond the 2 known `TS7016` | ✅ exactly those 2 |
+| V7 | `bun run build` | Succeeds; no generated `.mjs` hand-edited | ✅ clean `git status` after |
+| V8 | `md5sum ~/.config/princess-pi-packages/wtft.json` before/after a full run | **Identical** — the suite cannot mutate real settings (RC-5) | ✅ `e11a5502…` both times |
+| V9 | Parent `XDG_CONFIG_HOME` before/after; `/tmp/pp-test-config-*` count | Unset both times; 0 left behind | ✅ unset, 0 |
 
 V5 is the one that matters most: it is the direct test of the failure mode RC-0 describes
 — a runner that reports success without having run the tests.
+
+V4 came out stronger than specified. The live config at verification time carried
+`"interval": "7t"`, `"limit": 17`, `"tokens": false` — including an **invalid** interval unit
+(`t` is not `m|h|d|w`) — and all three suites still passed standalone, because each states
+its mode explicitly rather than inheriting it. A hostile config is the real test; a merely
+different one would have been weaker evidence.
+
+That `"7t"` persisted at all is a separate finding: the extension's write path does not
+validate before persisting. Not fixed here — noted in §8.
 
 ---
 
@@ -268,5 +273,20 @@ is documentation of a protection that does not exist. No impact on this machine,
   what landed on disk, not how far the handler got. Rendering is covered by other suites, but
   no suite exercises the handler end-to-end.
 - `serve` and `tpm` also call `writeConfig`. Only `wtft` is covered here.
+- The 2 `.test.sh` suites are not driven by `tests/run.ts` (they need sudo or a live nginx).
+  The runner prints their names at the end of every run so the gap stays visible rather than
+  reading as coverage.
+
+---
+
+## 8. Follow-ups this issue found but did not fix
+
+| Finding | Why not here |
+|---|---|
+| **No validation before persist.** `/wtft -i 7t` persisted `"interval": "7t"` — `t` is not a valid unit (`m\|h\|d\|w`). The write path accepts whatever the parser passed through. | Product bug in the extension's option handling, orthogonal to the test runner. Found via V4's live config. |
+| **2 standing `TS7016`** on `extensions/lib/serve/cloudflare.js`. | Needs a `.d.ts` or a `.ts` port. |
+| **5 test files import `.js` specifiers into `.ts` sources.** | They resolve under the declared runner. Worth changing only alongside a decision about whether `extensions/lib/serve/*.js` stays JavaScript. |
+| **Leaked `/tmp/wtft-*` fixture dirs.** `wtft-title-layout` *does* `rmSync` its fixture; a lingering daemon recreates `wtft-tags/` inside it afterwards. 12 found on this machine. | Daemon lifecycle bug, not a test bug. |
+| **Parallel suite execution.** | Several suites spawn daemons, bind ports, and share `/tmp` fixture paths. Serial (~40s total) until those are isolated. |
 
 — 👑π🐱 Princess Pi
