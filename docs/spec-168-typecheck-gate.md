@@ -144,7 +144,47 @@ defeated, the orphan reads as debris rather than as source.
 
 ---
 
-## 6. Notes on running V7
+## 6. What V6 turned up: symlinked `node_modules` corrupts the build and evades `.gitignore`
+
+V6 ("`bun run build` output is unchanged") failed on first run, and the cause had nothing to do
+with `allowJs`. It is recorded here because it invalidates a worktree setup this repo will keep
+reaching for, and because it would have made #159's staleness gate permanently red.
+
+The seven worktrees for this round of work were each given `node_modules` as a **symlink** to the
+main clone's, on the reasoning that bun already hardlinks and a second install is waste. Two things
+follow, both bad:
+
+**1. The build output changes.** `bun build` records each module's resolved path in a bundle
+comment. Through a symlink that path escapes the worktree:
+
+```diff
+-// node_modules/wcwidth/index.js
++// ../../../princess-pi-packages/node_modules/wcwidth/index.js
+```
+
+Three tracked bins (`wtft.mjs`, `wtft-daemon.mjs`, `serve.mjs`) change on every build, for a
+cosmetic reason, and the shipped artifact leaks the developer's local directory layout. A
+`bun run build && git diff --exit-code bin/` staleness gate — exactly what #159 is adding — would
+be red forever for anyone using a symlinked worktree, and the true positives it exists to catch
+would be lost in that noise.
+
+**2. `.gitignore` does not catch it.** The pattern was `node_modules/`, with a trailing slash,
+which matches a **directory only**. A symlink is a file. So `git add -A` committed the symlink, and
+by the time it was noticed it was tracked on four of the seven branches.
+
+Fix, both halves:
+
+- `.gitignore`: `node_modules/` → `node_modules`, so the pattern matches a symlink too. The comment
+  above it records why, since a bare pattern looks like a typo of the conventional one.
+- Every worktree gets a real `bun install`. It hardlinks from the global content-addressable cache,
+  which is the documented reason this repo standardised on bun — the disk cost of the "waste" being
+  avoided was approximately zero, and the correctness cost was not.
+
+Verified after the fix: `bun install && bun run build` in this worktree leaves `git status` clean.
+
+---
+
+## 7. Notes on running V7
 
 This branch was developed while six sibling branches (#144/#145/#164, #148, #149, #159,
 #160/#161/#162, #163) were being worked concurrently in their own worktrees. `tests/run.ts` states
