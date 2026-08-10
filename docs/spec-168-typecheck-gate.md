@@ -2,7 +2,7 @@
 
 **Issue:** #168
 **Branch:** `168-typecheck-gate`
-**State:** Spec Approved
+**State:** Code Approved
 
 ---
 
@@ -108,16 +108,34 @@ fixed forward, never pinned back.
 
 ## 5. Verification criteria
 
-| # | Criterion | How it is checked |
-|---|---|---|
-| V1 | `bun run typecheck` exits 0 on this branch | run it; assert exit code |
-| V2 | The typecheck gate is a suite, discovered and run by `bun run test` like every other suite | `bun run test typecheck` selects it; it appears in the runner's suite count |
-| V3 | The gate goes **red** when a real type error exists | negative control: introduce a deliberate type error in a temp copy, assert the suite fails; restore |
-| V4 | The gate reports the compiler's own diagnostics on failure, not just a bare exit code | inspect failure output; it must contain the `error TS` lines |
-| V5 | `allowJs` reaches `cloudflare.js` and widens the program no further | `tsc --noEmit --listFiles` must contain `extensions/lib/serve/cloudflare.js` **and no other repo `.js`** |
-| V6 | No production behaviour changes | the diff touches `tsconfig.json`, `tests/`, and `docs/` only — no `extensions/` or `bin/` source, and `bun run build` output is unchanged |
-| V7 | The full suite is still green | `bun run test` — 43 suites before, 44 after (the new one), all passing |
-| V8 | The reason `allowJs` is on is readable at the setting itself | a comment in `tsconfig.json`, not only in this spec |
+| # | Criterion | How it is checked | Result |
+|---|---|---|---|
+| V1 | `bun run typecheck` exits 0 on this branch | run it; assert exit code | ✅ exit 0 |
+| V2 | The typecheck gate is a suite, discovered and run by `bun run test` like every other suite | `bun run test typecheck-gate` selects it; it appears in the runner's suite count | ✅ suite count 43 → 44 |
+| V3 | The gate goes **red** when a real type error exists | negative control: write a deliberate type error into `bin/`, assert the suite fails *on that file*; remove it | ✅ diagnostic names the probe; cleaned up |
+| V4 | The gate reports the compiler's own diagnostics on failure, not just a bare exit code | inspect failure output; it must contain the `error TS` lines | ✅ |
+| V5 | `allowJs` reaches `cloudflare.js` and widens the program no further | `tsc --noEmit --listFiles` must contain `extensions/lib/serve/cloudflare.js` **and no other repo `.js`** | ✅ |
+| V6 | No production behaviour changes | the diff touches `tsconfig.json`, `.gitignore`, `tests/` and `docs/` only — no `extensions/` or `bin/` source, and `bun run build` output is unchanged | ✅ after §6's symlink fix |
+| V7 | The full suite is still green | `bun run test` — 43 suites before, 44 after (the new one), all passing | ✅ 44 suites, 44 passed, 0 failed |
+| V8 | The reason `allowJs` is on is readable at the setting itself | a comment in `tsconfig.json`, not only in this spec | ✅ |
+
+### 5.2 The check that mattered most: does the gate catch *this* bug?
+
+V3 proves the gate reacts to *a* type error — a synthetic one it wrote itself. That is not the same
+as proving it would have caught #168. So the gate was run against the original defect directly, by
+removing `allowJs` and re-running:
+
+```
+❌ V1: `bun run typecheck` exited 1, expected 0. Compiler said:
+bin/serve.ts(21,81): error TS7016: Could not find a declaration file for module '.../cloudflare.js'
+extensions/lib/serve/process.ts(6,59): error TS7016: ...
+❌ V5: extensions/lib/serve/cloudflare.js is not in the checked program — allowJs is not reaching it.
+```
+
+Both of the issue's original error lines, reproduced. `allowJs` restored, suite green, `tsconfig.json`
+diff empty. V5 firing independently of V1 is the useful part: it is a second signal with a different
+mechanism, not an echo of the first, so a future change that silences the errors *without* actually
+typing `cloudflare.js` would still be caught.
 
 V3 is the one that matters most. A gate that cannot be shown to fail is indistinguishable from no
 gate, and this issue exists because an unexercised check produced exactly that illusion.
