@@ -157,6 +157,13 @@ established the referent, so its flag lines say "daemon". A manifest `desc` stri
 independently addressable — `--why` and per-flag lookups render it with no header above it — so
 each one carries the full form itself. Same rule, opposite outcomes, because the unit of reading
 differs.
+
+*When the long form does not fit.* Fixed-width surfaces — ASCII box diagrams, aligned help
+columns, the title-line status indicator — take the shorthand, and the surrounding prose does the
+teaching. Never widen a box or truncate a word to force the long form in. `wtft-daemon` in a
+diagram needs no gloss at all when the section heading above it already says "Log parser daemon";
+the parenthetical `(log parser)` that used to sit there existed only to bridge two unreconciled
+names, and reconciling them retired it.
 _Avoid_: bare "log parser" (always promote to "log parser daemon"), watcher, background process,
 session parser
 
