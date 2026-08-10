@@ -97,10 +97,23 @@ check(
 	"F2: parseInterval at corpus nonetheless accepts t/turn/turns",
 	renderer.includes("/^(\\d+)(?:t|turns?)$/"),
 );
+// Fixed at Code Approved (#163): the corpus manifest's tool DESCRIPTION uses "turn" twice
+// in ordinary prose ("each turn's action", "every turn's cost") that has nothing to do with
+// the --interval flag — a whole-file substring check false-failed on that prose. The
+// fixture's actual claim is narrower: the `-i, --interval` FLAG ENTRY's own desc is silent
+// on the turn unit. Scope the check to that entry instead of the whole file.
+const intervalEntryMatch = /"flags":\s*"-i, --interval[^"]*"\s*,\s*"desc":\s*"([^"]*)"/.exec(
+	manifest,
+);
 check(
-	"F2: manifest at corpus never mentions a turn interval unit",
-	!/\bturns?\b/i.test(manifest.replace(/every turn's cost/g, "")),
-	"a 'turn' mention appeared — the omission fixture may have been fixed upstream",
+	"F2: manifest at corpus has a recognisable -i/--interval usage entry",
+	intervalEntryMatch !== null,
+	"could not find the -i, --interval entry in the corpus manifest — its shape changed",
+);
+check(
+	"F2: that entry's own desc never mentions a turn interval unit",
+	intervalEntryMatch !== null && !/\bturns?\b/i.test(intervalEntryMatch[1]),
+	"the -i/--interval desc itself now mentions turns — the omission fixture may have been fixed upstream",
 );
 
 // F3 — the test header that rotted in lockstep with its own assertions.
