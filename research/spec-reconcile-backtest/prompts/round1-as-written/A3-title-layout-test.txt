@@ -1,0 +1,4 @@
+Read `tests/wtft-title-layout.test.ts`. Then read `docs/EXT_WTFT.html`, `docs/manifests/wtft-cmd.json`, and the header comment and `//` comments inside `tests/wtft-title-layout.test.ts` itself.
+List every claim in those artifacts that the source contradicts, is silent on, or documents only partially. For each: quote the artifact line, quote the contradicting code as `path:line`, and state what the code actually does.
+Include claims that are *incomplete*, not just wrong — an accepted input that `--help` never mentions is a contradiction, because a reader concludes it is unsupported.
+If you find none, do not say "looks good" — list what you checked and how you verified it. Do not fix anything. Under 400 words.

@@ -1,0 +1,17 @@
+`tests/wtft-title-layout.test.ts` is an ARTIFACT, not an authority.
+
+Read `extensions/lib/wtft-renderer.ts` first — that, and the production code it calls, is the authority for what the rendered output actually looks like.
+
+Then read `tests/wtft-title-layout.test.ts`. Treat BOTH its header comment AND its assertion strings as claims about that production code. A header comment and an assertion that agree with each other but not with the production code are two findings, not zero — do not audit a test against itself.
+
+Also read `docs/EXT_WTFT.html` and `docs/manifests/wtft-cmd.json`.
+
+List EVERY claim in those artifacts that the production code contradicts, is silent on, or documents only partially. One line per finding. Do NOT triage, rank, or summarise — if there are forty, list forty. Never drop a finding to fit a length; there is no length limit.
+
+For each finding: quote the artifact line, quote the contradicting code as `path:line`, and state what the code actually does.
+
+Include claims that are *incomplete*, not just wrong — an accepted input that `--help` never mentions is a contradiction, because a reader concludes it is unsupported.
+
+If a user-facing string uses a term the project glossary (`CONTEXT.md`) marks under `_Avoid_`, that is a finding. If the glossary has no section for this tool, say so plainly and invent no terminology.
+
+If you find none, do not say "looks good" — list what you checked and how you verified it. Do not fix anything.

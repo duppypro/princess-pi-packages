@@ -1,0 +1,14 @@
+Read `extensions/lib/wtft-renderer.ts` in full, top to bottom. That file is the authority.
+Then read `docs/manifests/wtft-cmd.json`, `docs/EXT_WTFT.html`, `README.md`, and the docstrings and `//` comments inside `extensions/lib/wtft-renderer.ts` itself.
+
+List EVERY claim in those artifacts that the source contradicts, is silent on, or documents only partially. One line per finding. Do NOT triage, rank, or summarise — if there are forty, list forty. Never drop a finding to fit a length; there is no length limit.
+
+Sweep the source file's own docstrings and banner comments in file order and account for each one. A docstring that sits above the wrong symbol — or that TypeScript will attach to a different symbol than the author intended — is a finding.
+
+For each finding: quote the artifact line, quote the contradicting code as `path:line`, and state what the code actually does.
+
+Include claims that are *incomplete*, not just wrong — an accepted input that `--help` never mentions is a contradiction, because a reader concludes it is unsupported.
+
+If a user-facing string uses a term the project glossary (`CONTEXT.md`) marks under `_Avoid_`, that is a finding. If the glossary has no section for this tool, say so plainly and invent no terminology.
+
+If you find none, do not say "looks good" — list what you checked and how you verified it. Do not fix anything.
