@@ -2,7 +2,7 @@
 
 **Issue:** #159
 **Branch:** `159-pack-and-smoke`
-**State:** Spec Draft
+**State:** Spec Approved
 
 ---
 
@@ -226,17 +226,18 @@ need for this compromise; out of scope for #159 (see roads not taken).
 
 | # | Check | Expected | Status |
 |---|---|---|---|
-| V1 | `tests/pack-and-smoke.test.ts` exists, follows the suite conventions in `tests/run.ts` (own process, `bun test <file>`-runnable, prints a `Results: N passed, M failed` line, exits non-zero on any failure) | Present | Written, not yet run — see §7 |
-| V2 | Tarball install, plain node/npm (no bun on `PATH`): `wtft --version` and `yada --version` exit 0 and print `1.1.0` | Pass, after the §1.2 fix | Manually verified via raw `npm pack` + `npm install` + restricted-`PATH` `spawnSync`, reproduced below the fix; suite itself not yet run (§7) |
-| V3 | `files`-allowlist coverage assertion is generic (reads `bin/`, `extensions/lib/harness/`, `docs/manifests/` off the filesystem at test time), not a hardcoded list | Present in suite | Code review — see suite source |
-| V4 | `wtft -s <fixture> --cost` renders a `$`-figure, no error banner, exit 0 | Pass | Manually verified with an equivalent fixture against the installed tarball (§1.2 evidence) |
-| V5 | `tests/build-staleness-gate.test.ts` exists, follows suite conventions | Present | Written, not yet run — see §7 |
-| V6 | Fresh `bun run build` in THIS worktree matches the tree committed by a prior (non-worktree) session | Clean diff, after the §1.3 fix | Manually verified: `bun build.ts && git status --short bin/ extensions/lib/harness/builtins.generated.ts` → clean |
-| V7 | Negative control: `files` allowlist missing `extensions/` → tarball is missing `extensions/lib/harness/session-cwd.ts` | Confirmed absent | Manually reproduced (§7.1), not yet run through the suite itself |
-| V8 | Negative control: hand-edit a committed `bin/*.mjs` without touching its `.ts` source → `git diff --exit-code` on that file is non-zero | Confirmed non-zero | Manually reproduced (§7.2), not yet run through the suite itself |
-| V9 | Both suites restore the tree — `git status --short` clean on `bin/`, `extensions/lib/harness/`, `package.json` (minus this branch's own intentional edits) after every manual reproduction above | Clean | Confirmed after each manual step in this session |
-| V10 | Every bin/*.mjs and extensions/lib/harness/* file present in a real (unmutated) tarball | Present | Manually verified via `tar -tzf` against the real tarball post-fix |
-| V11 | The known-limit disclaimer (git-URL channel not covered) prints in the suite's own output, unconditionally | Present | Code review — see suite source, printed before AND after the check body |
+| V1 | `tests/pack-and-smoke.test.ts` exists, follows the suite conventions in `tests/run.ts` (own process, `bun test <file>`-runnable, prints a `Results: N passed, M failed` line, exits non-zero on any failure) | Present | **Verified at Code Approved:** ran via both `bun run test` (full 45-suite run, PASS, 1.9s) and standalone `bun test tests/pack-and-smoke.test.ts` |
+| V2 | Tarball install, plain node/npm (no bun on `PATH`): `wtft --version` and `yada --version` exit 0 and print `1.1.0` | Pass, after the §1.2 fix | **Verified at Code Approved:** suite run, both checks PASS (`wtft --version exits 0 and reports 1.1.0`, `yada --version exits 0 ...`). Code Draft's by-hand raw `npm pack`+`npm install` run corroborates. |
+| V3 | `files`-allowlist coverage assertion is generic (reads `bin/`, `extensions/lib/harness/`, `docs/manifests/` off the filesystem at test time), not a hardcoded list | Present in suite | Code review (suite source, `listFiles()`/`readdirSync` calls) + **behaviorally confirmed** by §7.3: dropping `extensions/` from `files` turned the harness-coverage check red without touching the suite file, proving it reads live state, not a hardcoded list |
+| V4 | `wtft -s <fixture> --cost` renders a `$`-figure, no error banner, exit 0 | Pass | **Verified at Code Approved:** suite run, `wtft -s <fixture> renders a cost bar chart` PASS |
+| V5 | `tests/build-staleness-gate.test.ts` exists, follows suite conventions | Present | **Verified at Code Approved:** ran via both `bun run test` (PASS, 0.1s) and standalone `bun test tests/build-staleness-gate.test.ts` |
+| V6 | Fresh `bun run build` in THIS worktree matches the tree committed by a prior (non-worktree) session | Clean diff, after the §1.3 fix | **Verified at Code Approved:** `build-staleness-gate` suite itself PASS — `bun run build succeeds` + `fresh build matches committed bin/*.mjs and builtins.generated.ts` both green |
+| V7 | Negative control: `files` allowlist missing `extensions/` → tarball is missing `extensions/lib/harness/session-cwd.ts` (and 7 sibling files) | Confirmed absent | **Verified at Code Approved through the suite itself** (§7.3): `bun test tests/pack-and-smoke.test.ts` against a mutated `package.json` reported `FAIL all 8 extensions/lib/harness/* files are in the tarball`, all other 12 checks stayed PASS |
+| V8 | Negative control: hand-edit a committed `bin/*.mjs` without touching its `.ts` source → suite goes red | Red | **Verified at Code Approved through the suite itself** (§7.4): `bun test tests/build-staleness-gate.test.ts` against a hand-edited `bin/wtft.mjs` reported `FAIL pre-flight: ... already has uncommitted changes`, `Results: 0 passed, 1 failed` |
+| V9 | Suite restore behavior: the *post-build* path (ordinary pass/fail through the check body) restores generated files via its `finally` block; the *pre-flight* short-circuit (dirt found before the build even runs) deliberately restores **nothing**, by design (§4/§7.4) | Post-build path: clean after. Pre-flight path: unchanged, by design — restored manually by whoever caused the dirt | **Verified at Code Approved** — §7.4 caught the pre-flight non-restore directly (`git status --short bin/wtft.mjs` still `M` after the suite exited); manual restore + `git diff --exit-code` confirmed clean. Corrected from the Spec Draft's blanket "clean" claim. |
+| V10 | Every bin/*.mjs and extensions/lib/harness/* file present in a real (unmutated) tarball | Present | **Verified at Code Approved:** suite run against the real (unmutated) tree — `all 6 bin/*.mjs files are in the tarball` and `all 8 extensions/lib/harness/* files are in the tarball` both PASS |
+| V11 | The known-limit disclaimer (git-URL channel not covered) prints in the suite's own output, unconditionally | Present | Code review — see suite source, printed before AND after the check body. Confirmed present in both PASS and FAIL runs captured for V7 (§7.3) and the full `bun run test` output. |
+| V12 | `bun run typecheck` is clean | N/A — pre-existing failure, unrelated to this branch | **Not clean, but not this branch's fault:** `tsc --noEmit` fails on `bin/serve.ts`/`extensions/lib/serve/process.ts` (`TS7016`, missing declarations for `cloudflare.js`). Reproduced identically on the main clone @ `ad91cdc` (this branch's base) before this branch's changes — same two errors, same files. Neither file is touched by this branch (only `build.ts`, `package.json`, `tests/*`, this spec changed). Left unfixed here as out of scope for a packaging-test issue; recorded as a new follow-up in §8 rather than silently ignored. |
 
 ---
 
@@ -252,19 +253,16 @@ printed before the checks run and again beside the final tally.
 
 ---
 
-## 7. Negative-control evidence — measured directly, suite execution deferred
+## 7. Negative-control evidence — verified through the suites themselves, at Code Approved
 
-The issue and the general engineering standard both ask for negative-control verification
-(temporarily break the thing, confirm red, restore) with evidence recorded **at Code Approved**
-— not at Code Draft. My task instructions for this branch carry a harder, more specific rule
-that governs this exact moment: *do not run `bun run test` or any test suite before the Code
-Draft commit* — the pre-test state is committed deliberately to measure zero-shot accuracy, and
-running the suite (including for negative controls) before that commit pollutes the
-measurement. That rule wins here; the two asks are reconciled by doing the negative-control
-**mechanics** by hand (not through the suite files) to validate the design before committing,
-and leaving the suite-level negative-control run itself for the Code Approved step.
+Section 7.1/7.2 below record the by-hand mechanics reproduced at Code Draft, in case the raw
+`npm pack`/`git diff --exit-code` commands are useful to a future reader independent of the
+suite files. But the load-bearing evidence for V7/V8 is §7.3/§7.4: both negative controls were
+re-run **through the actual suite files** (`bun test tests/<name>.test.ts` directly, not via
+`bun run test`, so a single suite could be pointed at a deliberately-broken tree) at Code
+Approved, per the open item this section used to carry.
 
-### 7.1 Files-allowlist negative control (measured by hand, not via the suite)
+### 7.1 Files-allowlist negative control (by-hand mechanics, Code Draft)
 
 ```
 $ python3 -c '... files = ["bin/", "skills/", "docs/manifests/"] ...'   # drop "extensions/"
@@ -273,12 +271,10 @@ $ tar -tzf $T/*.tgz | grep extensions/lib/harness/session-cwd.ts
 (no output — absent)
 ```
 
-This is exactly the condition `tests/pack-and-smoke.test.ts`'s harness-coverage `check()` block
-asserts against (`missing.length === 0`); with `extensions/` dropped, `missing` would be
-non-empty and that `check()` would report FAIL. Restored `package.json` from backup immediately
-after; `git status --short package.json` confirmed clean.
+Restored `package.json` from backup immediately after; `git status --short package.json`
+confirmed clean.
 
-### 7.2 Staleness-gate negative control (measured by hand, not via the suite)
+### 7.2 Staleness-gate negative control (by-hand mechanics, Code Draft)
 
 ```
 $ cp bin/wtft.mjs /tmp/wtft.mjs.bak
@@ -287,18 +283,53 @@ $ git diff --exit-code -- bin/wtft.mjs; echo "exit=$?"
 exit=1
 ```
 
-This is exactly the command `tests/build-staleness-gate.test.ts` runs after `bun run build`
-(scoped per-file rather than the whole tree, per §3's fix); a non-committed hand-edit produces
-exit 1, which the suite's `check()` turns into a labeled FAIL with a `git diff --stat` summary.
-Restored `bin/wtft.mjs` from backup immediately after; `git status --short bin/` confirmed clean.
+Restored `bin/wtft.mjs` from backup immediately after; `git status --short bin/` confirmed
+clean.
 
-### What is NOT yet done
+### 7.3 Files-allowlist negative control, through the suite (Code Approved)
 
-Actually invoking `tests/pack-and-smoke.test.ts` and `tests/build-staleness-gate.test.ts`
-themselves — including running them once against a deliberately broken `files`/hand-edited
-`.mjs` to see the suite's own PASS/FAIL output, not just the underlying mechanics — is left for
-the Code Approved step, along with the rest of `bun run test`. Recorded as an open item in the
-structured task output, not silently dropped.
+With `package.json`'s `files` temporarily reduced to `["bin/", "skills/", "docs/manifests/"]`
+(`extensions/` dropped), `bun test tests/pack-and-smoke.test.ts` itself went red, exactly as
+V7 predicted:
+
+```
+FAIL all 8 extensions/lib/harness/* files are in the tarball
+     missing from tarball: extensions/lib/harness/registry.ts, .../session-cwd.ts, ...
+Results: 12 passed, 1 failed
+```
+
+All 12 other checks in the same run stayed green — the failure is isolated to the one check the
+break targets, not a cascade. `package.json` restored from the Code Approved backup immediately
+after; `git diff --exit-code package.json` confirmed clean before the Code Approved commit.
+
+### 7.4 Staleness-gate negative control, through the suite (Code Approved)
+
+With `bin/wtft.mjs` hand-edited (one comment line appended, `.ts` source untouched — same
+mutation as §7.2), `bun test tests/build-staleness-gate.test.ts` went red:
+
+```
+FAIL pre-flight: bin/, extensions/lib/harness/, or build.ts already has uncommitted changes
+     Not a staleness defect — a fresh build's diff can't be trusted while these are
+     mid-edit, and restoring afterward would discard that work. Commit or stash, then re-run:
+      M bin/wtft.mjs
+Results: 0 passed, 1 failed
+```
+
+**Sharpened from what §5/V9 originally claimed:** the *pre-flight* branch (`tests/build-staleness-gate.test.ts` lines ~87–96) exits directly on `process.exit(1)` — it never reaches the
+`try/finally` that does the generated-files restore. This is correct **by design**, not a gap:
+pre-flight's entire job is to recognize dirt it did not cause and leave it *exactly as found*,
+because the tree might be a developer's genuine in-progress `.ts` edit not yet built (§4's
+reasoning). Auto-restoring here would risk discarding real work — the opposite of what a
+pre-flight guard is for. Confirmed directly: `git status --short bin/wtft.mjs` still showed `M`
+immediately after the suite exited 1; the hand-edit had to be restored manually
+(`cp` from the pre-mutation backup), same as §7.2's by-hand run. `git diff --exit-code
+bin/wtft.mjs` confirmed clean after.
+
+**What this means for V9:** the "suites restore the tree" claim holds for the *post-build*
+finally block (the ordinary stale-vs-fresh path and the honest-failure path both go through
+it — see the `finally` blocks in both suite files), but **not** for either suite's pre-flight
+short-circuit, which restores nothing on purpose. V9 below is corrected to say this precisely
+instead of "clean" unqualified.
 
 ---
 
@@ -308,6 +339,7 @@ structured task output, not silently dropped.
 |---|---|
 | `merge --version` fails with `fatal: not a git repository` when installed and run outside a git working directory (§1.4). | A `merge`-specific control-flow bug, unrelated to packaging. Worth its own issue. |
 | A three-state (PASS/FAIL/SKIP) test runner would remove the FAIL-for-visibility compromise in §4. | Would mean editing `tests/run.ts` (#158's surface), out of scope for a testing-the-artifact issue. |
+| `bun run typecheck` fails on `bin/serve.ts` / `extensions/lib/serve/process.ts` (`TS7016`, missing type declarations for `extensions/lib/serve/cloudflare.js`) — pre-existing on `main` @ `ad91cdc`, reproduced there independent of this branch (§5/V12). | Unrelated to packaging; touching `serve`'s files here would risk collisions with concurrent sibling worktrees. Worth its own issue (likely: add a `.d.ts` for `cloudflare.js`, or convert it to `.ts`). |
 
 ---
 
