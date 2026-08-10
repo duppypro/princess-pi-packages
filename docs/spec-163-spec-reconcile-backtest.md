@@ -4,8 +4,9 @@
 **Branch:** `163-backtest-spec-reconcile`
 **Base:** `main` @ `ad91cdc`
 **Fixture SHA:** `9b2a16e` (`main` before the #158 work landed)
-**State:** Spec Approved (2026-08-10) — backtest run, skill fixed, §9 carries the record; V1-V10
-independently re-verified against the run transcripts and issue tracker before approval (see §10)
+**State:** Code and Spec Approved (2026-08-10) — backtest run, skill fixed, §9 carries the record;
+V1-V10 independently re-verified against the run transcripts and issue tracker before approval
+(§10); every readable artifact reconciled against the tested code at Step 5 (§11)
 
 ---
 
@@ -42,7 +43,7 @@ git archive 9b2a16e | tar -x -C <tmpdir>
 
 ### F1 — stale docstring, a **false statement** (issue's fixture 1)
 
-`extensions/lib/wtft-renderer.ts:694-699`:
+`extensions/lib/wtft-renderer.ts:693-700` (comment fences included):
 
 ```
 /**
@@ -87,8 +88,12 @@ if (turnMatch) {
 }
 ```
 
-The manifest contains exactly **one** occurrence of the substring `turn` in the whole file,
-and it is `"every turn's cost"` in the tool description — nothing about the interval unit.
+The substring `turn` occurs **twice** in the whole manifest, both on line 5 and both in
+ordinary prose inside the tool description (`"each turn's action"`, `"every turn's cost"` —
+"turn" as in conversational turn). Neither is about the interval unit, and the `-i,
+--interval` entry's own `flags` and `desc` never mention it. That narrower statement — *the
+flag entry is silent on the turn unit* — is the fixture; the whole-file count is not, and
+was wrong when this section first claimed "exactly one" (corrected at Step 4; see §11 D1).
 Covered by `tests/wtft-issue-121.test.ts` (#121). Because `docs/EXT_WTFT.html:317` renders
 this same manifest via `fetch('manifests/wtft-cmd.json')`, the extension doc inherits the
 gap — Tier 1 in the skill's own taxonomy.
@@ -346,13 +351,13 @@ check that no prompt implements does not exist.
 |---|---|---|
 | Cap replaced with "One line per finding. Do NOT triage, rank, or summarise — if there are forty, list forty… there is no length limit" | §4 | F1 |
 | "Sweep the source file's own docstrings and banner comments **in file order** and account for each one" | §4 | F1, F4 |
-| "A docstring that sits above the wrong symbol — or that TypeScript will attach to a different symbol than the author intended — is a finding" | §4 | the #158 mis-paste |
+| "A docstring that sits above the wrong symbol — or that TypeScript will attach to a different symbol than the author intended — is a finding" | §4 | the `buildTimelineString` misbinding (B1 #103) |
 | Granularity rule: one auditor per file is the *floor*; a long triaged list means **re-run narrowed**; themed grouping is a symptom, not a service | §1 | F1 |
 | Test-file prompt variant: "`<test file>` is an ARTIFACT, not an authority… a header comment and an assertion that agree with each other but not with the production code are **two findings, not zero**" | §4 | F3 |
 | "'The code' means **production code**. A test file is an artifact — never the authority" | §5 | F3 |
 | Glossary clause added to the prompt template, plus a note that Tier 3 stops existing in any variant that drops it | §4, §2 | Tier 3 |
 | "The orchestrator assembles the table; auditors return findings, not tables" | §6 | output shape |
-| Re-audit rationale rewritten around #158's mis-paste — step 4 of the loop is what catches a fix landed in the wrong place | §3 | convergence |
+| Re-audit rationale rewritten around the `buildTimelineString` misbinding — step 4 of the loop is what catches a corrected text that stayed in the wrong place | §3 | convergence. **The shipped §3 wording attributes the misbinding to #158; §11 D2 shows it predates #158. Filed #175** |
 | Sync-direction header: the repo copy is the source of truth | top | durability |
 
 ### Round 2 — corrected prompts, same corpus, same model
@@ -369,11 +374,17 @@ Output: `research/spec-reconcile-backtest/runs/round2-fixed/`.
 
 **4 of 4.** Both fixed prompts also returned findings neither the issue nor #158 had:
 
-- **B1 #103** — the *corrected* `buildTimelineString` docstring from #158 is **misattached
-  on `main` today**: `MOON_PHASES`, `SYNODIC_MONTH_MS`, `REF_NEW_MOON` and `getMoonPhase`
-  sit between it and the function, so TypeScript binds it to the moon-phase array and the
-  function ships undocumented. #158 fixed the *text* and broke the *binding*, and its
-  hand-run reconciliation could not see it because it re-read what it had just written.
+- **B1 #103** — the `buildTimelineString` docstring is **misattached**: `MOON_PHASES`,
+  `SYNODIC_MONTH_MS`, `REF_NEW_MOON` and `getMoonPhase` sit between it and the function, so
+  TypeScript binds it to the moon-phase array and the function ships undocumented. B1 found
+  this on the *corpus* text at `:693-700` (`MOON_PHASES` at `:702`, the function at `:718`),
+  and it was **still true on `main` at `ad91cdc`** with the corrected #158 wording — same
+  four declarations, shifted to `:710`/`:726`. So the misbinding **predates #158**: #158
+  rewrote the docstring's text in place and inherited the bad binding rather than
+  introducing it. Its hand-run reconciliation could not see either half, because it re-read
+  what it had just written and never asked what the text was attached to.
+  *(Corrected at Step 5 — the first draft of this bullet asserted #158 "broke the binding",
+  which its own cited evidence disproves. See §11 D2.)*
 - **B3 #3** — `tests/wtft-title-layout.test.ts:140` passes **vacuously**: it searches rows
   2+ for a glyph nothing emits, so it cannot fail regardless of layout. Stale-invariant rot
   one layer below the header comment.
@@ -400,7 +411,11 @@ prose in a prompt, and nothing verifies that an auditor obeys it beyond this run
 Zero contradictions left standing: two fixed here, four fixed as artifacts of this issue,
 three carried as filed issues (#160, #162, #167) with reasons.
 
-### Verification criteria — status at Code Draft
+### Verification criteria — status
+
+V1-V10 and V12 were self-reported at Code Draft and re-verified at Spec Approved (§10) and
+Code Approved. V11 could not be reported at Code Draft at all: the pre-test rule (Step 3)
+forbids running the suite before that commit exists, so its ⏳ was correct, not lax.
 
 | # | Status |
 |---|---|
@@ -414,8 +429,8 @@ three carried as filed issues (#160, #162, #167) with reasons.
 | V8 glossary gap | ✅ both round-2 auditors reported no WTFT section and invented nothing; one explicitly declined to apply Serve's `_Avoid_` list to wtft |
 | V9 miss handling | ✅ two misses, each with its failing clause named, each answered with a skill edit. No fixture softened |
 | V10 sync direction | ✅ `diff` empty; `~/.claude/skills/spec-reconcile/SKILL.md.2026-08-10T10-45-54Z.bak` exists |
-| V11 corpus gate | ⏳ `tests/spec-163-spec-reconcile.test.ts` written, **not yet run** — Step 3 commits pre-test by design |
-| V12 build hygiene | ✅ `bun run build` clean (validated 2 SKILL.md files); `bun run typecheck` shows exactly the 2 known `TS7016` |
+| V11 corpus gate | ✅ at Code Approved (`09d97e0`). First-ever run failed one assertion — a **test-logic** bug, not a fixture regression: the F2 check swept the whole corpus manifest for the substring `turn`, which matches two occurrences of unrelated prose on line 5. Rescoped to the `-i, --interval` entry's own `desc`, which is the fixture's actual claim; the wrong claim was §2's, and §2 is corrected here. Re-run: **44/44 suites, 37/37 assertions in this suite** |
+| V12 build hygiene | ✅ `bun run build` clean (validated 2 SKILL.md files), `git status` clean after; `bun run typecheck` shows exactly the 2 known pre-existing `TS7016` (`bin/serve.ts`, `extensions/lib/serve/process.ts` importing `cloudflare.js`) — unrelated to this branch, present on `main` |
 
 **The headline: the skill as written scored 2 of 4, and both misses were in the audit
 prompt rather than in the ideas.** §1's file-level scope rule and §4's "silent on /
@@ -454,5 +469,80 @@ real, from the runner's own output, at Code Approved. The remaining open questio
 artifact enumeration is still orchestrator judgment; #167's ~30 findings are mostly
 unverified raw output) are accurately scoped as future work, not gaps in *this* issue's
 V1-V12, and are left as recorded.
+
+## 11. Step 5 — Code and Spec Approved: the reconciliation
+
+This issue's subject is a skill that reconciles specs against code. Running Step 5 on it
+without running that skill's own method would have been the joke writing itself, so §1's
+file-level blast radius and §4's "silent on / partial" were applied here, to this branch:
+
+    git diff main..HEAD --name-only, minus runs/ (raw auditor transcripts, preserved verbatim)
+      docs/spec-163-spec-reconcile-backtest.md   extensions/lib/wtft-renderer.ts
+      skills/spec-reconcile/SKILL.md             tests/spec-163-spec-reconcile.test.ts
+      research/spec-reconcile-backtest/{RUBRIC.md, run-backtest.sh, prompts/}
+    plus, per §1, the artifacts those files' *contents* changed the truth of:
+      README.md (what `skills/` now contains)   tests/run.ts (how many suites exist)
+
+Whole files were re-read, not only the hunks. Two of the six findings below sit in
+neighbours nobody edited — which is the scope rule earning its keep a second time.
+
+### The table (§6 shape)
+
+| # | Artifact | Claim | Contradicted by | Covered by a test? | Action |
+|---|---|---|---|---|---|
+| D1 | `docs/…-backtest.md` §2 F2 | "The manifest contains exactly **one** occurrence of the substring `turn` … `"every turn's cost"`" | `git show 9b2a16e:docs/manifests/wtft-cmd.json` — **two**, both line 5, both prose (`"each turn's action"`, `"every turn's cost"`) | ✅ `spec-163-spec-reconcile.test.ts` (the assertion this broke) | **Fixed** — §2 now states the narrower true claim: the `-i, --interval` entry's own `desc` is silent on the turn unit |
+| D2 | `docs/…-backtest.md` §9, round-2 bullet | "#158 fixed the *text* and broke the *binding*" | `9b2a16e` already has the docstring at `:693-700`, `MOON_PHASES` at `:702`, function at `:718` — B1 #103 audited **that** tree, and `ad91cdc` repeats it at `:710`/`:726` | ✅ `spec-163-spec-reconcile.test.ts` gates the binding, not the history | **Fixed** — bullet rewritten: the misbinding predates #158, which inherited it |
+| D3 | `extensions/lib/wtft-renderer.ts` `#163` note in the `buildTimelineString` docstring | "#158 landed this text four declarations too early" | same as D2 — the note repeated the false causality into the source file | ✅ the binding is gated; the *comment* is not | **Fixed** — reworded to "the misbinding predates #158 … #158 rewrote the text in place and inherited it" |
+| D4 | `tests/spec-163-spec-reconcile.test.ts` header | enumerates **3** things the suite gates | the suite has **5** sections — repo-vs-deploy parity and harness presence were unlisted | `reconciled-against-untested` — nothing asserts a header matches its own body | **Fixed** — header now lists all five, one per section, and states why §3 skips rather than fails |
+| D5 | `skills/spec-reconcile/SKILL.md` §3 and §6 | §3 attributes the misbinding to #158 (D2 again); §6's example cites `:744` for "clock faces / moon bookends", which is a bare `}` (`:736` and `:748` are the code) | `9b2a16e` renderer | ✅ §2's clause set is gated; these two sentences are not | **Filed #175** — §3 of the suite pins this file byte-for-byte to `~/.claude/skills/spec-reconcile/SKILL.md`, and this pass was scoped to the worktree. Editing the repo copy without the paired copy-out ships a red gate. Both edits + the `cp` are in the issue |
+| D6 | `README.md` "What's Included" | lists a `learning_pi_extension_api` skill "Found in `skills/learning-pi/SKILL.md`"; lists **no** skill this repo actually ships | `git ls-files` — no `learning-pi` path since `911507d` (#27, consolidated to `~/.pi/agent/skills/`); `skills/` holds `cross-harness-tool` and, as of this branch, `spec-reconcile` | `reconciled-against-untested` — nothing checks README against `skills/` | **Fixed** — stale row removed, real rows added. This branch *created* half of it: shipping a skill the index never mentions is the F2 omission class, in our own README |
+| D7 | `tests/run.ts` header | "34 of 42 suites are standalone scripts" (present tense) | 44 suites today, 36 with `process.exit`; `docs/spec-158-one-test-runner.md:29` already pins those numbers to `main` @ `9b2a16e` "as measured" | `reconciled-against-untested` | **Fixed** — count claim anchored to the #158 measurement instead of the live tree, so it stops re-rotting each time a suite lands. This branch added the 44th |
+
+### Convergence — passes until one found nothing new
+
+1. **Pass 1** (whole-file re-read of the seven artifacts above): D1, D2, D4, D6, D7.
+2. **Pass 2** (re-audit of what pass 1 *edited*, plus what those edits now reference — §3
+   step 4 of the skill): found D3 and D5, both of which are the *same false sentence as D2*
+   copied into a source comment and into the skill. Pass 1 had fixed the spec and left two
+   copies standing. This is precisely the failure mode §3 step 4 exists for, and it fired on
+   the first branch that ran it.
+3. **Pass 3** (re-read of every file touched by passes 1-2, plus `docs/manifests/*.json`,
+   `docs/EXT_WTFT.html`, `CLAUDE.md`, `docs/agents/*`): **nothing new.** Clean pass — done.
+
+### What pass 3 checked and cleared, so the absence is legible
+
+- **`docs/manifests/*.json`** — no drift *caused by this branch*. It ships no flag, no
+  accepted input, no CLI surface: `extensions/lib/wtft-renderer.ts` changed comments only
+  (`git diff main..HEAD -- extensions/lib/wtft-renderer.ts` is two docstrings). Manifest
+  gaps that already existed are #160 (the `-i <n>t` omission, which is fixture F2) and #167.
+- **`docs/EXT_WTFT.html`** — Tier 1: it `fetch`es the manifest rather than copying it, so it
+  inherits exactly the above and adds nothing. Its prose drift is #167.
+- **Every citation in §2, §3 and §9** re-opened against `git show 9b2a16e:…` a second time,
+  independently of §10: F1 `:693-700`/`:695` (the file's only `◆`), the contradicting
+  `:735-736` and `:747-748`, F2 manifest `:114`, `parseInterval` `:150`-`:163` with the turn
+  branch at `:157`, F3 test `:10-11`/`:130`/`:135` and the vacuous `:140`, F4 `:143-149`.
+  All exact. §2's F1 range was widened `694-699` → `693-700` to include the comment fences
+  it quotes. The `:150-162` range for `parseInterval` is left as-is — the closing brace is
+  at `:163`, which is a citation convention, not a false claim.
+- **`skills/spec-reconcile/SKILL.md` §1, §4, §5, §7** — every "Backtested (#163)" claim
+  traced to a run file and a finding number in `runs/`. All hold. Only §3 and §6 drifted
+  (D5).
+- **`research/spec-reconcile-backtest/`** — `RUBRIC.md`'s four fixtures and its result log
+  match §9 row for row; `run-backtest.sh` pins `9b2a16e`, the SHA the record cites, and V11
+  asserts that. `prompts/` and `runs/` are the run *as executed* and are deliberately frozen:
+  correcting a prompt after the fact would destroy the measurement it produced.
+
+### Notes on scope
+
+No production code changed between `09d97e0` (Code Approved) and this commit. D3 and D7 are
+comment-only edits; D1, D2, D4, D6 are docs and a test header. The one code-shaped finding
+this branch is carrying — the possibly-unreachable `'ending'` surge badge (§8) — stays in
+#167, per §5's rule that reconcile does not brake on code findings.
+
+**Issues left open on purpose:** #160 (manifest copy — it *is* fixture F2; fixing it in this
+branch would have destroyed the fixture), #162 (glossary, needs domain-modeling judgment),
+#167 (~30 wtft doc claims, splits three ways), #175 (SKILL.md, needs the paired deploy-copy
+sync). Each is named in a table row with its reason. Zero contradictions left standing and
+unattributed.
 
 — 👑π🐱 Princess Pi

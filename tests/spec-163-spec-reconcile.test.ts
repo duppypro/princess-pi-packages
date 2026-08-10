@@ -9,7 +9,7 @@
  * `research/spec-reconcile-backtest/run-backtest.sh`.
  *
  * What CAN be gated is everything the backtest *record* depends on to stay
- * verifiable by a third party:
+ * verifiable by a third party — one numbered section below per item:
  *
  *   1. The corpus. `docs/spec-163-spec-reconcile-backtest.md` §9 cites four drifts at
  *      SHA 9b2a16e by file and content. If that tree stops containing them, the record
@@ -18,7 +18,12 @@
  *      reach WHICH fixture. Delete one and the skill silently regresses to the version
  *      that scored 2 of 4 — with no test failing, which is the exact landmine the skill
  *      is about.
- *   3. The two drifts this branch fixed, so they cannot rot back.
+ *   3. Repo-vs-deploy parity. Two copies of the skill exist and the spec (§5) names the
+ *      repo one as the source of truth; without a check they fork silently. Host-state
+ *      dependent by design: it SKIPS where no `~/.claude` deploy copy exists (CI, a
+ *      fresh clone) — the failure it exists to catch is a fork on a machine with both.
+ *   4. The two drifts this branch fixed, so they cannot rot back.
+ *   5. The harness files the record points at, so the re-run instructions stay truthful.
  *
  * This suite reads git and the filesystem only. No clock, no network, no daemon.
  *

@@ -32,7 +32,8 @@ today **Pi Coding Agent** and **Claude Code**, with room for others. Each capabi
 | **`merge.ts`** | `/merge` | Safety-centric git branch merger for multi-worktree repositories. Enforces strict compliance with Step 5 "Code and Spec Approved" commit guidelines before merging to `main`. |
 | **`github-issue-autocomplete.ts`** | (Automatic) | Enhances the terminal TUI by autocompleting GitHub issue numbers (starting with `#`) dynamically as you type. |
 | **`system-clock.ts`** | (System Service) | Emits centralized 1s, 4s, and 60s tick events across the `pi` event bus to drive polling widgets smoothly. |
-| **`learning_pi_extension_api`** | (Skill) | Memory bank documenting Pi's extension API, lifecycle events, and CWD caching rules. Found in `skills/learning-pi/SKILL.md`. |
+| **`cross-harness-tool`** | (Skill) | How to build or port a tool to the one-implementation-per-tool bar described above. Found in `skills/cross-harness-tool/SKILL.md`. |
+| **`spec-reconcile`** | (Skill) | Step 5 of the 5-step flow: find and **fix** every readable artifact that contradicts the code. Backtested against four frozen drifts (#163); corpus, prompts, and rubric in `research/spec-reconcile-backtest/`. Found in `skills/spec-reconcile/SKILL.md` — that copy is the source of truth, `~/.claude/skills/spec-reconcile/` is a downstream deploy copy. |
 
 ---
 
