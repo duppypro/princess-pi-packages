@@ -1,4 +1,10 @@
-node_modules/
+# No trailing slash (#168): `node_modules/` matches a directory only. A worktree set up with
+# `ln -s .../princess-pi-packages/node_modules` has a SYMLINK here, which that pattern does not
+# match — so `git add -A` committed it on four branches before anyone noticed. Symlinking also
+# corrupts the build: bun bakes the resolved path into bundle comments, turning
+# `// node_modules/wcwidth/index.js` into `// ../../../princess-pi-packages/node_modules/...`,
+# dirtying the tracked bins on every build. Give each worktree a real `bun install` — it hardlinks
+# from the global cache, which is the whole reason this repo standardised on bun.
 node_modules
 .pi/
 
