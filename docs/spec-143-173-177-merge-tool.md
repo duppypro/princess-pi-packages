@@ -2,7 +2,7 @@
 
 **Issues:** #143, #173, #177
 **Branch:** `143-173-177-merge-tool`
-**State:** Spec Draft
+**State:** Spec Approved
 
 ---
 
@@ -180,3 +180,41 @@ Driven by a new sandbox suite (`tests/merge-worktree-cleanup.test.ts`) that buil
 V7, V8 and V14 are the ones that need a deliberately broken fixture rather than a happy path — they
 are the criteria that distinguish "the tool works" from "the tool fails honestly", which is the
 whole subject of #143.
+
+---
+
+## 6. What implementing it changed in the spec
+
+**A fourth defect in the #143 family, introduced by the #177 fix.** The in-place merge path wraps
+any throw from its merge block in *"In-place merge into 'main' failed and was rolled back"*
+(`core.ts:243`). A build failure thrown from inside that block would inherit that message — and it
+would be false twice: the merge succeeded, and nothing was rolled back. That is the identical lie
+#143.3 exists to remove, and the #177 fix would have reintroduced it in the same commit that
+deletes it.
+
+Fixed with a tagged `BuildFailureError`: the in-place path re-throws it untouched, and `bin/merge.ts`
+prints `❌ Merge not pushed:` rather than `❌ Merge Aborted:` for it. The distinction is the whole
+point — one banner tells you to undo work, the other tells you the work is safe and only the push
+was withheld.
+
+Worth stating as a general rule the two issues jointly establish: **a failure banner must name what
+actually failed.** `merge` now has three (`Merge Aborted`, `Merge not pushed`, `cleanup failed —
+the merge succeeded`) because it has three genuinely different outcomes, and collapsing them was
+the defect.
+
+**`--cleanup`'s manifest description was wrong for the worktree layout.** It promised "switch to
+main after a successful merge", which is what #143 proves cannot happen there. Updated to state both
+behaviours, since the flag now does one thing in a single checkout and another in a worktree.
+
+**Cleanup no longer removes the worktree, and says so.** After detaching, the worktree still exists.
+The engineering standard gates `git worktree remove` as a manual step — a worktree may be an
+assigned scope for a parallel agent session — so cleanup prints the command rather than running it.
+This is deliberately *not* the "guided teardown" #143 floats as a bigger alternative.
+
+## 7. Verification note
+
+V7 and V14 need failures git will not produce on request. V7 injects a `git` shim earlier on `PATH`
+that fails only on `branch -d`; V14 commits a `build.js` that exits non-zero. Both exercise real
+control flow rather than asserting on source text — the ordering fix in #143.2 is only meaningful if
+something actually fails at the right moment, and a test that read the source for statement order
+would pass against code that never ran.
