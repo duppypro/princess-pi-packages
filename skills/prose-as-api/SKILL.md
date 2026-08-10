@@ -71,7 +71,10 @@ binary or adding a wrapper considers it a breaking change.
 This repo already shipped the bug. `CONTEXT.md`'s *Server instance* entry defines discovery exactly
 that way, and the entry three paragraphs down records the consequence: a systemd service tenant
 matches neither substring, so `Reap` classifies it as an `Orphan` and the next `serve` invocation
-silently unpublishes it (princess-pi-brain #9).
+silently unpublishes it (princess-pi-brain #9; the fix is princess-pi-packages #181, which this
+skill found from a cold grep before anyone connected the two).
+
+This is the class that survives an "are we parsing JSON?" review, because the answer is yes.
 
 **So check both layers:** is the container addressable, *and* is the predicate a declared marker
 rather than a guess? The fix for a bad predicate is to make identity explicit — a PID file, a
