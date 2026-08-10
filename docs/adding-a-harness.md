@@ -38,6 +38,7 @@ interface HarnessParseAdapter {
   matchAssistant(entry: any): AssistantTurn | null;
   readBlock(block: any): ParsedBlock | null;
   readControlEntry(entry: any): ControlSignal | null;
+  readUncountedBillable?(entry: any): UncountedBillableClass | null;  // optional (#149)
 }
 ```
 
@@ -53,6 +54,16 @@ compute anything.
 - `readControlEntry` — recognize non-assistant entries that change how following turns
   read: model switches, thinking level, compaction markers, interrupts. Every registered
   adapter is consulted for every entry, first match wins.
+- `readUncountedBillable` — **optional** (#149). Recognize an entry that stands for an API
+  call your harness *bills for* but writes no `usage` object for, and return its class
+  (`"compaction"` | `"recap"`). wtft counts these and prints them as an `UNCOUNTED` line
+  under `--tokens`; it never prices them, because the dollars reach no file a parser can
+  read. Omit the method entirely and your harness simply reports no blind spot — the
+  out-of-tree loader does not require it, so an adapter written before #149 stays valid.
+  Same first-match-wins consultation order as `readControlEntry`, and for the same reason:
+  one entry must not be counted twice. Measured motivation: 4.72% of Claude Code's own
+  `total_cost_usd` across seven logged sessions was spend of this kind — see
+  `docs/spec-149-compaction-cost-scope.md`.
 
 Cost, cache-miss observation, the meter-split, dedup, classification and every renderer are
 inherited. That is the point.

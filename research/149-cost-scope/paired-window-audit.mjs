@@ -30,9 +30,24 @@
 //
 // over aligned records only. R is then a clean MONOTONE STAIRCASE: flat while
 // the transcript explains the bill, stepping up exactly when Claude Code bills
-// something the transcript never records. Measured across five logged sessions,
-// R has ZERO negative steps — the sawtooth is entirely gone. Each step is one
-// transcript-invisible API call, and its size is the measurement.
+// something the transcript never records. Each step is one transcript-invisible
+// API call, and its size is the measurement.
+//
+// WHERE THE STAIRCASE IS VALIDATED — AND WHERE IT IS NOT
+// On sessions WITHOUT Task subagents the staircase has ZERO negative steps
+// (five logged sessions at first measurement, 2026-08-10T11:00Z; the sawtooth is
+// entirely gone). On a session WITH subagents it is NOT validated: `e0d2ec4b`
+// (18 subagent transcripts, 55/107 records aligned) reports 6 downward steps and
+// the harness flags it `⚠️  alignment broke`. The mechanism is NOT identified —
+// naming one here without measuring it would repeat the mistake the SAWTOOTH
+// paragraph above documents. What is known: `loadWtftInteractions` does fold
+// subagent files in, so it is not a missing-input problem, and the forward-only
+// pointer in `alignRecords` is the obvious suspect on an interleaved,
+// concurrently-written stream. Tracked as its own issue.
+// PRACTICAL RULE: treat any non-zero `negativeSteps` as "this session is out of
+// scope for this instrument", never as a finding. `tests/wtft-issue-149-*.test.ts`
+// enforces exactly that — it skips subagent-bearing sessions rather than
+// asserting on them.
 //
 // DEDUP RULE (do not "fix" this)
 // The transcript writes multiple copies of one assistant message id as streaming

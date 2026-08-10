@@ -30,11 +30,16 @@ Every tool must support `--why`, which answers "Why would I run this?" using use
 4. Includes at least one anti-use-case (where the tool doesn't help)
 5. Closes with: `Run <tool> --help for the full flag reference.`
 
-Manifest `why` entries have three fields:
+Manifest `why` entries have four fields — three required, one optional:
 
 - `scenario` — the user's context/problem
 - `commands` — one or more invocations to address it (tool name omitted; renderer prepends)
 - `result` — what the end state looks like
+- `demo` *(optional)* — an array of literal output lines printed under `result`, ANSI escapes
+  included, written as `\u001b[…m` in the JSON. Rendered by the shared help renderer
+  (`extensions/lib/merge/help.ts`), skipped when absent or empty. Paste real output rather
+  than inventing it: a demo is the one part of `--why` a reader will compare against what
+  their terminal actually printed.
 
 For tools without manifests, `--why` is rendered inline.
 
