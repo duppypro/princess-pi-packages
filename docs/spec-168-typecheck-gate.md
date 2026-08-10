@@ -116,14 +116,17 @@ fixed forward, never pinned back.
 | V4 | The gate reports the compiler's own diagnostics on failure, not just a bare exit code | inspect failure output; it must contain the `error TS` lines | ✅ |
 | V5 | `allowJs` reaches `cloudflare.js` and widens the program no further | `tsc --noEmit --listFiles` must contain `extensions/lib/serve/cloudflare.js` **and no other repo `.js`** | ✅ |
 | V6 | No production behaviour changes | the diff touches `tsconfig.json`, `.gitignore`, `tests/` and `docs/` only — no `extensions/` or `bin/` source, and `bun run build` output is unchanged | ✅ after §6's symlink fix |
-| V7 | The full suite is still green | `bun run test` — 43 suites before, 44 after (the new one), all passing | ✅ 44 suites, 44 passed, 0 failed |
+| V7 | The full suite is still green | `bun run test` — 43 suites before, 44 after (the new one), all passing | ✅ 44/44 standalone; 46/46 after the §8 merge |
 | V8 | The reason `allowJs` is on is readable at the setting itself | a comment in `tsconfig.json`, not only in this spec | ✅ |
 
-### 5.2 The check that mattered most: does the gate catch *this* bug?
+V3 is the one that matters most. A gate that cannot be shown to fail is indistinguishable from no
+gate, and this issue exists because an unexercised check produced exactly that illusion.
 
-V3 proves the gate reacts to *a* type error — a synthetic one it wrote itself. That is not the same
-as proving it would have caught #168. So the gate was run against the original defect directly, by
-removing `allowJs` and re-running:
+### 5.1 Does the gate catch *this* bug, or only a synthetic one?
+
+V3 proves the gate reacts to *a* type error — one it wrote itself. That is not the same as proving
+it would have caught #168. So the gate was run against the original defect directly, by removing
+`allowJs` and re-running:
 
 ```
 ❌ V1: `bun run typecheck` exited 1, expected 0. Compiler said:
@@ -212,3 +215,34 @@ against a run made when no sibling run was in flight.
 
 The new typecheck suite itself is exempt from that constraint — it invokes `tsc` and touches no
 port, daemon or shared fixture path — so it is safe to run at any time.
+
+---
+
+## 8. Why this branch contains `160-161-162-wtft-spec-surfaces`
+
+`160-161-162` adds `tests/wtft-doc-spec-index.test.ts`, which asserts that **every**
+`docs/spec-*.md` on disk is href-linked from `docs/EXT_WTFT.html`. That branch was briefed with the
+filenames of the five specs being written in parallel with it, so it links all of them ahead of
+time. `#168` was filed *after* that briefing — so `docs/spec-168-typecheck-gate.md` is the one spec
+file its index does not know about, and the two branches are green in isolation while their merge
+is red.
+
+Confirmed rather than assumed, by merging and running it:
+
+```
+❌ FAIL: spec-168-typecheck-gate.md is href-linked from docs/EXT_WTFT.html
+```
+
+That is the gate doing exactly its job — an unlinked spec is the failure mode it was written to
+catch, and it caught the first one that existed.
+
+Resolved by merging `160-161-162` into this branch and adding the index row here, rather than by
+adding the row on the other branch: `160-161-162` rewrote `EXT_WTFT.html` substantially, so a
+second branch editing the same file would have produced a conflict at merge time instead of a
+clean history. The merge makes the dependency explicit and removes the ordering hazard in both
+directions — merging `160-161-162` first is a fast-forward that this branch already contains, and
+merging this branch first brings `160-161-162` along intact.
+
+The row is marked *"Not wtft-specific"*, matching how `spec-159` and `spec-163` are already labelled
+in that index: `EXT_WTFT.html` is currently the only system-spec page with a feature index, so
+repo-wide specs live there until another `EXT_*.html` grows one.
