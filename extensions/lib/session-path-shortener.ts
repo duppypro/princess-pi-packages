@@ -66,7 +66,7 @@ export function buildDisplayPath(
 	if (slug.startsWith(knownPrefix + "-")) {
 		const projectName = slug.slice(knownPrefix.length + 1); // +1 for trailing '-'
 		const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
-		const pathStr = `~/g-p/${projectName}`;
+		const pathStr = `~/g-p/${compactWorktreeProject(projectName)}`;
 		return appendTail(pathStr, datePrefix, uuidTail);
 	}
 
@@ -74,7 +74,7 @@ export function buildDisplayPath(
 	if (slug.startsWith(compactPrefix + "-")) {
 		const projectName = slug.slice(compactPrefix.length + 1);
 		const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
-		const pathStr = `~/g-p/${projectName}`;
+		const pathStr = `~/g-p/${compactWorktreeProject(projectName)}`;
 		return appendTail(pathStr, datePrefix, uuidTail);
 	}
 
@@ -84,6 +84,54 @@ export function buildDisplayPath(
 	const cleanedSlug = slug.replace(/-/g, "/");
 	const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
 	return appendTail(cleanedSlug, datePrefix, uuidTail);
+}
+
+// ---
+// WORKTREE DISPLAY COMPACTION (#145)
+// ---
+
+/** The in-tree worktree layout leaves this literal marker in the slug. */
+const IN_TREE_WORKTREE_MARKER = "--claude-worktrees-";
+
+/** The out-of-tree layout is ~/git-projects/worktrees/<repo>/<branch>. */
+const OUT_OF_TREE_WORKTREE_PREFIX = "worktrees-";
+
+/**
+ * Render a worktree checkout as `<repo>/w/<branch>` so it reads as a variant of
+ * its repo rather than as an unrelated project with a very long name.
+ *
+ * Both layouts this machine has used collapse to the same shape:
+ *   <repo>--claude-worktrees-<branch>   (in-tree, the old .claude/worktrees/)
+ *   worktrees-<repo>-<branch>           (out-of-tree, the current standard)
+ *
+ * The in-tree split is on a literal marker and is exact. The out-of-tree one
+ * cannot be: the slug is lossy, so `<repo>` and `<branch>` are separated by a
+ * dash indistinguishable from the dashes inside either. It splits at the first
+ * all-digit segment — the `<issue#>` that opens every branch name under this
+ * repo's `<issue#>-<slug>` naming standard — and leaves the string untouched
+ * when there is none. Deliberately a *display* heuristic: being wrong costs an
+ * uglier row, never a missing session.
+ */
+function compactWorktreeProject(projectName: string): string {
+	const marker = projectName.indexOf(IN_TREE_WORKTREE_MARKER);
+	if (marker > 0) {
+		const repo = projectName.slice(0, marker);
+		const branch = projectName.slice(marker + IN_TREE_WORKTREE_MARKER.length);
+		if (branch) return `${repo}/w/${branch}`;
+	}
+
+	if (projectName.startsWith(OUT_OF_TREE_WORKTREE_PREFIX)) {
+		const rest = projectName.slice(OUT_OF_TREE_WORKTREE_PREFIX.length);
+		const segments = rest.split("-");
+		const branchStart = segments.findIndex(seg => /^\d+$/.test(seg));
+		if (branchStart > 0) {
+			const repo = segments.slice(0, branchStart).join("-");
+			const branch = segments.slice(branchStart).join("-");
+			return `${repo}/w/${branch}`;
+		}
+	}
+
+	return projectName;
 }
 
 /**
