@@ -115,3 +115,158 @@ prose say "loopback service"** and reserve bare *origin* for CORS.
 > classifies it as an `Orphan` and the next `serve` invocation silently unpublishes it. Latent only
 > until the first service tenant deploys. Tracked as **princess-pi-brain #9**; the other three
 > tenancy gaps are **#10**. Both fixes land in this repo.
+
+## Language — WTFT
+
+> **Daemon vs. log parser — resolved.** These named the same thing in two layers: `daemon`
+> throughout the code (131× in `extensions/lib/wtft-daemon-lib.ts`, 12 filenames), `log parser`
+> only in user-facing text (5× `docs/manifests/wtft-cmd.json`, 8× `docs/EXT_WTFT.html`, 68×
+> repo-wide including generated `.mjs` mirrors). **Daemon wins** — see the `Daemon` entry below.
+> Renaming the surviving `log parser` mentions to match is tracked as
+> [#165](https://github.com/duppypro/princess-pi-packages/issues/165); it touches doc/manifest
+> content, not code, so it gets its own 5-step cycle rather than landing with this glossary
+> section. See `docs/spec-160-161-162-wtft-spec-surfaces.md` §4.1 for the full count table.
+
+**Daemon**:
+The persistent background process (`bin/wtft-daemon.ts` / `wtft-daemon.mjs`, driven by
+`extensions/lib/wtft-daemon-lib.ts`) that watches a session's `.jsonl` file, classifies each
+interaction, and writes pre-computed entries to a tag file so the CLI and Pi widget don't
+re-parse the whole log on every read. Spawned on `session_start`, auto-revived on idle-timeout
+death, auto-replaced on a version bump. Health is exposed via `checkDaemonHealth()` and rendered
+via `renderDaemonStatus()`.
+_Avoid_: Log parser, watcher, background process, session parser
+
+**Interval**:
+The user-specified size+unit that decides how interactions are grouped — the `-i, --interval`
+value (e.g. `4h`, `5t`), parsed by `parseInterval()` into an `IntervalConfig`. An interval is a
+*request*; a bin (below) is the concrete result of applying one.
+_Avoid_: Bucket (see the Bin/Bucket split below), window, period
+
+**Bin**:
+The concrete time-or-turn slot an interaction is grouped into, computed by `getBinInfo()` from
+an `IntervalConfig` and a timestamp — e.g. "the `22:00` bin" or "turn-bin `000010`". Binning
+happens identically regardless of render mode; every render bins first, then decides how to
+display each bin's total.
+_Avoid_: Bucket — reserved for the render mode, not the grouping unit. This split is intentional:
+`getBinInfo()` never returns anything the code itself calls a "bucket," but comments and prose
+sometimes use "binned"/"bucket" as loose synonyms for this concept. They are not the same word
+in the type system (`IntervalConfig`, `mode: "bucket" | "cumulative"`) and should not be treated
+as interchangeable in new prose.
+
+**Bucket (mode)**:
+One of the two render modes, set by `-b/--bucket` (the other is `-c/--cumulative`, default):
+shows each bin's own discrete total rather than a running sum. `mode: "bucket" | "cumulative"`
+in `wtft-renderer.ts`/`wtft.ts`. Not a grouping concept — see Bin above. Also overloaded once,
+harmlessly: `wtft-renderer.ts:1292` has an unrelated local variable named `buckets` (a `Map`
+used only for same-column marker tie-breaking inside *cumulative*-mode rendering) — it is not
+the `-b/--bucket` flag and should not be confused with it when reading that function.
+_Avoid_: Bin (see above), interval
+
+**Cumulative (mode)**:
+The default render mode (`-c/--cumulative`): each bin's bar shows the running sum of cost up to
+and including that bin, not just that bin's own total. Guarantees monotonically non-decreasing
+bar widths (#106).
+_Avoid_: Running mode, total mode
+
+**Session**:
+One coding-agent conversation's append-only `.jsonl` log — the unit wtft parses, classifies, and
+renders costs for. Identified by a UUID-bearing basename (Claude Code) or a
+timestamp-prefixed UUID basename (Pi); see `isSessionIdBasename()`.
+_Avoid_: Chat, conversation, log (ambiguous with "tag file", below), transcript
+
+**Sidechain**:
+A subagent's own interaction stream within the *same* session file — marked
+`Interaction.isSidechain`, excluded from prevCtx recache-signature tracking because it does not
+share the parent turn's context window. Distinct from a subagent session (below): a sidechain is
+inline entries in one file; a subagent session is a separate file.
+_Avoid_: Sub-thread, branch, fork
+
+**Subagent session**:
+A separate `.jsonl` log for a spawned subagent, stored under `<session-id>/subagents/` (Claude
+Code). wtft recursively discovers and blends these chronologically into the parent's timeline
+(Recursive Subagent Rollup). Distinct from a sidechain (above), which lives inline in the parent
+file rather than as its own file.
+_Avoid_: Child session, nested session
+
+**Tag file**:
+The per-session output file the daemon writes classified entries to:
+`wtft-tags/<session>.wtft-tag.v{N}.jsonl`. One tag file per source session, versioned so a
+daemon upgrade can detect and replace a stale one. Read by `readClassifiedTagFile()`.
+_Avoid_: Cache file, index file
+
+**Tags dir**:
+The `wtft-tags/` directory itself — one per project/session root, holding every tag file for
+sessions discovered there. `wtft-parser.ts` explicitly excludes it from session discovery
+("`wtft-tags` is our own output") so the daemon never treats its own writes as a session to
+parse.
+_Avoid_: Tag cache, output dir
+
+**Surge (window / pricing)**:
+DeepSeek's peak-valley pricing: specific UTC hour ranges (01:00–04:00 and 06:00–10:00) billed at
+a 2× multiplier. `getSurgeLocalHours()` converts the UTC windows to the display timezone;
+`checkSurgeProximity()` reports whether the current time is inside, approaching (≤20 min), or
+ending (≤20 min) a window. Rendered as the SURGE Timeline badge and orange segments.
+_Avoid_: Peak pricing, rush hour, premium window
+
+**Category** (the classification vocabulary):
+The `Category` union (`extensions/lib/wtft-parser.ts`) an interaction is classified into:
+`plan`, `spec`, `research`, `web`, `grep`, `code`, `tests`, `git`, `agents`, `prompt`,
+`compaction`, `interrupted`, `overhead`, `other`. Display labels differ from the type names for
+the Phase-3 overhead trio: `compaction` → **Cmpct**, `interrupted` → **Waste**, `overhead` →
+**Ovrhd** (`CATEGORY_STYLE` in `wtft-renderer.ts`). Use the type name in code/tests, the display
+label only in UI-facing prose.
+_Avoid_: Type, tag, class, bucket (see Bin/Bucket — a category is not a bin)
+
+**Overhead vs. waste vs. compaction** (the Phase-3 trio, #52):
+Three distinct causes of cost that isn't the model doing requested work, each its own category:
+- **Overhead** (`Ovrhd`) — a full-context recache: the 1h cache tier rewrote, driven by a
+  recache signature the parser detects from raw usage.
+- **Waste** — a turn the user killed (`interrupted: true`); its whole cost is discarded work,
+  not overhead from re-priming.
+- **Compaction** (`Cmpct`) — a turn immediately following a compact summary
+  (`afterCompaction: true`); its cache-write component is specifically the compaction bill.
+_Avoid_: Using "overhead" as an umbrella term for all three — each has a different cause and a
+different fix; conflating them was the exact ambiguity #52 Phase 3 resolved.
+
+**Thinking level**:
+A *signal* — the model's current reasoning-depth setting, read from a harness event
+(`thinking_level_change`) and carried on `Interaction.thinkingLevel`. Describes what happened.
+_Avoid_: Thinking budget (see below — a different concept, not a synonym)
+
+**Thinking budget**:
+A *CLI input* — the `--thinking-budget <n>` flag, a token budget used only to compute a
+utilization percentage in `--tokens`/`--by-model` output. Not read from the session; supplied by
+the caller. Describes a ceiling to compare against, not what happened.
+_Avoid_: Thinking level (see above)
+
+**Harness**:
+The coding-agent runtime a session log came from — `pi` or `claude-code`, selected via
+`--harness <pi|claude-code|auto>` (default `auto`). Determines which session-discovery and
+parse adapter (`extensions/lib/harness/<id>/`) wtft uses. Not the same as "widget" (below) —
+harness is about which agent produced the log; widget is about how wtft displays it.
+_Avoid_: Agent, client, platform
+
+**Widget**:
+The persistent TUI panel wtft renders below the editor inside the Pi harness — auto-shown on
+session start if config exists, toggled via `-S/--show` / `-H/--hide`. Distinct from the CLI
+(below): the widget only exists inside Pi.
+_Avoid_: Panel, sidebar (reserved for `serve`'s widget in this repo's `Language — Serve` section)
+
+**CLI**:
+Running `wtft` (or `./wtft`, or the npm-global install) directly from the host shell, outside
+Pi — reuses the same classification engine as the widget but prints to stdout. Supports modes
+the widget does not (`--other` histogram, `-p` pager, `--watch`).
+_Avoid_: Standalone mode, binary (the binary is `bin/wtft.mjs`; "CLI" names the usage mode)
+
+**Pager**:
+`-p/--pager` — a fullscreen, interactive, scrollable TUI overlay for browsing expanded cost
+history. A CLI-only feature (not available inside the Pi widget itself, which is not
+fullscreen).
+_Avoid_: Scroll mode, viewer
+
+**Watch mode**:
+`--watch` (`-W`) — a companion-terminal mode that tails a session file and re-renders in
+real-time as new interactions are logged, until `Ctrl+C`/`q`. Distinct from the widget's own
+periodic refresh (which lives inside Pi); watch mode is a standalone CLI process meant to run in
+a separate pane.
+_Avoid_: Live mode, tail mode
