@@ -227,13 +227,13 @@ V5 is the one that matters most: it is the direct test of the failure mode RC-0 
 — a runner that reports success without having run the tests.
 
 V4 came out stronger than specified. The live config at verification time carried
-`"interval": "7t"`, `"limit": 17`, `"tokens": false` — including an **invalid** interval unit
-(`t` is not `m|h|d|w`) — and all three suites still passed standalone, because each states
-its mode explicitly rather than inheriting it. A hostile config is the real test; a merely
-different one would have been weaker evidence.
+`"interval": "7t"`, `"limit": 17`, `"tokens": false` — a config differing from every suite's
+assumption on all three axes — and all three suites still passed standalone, because each
+states its mode explicitly rather than inheriting it.
 
-That `"7t"` persisted at all is a separate finding: the extension's write path does not
-validate before persisting. Not fixed here — noted in §8.
+`"7t"` is **valid**: `parseInterval` accepts a turn unit (`t`/`turn`/`turns`, #121, covered
+by `tests/wtft-issue-121.test.ts`) alongside `m|h|d|w`. The manifest driving `--help`
+documents only `<size><m|h|d|w>` and never mentions it — a documentation gap, noted in §8.
 
 ---
 
@@ -283,7 +283,7 @@ is documentation of a protection that does not exist. No impact on this machine,
 
 | Finding | Why not here |
 |---|---|
-| **No validation before persist.** `/wtft -i 7t` persisted `"interval": "7t"` — `t` is not a valid unit (`m\|h\|d\|w`). The write path accepts whatever the parser passed through. | Product bug in the extension's option handling, orthogonal to the test runner. Found via V4's live config. |
+| **`--help` omits the turn interval unit.** `parseInterval` accepts `<n>t` / `<n>turn` / `<n>turns` (#121), but `docs/manifests/wtft-cmd.json` documents `-i, --interval <size><m\|h\|d\|w>` only, so `--help` never reveals it. A working feature is invisible. | Manifest copy, orthogonal to the test runner. Found via V4's live config carrying `"interval": "7t"` — which I first misread as invalid *because* the help text says it is. |
 | **2 standing `TS7016`** on `extensions/lib/serve/cloudflare.js`. | Needs a `.d.ts` or a `.ts` port. |
 | **5 test files import `.js` specifiers into `.ts` sources.** | They resolve under the declared runner. Worth changing only alongside a decision about whether `extensions/lib/serve/*.js` stays JavaScript. |
 | **Leaked `/tmp/wtft-*` fixture dirs.** `wtft-title-layout` *does* `rmSync` its fixture; a lingering daemon recreates `wtft-tags/` inside it afterwards. 12 found on this machine. | Daemon lifecycle bug, not a test bug. |
