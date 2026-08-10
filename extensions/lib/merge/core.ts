@@ -207,6 +207,7 @@ async function cleanupBranch(currentBranch: string, cwd: string, logger: MergeLo
 	} catch (err: any) {
 		const msg = err?.stderr || err?.message || String(err);
 		logger.error(`⚠️  Failed to delete local branch '${currentBranch}': ${String(msg).trim()}`);
+		logger.info(`✅ The merge itself succeeded and was pushed — nothing needs undoing.`);
 		logger.info(`💡 Remote branch 'origin/${currentBranch}' was left in place, so nothing is half-deleted. Re-run cleanup once resolved.`);
 		return;
 	}

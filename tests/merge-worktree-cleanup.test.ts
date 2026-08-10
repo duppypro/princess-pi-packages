@@ -67,7 +67,7 @@ const created: string[] = [];
  * `pkg` optionally installs a package.json + build script, so the #177 path has
  * something real to regenerate.
  */
-function freshRepo(name: string, pkg: { build?: string; buildScript?: string } = {}): { remote: string; main: string } {
+function freshRepo(name: string, pkg: { build?: string; buildScript?: string; sources?: string[] } = {}): { remote: string; main: string } {
 	const base = path.join(TMP_ROOT, name);
 	created.push(base);
 	const remote = path.join(base, "remote.git");
@@ -79,8 +79,9 @@ function freshRepo(name: string, pkg: { build?: string; buildScript?: string } =
 	git(main, "config user.name t");
 	git(main, "checkout -q -b main");
 	fs.mkdirSync(path.join(main, "src"), { recursive: true });
-	fs.writeFileSync(path.join(main, "src", "a.txt"), "A0\n");
-	fs.writeFileSync(path.join(main, "src", "b.txt"), "B0\n");
+	for (const s of pkg.sources || ["a.txt", "b.txt"]) {
+		fs.writeFileSync(path.join(main, "src", s), `${s[0].toUpperCase()}0\n`);
+	}
 	if (pkg.build) {
 		fs.writeFileSync(path.join(main, "package.json"), JSON.stringify({ name, scripts: { build: pkg.build } }, null, 2) + "\n");
 		if (pkg.buildScript) fs.writeFileSync(path.join(main, "build.js"), pkg.buildScript);
@@ -109,13 +110,40 @@ function step5Commit(cwd: string, what: string): void {
 	execSync(`git commit -q -m "docs: Code and Spec Approved — ${what}"`, { cwd, stdio: "ignore" });
 }
 
-const BUILD_JS = `// concatenates src/*.txt into dist/bundle.txt
-const fs = require("node:fs"), path = require("node:path");
+// The fixture build: a derived HEADER plus one block per source, separated by filler.
+//
+// Getting this faithful took two attempts, and the first failure is the useful part.
+// A plain concatenation of sources is a pure line-wise function of them, so git's
+// 3-way merge reconstructs the correct artifact by itself and no rebuild is ever
+// needed — the first version of this fixture proved the tool correct by proving the
+// bug did not exist. That is not what #177 is about.
+//
+// Real bundlers emit DERIVED GLOBALS: module counts, tables of contents, ordering,
+// identifier numbering. Those are the parts line-merge cannot reconcile, and they
+// are why a merged bundle is wrong without conflicting. The `// modules: N` header
+// is the minimal version of that: two branches that each ADD a source both change
+// the header 2 → 3 and write the byte-identical line, so git merges it silently —
+// while the truth after the merge is 4. Stale, clean `git status`, no conflict.
+// That is #177 exactly.
+//
+// The filler keeps the two inserted blocks far enough apart to merge cleanly; the
+// sort order (a, b, m, n) puts one insertion on each side of `m` so they never share
+// an anchor. Both are fixture mechanics standing in for a real bundle's scale.
+const BUILD_JS = `const fs = require("node:fs"), path = require("node:path");
 const src = path.join(__dirname, "src"), dist = path.join(__dirname, "dist");
 fs.mkdirSync(dist, { recursive: true });
+const filler = Array(20).fill("// ---").join("\\n") + "\\n";
 const names = fs.readdirSync(src).sort();
-fs.writeFileSync(path.join(dist, "bundle.txt"), names.map(n => fs.readFileSync(path.join(src, n), "utf8")).join(""));
+const body = names.map(n => fs.readFileSync(path.join(src, n), "utf8") + filler).join("");
+fs.writeFileSync(path.join(dist, "bundle.txt"), "// modules: " + names.length + "\\n" + body);
 `;
+
+/** Read the derived header the fixture build writes. */
+function bundleModuleCount(bundleFile: string): number {
+	const first = fs.readFileSync(bundleFile, "utf8").split("\n")[0];
+	const m = /^\/\/ modules: (\d+)$/.exec(first);
+	return m ? Number(m[1]) : -1;
+}
 
 // ---
 // V1-V3 — --version must answer without touching git (#173)
@@ -146,6 +174,9 @@ console.log("\n--- V4-V5: merge --cleanup from a linked worktree ---");
 	fs.writeFileSync(path.join(wt, "src", "a.txt"), "A1\n");
 	step5Commit(wt, "feature x");
 	git(wt, "push -q -u origin feature-x");
+	// Capture the hash BEFORE cleanup — the whole point of --cleanup is that the
+	// branch name stops resolving afterwards.
+	const featureHash = git(wt, "rev-parse HEAD");
 
 	const r = runMerge(wt, "--cleanup");
 
@@ -153,7 +184,7 @@ console.log("\n--- V4-V5: merge --cleanup from a linked worktree ---");
 	check(!/Merge Aborted/.test(r.out), "V4: no 'Merge Aborted' banner", r.out);
 	git(main, "fetch -q origin");
 	let merged = true;
-	try { git(main, "merge-base --is-ancestor feature-x origin/main"); } catch { merged = false; }
+	try { git(main, `merge-base --is-ancestor ${featureHash} origin/main`); } catch { merged = false; }
 	check(merged, "V4: origin/main advanced to include the feature commit");
 
 	const branches = git(main, "branch --list feature-x");
@@ -213,7 +244,8 @@ console.log("\n--- V7-V8: local delete fails → remote survives, merge not blam
 
 	check(r.code === 0, "V8: exits 0 — a cleanup failure is not a merge failure", `exit ${r.code}\n${r.out}`);
 	check(!/Merge Aborted/.test(r.out), "V8: no 'Merge Aborted' banner", r.out);
-	check(/succeeded/i.test(r.out), "V8: output states the merge succeeded", r.out);
+	check(/merge itself succeeded/i.test(r.out), "V8: output states the merge itself succeeded", r.out);
+	check(/nothing needs undoing/i.test(r.out), "V8: output tells the user nothing needs undoing", r.out);
 
 	const remotes = git(main, "ls-remote --heads origin feature-z");
 	check(remotes !== "", "V7: remote branch still present — nothing half-deleted", "remote was deleted despite local failing");
@@ -225,16 +257,18 @@ console.log("\n--- V7-V8: local delete fails → remote survives, merge not blam
 
 console.log("\n--- V9-V11: merging two branches regenerates the combined artifact ---");
 {
-	const { main } = freshRepo("rebuild", { build: "node build.js", buildScript: BUILD_JS });
+	// Sources a.txt + m.txt on main (header says 2). Each branch ADDS one source,
+	// on opposite sides of m.txt, so neither the header change nor the inserted
+	// block conflicts — and the merged header is wrong.
+	const { main } = freshRepo("rebuild", { build: "node build.js", buildScript: BUILD_JS, sources: ["a.txt", "m.txt"] });
 	const bundle = path.join(main, "dist", "bundle.txt");
+	check(bundleModuleCount(bundle) === 2, "V9 setup: main's bundle header says 2 modules");
 
-	// Two branches, each touching a DIFFERENT source, each committing a bundle that
-	// is correct for its own tree and wrong for the merge of the two.
-	for (const [branch, file, val] of [["feat-a", "a.txt", "A9"], ["feat-b", "b.txt", "B9"]] as const) {
+	for (const [branch, file] of [["feat-a", "b.txt"], ["feat-b", "n.txt"]] as const) {
 		git(main, `checkout -q -b ${branch} main`);
-		fs.writeFileSync(path.join(main, "src", file), `${val}\n`);
+		fs.writeFileSync(path.join(main, "src", file), `${file}-content\n`);
 		execSync("node build.js", { cwd: main, stdio: "ignore" });
-		step5Commit(main, `${branch} work`);
+		step5Commit(main, `${branch} adds ${file}`);
 		git(main, `push -q -u origin ${branch}`);
 		git(main, "checkout -q main");
 	}
@@ -247,16 +281,29 @@ console.log("\n--- V9-V11: merging two branches regenerates the combined artifac
 	const r2 = runMerge(main, "--cleanup");
 	check(r2.code === 0, "V9: second merge exits 0", `exit ${r2.code}\n${r2.out}`);
 
-	// The combined bundle must be on main, and a fresh build must produce no diff.
+	// Four sources now exist. Had merge NOT rebuilt, the header would read 3 —
+	// both branches wrote that identical line and git kept it without conflict.
+	check(bundleModuleCount(bundle) === 4,
+		"V9: merged bundle header regenerated to 4 (git's silent merge would leave 3)",
+		`header says ${bundleModuleCount(bundle)}`);
+
 	execSync("node build.js", { cwd: main, stdio: "ignore" });
 	const dirty = git(main, "status --porcelain");
 	check(dirty === "", "V9: no stale artifact on main — a fresh build produces no diff", `dirty:\n${dirty}`);
-	check(fs.readFileSync(bundle, "utf8") === "A9\nB9\n", "V9: bundle holds BOTH branches' changes",
-		`got: ${JSON.stringify(fs.readFileSync(bundle, "utf8"))}`);
+	for (const f of ["a.txt", "b.txt", "m.txt", "n.txt"]) {
+		check(fs.readFileSync(bundle, "utf8").includes(f === "a.txt" ? "A0" : f === "m.txt" ? "M0" : `${f}-content`),
+			`V9: bundle contains ${f}'s contribution`);
+	}
 
 	const log = git(main, 'log --oneline -20 --pretty=%s');
 	check(/build: regenerate tracked artifacts/.test(log), "V10: rebuild landed as its own commit", log);
-	check(/regenerate tracked artifacts/.test(r2.out), "V10: rebuild reported before the push", r2.out);
+	// Ordering, not just presence: the rebuild must be reported BEFORE the push line,
+	// because building after the push would need a second push and would leave a
+	// window where origin/main is stale.
+	const rebuiltAt = r2.out.indexOf("Rebuilt artifacts committed");
+	const pushedAt = r2.out.indexOf("Pushing merged 'main'");
+	check(rebuiltAt !== -1 && pushedAt !== -1 && rebuiltAt < pushedAt,
+		"V10: rebuild is reported before the push", `rebuilt@${rebuiltAt} push@${pushedAt}\n${r2.out}`);
 	check(git(main, "rev-parse main") === git(main, "rev-parse origin/main"),
 		"V10: rebuild commit was pushed in the same push as the merge");
 }
