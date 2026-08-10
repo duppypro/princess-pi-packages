@@ -33,7 +33,7 @@ var __toESM = (mod, isNodeMode, target) => {
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
 
-// ../../../princess-pi-packages/node_modules/clone/clone.js
+// node_modules/clone/clone.js
 var require_clone = __commonJS((exports, module) => {
   var clone = function() {
     function clone2(parent, circular, depth, prototype) {
@@ -149,7 +149,7 @@ var require_clone = __commonJS((exports, module) => {
   }
 });
 
-// ../../../princess-pi-packages/node_modules/defaults/index.js
+// node_modules/defaults/index.js
 var require_defaults = __commonJS((exports, module) => {
   var clone = require_clone();
   module.exports = function(options, defaults) {
@@ -163,7 +163,7 @@ var require_defaults = __commonJS((exports, module) => {
   };
 });
 
-// ../../../princess-pi-packages/node_modules/wcwidth/combining.js
+// node_modules/wcwidth/combining.js
 var require_combining = __commonJS((exports, module) => {
   module.exports = [
     [768, 879],
@@ -311,7 +311,7 @@ var require_combining = __commonJS((exports, module) => {
   ];
 });
 
-// ../../../princess-pi-packages/node_modules/wcwidth/index.js
+// node_modules/wcwidth/index.js
 var require_wcwidth = __commonJS((exports, module) => {
   var defaults = require_defaults();
   var combining = require_combining();
