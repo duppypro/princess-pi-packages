@@ -1835,7 +1835,7 @@ function scanUncountedBillables(filePath) {
   const counts = newUncountedBillables();
   let content;
   try {
-    content = fs6.readFileSync(filePath, "utf8");
+    content = fs7.readFileSync(filePath, "utf8");
   } catch {
     return counts;
   }
