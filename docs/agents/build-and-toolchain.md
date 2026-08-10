@@ -39,3 +39,36 @@ the failure this runner exists to prevent.
   `bun:test` and can only run this way.
 - **`.test.sh` suites are not driven.** They need sudo or a live nginx; run them by hand.
   `tests/run.ts` prints their names at the end of every run so the gap stays visible.
+
+## `@earendil-works/pi-tui` — tracked, not pinned
+
+`@earendil-works` owns the Pi harness, so `pi-tui` *is* the extension API. It is a
+`devDependency` only — the harness provides it at runtime; we never ship it — and its range
+is the `latest` dist-tag rather than a caret pin:
+
+```json
+"@earendil-works/pi-tui": "latest"
+```
+
+`^0.84.1` would have been the wrong shape: for `0.x` versions a caret means `>=0.84.1
+<0.85.0`, so the repo would have sat on 0.84.x while the harness moved to 0.85+ — typechecking
+and testing extensions against an API older than the one they actually run under. `bun.lock`
+still pins the resolved version, so installs stay reproducible; refresh deliberately with:
+
+```
+bun update --latest @earendil-works/pi-tui
+```
+
+## Config Is Read AND Written — Both Honour `XDG_CONFIG_HOME`
+
+`extensions/lib/config.ts` resolves the global config path through `$XDG_CONFIG_HOME`
+(defaulting to `~/.config`) on **both** the read path (`loadConfig`) and the write path
+(`getConfigPaths` → `writeConfig`, `hasConfig`). They disagreed before #158 — reads honoured
+XDG, writes hardcoded `~/.config` — which meant a persisted setting could appear not to
+stick, and a test could not isolate itself from the developer's real config no matter what
+it set.
+
+Note the surface asymmetry, which is deliberate and pinned by `tests/config-persistence.test.ts`:
+
+- **The CLI (`bin/wtft.mjs`) never writes config.** It only reads.
+- **The Pi extension (`/wtft`) does write**, for the flags documented as "Config-persistable".

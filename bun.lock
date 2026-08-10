@@ -8,7 +8,7 @@
         "wcwidth": "^1.0.1",
       },
       "devDependencies": {
-        "@earendil-works/pi-tui": "^0.84.1",
+        "@earendil-works/pi-tui": "latest",
         "@types/node": "^26.1.1",
         "@types/wcwidth": "^1.0.0",
         "typescript": "^7.0.2",

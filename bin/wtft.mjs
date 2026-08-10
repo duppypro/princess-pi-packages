@@ -4002,6 +4002,9 @@ function deepMerge(target, source) {
   }
   return target;
 }
+function xdgConfigHome() {
+  return process.env.XDG_CONFIG_HOME || join7(homedir7(), ".config");
+}
 function walkUpConfigs(toolName, startDir) {
   const results = [];
   let dir = startDir;
@@ -4021,7 +4024,7 @@ function walkUpConfigs(toolName, startDir) {
 }
 function loadConfig(toolName, defaults) {
   const merged = { ...defaults };
-  const xdgHome = process.env.XDG_CONFIG_HOME || join7(homedir7(), ".config");
+  const xdgHome = xdgConfigHome();
   let globalConfig = tryReadConfig(join7(xdgHome, CONFIG_DIR, `${toolName}.json`));
   if (!globalConfig) {
     globalConfig = tryReadConfig(join7(xdgHome, OLD_CONFIG_DIR, `${toolName}.json`));

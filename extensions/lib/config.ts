@@ -113,11 +113,28 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 // ---
 
 /**
+ * The XDG config root, honouring $XDG_CONFIG_HOME with the spec's default.
+ *
+ * Read at call time, never cached: tests (and any process that re-points its
+ * config root) must be able to change it after this module is imported.
+ */
+function xdgConfigHome(): string {
+	return process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+}
+
+/**
  * Resolve config file paths for a tool.
  * Also returns legacy paths (old directory) for migration read fallback.
+ *
+ * Must resolve the global path the same way `loadConfig` does. It did not
+ * before (#158): `loadConfig` honoured $XDG_CONFIG_HOME while this hardcoded
+ * `~/.config`, so on any machine with XDG_CONFIG_HOME set, a tool READ one
+ * file and WROTE another — a persisted setting would appear not to stick, and
+ * anything driving the write path (a test, say) would land in the user's real
+ * `~/.config` no matter how carefully it had isolated itself.
  */
 export function getConfigPaths(toolName: string): ConfigPaths {
-	const globalDir = join(homedir(), ".config", CONFIG_DIR);
+	const globalDir = join(xdgConfigHome(), CONFIG_DIR);
 	const localDir = join(process.cwd(), `.${CONFIG_DIR}`);
 	return {
 		global: join(globalDir, `${toolName}.json`),
@@ -126,7 +143,7 @@ export function getConfigPaths(toolName: string): ConfigPaths {
 }
 
 function getOldConfigPaths(toolName: string): ConfigPaths {
-	const globalDir = join(homedir(), ".config", OLD_CONFIG_DIR);
+	const globalDir = join(xdgConfigHome(), OLD_CONFIG_DIR);
 	const localDir = join(process.cwd(), `.${OLD_CONFIG_DIR}`);
 	return {
 		global: join(globalDir, `${toolName}.json`),
@@ -178,7 +195,7 @@ export function loadConfig(toolName: string, defaults: Record<string, unknown>):
 	const merged = { ...defaults };
 
 	// XDG global config (lowest user priority)
-	const xdgHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+	const xdgHome = xdgConfigHome();
 	let globalConfig = tryReadConfig(join(xdgHome, CONFIG_DIR, `${toolName}.json`));
 	if (!globalConfig) {
 		// Migration fallback: old directory
