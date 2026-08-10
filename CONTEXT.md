@@ -119,7 +119,7 @@ prose say "loopback service"** and reserve bare *origin* for CORS.
 ## Language — WTFT
 
 > **Daemon vs. log parser — resolved.** These named the same thing in two layers: `daemon`
-> throughout the code (131× in `extensions/lib/wtft-daemon-lib.ts`, 11 filenames), `log parser`
+> throughout the code (131× in `extensions/lib/wtft-daemon-lib.ts`, 12 filenames), `log parser`
 > only in user-facing text (5× `docs/manifests/wtft-cmd.json`, 8× `docs/EXT_WTFT.html`, 68×
 > repo-wide including generated `.mjs` mirrors). **Daemon wins** — see the `Daemon` entry below.
 > Renaming the surviving `log parser` mentions to match is tracked as
