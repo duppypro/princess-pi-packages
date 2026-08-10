@@ -1038,6 +1038,15 @@ var parse = {
         return { kind: "interrupt" };
     }
     return null;
+  },
+  readUncountedBillable(entry) {
+    if (!entry || entry.type !== "system")
+      return null;
+    if (entry.subtype === "compact_boundary")
+      return "compaction";
+    if (entry.subtype === "away_summary")
+      return "recap";
+    return null;
   }
 };
 
@@ -1217,6 +1226,11 @@ var parse2 = {
     if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
       return { kind: "compaction", tokensBefore: entry.tokensBefore };
     }
+    return null;
+  },
+  readUncountedBillable(entry) {
+    if (entry?.type === "compaction")
+      return "compaction";
     return null;
   }
 };
@@ -1613,6 +1627,44 @@ function parseSessionFile(filePath) {
   } catch {}
   attributeClaudeSubAgentCosts(interactions);
   return interactions;
+}
+function newUncountedBillables() {
+  return { compaction: 0, recap: 0 };
+}
+function addUncountedBillables(a, b) {
+  return { compaction: a.compaction + b.compaction, recap: a.recap + b.recap };
+}
+function readUncountedBillableClass(entry) {
+  for (const adapter of getParseAdapters()) {
+    const hit = adapter.readUncountedBillable?.(entry);
+    if (hit)
+      return hit;
+  }
+  return null;
+}
+function scanUncountedBillables(filePath) {
+  const counts = newUncountedBillables();
+  let content;
+  try {
+    content = fs6.readFileSync(filePath, "utf8");
+  } catch {
+    return counts;
+  }
+  for (const line of content.split(`
+`)) {
+    if (!line.trim())
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const kind = readUncountedBillableClass(entry);
+    if (kind)
+      counts[kind]++;
+  }
+  return counts;
 }
 function deduplicateInteractions(interactions) {
   const byId = new Map;
@@ -3089,7 +3141,7 @@ function formatTokenCount(n) {
 function shortenModel(model) {
   return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
-function renderTokenSummary(interactions, maxWidth = 80, thinkingBudget) {
+function renderTokenSummary(interactions, maxWidth = 80, thinkingBudget, uncounted) {
   const deduped = deduplicateInteractions(interactions);
   const byModel = new Map;
   let unmatched = 0;
@@ -3197,7 +3249,23 @@ function renderTokenSummary(interactions, maxWidth = 80, thinkingBudget) {
 Compaction: ${compactionCount} event(s), ${formatTokenCount(totalCompacted)} total tokens freed
 `;
   }
+  out += renderUncountedBillables(uncounted);
   return out;
+}
+function renderUncountedBillables(uncounted) {
+  if (!uncounted)
+    return "";
+  const parts = [];
+  if (uncounted.compaction > 0)
+    parts.push(`${uncounted.compaction} compaction${uncounted.compaction === 1 ? "" : "s"}`);
+  if (uncounted.recap > 0)
+    parts.push(`${uncounted.recap} recap${uncounted.recap === 1 ? "" : "s"}`);
+  if (parts.length === 0)
+    return "";
+  return `
+UNCOUNTED  ${parts.join(", ")} — billed by the harness; the transcript records
+` + `           no usage for them, so they are NOT in TOTAL above (#149)
+`;
 }
 // extensions/lib/wtft-daemon-lib.ts
 import * as path7 from "node:path";
@@ -4770,7 +4838,12 @@ async function main() {
     }
   }
   if (opts.tokens) {
-    const tokenOutput = renderTokenSummary(interactions, Math.min(paddedWidth, 1023), opts.thinkingBudget);
+    let uncounted = newUncountedBillables();
+    uncounted = addUncountedBillables(uncounted, scanUncountedBillables(finalSessionPath));
+    for (const sub of discoverSubagentSessionFiles(finalSessionPath)) {
+      uncounted = addUncountedBillables(uncounted, scanUncountedBillables(sub));
+    }
+    const tokenOutput = renderTokenSummary(interactions, Math.min(paddedWidth, 1023), opts.thinkingBudget, uncounted);
     for (const line of tokenOutput.split(`
 `)) {
       console.log(padStr + line);
@@ -4800,18 +4873,23 @@ export {
   splitOverheadCost,
   serializeClassifiedWithOverheadSplit,
   serializeClassified,
+  scanUncountedBillables,
   resolveTieredRates,
   resolveMovedSession,
   resolveLastCwd,
   resetHarnessRegistry,
   resetCwdCache,
+  renderUncountedBillables,
+  renderTokenSummary,
   renderHalfBlockBar,
   registerHarness,
+  readUncountedBillableClass,
   readControlEntry,
   readClassifiedTagFile,
   parseSessionFile,
   parseInterval,
   parseEntryToInteraction,
+  newUncountedBillables,
   newParseStreamState,
   lookupModelPricing,
   loadUserPricing,
@@ -4849,6 +4927,7 @@ export {
   attributeClaudeSubAgentCosts,
   applyUserPricing,
   applyControlEntry,
+  addUncountedBillables,
   WTFT_TAGGER_VERSION,
   MODEL_PRICING,
   IDLE_THRESHOLD_MS,

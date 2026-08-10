@@ -8,6 +8,22 @@ Most `bin/*.mjs` files are **build artifacts** generated from `.ts` counterparts
 
 Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
 
+### A symbol reaches the bundle only if it is re-exported (#149)
+
+`bin/wtft.ts` (and its siblings) carry an explicit `export { … }` block, and the bundler
+tree-shakes out everything absent from it. **Using a symbol inside the file is not the same
+as re-exporting it.** Combined with the rule above — tests import from the built `.mjs` —
+the failure mode is a suite that cannot import a function which plainly exists in the source:
+
+```
+error: Export named 'renderTokenSummary' not found in module '.../bin/wtft.mjs'
+```
+
+`renderTokenSummary` hit exactly this: pre-existing, called by `bin/wtft.ts` on every
+`--tokens` run, and still unreachable from the bundle because no caller outside the file had
+ever needed it. Add the name to the `export { … }` block and `bun run build`; no runtime path
+changes. Expect this whenever a new suite reaches for an *existing* helper, not just a new one.
+
 ## Running Tests — `bun run test`
 
 `bun run test` is the one way to run the suite. It drives `tests/run.ts`, which runs every

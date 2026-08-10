@@ -920,6 +920,15 @@ var parse = {
         return { kind: "interrupt" };
     }
     return null;
+  },
+  readUncountedBillable(entry) {
+    if (!entry || entry.type !== "system")
+      return null;
+    if (entry.subtype === "compact_boundary")
+      return "compaction";
+    if (entry.subtype === "away_summary")
+      return "recap";
+    return null;
   }
 };
 
@@ -1099,6 +1108,11 @@ var parse2 = {
     if (entry.type === "compaction" && typeof entry.tokensBefore === "number") {
       return { kind: "compaction", tokensBefore: entry.tokensBefore };
     }
+    return null;
+  },
+  readUncountedBillable(entry) {
+    if (entry?.type === "compaction")
+      return "compaction";
     return null;
   }
 };
