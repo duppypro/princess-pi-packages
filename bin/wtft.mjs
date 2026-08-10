@@ -388,9 +388,9 @@ __export(exports_help, {
   renderWhy: () => renderWhy,
   renderHelp: () => renderHelp
 });
-import * as fs9 from "node:fs";
+import * as fs10 from "node:fs";
 function renderHelp(manifestPath, invokedAs) {
-  const manifestStr = fs9.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs10.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let helpText = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -415,7 +415,7 @@ function renderHelp(manifestPath, invokedAs) {
   return helpText;
 }
 function renderWhy(manifestPath, invokedAs) {
-  const manifestStr = fs9.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs10.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -454,9 +454,9 @@ function renderWhy(manifestPath, invokedAs) {
 var init_help = () => {};
 
 // bin/wtft.ts
-import * as fs11 from "node:fs";
+import * as fs12 from "node:fs";
 import * as os6 from "node:os";
-import * as path10 from "node:path";
+import * as path11 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/wtft-cost.ts
@@ -696,32 +696,54 @@ function loadUserPricing(filePath = getUserPricingPath()) {
   }
 }
 // extensions/lib/wtft-parser.ts
-import * as path6 from "node:path";
-import * as fs6 from "node:fs";
+import * as path7 from "node:path";
+import * as fs7 from "node:fs";
 import * as os4 from "node:os";
 
 // extensions/lib/harness/registry.ts
-import * as fs5 from "node:fs";
-import * as path5 from "node:path";
+import * as fs6 from "node:fs";
+import * as path6 from "node:path";
 import { homedir as homedir5 } from "node:os";
 import { pathToFileURL } from "node:url";
 
 // extensions/lib/harness/claude-code/discovery.ts
-import * as fs3 from "node:fs";
-import * as path3 from "node:path";
+import * as fs4 from "node:fs";
+import * as path4 from "node:path";
 import * as os2 from "node:os";
 
 // extensions/lib/harness/session-cwd.ts
 import * as fs2 from "node:fs";
 var TAIL_WINDOWS = [8 * 1024, 64 * 1024, 512 * 1024];
 var cwdCache = new Map;
+var historyCache = new Map;
+var existsCache = new Map;
 var readCount = 0;
+var historyReadCount = 0;
 function getCwdReadCount() {
   return readCount;
 }
+function getCwdHistoryReadCount() {
+  return historyReadCount;
+}
 function resetCwdCache() {
   cwdCache.clear();
+  historyCache.clear();
+  existsCache.clear();
   readCount = 0;
+  historyReadCount = 0;
+}
+function pathExists(dir) {
+  const cached = existsCache.get(dir);
+  if (cached !== undefined)
+    return cached;
+  let ok = false;
+  try {
+    ok = fs2.existsSync(dir);
+  } catch {
+    ok = false;
+  }
+  existsCache.set(dir, ok);
+  return ok;
 }
 function readSlice(file, start, len) {
   const fd = fs2.openSync(file, "r");
@@ -785,36 +807,180 @@ function resolveLastCwd(filePath, knownStat) {
   cwdCache.set(key, result);
   return result;
 }
+var RELOCATED_MARKER = '"relocated"';
+function resolveCwdHistory(filePath, knownStat) {
+  let stat;
+  try {
+    stat = knownStat || fs2.statSync(filePath);
+  } catch {
+    return [];
+  }
+  if (!stat.isFile() || stat.size === 0)
+    return [];
+  const key = `${filePath}:${stat.mtimeMs}:${stat.size}`;
+  const cached = historyCache.get(key);
+  if (cached !== undefined)
+    return cached;
+  const ordered = [];
+  const last = resolveLastCwd(filePath, stat);
+  if (last)
+    ordered.push(last);
+  let text;
+  try {
+    text = fs2.readFileSync(filePath, "utf8");
+    historyReadCount++;
+  } catch {
+    historyCache.set(key, ordered);
+    return ordered;
+  }
+  const lines = text.split(`
+`);
+  for (let i = lines.length - 1;i >= 0; i--) {
+    const line = lines[i];
+    if (line.indexOf(RELOCATED_MARKER) === -1)
+      continue;
+    try {
+      const entry = JSON.parse(line.trim());
+      if (entry && entry.type === "relocated" && typeof entry.relocatedCwd === "string" && entry.relocatedCwd) {
+        ordered.push(entry.relocatedCwd);
+      }
+    } catch {}
+  }
+  const history = [...new Set(ordered)];
+  historyCache.set(key, history);
+  return history;
+}
+function pickLiveCwd(history) {
+  for (const dir of history) {
+    if (pathExists(dir))
+      return dir;
+  }
+  return null;
+}
 function cwdToSlug(cwd) {
   return cwd.replace(/[/\\]/g, "-");
 }
+function cwdToStrictSlug(cwd) {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+function cwdSlugVariants(cwd) {
+  const strict = cwdToStrictSlug(cwd);
+  const legacy = cwdToSlug(cwd);
+  return strict === legacy ? [strict] : [strict, legacy];
+}
+function slugMatchesCwd(slug, cwd) {
+  return cwdSlugVariants(cwd).includes(slug);
+}
+
+// extensions/lib/harness/worktrees.ts
+import * as fs3 from "node:fs";
+import * as path2 from "node:path";
+import { execFileSync } from "node:child_process";
+var GIT_TIMEOUT_MS = 3000;
+function findRepoRoot(dir) {
+  let cur = path2.resolve(dir);
+  for (;; ) {
+    try {
+      if (fs3.existsSync(path2.join(cur, ".git")))
+        return cur;
+    } catch {}
+    const parent = path2.dirname(cur);
+    if (parent === cur)
+      return null;
+    cur = parent;
+  }
+}
+function listWorktreeDirs(repoRoot) {
+  if (process.env.WTFT_NO_GIT === "1")
+    return null;
+  let out;
+  try {
+    out = execFileSync("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+  } catch {
+    return null;
+  }
+  const dirs = [];
+  for (const line of out.split(`
+`)) {
+    if (!line.startsWith("worktree "))
+      continue;
+    const dir = line.slice("worktree ".length).trim();
+    if (dir)
+      dirs.push(path2.resolve(dir));
+  }
+  return dirs.length > 0 ? dirs : null;
+}
+function fanOutCwd(target) {
+  const resolved = path2.resolve(target);
+  const root = findRepoRoot(resolved);
+  if (!root) {
+    return { dirs: [resolved], inRepo: false, usedFallback: false, slugPrefixes: [] };
+  }
+  const checkouts = listWorktreeDirs(root);
+  if (checkouts) {
+    const dirs = [...new Set([resolved, ...checkouts])];
+    return { dirs, inRepo: true, usedFallback: false, slugPrefixes: [] };
+  }
+  return {
+    dirs: [resolved],
+    inRepo: true,
+    usedFallback: true,
+    slugPrefixes: cwdSlugVariants(resolved).map((s) => s + "-")
+  };
+}
 
 // extensions/lib/session-path-shortener.ts
-import * as path2 from "node:path";
+import * as path3 from "node:path";
 import * as os from "node:os";
 function buildDisplayPath(filename, dirSlug, harness) {
   const uuidMatch = filename.match(/([a-f0-9]{4})\.jsonl$/i);
   const uuidTail = uuidMatch ? uuidMatch[1] : "";
   const slug = harness === "pi" ? dirSlug.replace(/^--/, "").replace(/--$/, "") : dirSlug.replace(/^-/, "");
   const homeDir = os.homedir();
-  const userName = path2.basename(homeDir);
+  const userName = path3.basename(homeDir);
   const knownPrefix = `home-${userName}-git-projects`;
   const compactPrefix = `home-${userName}-g-p`;
   if (slug.startsWith(knownPrefix + "-")) {
     const projectName = slug.slice(knownPrefix.length + 1);
     const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
-    const pathStr = `~/g-p/${projectName}`;
+    const pathStr = `~/g-p/${compactWorktreeProject(projectName)}`;
     return appendTail(pathStr, datePrefix2, uuidTail);
   }
   if (slug.startsWith(compactPrefix + "-")) {
     const projectName = slug.slice(compactPrefix.length + 1);
     const datePrefix2 = harness === "pi" ? extractDatePrefix(filename) : "";
-    const pathStr = `~/g-p/${projectName}`;
+    const pathStr = `~/g-p/${compactWorktreeProject(projectName)}`;
     return appendTail(pathStr, datePrefix2, uuidTail);
   }
   const cleanedSlug = slug.replace(/-/g, "/");
   const datePrefix = harness === "pi" ? extractDatePrefix(filename) : "";
   return appendTail(cleanedSlug, datePrefix, uuidTail);
+}
+var IN_TREE_WORKTREE_MARKER = "--claude-worktrees-";
+var OUT_OF_TREE_WORKTREE_PREFIX = "worktrees-";
+function compactWorktreeProject(projectName) {
+  const marker = projectName.indexOf(IN_TREE_WORKTREE_MARKER);
+  if (marker > 0) {
+    const repo = projectName.slice(0, marker);
+    const branch = projectName.slice(marker + IN_TREE_WORKTREE_MARKER.length);
+    if (branch)
+      return `${repo}/w/${branch}`;
+  }
+  if (projectName.startsWith(OUT_OF_TREE_WORKTREE_PREFIX)) {
+    const rest = projectName.slice(OUT_OF_TREE_WORKTREE_PREFIX.length);
+    const segments = rest.split("-");
+    const branchStart = segments.findIndex((seg) => /^\d+$/.test(seg));
+    if (branchStart > 0) {
+      const repo = segments.slice(0, branchStart).join("-");
+      const branch = segments.slice(branchStart).join("-");
+      return `${repo}/w/${branch}`;
+    }
+  }
+  return projectName;
 }
 function extractDatePrefix(filename) {
   const match = filename.match(/^(\d{4}-\d{2}-\d{2}[^_]*)/);
@@ -856,20 +1022,20 @@ function formatRelativeTime(ts) {
 var ID = "claude-code";
 var SKIP_DIRS = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
 function projectsDir() {
-  return process.env.WTFT_CLAUDE_PROJECTS_DIR || path3.join(os2.homedir(), ".claude", "projects");
+  return process.env.WTFT_CLAUDE_PROJECTS_DIR || path4.join(os2.homedir(), ".claude", "projects");
 }
 function sessionIdOf(file) {
-  return path3.basename(file).replace(/\.jsonl$/i, "");
+  return path4.basename(file).replace(/\.jsonl$/i, "");
 }
 function collect(dir, projectSlug, out) {
   let entries;
   try {
-    entries = fs3.readdirSync(dir, { withFileTypes: true });
+    entries = fs4.readdirSync(dir, { withFileTypes: true });
   } catch {
     return;
   }
   for (const entry of entries) {
-    const full = path3.join(dir, entry.name);
+    const full = path4.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!SKIP_DIRS.has(entry.name))
         collect(full, projectSlug, out);
@@ -878,44 +1044,67 @@ function collect(dir, projectSlug, out) {
     }
   }
 }
+function displaySlugFor(file, projectSlug) {
+  const last = resolveLastCwd(file);
+  if (last === null || pathExists(last))
+    return projectSlug;
+  const live = pickLiveCwd(resolveCwdHistory(file));
+  return live ? cwdToSlug(live) : projectSlug;
+}
 function toCandidate(file, projectSlug) {
   let stat;
   try {
-    stat = fs3.statSync(file);
+    stat = fs4.statSync(file);
   } catch {
     return null;
   }
-  const name = path3.basename(file);
+  const name = path4.basename(file);
   return {
     path: file,
     harness: ID,
     timestamp: stat.mtimeMs,
     name,
-    displayPath: buildDisplayPath(name, projectSlug, ID)
+    displayPath: buildDisplayPath(name, displaySlugFor(file, projectSlug), ID)
   };
+}
+function matchesRecordedCwd(file, targets) {
+  const last = resolveLastCwd(file);
+  if (last === null)
+    return false;
+  if (targets.has(last))
+    return true;
+  if (pathExists(last))
+    return false;
+  return resolveCwdHistory(file).some((dir) => targets.has(dir));
 }
 var discovery = {
   id: ID,
   label: "Claude",
   discover(targetCwd) {
     const root = projectsDir();
-    if (!fs3.existsSync(root))
+    if (!fs4.existsSync(root))
       return [];
-    const target = path3.resolve(targetCwd || process.cwd());
-    const targetSlug = cwdToSlug(target);
+    const target = path4.resolve(targetCwd || process.cwd());
+    const fan = fanOutCwd(target);
+    const targets = new Set(fan.dirs);
+    const targetSlugs = new Set;
+    for (const dir of fan.dirs) {
+      for (const variant of cwdSlugVariants(dir))
+        targetSlugs.add(variant);
+    }
     let projectDirs;
     try {
-      projectDirs = fs3.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+      projectDirs = fs4.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
     } catch {
       return [];
     }
     const bySessionId = new Map;
     for (const slug of projectDirs) {
-      const physicalMatch = slug === targetSlug;
+      const physicalMatch = targetSlugs.has(slug) || fan.slugPrefixes.some((prefix) => slug.startsWith(prefix));
       const files = [];
-      collect(path3.join(root, slug), slug, files);
+      collect(path4.join(root, slug), slug, files);
       for (const file of files) {
-        if (!physicalMatch && resolveLastCwd(file) !== target)
+        if (!physicalMatch && !matchesRecordedCwd(file, targets))
           continue;
         const candidate = toCandidate(file, slug);
         if (!candidate)
@@ -931,24 +1120,24 @@ var discovery = {
   },
   resolveSessionById(sessionId) {
     const root = projectsDir();
-    if (!fs3.existsSync(root))
+    if (!fs4.existsSync(root))
       return null;
     const wanted = sessionId.replace(/\.jsonl$/i, "");
     let best = null;
     let projectDirs;
     try {
-      projectDirs = fs3.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+      projectDirs = fs4.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
     } catch {
       return null;
     }
     for (const slug of projectDirs) {
       const files = [];
-      collect(path3.join(root, slug), slug, files);
+      collect(path4.join(root, slug), slug, files);
       for (const file of files) {
         if (sessionIdOf(file) !== wanted)
           continue;
         try {
-          const mtimeMs = fs3.statSync(file).mtimeMs;
+          const mtimeMs = fs4.statSync(file).mtimeMs;
           if (!best || mtimeMs > best.mtimeMs)
             best = { path: file, mtimeMs };
         } catch {}
@@ -1051,26 +1240,26 @@ var parse = {
 };
 
 // extensions/lib/harness/pi/discovery.ts
-import * as fs4 from "node:fs";
-import * as path4 from "node:path";
+import * as fs5 from "node:fs";
+import * as path5 from "node:path";
 import * as os3 from "node:os";
 var ID3 = "pi";
 var SKIP_DIRS2 = new Set(["subagents", "tool-results", "memory", "wtft-tags"]);
 function sessionsDir() {
-  return process.env.WTFT_PI_SESSIONS_DIR || path4.join(os3.homedir(), ".pi", "agent", "sessions");
+  return process.env.WTFT_PI_SESSIONS_DIR || path5.join(os3.homedir(), ".pi", "agent", "sessions");
 }
 function sessionIdOf2(file) {
-  return path4.basename(file).replace(/\.jsonl$/i, "");
+  return path5.basename(file).replace(/\.jsonl$/i, "");
 }
 function collect2(dir, out) {
   let entries;
   try {
-    entries = fs4.readdirSync(dir, { withFileTypes: true });
+    entries = fs5.readdirSync(dir, { withFileTypes: true });
   } catch {
     return;
   }
   for (const entry of entries) {
-    const full = path4.join(dir, entry.name);
+    const full = path5.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!SKIP_DIRS2.has(entry.name))
         collect2(full, out);
@@ -1082,11 +1271,11 @@ function collect2(dir, out) {
 function toCandidate2(file, projectSlug) {
   let stat;
   try {
-    stat = fs4.statSync(file);
+    stat = fs5.statSync(file);
   } catch {
     return null;
   }
-  const name = path4.basename(file);
+  const name = path5.basename(file);
   return {
     path: file,
     harness: ID3,
@@ -1100,21 +1289,21 @@ var discovery2 = {
   label: "Pi",
   discover(targetCwd) {
     const root = sessionsDir();
-    if (!fs4.existsSync(root))
+    if (!fs5.existsSync(root))
       return [];
-    const target = targetCwd ? path4.resolve(targetCwd) : null;
-    const targetSlug = target ? cwdToSlug(target) : null;
+    const target = targetCwd ? path5.resolve(targetCwd) : null;
+    const targetSlugs = target ? cwdSlugVariants(target) : null;
     let projectDirs;
     try {
-      projectDirs = fs4.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+      projectDirs = fs5.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
     } catch {
       return [];
     }
     const bySessionId = new Map;
     for (const slug of projectDirs) {
-      const physicalMatch = targetSlug === null || slug.includes(targetSlug);
+      const physicalMatch = targetSlugs === null || targetSlugs.some((variant) => slug.includes(variant));
       const files = [];
-      collect2(path4.join(root, slug), files);
+      collect2(path5.join(root, slug), files);
       for (const file of files) {
         if (!physicalMatch && (target === null || resolveLastCwd(file) !== target))
           continue;
@@ -1132,7 +1321,7 @@ var discovery2 = {
   },
   resolveSessionById(sessionId) {
     const root = sessionsDir();
-    if (!fs4.existsSync(root))
+    if (!fs5.existsSync(root))
       return null;
     const wanted = sessionId.replace(/\.jsonl$/i, "");
     const files = [];
@@ -1142,7 +1331,7 @@ var discovery2 = {
       if (sessionIdOf2(file) !== wanted)
         continue;
       try {
-        const mtimeMs = fs4.statSync(file).mtimeMs;
+        const mtimeMs = fs5.statSync(file).mtimeMs;
         if (!best || mtimeMs > best.mtimeMs)
           best = { path: file, mtimeMs };
       } catch {}
@@ -1243,14 +1432,14 @@ var BUILTIN_HARNESSES = {
 
 // extensions/lib/harness/registry.ts
 function getHarnessConfigPath() {
-  const xdgHome = process.env.XDG_CONFIG_HOME || path5.join(homedir5(), ".config");
-  return path5.join(xdgHome, "princess-pi-packages", "wtft-harnesses.json");
+  const xdgHome = process.env.XDG_CONFIG_HOME || path6.join(homedir5(), ".config");
+  return path6.join(xdgHome, "princess-pi-packages", "wtft-harnesses.json");
 }
 function loadHarnessConfig(filePath = getHarnessConfigPath()) {
   try {
-    if (!fs5.existsSync(filePath))
+    if (!fs6.existsSync(filePath))
       return {};
-    const parsed = JSON.parse(fs5.readFileSync(filePath, "utf8"));
+    const parsed = JSON.parse(fs6.readFileSync(filePath, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
       return {};
     const out = {};
@@ -1268,7 +1457,7 @@ function expandHome(p) {
   if (p === "~")
     return homedir5();
   if (p.startsWith("~/") || p.startsWith("~\\"))
-    return path5.join(homedir5(), p.slice(2));
+    return path6.join(homedir5(), p.slice(2));
   return p;
 }
 var externals = new Map;
@@ -1305,8 +1494,8 @@ async function loadExternalHarnesses(filePath = getHarnessConfigPath()) {
     if (!entry.discovery || !entry.parse)
       continue;
     try {
-      const discoveryMod = await import(pathToFileURL(path5.resolve(expandHome(entry.discovery))).href);
-      const parseMod = await import(pathToFileURL(path5.resolve(expandHome(entry.parse))).href);
+      const discoveryMod = await import(pathToFileURL(path6.resolve(expandHome(entry.discovery))).href);
+      const parseMod = await import(pathToFileURL(path6.resolve(expandHome(entry.parse))).href);
       const discovery3 = discoveryMod.discovery || discoveryMod.default;
       const parse3 = parseMod.parse || parseMod.default;
       if (!discovery3 || !parse3)
@@ -1603,7 +1792,7 @@ function parseSessionFile(filePath) {
   const interactions = [];
   const state = newParseStreamState();
   try {
-    const content = fs6.readFileSync(filePath, "utf8");
+    const content = fs7.readFileSync(filePath, "utf8");
     for (const line of content.split(`
 `)) {
       if (!line.trim())
@@ -1772,14 +1961,14 @@ function classifyInteraction(interaction) {
     const norm = f.path.replace(/\\/g, "/");
     let category = null;
     if (norm.includes("node_modules/")) {
-      if (path6.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
+      if (path7.extname(norm).toLowerCase() === ".md" || norm.includes("/docs/")) {
         category = "research";
       } else {
         category = "code";
       }
     } else if (norm.startsWith("docs/research/") || norm.includes("/docs/research/")) {
       category = "plan";
-    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path6.extname(norm).toLowerCase() === ".md") {
+    } else if (norm.startsWith("docs/") || norm.includes("/docs/") || norm.endsWith("AGENTS.md") || norm.endsWith("ARCHITECTURE.md") || norm.endsWith("README.md") || path7.extname(norm).toLowerCase() === ".md") {
       category = "spec";
     } else if (norm.startsWith("tests/") || norm.includes("/tests/")) {
       category = "tests";
@@ -1788,7 +1977,7 @@ function classifyInteraction(interaction) {
     } else if (norm.startsWith(".pi/extensions/") || norm.includes("/.pi/extensions/") || norm.startsWith("extensions/") || norm.includes("/extensions/") || norm.startsWith("src/") || norm.includes("/src/") || norm.startsWith("public/") || norm.includes("/public/") || norm.startsWith("bin/") || norm.includes("/bin/") || norm.startsWith("debug/") || norm.includes("/debug/")) {
       category = "code";
     } else {
-      const ext = path6.extname(norm).toLowerCase();
+      const ext = path7.extname(norm).toLowerCase();
       if ([".ts", ".js", ".mjs", ".json", ".jsonl", ".css", ".tsx", ".jsx", ".py", ".rs", ".go", ".sh", ".yml", ".yaml", ".sql", ".txt"].includes(ext) || norm.endsWith(".gitignore") || norm.endsWith(".dockerignore")) {
         category = "code";
       } else if (ext === "") {
@@ -1864,31 +2053,31 @@ function classifyInteraction(interaction) {
 var MAX_SUBAGENT_DEPTH = 5;
 function discoverSubagentSessionFiles(sessionPath, maxDepth = MAX_SUBAGENT_DEPTH) {
   const files = [];
-  const sessionDir = path6.dirname(sessionPath);
-  const sessionBase = path6.basename(sessionPath, ".jsonl");
-  const ccBaseDir = path6.join(sessionDir, sessionBase, "subagents");
-  if (fs6.existsSync(ccBaseDir)) {
+  const sessionDir = path7.dirname(sessionPath);
+  const sessionBase = path7.basename(sessionPath, ".jsonl");
+  const ccBaseDir = path7.join(sessionDir, sessionBase, "subagents");
+  if (fs7.existsSync(ccBaseDir)) {
     walkSubagentDir(ccBaseDir, 1, maxDepth, files);
   }
   let mainSessionId;
   try {
-    const mainHeader = JSON.parse(fs6.readFileSync(sessionPath, "utf8").split(`
+    const mainHeader = JSON.parse(fs7.readFileSync(sessionPath, "utf8").split(`
 `)[0]);
     if (mainHeader.type === "session")
       mainSessionId = mainHeader.id;
   } catch {}
   if (mainSessionId) {
     try {
-      for (const f of fs6.readdirSync(sessionDir)) {
+      for (const f of fs7.readdirSync(sessionDir)) {
         if (!f.endsWith(".jsonl"))
           continue;
-        const fullPath = path6.join(sessionDir, f);
+        const fullPath = path7.join(sessionDir, f);
         if (fullPath === sessionPath)
           continue;
         if (files.includes(fullPath))
           continue;
         try {
-          const header = JSON.parse(fs6.readFileSync(fullPath, "utf8").split(`
+          const header = JSON.parse(fs7.readFileSync(fullPath, "utf8").split(`
 `)[0]);
           if (header.type === "session" && header.parentSession === mainSessionId) {
             files.push(fullPath);
@@ -1903,10 +2092,10 @@ function walkSubagentDir(dir, depth, maxDepth, files) {
   if (depth > maxDepth)
     return;
   try {
-    for (const f of fs6.readdirSync(dir)) {
-      const fullPath = path6.join(dir, f);
+    for (const f of fs7.readdirSync(dir)) {
+      const fullPath = path7.join(dir, f);
       try {
-        const stat = fs6.statSync(fullPath);
+        const stat = fs7.statSync(fullPath);
         if (stat.isDirectory()) {
           if (f !== "wtft-tags") {
             walkSubagentDir(fullPath, depth + (f === "subagents" || f === "ns" ? 1 : 0), maxDepth, files);
@@ -1946,19 +2135,19 @@ function cwdToClaudeProjectSlug(cwd) {
 }
 function discoverClaudeSubAgentSessionFiles(cwd, parentTimestamp, windowMs = CLAUDE_SUBAGENT_WINDOW_MS) {
   const slug = cwdToClaudeProjectSlug(cwd);
-  const projectDir = path6.join(os4.homedir(), ".claude", "projects", slug);
-  if (!fs6.existsSync(projectDir))
+  const projectDir = path7.join(os4.homedir(), ".claude", "projects", slug);
+  if (!fs7.existsSync(projectDir))
     return [];
   const files = [];
   const tsWindowStart = parentTimestamp - windowMs;
   const tsWindowEnd = parentTimestamp + windowMs;
   try {
-    for (const f of fs6.readdirSync(projectDir)) {
+    for (const f of fs7.readdirSync(projectDir)) {
       if (!f.endsWith(".jsonl"))
         continue;
-      const fullPath = path6.join(projectDir, f);
+      const fullPath = path7.join(projectDir, f);
       try {
-        const head = fs6.readFileSync(fullPath, "utf8").split(`
+        const head = fs7.readFileSync(fullPath, "utf8").split(`
 `).slice(0, 10);
         let ts;
         for (const line of head) {
@@ -2014,7 +2203,7 @@ function attributeClaudeSubAgentCosts(interactions) {
     let totalCost = 0;
     const sessionIds = [];
     for (const file of subAgentFiles) {
-      const sessionId = path6.basename(file, ".jsonl");
+      const sessionId = path7.basename(file, ".jsonl");
       if (seenSessionIds.has(sessionId))
         continue;
       seenSessionIds.add(sessionId);
@@ -3268,8 +3457,8 @@ UNCOUNTED  ${parts.join(", ")} — billed by the harness; the transcript records
 `;
 }
 // extensions/lib/wtft-daemon-lib.ts
-import * as path7 from "node:path";
-import * as fs7 from "node:fs";
+import * as path8 from "node:path";
+import * as fs8 from "node:fs";
 import * as os5 from "node:os";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -3395,7 +3584,7 @@ function classifiedToInteraction(obj) {
 function readClassifiedTagFile(tagPath) {
   const interactions = [];
   try {
-    const content = fs7.readFileSync(tagPath, "utf8");
+    const content = fs8.readFileSync(tagPath, "utf8");
     for (const line of content.split(`
 `)) {
       if (!line.trim())
@@ -3446,20 +3635,20 @@ function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
 }
 var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 function isSessionIdBasename(sessionPath) {
-  return UUID_RE.test(path7.basename(sessionPath));
+  return UUID_RE.test(path8.basename(sessionPath));
 }
 function findSiblingTagPath(sessionPath) {
   if (!isSessionIdBasename(sessionPath))
     return null;
-  const sessionBase = path7.basename(sessionPath);
+  const sessionBase = path8.basename(sessionPath);
   const wanted = sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
-  const projectsRoot = path7.dirname(path7.dirname(sessionPath));
+  const projectsRoot = path8.dirname(path8.dirname(sessionPath));
   let best = null;
   try {
-    for (const slug of fs7.readdirSync(projectsRoot)) {
-      const candidate = path7.join(projectsRoot, slug, "wtft-tags", wanted);
+    for (const slug of fs8.readdirSync(projectsRoot)) {
+      const candidate = path8.join(projectsRoot, slug, "wtft-tags", wanted);
       try {
-        const stat = fs7.statSync(candidate);
+        const stat = fs8.statSync(candidate);
         if (!stat.isFile())
           continue;
         if (!best || stat.mtimeMs > best.mtimeMs)
@@ -3470,21 +3659,21 @@ function findSiblingTagPath(sessionPath) {
   return best ? best.path : null;
 }
 function getTagPath(sessionPath) {
-  const sessionDir = path7.dirname(sessionPath);
-  const sessionBase = path7.basename(sessionPath);
-  const tagsDir = path7.join(sessionDir, "wtft-tags");
-  const defaultPath = path7.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  const sessionDir = path8.dirname(sessionPath);
+  const sessionBase = path8.basename(sessionPath);
+  const tagsDir = path8.join(sessionDir, "wtft-tags");
+  const defaultPath = path8.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
   let newest = null;
   try {
     const prefix = sessionBase + ".wtft-tag.v";
-    for (const f of fs7.readdirSync(tagsDir)) {
+    for (const f of fs8.readdirSync(tagsDir)) {
       if (!f.startsWith(prefix) || !f.endsWith(".jsonl"))
         continue;
-      const full = path7.join(tagsDir, f);
+      const full = path8.join(tagsDir, f);
       if (full === defaultPath)
         return defaultPath;
       try {
-        const mtimeMs = fs7.statSync(full).mtimeMs;
+        const mtimeMs = fs8.statSync(full).mtimeMs;
         if (!newest || mtimeMs > newest.mtimeMs)
           newest = { path: full, mtimeMs };
       } catch {}
@@ -3498,23 +3687,23 @@ function getTagPath(sessionPath) {
   return defaultPath;
 }
 function getCurrentVersionTagPath(sessionPath) {
-  const sessionBase = path7.basename(sessionPath);
-  const own = path7.join(path7.dirname(sessionPath), "wtft-tags", sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-  if (fs7.existsSync(own))
+  const sessionBase = path8.basename(sessionPath);
+  const own = path8.join(path8.dirname(sessionPath), "wtft-tags", sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  if (fs8.existsSync(own))
     return own;
   return findSiblingTagPath(sessionPath) || own;
 }
 function getDaemonPidPath(sessionPath) {
-  const key = isSessionIdBasename(sessionPath) ? path7.basename(sessionPath) : sessionPath;
+  const key = isSessionIdBasename(sessionPath) ? path8.basename(sessionPath) : sessionPath;
   const sessionHash = createHash("sha256").update(key).digest("hex").slice(0, 12);
-  return path7.join(os5.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
+  return path8.join(os5.tmpdir(), `wtft-daemon-${sessionHash}.pid`);
 }
 function resolveMovedSession(sessionPath) {
-  const sessionId = path7.basename(sessionPath).replace(/\.jsonl$/i, "");
+  const sessionId = path8.basename(sessionPath).replace(/\.jsonl$/i, "");
   for (const discovery3 of getDiscoveries()) {
     try {
       const found = discovery3.resolveSessionById(sessionId);
-      if (found && found !== sessionPath && fs7.existsSync(found))
+      if (found && found !== sessionPath && fs8.existsSync(found))
         return found;
     } catch {}
   }
@@ -3577,7 +3766,7 @@ function renderDaemonStatus(status, restarting = false) {
 }
 function getModelFromSessionFile(sessionPath) {
   try {
-    const content = fs7.readFileSync(sessionPath, "utf8");
+    const content = fs8.readFileSync(sessionPath, "utf8");
     const lines = content.split(`
 `);
     for (let i = lines.length - 1;i >= 0; i--) {
@@ -3603,7 +3792,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   let pidAlive = false;
   try {
-    const pid = parseInt(fs7.readFileSync(pidPath, "utf8").trim(), 10);
+    const pid = parseInt(fs8.readFileSync(pidPath, "utf8").trim(), 10);
     if (pid > 0) {
       try {
         process.kill(pid, 0);
@@ -3613,12 +3802,12 @@ function checkDaemonHealth(sessionPath, tagPath) {
   } catch {}
   if (pidAlive) {
     try {
-      const stat = fs7.statSync(tagPath);
+      const stat = fs8.statSync(tagPath);
       if (stat.size > 0) {
-        const fd = fs7.openSync(tagPath, "r");
+        const fd = fs8.openSync(tagPath, "r");
         const buf = Buffer.alloc(Math.min(stat.size, 8192));
-        fs7.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - 8192));
-        fs7.closeSync(fd);
+        fs8.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - 8192));
+        fs8.closeSync(fd);
         const lines = buf.toString("utf8").split(`
 `);
         let lastModel;
@@ -3664,7 +3853,7 @@ function checkDaemonHealth(sessionPath, tagPath) {
         }
         {
           try {
-            const sessionStat = fs7.statSync(sessionPath);
+            const sessionStat = fs8.statSync(sessionPath);
             const sessionIdleMs = Date.now() - sessionStat.mtimeMs;
             if (sessionIdleMs >= IDLE_THRESHOLD_MS) {
               if (!lastModel)
@@ -3680,12 +3869,12 @@ function checkDaemonHealth(sessionPath, tagPath) {
   }
   let lastHbMs = 0;
   try {
-    const stat = fs7.statSync(tagPath);
+    const stat = fs8.statSync(tagPath);
     const readStart = Math.max(0, stat.size - 8192);
-    const fd = fs7.openSync(tagPath, "r");
+    const fd = fs8.openSync(tagPath, "r");
     const buf = Buffer.alloc(stat.size - readStart);
-    fs7.readSync(fd, buf, 0, buf.length, readStart);
-    fs7.closeSync(fd);
+    fs8.readSync(fd, buf, 0, buf.length, readStart);
+    fs8.closeSync(fd);
     const lines = buf.toString("utf8").split(`
 `);
     for (let i = lines.length - 1;i >= 0; i--) {
@@ -3713,14 +3902,14 @@ function checkDaemonHealth(sessionPath, tagPath) {
 function restartDaemon(sessionPath, daemonPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   try {
-    const pid = parseInt(fs7.readFileSync(pidPath, "utf8").trim(), 10);
+    const pid = parseInt(fs8.readFileSync(pidPath, "utf8").trim(), 10);
     if (pid > 0) {
       try {
         process.kill(pid, "SIGTERM");
       } catch {}
     }
     try {
-      fs7.unlinkSync(pidPath);
+      fs8.unlinkSync(pidPath);
     } catch {}
   } catch {}
   try {
@@ -3801,7 +3990,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     const health = checkDaemonHealth(sessionPath, tagPath);
     if (!health.alive) {
       try {
-        const tagStat = fs7.statSync(tagPath);
+        const tagStat = fs8.statSync(tagPath);
         if (Date.now() - tagStat.mtimeMs < 2000 && tagStat.size > 0)
           return;
       } catch {}
@@ -3857,7 +4046,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let allInteractions = readClassifiedTagFile(tagPath);
   let lastReadOffset = 0;
   try {
-    lastReadOffset = fs7.statSync(tagPath).size;
+    lastReadOffset = fs8.statSync(tagPath).size;
   } catch {}
   let sessionInterval;
   let sessionLimit;
@@ -3865,7 +4054,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   let sessionShowTicks;
   let sessionTimezone;
   try {
-    const sessionContent = fs7.readFileSync(sessionPath, "utf8");
+    const sessionContent = fs8.readFileSync(sessionPath, "utf8");
     for (const line of sessionContent.split(`
 `)) {
       if (!line.trim())
@@ -3977,16 +4166,16 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   });
   let watcher = null;
   const startWatching = () => {
-    watcher = fs7.watch(tagPath, (eventType) => {
+    watcher = fs8.watch(tagPath, (eventType) => {
       if (eventType !== "change")
         return;
       try {
-        const stat = fs7.statSync(tagPath);
+        const stat = fs8.statSync(tagPath);
         if (stat.size > lastReadOffset) {
-          const fd = fs7.openSync(tagPath, "r");
+          const fd = fs8.openSync(tagPath, "r");
           const buf = Buffer.alloc(stat.size - lastReadOffset);
-          fs7.readSync(fd, buf, 0, buf.length, lastReadOffset);
-          fs7.closeSync(fd);
+          fs8.readSync(fd, buf, 0, buf.length, lastReadOffset);
+          fs8.closeSync(fd);
           lastReadOffset = stat.size;
           const newContent = buf.toString("utf8");
           const lines = newContent.split(`
@@ -4022,7 +4211,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         try {
           lastReadOffset = 0;
           allInteractions = readClassifiedTagFile(tagPath);
-          lastReadOffset = fs7.statSync(tagPath).size;
+          lastReadOffset = fs8.statSync(tagPath).size;
           needsRedraw = true;
           render();
           resetWatchdog();
@@ -4031,10 +4220,10 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     });
   };
   const fileWaitStart = Date.now();
-  while (!fs7.existsSync(tagPath) && Date.now() - fileWaitStart < 5000) {
+  while (!fs8.existsSync(tagPath) && Date.now() - fileWaitStart < 5000) {
     await new Promise((r) => setTimeout(r, 250));
   }
-  if (fs7.existsSync(tagPath)) {
+  if (fs8.existsSync(tagPath)) {
     startWatching();
   } else {
     console.error("❌ Log parser did not create tag file within 5s. Is wtft-daemon installed?");
@@ -4053,19 +4242,19 @@ async function watchTagFile(sessionPath, tagPath, settings) {
 import { execSync as execSync3 } from "node:child_process";
 
 // extensions/lib/config.ts
-import { existsSync as existsSync7, mkdirSync, readFileSync as readFileSync5, writeFileSync } from "node:fs";
+import { existsSync as existsSync9, mkdirSync, readFileSync as readFileSync6, writeFileSync } from "node:fs";
 import { homedir as homedir7 } from "node:os";
-import { dirname as dirname3, join as join7 } from "node:path";
+import { dirname as dirname4, join as join8 } from "node:path";
 var CONFIG_DIR = "princess-pi-packages";
 var OLD_CONFIG_DIR = "princess-pi";
 function stripJsonComments(json) {
   return json.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 function tryReadConfig(filePath) {
-  if (!existsSync7(filePath))
+  if (!existsSync9(filePath))
     return null;
   try {
-    const raw = readFileSync5(filePath, "utf8");
+    const raw = readFileSync6(filePath, "utf8");
     const stripped = stripJsonComments(raw);
     const parsed = JSON.parse(stripped);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
@@ -4100,19 +4289,19 @@ function deepMerge(target, source) {
   return target;
 }
 function xdgConfigHome() {
-  return process.env.XDG_CONFIG_HOME || join7(homedir7(), ".config");
+  return process.env.XDG_CONFIG_HOME || join8(homedir7(), ".config");
 }
 function walkUpConfigs(toolName, startDir) {
   const results = [];
   let dir = startDir;
   while (true) {
-    let config2 = tryReadConfig(join7(dir, `.${CONFIG_DIR}`, `${toolName}.json`));
+    let config2 = tryReadConfig(join8(dir, `.${CONFIG_DIR}`, `${toolName}.json`));
     if (!config2) {
-      config2 = tryReadConfig(join7(dir, `.${OLD_CONFIG_DIR}`, `${toolName}.json`));
+      config2 = tryReadConfig(join8(dir, `.${OLD_CONFIG_DIR}`, `${toolName}.json`));
     }
     if (config2)
       results.push(config2);
-    const parent = dirname3(dir);
+    const parent = dirname4(dir);
     if (parent === dir || parent === "/")
       break;
     dir = parent;
@@ -4122,9 +4311,9 @@ function walkUpConfigs(toolName, startDir) {
 function loadConfig(toolName, defaults) {
   const merged = { ...defaults };
   const xdgHome = xdgConfigHome();
-  let globalConfig = tryReadConfig(join7(xdgHome, CONFIG_DIR, `${toolName}.json`));
+  let globalConfig = tryReadConfig(join8(xdgHome, CONFIG_DIR, `${toolName}.json`));
   if (!globalConfig) {
-    globalConfig = tryReadConfig(join7(xdgHome, OLD_CONFIG_DIR, `${toolName}.json`));
+    globalConfig = tryReadConfig(join8(xdgHome, OLD_CONFIG_DIR, `${toolName}.json`));
   }
   if (globalConfig)
     deepMerge(merged, globalConfig);
@@ -4139,8 +4328,8 @@ function readConfig(toolName) {
 }
 
 // extensions/lib/session-selector.ts
-import * as fs8 from "node:fs";
-import * as path8 from "node:path";
+import * as fs9 from "node:fs";
+import * as path9 from "node:path";
 var TAGGER_VERSION = "2.3.8";
 function discoverSessions(harness = "auto", cwdOverride) {
   const targets = harness === "auto" ? getDiscoveries() : [getHarness(harness)?.discovery].filter((d) => !!d);
@@ -4170,18 +4359,18 @@ function compareVersions(a, b) {
   return 0;
 }
 function getSessionSummary(sessionPath) {
-  const sessionDir = path8.dirname(sessionPath);
-  const sessionBase = path8.basename(sessionPath);
-  const tagsDir = path8.join(sessionDir, "wtft-tags");
-  let tagPath = path8.join(tagsDir, sessionBase + `.wtft-tag.v${TAGGER_VERSION}.jsonl`);
+  const sessionDir = path9.dirname(sessionPath);
+  const sessionBase = path9.basename(sessionPath);
+  const tagsDir = path9.join(sessionDir, "wtft-tags");
+  let tagPath = path9.join(tagsDir, sessionBase + `.wtft-tag.v${TAGGER_VERSION}.jsonl`);
   let tagVersion = TAGGER_VERSION;
-  if (!fs8.existsSync(tagPath)) {
+  if (!fs9.existsSync(tagPath)) {
     try {
-      const files = fs8.readdirSync(tagsDir);
+      const files = fs9.readdirSync(tagsDir);
       const prefix = sessionBase + ".wtft-tag.v";
       const matches = files.filter((f) => f.startsWith(prefix) && f.endsWith(".jsonl")).map((f) => {
         const v = f.slice(prefix.length, -".jsonl".length);
-        return { path: path8.join(tagsDir, f), version: v };
+        return { path: path9.join(tagsDir, f), version: v };
       }).sort((a, b) => compareVersions(b.version, a.version));
       if (matches.length > 0) {
         tagPath = matches[0].path;
@@ -4189,9 +4378,9 @@ function getSessionSummary(sessionPath) {
       }
     } catch {}
   }
-  if (fs8.existsSync(tagPath)) {
+  if (fs9.existsSync(tagPath)) {
     try {
-      const content = fs8.readFileSync(tagPath, "utf8");
+      const content = fs9.readFileSync(tagPath, "utf8");
       const lines = content.split(`
 `);
       let cost = 0;
@@ -4213,7 +4402,7 @@ function getSessionSummary(sessionPath) {
   }
   let rawLines = null;
   try {
-    const raw = fs8.readFileSync(sessionPath, "utf8");
+    const raw = fs9.readFileSync(sessionPath, "utf8");
     rawLines = raw.split(`
 `).filter((l) => l.trim()).length;
   } catch {}
@@ -4237,7 +4426,7 @@ function formatTagSuffix(stats) {
   return `\x1B[90mv${stats.tagVersion}\x1B[0m`;
 }
 async function selectSessionPrompt(candidates) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     if (!process.stdout.isTTY) {
       console.log(`\x1B[90mNon-interactive environment detected. Defaulting to newest session [1]:\x1B[0m`);
       const maxPathLen2 = Math.max(...candidates.slice(0, 5).map((c) => c.displayPath.length), 10);
@@ -4253,7 +4442,7 @@ async function selectSessionPrompt(candidates) {
       }
       console.log(`\x1B[90mRun 'wtft -s <substring>' to target a specific session by path or basename filter.\x1B[0m
 `);
-      resolve4(candidates[0].path);
+      resolve5(candidates[0].path);
       return;
     }
     let selectedIndex = 0;
@@ -4302,7 +4491,7 @@ async function selectSessionPrompt(candidates) {
         clearPreviousLines(lastLineCount);
         const selectedPath = displayCandidates[selectedIndex].path;
         cleanup();
-        resolve4(selectedPath);
+        resolve5(selectedPath);
       } else if (key === "\x1B[A" || key === "k") {
         selectedIndex = (selectedIndex - 1 + displayCandidates.length) % displayCandidates.length;
         clearPreviousLines(lastLineCount);
@@ -4322,8 +4511,8 @@ async function selectSessionPrompt(candidates) {
 }
 
 // extensions/lib/wtft-cli-shared.ts
-import * as fs10 from "node:fs";
-import * as path9 from "node:path";
+import * as fs11 from "node:fs";
+import * as path10 from "node:path";
 import { spawn as spawn2 } from "node:child_process";
 function parseWtftCliArgs(argv) {
   let showHelp = false;
@@ -4532,7 +4721,7 @@ function parseWtftCliArgs(argv) {
   };
 }
 function spawnWtftDaemon(sessionPath, daemonDir) {
-  const daemonPath = path9.join(daemonDir, "wtft-daemon.mjs");
+  const daemonPath = path10.join(daemonDir, "wtft-daemon.mjs");
   try {
     const child = spawn2(process.execPath, [daemonPath, "--session", sessionPath], {
       detached: true,
@@ -4549,7 +4738,7 @@ function isEmojiDisabled() {
   return typeof config2.disabledEmoji === "boolean" ? config2.disabledEmoji : false;
 }
 function renderWtftHelp(manifestPath, invokedAs) {
-  const manifestStr = fs10.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs11.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -4577,26 +4766,26 @@ async function renderWtftWhy(manifestPath, invokedAs) {
   return renderWhy2(manifestPath, invokedAs);
 }
 function renderWtftVersion(manifestPath) {
-  const manifest = JSON.parse(fs10.readFileSync(manifestPath, "utf8"));
+  const manifest = JSON.parse(fs11.readFileSync(manifestPath, "utf8"));
   return `${manifest.name} ${manifest.version}`;
 }
 
 // bin/wtft.ts
 var cfg = loadConfig("wtft", { interval: "1h", limit: 100, mode: "cumulative" });
-var manifestPath = path10.join(path10.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-var daemonDir = path10.dirname(fileURLToPath(import.meta.url));
+var manifestPath = path11.join(path11.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+var daemonDir = path11.dirname(fileURLToPath(import.meta.url));
 var opts = parseWtftCliArgs(process.argv.slice(2));
 var unit = cfg.tokens ? "tokens" : "cost";
 if (opts.hasTokens)
   unit = "tokens";
 if (opts.hasCost)
   unit = "cost";
-var WARN_LOG = path10.join(os6.homedir(), ".local", "state", "wtft", "reap.log");
+var WARN_LOG = path11.join(os6.homedir(), ".local", "state", "wtft", "reap.log");
 function showReapWarnings() {
   try {
-    if (!fs11.existsSync(WARN_LOG))
+    if (!fs12.existsSync(WARN_LOG))
       return;
-    const content = fs11.readFileSync(WARN_LOG, "utf8").trim();
+    const content = fs12.readFileSync(WARN_LOG, "utf8").trim();
     if (!content)
       return;
     const lines = content.split(`
@@ -4621,7 +4810,7 @@ function showReapWarnings() {
     console.error(`\x1B[33m└──────────────────────────────────────────────────────\x1B[0m
 `);
     try {
-      fs11.truncateSync(WARN_LOG, 0);
+      fs12.truncateSync(WARN_LOG, 0);
     } catch (_) {}
   } catch (_) {}
 }
@@ -4645,7 +4834,7 @@ async function main() {
     process.exit(1);
   }
   if (opts.daemonList || opts.daemonCleanup || opts.daemonRestart || opts.daemonStop) {
-    const daemonPath = path10.join(daemonDir, "wtft-daemon.mjs");
+    const daemonPath = path11.join(daemonDir, "wtft-daemon.mjs");
     const daemonArgs = [daemonPath];
     if (opts.daemonList)
       daemonArgs.push("--list");
@@ -4673,7 +4862,7 @@ async function main() {
   const candidates = discoverSessions(opts.harnessOption, opts.cwdOverride);
   let finalSessionPath = "";
   if (opts.targetSession) {
-    if (fs11.existsSync(opts.targetSession)) {
+    if (fs12.existsSync(opts.targetSession)) {
       finalSessionPath = opts.targetSession;
     } else {
       const filter = opts.targetSession.toLowerCase();
@@ -4697,7 +4886,7 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !fs11.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !fs12.existsSync(finalSessionPath)) {
     console.error("❌ Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
@@ -4705,38 +4894,38 @@ async function main() {
     const forceTagPath = getTagPath(finalSessionPath);
     const forcePidPath = getDaemonPidPath(finalSessionPath);
     try {
-      const pid = parseInt(fs11.readFileSync(forcePidPath, "utf8").trim(), 10);
+      const pid = parseInt(fs12.readFileSync(forcePidPath, "utf8").trim(), 10);
       if (pid > 0) {
         try {
           process.kill(pid, "SIGTERM");
         } catch {}
       }
       try {
-        fs11.unlinkSync(forcePidPath);
+        fs12.unlinkSync(forcePidPath);
       } catch {}
     } catch {}
-    const forceTagsDir = path10.dirname(forceTagPath);
-    const forceSessionBase = path10.basename(finalSessionPath);
+    const forceTagsDir = path11.dirname(forceTagPath);
+    const forceSessionBase = path11.basename(finalSessionPath);
     try {
-      for (const f of fs11.readdirSync(forceTagsDir)) {
+      for (const f of fs12.readdirSync(forceTagsDir)) {
         if (f.startsWith(forceSessionBase + ".wtft-tag.v") && f.endsWith(".jsonl")) {
-          fs11.unlinkSync(path10.join(forceTagsDir, f));
+          fs12.unlinkSync(path11.join(forceTagsDir, f));
         }
       }
     } catch {}
-    console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path10.basename(finalSessionPath)}\x1B[0m`);
+    console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path11.basename(finalSessionPath)}\x1B[0m`);
   }
   if (opts.showWatch) {
-    const sessionDir2 = path10.dirname(finalSessionPath);
-    const sessionBase2 = path10.basename(finalSessionPath);
-    const tagsDir2 = path10.join(sessionDir2, "wtft-tags");
-    const tagPath2 = path10.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-    const daemonPath = path10.join(daemonDir, "wtft-daemon.mjs");
+    const sessionDir2 = path11.dirname(finalSessionPath);
+    const sessionBase2 = path11.basename(finalSessionPath);
+    const tagsDir2 = path11.join(sessionDir2, "wtft-tags");
+    const tagPath2 = path11.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+    const daemonPath = path11.join(daemonDir, "wtft-daemon.mjs");
     if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
       console.error(`\x1B[31m❌ Failed to start log parser daemon: ${daemonPath}\x1B[0m`);
       process.exit(1);
     }
-    await new Promise((resolve4) => setTimeout(resolve4, 500));
+    await new Promise((resolve5) => setTimeout(resolve5, 500));
     await watchTagFile(finalSessionPath, tagPath2, {
       interval: opts.hasInterval ? opts.interval : "1h",
       limit: opts.hasLimit ? opts.limit : 100,
@@ -4754,22 +4943,22 @@ async function main() {
     });
     return;
   }
-  const sessionDir = path10.dirname(finalSessionPath);
-  const sessionBase = path10.basename(finalSessionPath);
-  const tagsDir = path10.join(sessionDir, "wtft-tags");
-  const tagPath = path10.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  const sessionDir = path11.dirname(finalSessionPath);
+  const sessionBase = path11.basename(finalSessionPath);
+  const tagsDir = path11.join(sessionDir, "wtft-tags");
+  const tagPath = path11.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
   if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
-    console.error(`\x1B[31m❌ wtft-daemon not found at ${path10.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
+    console.error(`\x1B[31m❌ wtft-daemon not found at ${path11.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
     process.exit(1);
   }
   let interactions = [];
-  if (fs11.existsSync(tagPath)) {
+  if (fs12.existsSync(tagPath)) {
     interactions = readClassifiedTagFile(tagPath);
   }
   if (interactions.length === 0) {
     const tagWaitStart = Date.now();
     while (Date.now() - tagWaitStart < 1400) {
-      if (fs11.existsSync(tagPath)) {
+      if (fs12.existsSync(tagPath)) {
         interactions = readClassifiedTagFile(tagPath);
         if (interactions.length > 0)
           break;
@@ -4778,7 +4967,7 @@ async function main() {
     }
   }
   if (interactions.length === 0) {
-    const sessionName = path10.basename(finalSessionPath).replace(/.jsonl$/, "");
+    const sessionName = path11.basename(finalSessionPath).replace(/.jsonl$/, "");
     console.log(`\x1B[33mDaemon started on session ${sessionName.slice(0, 12)}… — no data yet. Try again in a moment.\x1B[0m`);
     process.exit(0);
   }
@@ -4817,7 +5006,7 @@ async function main() {
     mode: finalMode,
     timezone: finalTimezone,
     disabledEmoji,
-    sessionNameSuffix: path10.basename(finalSessionPath),
+    sessionNameSuffix: path11.basename(finalSessionPath),
     unit
   });
   if (!outputLines) {
@@ -4871,12 +5060,14 @@ if (process.argv[1]) {
 }
 export {
   splitOverheadCost,
+  slugMatchesCwd,
   serializeClassifiedWithOverheadSplit,
   serializeClassified,
   scanUncountedBillables,
   resolveTieredRates,
   resolveMovedSession,
   resolveLastCwd,
+  resolveCwdHistory,
   resetHarnessRegistry,
   resetCwdCache,
   renderUncountedBillables,
@@ -4886,6 +5077,8 @@ export {
   readUncountedBillableClass,
   readControlEntry,
   readClassifiedTagFile,
+  pickLiveCwd,
+  pathExists,
   parseSessionFile,
   parseInterval,
   parseEntryToInteraction,
@@ -4896,6 +5089,7 @@ export {
   loadSubagentInteractions,
   loadHarnessConfig,
   loadExternalHarnesses,
+  listWorktreeDirs,
   isSessionIdBasename,
   isModelPriced,
   isInterruptMarker,
@@ -4911,19 +5105,25 @@ export {
   getDiscoveries,
   getDaemonPidPath,
   getCwdReadCount,
+  getCwdHistoryReadCount,
   getCurrentVersionTagPath,
   getBinInfo,
+  findRepoRoot,
+  fanOutCwd,
   distributeHalfSlots,
   discoverSubagentSessionFiles,
   discoverSessions,
   deduplicateInteractions,
+  cwdToStrictSlug,
   cwdToSlug,
+  cwdSlugVariants,
   classifyInteraction,
   classifiedToInteraction,
   checkDaemonHealth,
   calculateServerToolCost,
   calculateClaudeCost,
   buildWtftLines,
+  buildDisplayPath,
   attributeClaudeSubAgentCosts,
   applyUserPricing,
   applyControlEntry,

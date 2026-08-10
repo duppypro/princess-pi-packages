@@ -27,6 +27,30 @@ last-cwd does. `resolveLastCwd()` from `harness/session-cwd.ts` does the tail sc
 memoises it. Union, not replacement — a last-cwd-only rule silently drops sessions whose
 directory slug is a parent of their cwd.
 
+The union has grown three more arms (#144/#145/#164), each a shared helper you should reach
+for rather than re-derive. Every one is **additive** — that is the invariant the whole rule
+is measured against, and the reason none of them may be written as a replacement.
+
+- **Match the slug, do not compute it.** `slugMatchesCwd(slug, cwd)` accepts *either* known
+  encoding, because what a harness munges beyond `/` is usually only partly evidenced —
+  Claude Code turns `.` into `-` as well, which is how `.claude/worktrees` paths went
+  missing. If you need a single canonical string for *display*, that is `cwdToSlug()`; for
+  *matching*, always the matcher. Pinning one encoding trades a known silent miss for an
+  unknown one.
+- **A deleted directory is not "nowhere".** If your transcripts record relocations, gate
+  `resolveCwdHistory()` on `pathExists(lastCwd) === false` and match against every directory
+  the session has ever occupied. Gate it, do not run it unconditionally: it is a whole-file
+  read, measured at ~315 ms across this machine's transcripts versus ~11 ms for the tail scan.
+- **"Here" may mean a whole repo.** `fanOutCwd(target)` returns every checkout of the
+  target's git repo, so a session recorded in a sibling worktree is still found. It returns
+  the target alone when there is no `.git` ancestor, which is what stops `~` from meaning
+  the entire machine. Whether this fits your harness is a policy call, exactly like the
+  `null`-target question above: Claude Code fans out, Pi does not.
+
+None of this is required to ship a harness. A harness whose transcripts carry no `cwd`
+resolves to `null` from `resolveLastCwd`, contributes nothing to any of these arms, and is
+correct — that is Pi's situation, deliberately.
+
 `resolveSessionById` is what lets a running daemon follow a session whose transcript moved
 (#155). Return the newest match when an id appears more than once.
 
