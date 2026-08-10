@@ -2,7 +2,7 @@
 
 **Issue:** #168
 **Branch:** `168-typecheck-gate`
-**State:** Spec Draft
+**State:** Spec Approved
 
 ---
 
@@ -114,13 +114,33 @@ fixed forward, never pinned back.
 | V2 | The typecheck gate is a suite, discovered and run by `bun run test` like every other suite | `bun run test typecheck` selects it; it appears in the runner's suite count |
 | V3 | The gate goes **red** when a real type error exists | negative control: introduce a deliberate type error in a temp copy, assert the suite fails; restore |
 | V4 | The gate reports the compiler's own diagnostics on failure, not just a bare exit code | inspect failure output; it must contain the `error TS` lines |
-| V5 | `allowJs` pulls no additional module into the program | compare `tsc --noEmit --listFiles` before/after; only `cloudflare.js` is added |
+| V5 | `allowJs` reaches `cloudflare.js` and widens the program no further | `tsc --noEmit --listFiles` must contain `extensions/lib/serve/cloudflare.js` **and no other repo `.js`** |
 | V6 | No production behaviour changes | the diff touches `tsconfig.json`, `tests/`, and `docs/` only — no `extensions/` or `bin/` source, and `bun run build` output is unchanged |
 | V7 | The full suite is still green | `bun run test` — 43 suites before, 44 after (the new one), all passing |
 | V8 | The reason `allowJs` is on is readable at the setting itself | a comment in `tsconfig.json`, not only in this spec |
 
 V3 is the one that matters most. A gate that cannot be shown to fail is indistinguishable from no
 gate, and this issue exists because an unexercised check produced exactly that illusion.
+
+### 5.1 How the negative control is made safe
+
+Writing V3 forced a detail the draft had not settled: *where* the deliberate type error goes. A
+synthetic project in a temp dir would prove that `tsc` reports errors — which was never in doubt —
+without proving that **this repo's config** reports them. So the probe is written into `bin/`,
+inside the real `include: ["bin/**/*.ts"]` glob, and the assertion checks that the diagnostic names
+the probe rather than merely that something failed.
+
+That puts a temporary broken file in the source tree, so the suite guards it three ways:
+
+1. it refuses to run if the probe path already exists, rather than overwriting an orphan from an
+   interrupted run;
+2. it removes the probe in a `finally`, so an assertion failure still cleans up;
+3. it re-checks for the file after cleanup and fails loudly if it survived.
+
+The third guard is not redundant. A stray `bin/__typecheck_gate_probe__.ts` would fail every
+subsequent suite in the run *and* — because `bin/` is in the package `files` allowlist — ship in
+the tarball. The filename is deliberately unmistakable so that if all three guards are somehow
+defeated, the orphan reads as debris rather than as source.
 
 ---
 
