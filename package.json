@@ -31,6 +31,7 @@
   "scripts": {
     "build": "bun build.ts",
     "prepare": "if [ -f package.json ] && [ ! -d node_modules/wcwidth ]; then bun install --production --ignore-scripts; fi && bun build.ts",
+    "test": "bun tests/run.ts",
     "typecheck": "tsc --noEmit",
     "deploy:local": "bun unlink -g 2>/dev/null; bun link"
   },
@@ -38,6 +39,7 @@
     "wcwidth": "^1.0.1"
   },
   "devDependencies": {
+    "@earendil-works/pi-tui": "^0.84.1",
     "@types/node": "^26.1.1",
     "@types/wcwidth": "^1.0.0",
     "typescript": "^7.0.2"

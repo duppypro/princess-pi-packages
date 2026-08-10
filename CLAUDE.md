@@ -15,7 +15,13 @@ Extensions, skills, and documentation manifests for the Princess-Pi Coding Agent
 |---|---|
 | Install deps | `bun install` |
 | Build | `bun run build` |
+| Test | `bun run test` (never bare `bun test` — see below) |
 | Typecheck | `bun run typecheck` |
+
+⚠️ **Never run `bun test` over the whole `tests/` directory.** Most suites are standalone
+scripts that call `process.exit`, so a shared runner process dies after a few files and
+exits 0. `bun run test` runs each suite in its own process. See
+[build & toolchain](docs/agents/build-and-toolchain.md#running-tests--bun-run-test).
 
 ## Conventions
 
