@@ -17,7 +17,20 @@ name="${repo##*/}"
 
 # Fetch ALL review threads with pagination. The GraphQL API returns max 100 per
 # page; we loop until we've seen totalCount threads.
-unresolved=()
+#
+# The count is tallied as an integer, deliberately kept separate from the text
+# we print (#211). It used to be `${#unresolved[@]}` over an array built by
+# `while read` from jq — but each jq record spans TWO lines (author/path, then
+# the URL), so read appended two elements per thread and every count came out
+# doubled. The listing looked right the whole time, which is why it survived:
+# the count is the only part a merge gate reads.
+#
+# Counting in an integer also sidesteps `${#arr[@]}` on an empty array, which
+# aborts under `set -u` on bash < 4.4 (macOS system bash is 3.2, and this script
+# ships to ~/bin with an env shebang) — so the ZERO-unresolved success path was
+# the one that crashed.
+unresolved_count=0
+unresolved_text=""
 after="null"
 seen=0
 total=0
@@ -44,13 +57,20 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
 
   total=$(jq '.data.repository.pullRequest.reviewThreads.totalCount' <<<"$json")
 
-  # Collect unresolved
-  while IFS= read -r line; do
-    unresolved+=("$line")
-  done < <(jq -r '.data.repository.pullRequest.reviewThreads.nodes[]
+  # Count unresolved threads (one number per THREAD — jq counts the nodes, so
+  # the multi-line rendering below cannot influence it)
+  unresolved_count=$((unresolved_count + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved | not)] | length' <<<"$json")))
+
+  # …and separately accumulate the human-readable listing
+  page_text=$(jq -r '.data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved | not)
     | .comments.nodes[0]
     | "  \(.author.login)  \(.path)\n    \(.url)"' <<<"$json")
+  if [ -n "$page_text" ]; then
+    unresolved_text="${unresolved_text}${page_text}
+"
+  fi
 
   seen=$((seen + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[]] | length' <<<"$json")))
 
@@ -61,13 +81,11 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   after=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<<"$json")
 done
 
-if [ "${#unresolved[@]}" -eq 0 ]; then
+if [ "$unresolved_count" -eq 0 ]; then
   echo "✅ $repo #$pr — 0 unresolved conversations ($total total, all resolved)"
   exit 0
 fi
 
-echo "❌ $repo #$pr — ${#unresolved[@]} unresolved conversation(s):"
-for line in "${unresolved[@]}"; do
-  echo "$line"
-done
+echo "❌ $repo #$pr — $unresolved_count unresolved conversation(s):"
+printf '%s' "$unresolved_text"
 exit 1

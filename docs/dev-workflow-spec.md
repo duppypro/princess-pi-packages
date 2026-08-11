@@ -59,6 +59,7 @@ Labels are commit markers, not gates. Commit as often as needed.
 | `pr-merge` | Discovers PR from current branch → `gh pr merge --squash` (human command) |
 | `pr-reject [reason]` | Discovers PR from current branch → `gh pr close` (human command) |
 | `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
+| `pr-threads <pr#> [owner/repo]` | Unresolved review-conversation count. Exit 0 = none; exit 1 lists each thread's file and URL. Scriptable merge gate — `gh pr view` has no unresolved-conversation field, that state exists only in GraphQL. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
 
 **Note:** `git-snap` and `git-ship` have been replaced by `git-checkpoint`. The old
