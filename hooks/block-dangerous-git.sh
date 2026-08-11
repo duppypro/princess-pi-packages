@@ -529,6 +529,24 @@ check_git_subcommand() {
   return 0
 }
 
+# ---
+# Check for dangerous gh (GitHub CLI) commands.
+# Separate from git guardrails because gh is not git — but gh pr merge
+# is the merge-to-main gate and must stay human-only.
+# ---
+check_gh_command() {
+  local -a T=("${TOKENS[@]}")
+  local n=${#T[@]} base
+  [ "$n" -lt 3 ] && return 0
+  # Match by basename, same convention as git subcommand check (#74 finding 19)
+  base="${T[0]##*/}"
+  [ "$base" != "gh" ] && return 0
+  if [ "${T[1]}" = "pr" ] && [ "${T[2]}" = "merge" ]; then
+    block "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell."
+  fi
+  return 0
+}
+
 # Full check of one command string: strip heredocs, inspect command
 # substitutions, quote-aware split, then tokenize each sub-command with
 # quotes honored before inspection. This is the recursion point for nested
@@ -544,6 +562,7 @@ check_command_string() {
     tokenize "$sub"
     [ ${#TOKENS[@]} -eq 0 ] && continue
     check_git_subcommand
+    check_gh_command
   done <<< "${subs}"$'\x1f'
   return 0
 }

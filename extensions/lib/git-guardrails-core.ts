@@ -513,8 +513,26 @@ export function checkGitCommand(command: string, hookCwd: string): string | null
   // One blocked sub-command blocks the whole command line (fail-safe).
   const subs = splitOutsideQuotes(stripped);
   for (const sub of subs) {
-    const reason = checkGitSubcommand(tokenize(sub), hookCwd);
+    const toks = tokenize(sub);
+    const reason = checkGitSubcommand(toks, hookCwd);
     if (reason) return reason;
+    const ghReason = checkGhSubcommand(toks);
+    if (ghReason) return ghReason;
+  }
+  return null;
+}
+
+/**
+ * Check for dangerous gh (GitHub CLI) commands.
+ * Separate from git guardrails because gh is not git — but gh pr merge
+ * is the merge-to-main gate and must stay human-only.
+ */
+function checkGhSubcommand(T: string[]): string | null {
+  if (T.length < 3) return null;
+  // Match by basename like git does (path-based invocations)
+  if (T[0].slice(T[0].lastIndexOf("/") + 1) !== "gh") return null;
+  if (T[1] === "pr" && T[2] === "merge") {
+    return "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell.";
   }
   return null;
 }
