@@ -27,7 +27,7 @@ exits 0. `bun run test` runs each suite in its own process. See
 
 ## Shipped scripts
 
-Shell scripts in `bin/` are installed to `~/.bun/bin/` (on PATH):
+Shell scripts in `bin/` are copied to `~/bin/` for use (on PATH):
 
 | Script | Does |
 |---|---|

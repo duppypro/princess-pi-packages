@@ -278,6 +278,11 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 	}
 
 	// 5. Ensure the branch is pushed. Push if not — merge is the ship command.
+	//
+	// When a specific ref was given (merge <older-ancestor>), auto-pushing the
+	// branch tip would expose unapproved commits beyond the requested checkpoint.
+	// In that case, push only if the target is already on origin — otherwise
+	// require an explicit push so no unapproved commits leak.
 	let isPushed = false;
 	try {
 		execSync(`git merge-base --is-ancestor ${targetHash} origin/${currentBranch}`, { cwd: currentCwd });
@@ -287,6 +292,13 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 	}
 
 	if (!isPushed) {
+		if (ref && targetHash !== localHash) {
+			throw new Error(
+				`MERGE_BLOCKED: target commit ${targetHash.substring(0, 7)} is not on origin/${currentBranch}.\n` +
+				`When merging an older checkpoint, push it explicitly first:\n` +
+				`  git push origin ${targetHash}:refs/heads/${currentBranch}`
+			);
+		}
 		logger.info(`📡 Pushing ${currentBranch} to origin...`);
 		execSync(`git push origin ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" });
 	}
