@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# pr-open — create a PR for the current feature branch.
+# Auto-discovers branch from cwd. Ensures pushed, checks pre-conditions,
+# then runs "gh pr create".
+set -euo pipefail
+
+BRANCH=$(git branch --show-current)
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "pr-open: cannot create a PR from '$BRANCH'. Switch to a feature branch." >&2
+  exit 1
+fi
+
+# 1. Worktree must be clean
+if [ -n "$(git status --porcelain)" ]; then
+  echo "pr-open: worktree not clean — commit or stash changes first." >&2
+  git status --short
+  exit 1
+fi
+
+# 2. Fetch to get latest remote state
+echo "📡 Fetching origin..."
+git fetch origin
+
+# 3. Ensure branch is pushed
+if ! git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
+  echo "📡 Pushing $BRANCH to origin..."
+  git push origin "$BRANCH"
+fi
+
+# 4. Verify branch is up-to-date with main (no conflicts)
+if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null && \
+   ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+  echo "⚠️  Branch has diverged from origin/main. Consider rebasing." >&2
+fi
+
+# 5. Create the PR
+echo "📡 Creating pull request..."
+gh pr create --fill --base main
