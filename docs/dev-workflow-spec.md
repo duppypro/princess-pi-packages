@@ -114,13 +114,25 @@ Issue #42 body:            updated with resolution, closed
 ### Ship + merge
 ```
 $ git-checkpoint "docs: Code and Spec Approved (#42)"
-$ gh pr create --fill --base main
+$ pr-open
 https://github.com/duppypro/princess-pi-packages/pull/43
 
-Duppy: reviews → merges PR #43 → tells agent "done"
+Duppy: reviews → runs pr-merge → tells agent "done"
 
-Agent: post-merge-cleanup 42-verbose-flag /path/to/worktree
+Agent: pr-cleanup          # run from the feature worktree
 ```
+
+**`pr-cleanup` is the merge path only.** Deleting a branch is how work gets lost, so it
+deletes nothing until it can prove the commits survive elsewhere — a merged PR whose
+head is this exact branch tip, or failing that, a tip already contained in
+`origin/main`. A closed-without-merging PR is neither.
+
+After `pr-reject` there is nothing to clean up automatically, because the commits are
+still the only copy of that work. Either:
+
+- **revise** — keep the branch and worktree, push again, and the PR path resumes; or
+- **abandon** — tear the worktree down by hand, which is a deliberate act gated on
+  confirming `git -C <worktree> status --short` is clean.
 
 ## When things go wrong
 
@@ -193,7 +205,9 @@ The repository ruleset requires review threads to be resolved before merging.
 | Removed | Why |
 |---|---|
 | Commit-message regex gate (`isStep5ApprovedMessage`) | Fragile — legitimate commits failed over word order. Process guarantees readiness, not wording. |
-| `pr-open` (was `merge`) | Post-hoc checklist. Same checks now live in the merge script. |
-| `pre-merge-checklist` skill | Redundant with merge-checklist. |
+| `merge-checklist` skill | Post-hoc checklist. The same checks now live in `pr-open` itself. |
+| `pre-merge-checklist` skill | Redundant with `merge-checklist`. |
+| `bin/merge` CLI (#201) | Replaced by `pr-open`. The Pi `/merge` slash command (`extensions/merge.ts`) is a separate thing and still exists. |
+| `bin/post-merge-cleanup` (#207) | Replaced by `pr-cleanup`, which discovers branch and worktree from cwd instead of taking them as arguments. |
 | Local merge to main (`merge --cleanup`) | Replaced by PR merge. LLM runs `pr-open`, human runs `pr-merge`. |
 | Human gate between Spec Approved and Code Draft | Spec iterates alongside code. Gate moved to PR review. |

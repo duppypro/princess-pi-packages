@@ -34,10 +34,15 @@ Full spec: `docs/dev-workflow-spec.md`.
 |---|---|
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
 | `git-overview` | Branch + status + diff stat + recent commits in one call |
-| `merge` | Ensures pushed → pre-checks → creates PR (the one command to ship) |
-| `post-merge-cleanup <branch> [worktree]` | Pull main → delete remote branch → delete local branch → remove worktree |
+| `pr-open` | Ensures pushed → pre-checks → `gh pr create` (the one command to ship) |
+| `pr-merge` | Squash-merges the PR for the current branch (**human-only**) |
+| `pr-reject [reason]` | Closes the PR for the current branch without merging (**human-only**) |
+| `pr-cleanup` | Deletes branch + remote + worktree after the PR is merged |
+| `pr-threads <pr#>` | Unresolved review-conversation count (exit 0 = none; scriptable merge gate) |
 
-`git-snap` and `git-ship` are deprecated — replaced by `git-checkpoint`.
+Removed, not merely deprecated — `install-workflow-tools` deletes these from `~/bin`:
+`git-snap` / `git-ship` (→ `git-checkpoint`), `merge` (→ `pr-open`, removed in #201),
+`post-merge-cleanup` (→ `pr-cleanup`, removed in #207).
 
 - [Tool conventions](docs/agents/tool-conventions.md) — manifest-driven `--help`/`--why`, cross-harness architecture
 - [Development workflow](docs/agents/dev-workflow.md) — local testing, install methods, hot-swapping
