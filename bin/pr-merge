@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# pr-merge — squash-merge the PR for the current feature branch.
+# Discovers the open PR from the branch name. Human-only command.
+set -euo pipefail
+
+BRANCH=$(git branch --show-current)
+
+# Allow running from main too — use the most recent branch
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "pr-merge: on main — pass a branch name or switch to a feature worktree." >&2
+  echo "  pr-merge <branch>" >&2
+  exit 1
+fi
+
+PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null)
+if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+  echo "pr-merge: no open PR found for branch '$BRANCH'." >&2
+  exit 1
+fi
+
+echo "🔀 Squash-merging PR #$PR (branch: $BRANCH)..."
+gh pr merge "$PR" --squash
