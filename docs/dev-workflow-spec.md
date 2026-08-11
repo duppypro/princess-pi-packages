@@ -114,12 +114,12 @@ Issue #42 body:            updated with resolution, closed
 ### Ship + merge
 ```
 $ git-checkpoint "docs: Code and Spec Approved (#42)"
-$ gh pr create --fill --base main
+$ pr-open
 https://github.com/duppypro/princess-pi-packages/pull/43
 
-Duppy: reviews → merges PR #43 → tells agent "done"
+Duppy: reviews → runs pr-merge (or pr-reject) → tells agent "done"
 
-Agent: post-merge-cleanup 42-verbose-flag /path/to/worktree
+Agent: pr-cleanup          # run from the feature worktree
 ```
 
 ## When things go wrong
@@ -193,7 +193,9 @@ The repository ruleset requires review threads to be resolved before merging.
 | Removed | Why |
 |---|---|
 | Commit-message regex gate (`isStep5ApprovedMessage`) | Fragile — legitimate commits failed over word order. Process guarantees readiness, not wording. |
-| `pr-open` (was `merge`) | Post-hoc checklist. Same checks now live in the merge script. |
-| `pre-merge-checklist` skill | Redundant with merge-checklist. |
+| `merge-checklist` skill | Post-hoc checklist. The same checks now live in `pr-open` itself. |
+| `pre-merge-checklist` skill | Redundant with `merge-checklist`. |
+| `bin/merge` CLI (#201) | Replaced by `pr-open`. The Pi `/merge` slash command (`extensions/merge.ts`) is a separate thing and still exists. |
+| `bin/post-merge-cleanup` (#207) | Replaced by `pr-cleanup`, which discovers branch and worktree from cwd instead of taking them as arguments. |
 | Local merge to main (`merge --cleanup`) | Replaced by PR merge. LLM runs `pr-open`, human runs `pr-merge`. |
 | Human gate between Spec Approved and Code Draft | Spec iterates alongside code. Gate moved to PR review. |
