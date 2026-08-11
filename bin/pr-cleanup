@@ -101,6 +101,20 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
     echo "   Refusing to delete. Open a new PR for the extra commits, or reset the branch." >&2
     exit 1
   fi
+  # The local tip matching is not enough. Another clone can push to
+  # origin/$BRANCH after the PR merged; our tip is untouched, so the check above
+  # still passes, and step 4 would delete a remote ref carrying commits that
+  # exist nowhere else. Check what is actually ON the remote, here in the gate —
+  # before anything is destroyed, rather than at the delete itself.
+  REMOTE_TIP=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null | awk 'NR==1 {print $1}' || true)
+  if [ -n "$REMOTE_TIP" ] && [ "$REMOTE_TIP" != "$PR_HEAD_OID" ]; then
+    echo "   ❌ ERROR: origin/$BRANCH has moved since PR #$PR_NUM merged." >&2
+    echo "      remote tip:     $REMOTE_TIP" >&2
+    echo "      PR headRefOid:  $PR_HEAD_OID" >&2
+    echo "   Someone pushed after the merge. Those commits are not in any PR —" >&2
+    echo "   refusing to delete the remote branch. Fetch and review them first." >&2
+    exit 1
+  fi
   echo "   ✅ PR #$PR_NUM merged into origin/$PRIMARY_REF, and its head matches this branch tip."
 else
   # No merged PR. The branch being absent from origin is the ONLY reading that
@@ -152,8 +166,14 @@ fi
 # Confirm the ref is actually gone rather than trusting the exit status alone:
 # auth, network and protected-ref rejections were all being reported as
 # "may already be deleted", under a final "✅ Cleanup complete" (#210).
+#
+# --force-with-lease pins the delete to the sha the gate verified, closing the
+# residual race between that check and this push: if someone lands a commit in
+# between, the push is REJECTED rather than silently taking their work with it.
 echo "🗑  Deleting remote branch origin/$BRANCH..."
-if git -C "$MAIN_CLONE" push origin --delete "$BRANCH" 2>/dev/null; then
+LEASE=()
+[ -n "${PR_HEAD_OID:-}" ] && LEASE=(--force-with-lease="refs/heads/$BRANCH:$PR_HEAD_OID")
+if git -C "$MAIN_CLONE" push "${LEASE[@]}" origin --delete "$BRANCH" 2>/dev/null; then
   echo "   ✅ remote branch deleted."
 elif REMAINS=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null); then
   if [ -n "$REMAINS" ]; then
@@ -173,8 +193,20 @@ fi
 # cleanup. The proof of merge is the PR gate in step 2 — which is strictly
 # stronger than git's ancestry test, because it also pins the tip to the exact
 # commit the PR merged.
+#
+# The failure is checked against the ref, not inferred from the exit status —
+# same rule as every other gate here. A ref-lock error, a permissions problem or
+# the branch being checked out in another worktree all make `branch -D` fail
+# while the branch is still very much there, and reporting that as "already
+# gone" under a final "✅ Cleanup complete" is the exact fail-open shape this
+# script exists to remove.
 echo "🗑  Deleting local branch $BRANCH..."
 if ! git -C "$MAIN_CLONE" branch -D "$BRANCH" 2>/dev/null; then
+  if git -C "$MAIN_CLONE" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    echo "   ❌ ERROR: failed to delete local branch '$BRANCH' — it still exists." >&2
+    echo "   Checked out in another worktree, or a ref lock / permissions problem." >&2
+    exit 1
+  fi
   echo "   ℹ️  Local branch already gone."
 fi
 

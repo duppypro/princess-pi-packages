@@ -77,6 +77,10 @@ interface SandboxOpts {
 	remoteBranchGone?: boolean;
 	/** primary branch name of the repo — 'master' exercises the non-main path */
 	primary?: string;
+	/** another clone pushed to origin/<branch> after the PR merged */
+	remoteAdvanced?: boolean;
+	/** leave a stale ref lock so `git branch -D` cannot delete the ref */
+	staleRefLock?: boolean;
 }
 
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
@@ -108,6 +112,28 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	git(mainClone, ["commit", "-q", "-m", `squash: feature work (#1)`]);
 	git(mainClone, ["push", "-q", "origin", primary]);
 	const mergeSha = git(mainClone, ["rev-parse", "HEAD"]);
+
+	// Another clone lands a commit on origin/<branch> after the merge. OUR tip is
+	// untouched, so the local-tip gate still passes — the remote is the only place
+	// this commit exists.
+	if (opts.remoteAdvanced) {
+		const other = path.join(root, "other-clone");
+		git(root, ["clone", "-q", "-b", branch, remote, other]);
+		fs.writeFileSync(path.join(other, "late.txt"), "landed after the merge\n");
+		git(other, ["add", "-A"]);
+		git(other, ["commit", "-q", "-m", "late work from another clone"]);
+		git(other, ["push", "-q", "origin", branch]);
+	}
+
+	// A stale .lock left by a crashed process: git refuses to update the ref, so
+	// `branch -D` fails while the branch is still very much there. (A second
+	// worktree holding the branch cannot be used — git won't check out a branch
+	// that is already checked out in the feature worktree.)
+	if (opts.staleRefLock) {
+		const lock = path.join(mainClone, ".git", "refs", "heads", `${branch}.lock`);
+		fs.mkdirSync(path.dirname(lock), { recursive: true });
+		fs.writeFileSync(lock, "");
+	}
 
 	if (opts.remoteBranchGone) git(remote, ["update-ref", "-d", `refs/heads/${branch}`]);
 	if (opts.denyDeletes) git(remote, ["config", "receive.denyDeletes", "true"]);
@@ -300,6 +326,32 @@ console.log("\nno merged PR, branch absent from origin:");
 	check(code === 0, "tip already in origin/main → exits 0", `got ${code}, output:\n${out}`);
 	check(!fs.existsSync(sb.worktree), "tip already in origin/main → worktree removed", out);
 	check(!localBranchExists(sb), "tip already in origin/main → local branch deleted", out);
+}
+
+// --- someone pushed to the remote branch after the PR merged ---
+//
+// Our local tip is untouched, so the headRefOid gate passes. The commit exists
+// ONLY on origin/<branch>, so deleting that ref destroys it — and nothing about
+// the local state hints at it.
+console.log("\nremote branch advanced after the merge:");
+{
+	const sb = makeSandbox("42-feature", { remoteAdvanced: true });
+	const { code, out } = runCleanup(sb);
+	check(code !== 0, "remote advanced → non-zero", `got ${code}, output:\n${out}`);
+	check(remoteBranchExists(sb), "remote advanced → remote branch SURVIVES", out);
+	check(fs.existsSync(sb.worktree), "remote advanced → worktree survives (gate is before teardown)", out);
+	check(localBranchExists(sb), "remote advanced → local branch survives", out);
+	check(/moved since|remote tip/i.test(out), "remote advanced → says why", out);
+}
+
+// --- `git branch -D` failing must not be read as "already gone" ---
+console.log("\nlocal branch delete blocked by a stale ref lock:");
+{
+	const sb = makeSandbox("42-feature", { staleRefLock: true });
+	const { code, out } = runCleanup(sb);
+	check(code !== 0, "branch -D fails → non-zero", `got ${code}, output:\n${out}`);
+	check(localBranchExists(sb), "branch -D fails → branch still exists (precondition)", out);
+	check(!/Cleanup complete/.test(out), "branch -D fails → does not claim success", out);
 }
 
 // --- master-primary repo: the ref name must be discovered, not assumed ---
