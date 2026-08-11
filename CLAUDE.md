@@ -35,8 +35,8 @@ Full spec: `docs/dev-workflow-spec.md`.
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
 | `git-overview` | Branch + status + diff stat + recent commits in one call |
 | `pr-open` | Ensures pushed → pre-checks → `gh pr create` (the one command to ship) |
-| `pr-merge` | Squash-merges the PR for the current branch (**human-only**) |
-| `pr-reject [reason]` | Closes the PR for the current branch without merging (**human-only**) |
+| `pr-merge [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**) |
+| `pr-reject [-b <branch>] [reason]` | Closes that branch's PR without merging; defaults to the current branch (**human-only**) |
 | `pr-cleanup` | Deletes branch + remote + worktree after the PR is merged |
 | `pr-threads <pr#>` | Unresolved review-conversation count (exit 0 = none; scriptable merge gate) |
 
