@@ -32,7 +32,7 @@ Full spec: `docs/dev-workflow-spec.md`.
 
 | Script | Does |
 |---|---|
-| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
+| `git-checkpoint "msg"` | Add, commit, and push in one step (exact command in the spec) |
 | `git-overview` | Branch + status + diff stat + recent commits in one call |
 | `pr-open` | Ensures pushed → pre-checks → `gh pr create` (the one command to ship) |
 | `pr-merge [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**) |
@@ -40,9 +40,9 @@ Full spec: `docs/dev-workflow-spec.md`.
 | `pr-cleanup` | Deletes branch + remote + worktree after the PR is merged |
 | `pr-threads <pr#>` | Unresolved review-conversation count (exit 0 = none; scriptable merge gate) |
 
-Removed, not merely deprecated — `install-workflow-tools` deletes these from `~/bin`:
-`git-snap` / `git-ship` (→ `git-checkpoint`), `merge` (→ `pr-open`, removed in #201),
-`post-merge-cleanup` (→ `pr-cleanup`, removed in #207).
+Retired-tool history (what replaced what, and why) lives in `docs/dev-workflow-spec.md`.
+`install-workflow-tools` reports any stale copy it finds on `PATH` at install time — that's
+the live check; this file doesn't need to carry the list too.
 
 - [Tool conventions](docs/agents/tool-conventions.md) — manifest-driven `--help`/`--why`, cross-harness architecture
 - [Development workflow](docs/agents/dev-workflow.md) — local testing, install methods, hot-swapping

@@ -51,6 +51,90 @@ Labels are commit markers, not gates. Commit as often as needed.
 - Close issue, add `attention-needed` label
 - `pr-open` — creates PR (ensures pushed, pre-checks, gh pr create)
 
+## Spec Gate
+
+A spec is clear enough to start TDD only when there is a defined test, evaluation
+function, set of log outputs, or expected system state to check it against. "I think
+this is right" is not a spec gate; "this test goes green" is.
+
+## Branch naming & worktrees
+
+Branch naming (`<issue#>-<slug>`) and the never-edit-on-`main` rule are Hard Gates —
+they live in this repo's `CLAUDE.md`, not here, because they can be violated in an
+agent's very first tool call, before it has read anything else. This section covers the
+mechanics once a branch exists.
+
+All worktrees for a repo `~/git-projects/<repo>` live at
+`~/git-projects/worktrees/<repo>/<branch-name>/` — **never inside the clone**. In-tree
+worktrees caused a real cascade: a dirty `git status` needing `.gitignore`/`info/exclude`
+patches, search tools blind to worktree files, dotted paths breaking session tooling.
+One central `worktrees/` parent also gives a single sweep point for stale-workspace
+audits.
+
+**How (Claude Code):** `EnterWorktree` without a path hard-codes creation under
+`.claude/worktrees/` — never let it create. Instead: (1) from the main clone,
+`git worktree add ~/git-projects/worktrees/<repo>/<branch> -b <branch>`; (2)
+`EnterWorktree { path: ... }` to switch the session in; (3) `ExitWorktree` cannot remove
+a path-entered worktree — exit with `action: "keep"`. Teardown stays a manual, confirmed
+step (below), not something `ExitWorktree` does for you.
+
+**Teardown is confirm-first, not routine cleanup.** Deleting a merged *branch* is
+routine; removing a *worktree* tears down a workspace and needs a yes. Safe sequence
+once approved:
+
+0. Get every live session **out** of the worktree first — `ExitWorktree { action: "keep" }`.
+1. Confirm `git -C <worktree> status --short` is clean — nothing uncommitted is lost.
+2. Confirm the worktree's branch is an ancestor of `origin/main` (its work is merged).
+3. `git worktree remove <path>` from the main clone.
+4. Delete the now-unreferenced local branch (`git branch -d`).
+
+**Why step 0 is step 0, not an afterthought** (princess-pi-packages#158): entering a
+worktree *moves* the session transcript into that worktree's project directory, and only
+`ExitWorktree` moves it back — nothing hooks `git worktree remove`. Remove the worktree
+while a session is still inside it and that session's transcript is stranded under a
+directory that no longer exists; session-discovery tooling then finds nothing, because
+both its lookup paths (physical location, last-recorded cwd) point at a path that's
+gone. The session becomes invisible until someone exits the worktree — impossible from a
+directory that doesn't exist. Symptom: a session you're *currently in* doesn't show up
+in the session picker. Recovery is `ExitWorktree { action: "keep" }`.
+
+`pr-cleanup` currently has a known gap here (#221) — it can remove the worktree its own
+session is inside, stranding the transcript the same way. Fixed there, not duplicated
+here.
+
+## Git guardrails
+
+A `PreToolUse` hook (`~/.claude/hooks/block-dangerous-git.sh`, plus a Pi equivalent)
+intercepts dangerous git commands. It is **destination-aware, not a flat block list** —
+measured against the hook (2026-08-11):
+
+```
+git push --force-with-lease origin 42-my-feature   → exit 0  allowed
+git rebase --onto origin/main origin/218-base …    → exit 0  allowed
+git push --force-with-lease                        → exit 2  blocked (from a repo on main)
+git push origin main                               → exit 2  blocked
+```
+
+It blocks by *destination*: a force-push to a named feature branch is allowed, and this
+workflow depends on it (`git-checkpoint`, `pr-open`, the rebase recipes below). **Always
+name the refspec explicitly** — `git push --force-with-lease origin <branch>`, never the
+bare form, since the bare form's safety depends on which branch you happen to be
+standing on. (Wording coordinated with #225, which owns the guardrail's canonical
+description; if that issue changes the hook's behavior, this section may need a
+re-measure.)
+
+**`gh pr merge` in any form is human-only**, regardless of flags. Measured: both
+`gh pr merge <N> --squash` and `gh pr merge <N> --squash --admin` are currently allowed
+for an agent to run directly — enforcement for this specific command arrives only once
+#217 deploys. Until then, the rule holds by convention, not by a technical block: an
+agent runs `pr-open` and stops; a human runs `pr-merge`/`pr-reject`.
+
+## Trigger words
+
+- **"ready to merge?"** → run `pr-open` to create the PR.
+- **After the human says "done" / "merged"** → verify PR state, then run `pr-cleanup`
+  from the feature worktree.
+
 ## Scripts
 
 | Script | What it does |
@@ -61,6 +145,13 @@ Labels are commit markers, not gates. Commit as often as needed.
 | `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
 | `pr-threads <pr#> [owner/repo]` | Unresolved review-conversation count. Exit 0 = none; exit 1 lists each thread's file and URL. Scriptable merge gate — `gh pr view` has no unresolved-conversation field, that state exists only in GraphQL. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
+| `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
+| `install-workflow-tools` | Copies every script above from this repo's `bin/` to `~/bin/`. Not itself installed by itself — run from a clone. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). |
+
+This table is the installer's contract: every script it copies must have a row here, and
+every row that's an installable script must be in `install-workflow-tools`' `SCRIPTS`
+array. A row here with nothing to install (like this one) is the exception, not a
+pattern to repeat.
 
 **Why the branch is positional on `pr-merge` but a flag on `pr-reject`:** `pr-merge`
 takes no other argument, so a bare word can only be a branch. `pr-reject` also takes a
@@ -104,6 +195,35 @@ Two things that look like bugs and are not:
 **Note:** `git-snap` and `git-ship` have been replaced by `git-checkpoint`. The old
 names are deprecated — `git-checkpoint` does add + commit + push in one step.
 There is never a reason to commit without pushing in the new workflow.
+
+## Issue cadence & branch cleanup
+
+**Comment about as often as you commit.** Keep the issue updated with status progress,
+not just code dumps. Every active repo maintains a standing "Project status & human
+action items" issue so human and agent don't lose track of the big picture between
+sessions.
+
+**Branch cleanup beyond `pr-cleanup`.** Once an issue is closed *and* its work is merged
+into `main`, delete all its branches — local and remote — as routine cleanup. Verify
+**per-repo, never across repos**: issue numbers collide across repositories, so branch
+↔ issue is read from the `<issue#>-<slug>` name of the branch in *that repo*, checked
+against *that repo's* closed issues and `origin/main`. Don't delete a branch for another
+issue just because it happens to be merged. `git branch -d` may refuse a branch whose
+remote was already deleted even though it's merged to `main` — re-confirm the ancestor
+check (`git merge-base --is-ancestor <branch> origin/main`), then `-D`.
+
+Deploy/protected branches beyond `main`/`master` aren't a declared concept in the
+tooling yet (#222, open) — the guard above assumes the only branch you must never delete
+work from is `main`.
+
+## Commit floor for research and debug scripts
+
+Any experiment, prototype, or diagnostic script in `research/` or `debug/` must reach
+**at least one git commit before it is deleted, consolidated, or rewritten**. An
+experiment that never reached a commit is gone for good; one that did can always be
+resurrected from history, and the result it produced stays reproducible. This doesn't
+forbid later cleanup — pruning and reorganizing past experiments is expected. It only
+sets the floor: commit first, tidy later. Prune only when explicitly asked.
 
 ## Happy path — small feature
 
@@ -219,7 +339,8 @@ detail: Pull request has conflicts.
 Fix:
 1. `git fetch origin && git rebase origin/main`
 2. Resolve conflicts
-3. `git push --force-with-lease`
+3. `git push --force-with-lease origin <branch>` — name the refspec; see
+   [Git guardrails](#git-guardrails) for why the bare form is the wrong habit to build
 4. Re-run `pr-open`
 
 ### A stacked PR conflicts after its parent merges
@@ -285,8 +406,9 @@ content; clean application is not proof the result still works.
 The repository ruleset requires review threads to be resolved before merging.
 
 1. Resolve all review conversation threads (click "Resolve conversation" on each)
-2. If the UI still blocks: `gh pr merge <N> --squash --admin` (bypasses the block
-   if you have admin permissions)
+2. **This is a human step.** `gh pr merge` is human-only in every form — see
+   [Git guardrails](#git-guardrails) — including `--admin`, which bypasses the ruleset
+   block if you have admin permissions.
 3. The `--admin` flag is temporary — the ruleset is doing its job; fix the root
    cause (unresolved threads) rather than relying on bypass
 
