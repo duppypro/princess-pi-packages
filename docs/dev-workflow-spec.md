@@ -76,6 +76,31 @@ scripts now keep only head branches in your own repo, and abort listing the cand
 if more than one survives rather than taking `.[0]`. A failed `gh pr list` is reported
 as a failure, never as "no PR found".
 
+### `pr-cleanup` fails closed, by design
+
+Every gate aborts when it cannot **prove** its precondition. It never treats a failed
+command as evidence that deletion is safe. In practice that means `pr-cleanup` will
+refuse, and tell you why, when:
+
+| Situation | Why it refuses |
+|---|---|
+| The worktree has uncommitted or untracked changes | `git worktree remove` refusing IS the safeguard. There is no `--force` retry — a merged PR says nothing about local-only edits. Commit, stash, or force it by hand once you are sure. |
+| Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. |
+| `git fetch`, `git ls-remote` or `gh pr list` fails | An unreachable or unauthenticated remote is not proof of anything. |
+| There is no merged PR, the branch is absent from origin, **and** its tip isn't in the primary branch | Absence from origin is not authorization. That is exactly the state of a branch never pushed, or one whose remote ref was deleted *without* merging — its commits exist nowhere else. |
+| `origin/<branch>` has moved since the PR merged | Someone pushed after the merge. Your local tip still matches the PR, so nothing local hints at it — those commits live only on the remote. The delete also carries a `--force-with-lease` pinned to the merged sha, so a commit landing mid-run is rejected rather than swept up. |
+| `git push --delete` fails and the ref is still on origin | Includes protected-ref rejections. It exits non-zero instead of printing `✅ Cleanup complete`. |
+| `git branch -D` fails while the branch still exists | A ref lock or a permissions problem — reported as a failure, never as "already gone". |
+
+Two things that look like bugs and are not:
+
+- **The merge check is the PR's `headRefOid`, not `git merge-base --is-ancestor`.**
+  We squash-merge, so a branch tip is *never* an ancestor of its own squash commit.
+  An ancestry test would refuse every legitimate cleanup.
+- **The local delete is `git branch -D`, not `-d`.** For the same reason: git never
+  considers a squash-merged branch merged, so `-d` would refuse every time. The PR gate
+  above is the stronger proof — it pins the tip to the exact merged commit.
+
 **Note:** `git-snap` and `git-ship` have been replaced by `git-checkpoint`. The old
 names are deprecated — `git-checkpoint` does add + commit + push in one step.
 There is never a reason to commit without pushing in the new workflow.

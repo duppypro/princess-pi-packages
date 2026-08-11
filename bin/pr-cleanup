@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# pr-cleanup — delete merged branch, its remote, and its worktree.
+# pr-cleanup — delete a merged branch, its remote, and its worktree.
 # Auto-discovers branch and worktree from cwd. Run from the feature
 # worktree AFTER the PR was merged.
+#
+# Governing rule (#210): every gate fails CLOSED. A check that cannot PROVE its
+# precondition aborts — it never assumes the safe-to-delete case. Each of the
+# three Critical findings on #204 was the same mistake in a different costume:
+# a command failing, and the failure being read as "nothing to worry about."
 set -euo pipefail
 
+# `pwd` is wherever the human happened to be standing; `git worktree remove`
+# only accepts the registered top level, so running from any subdirectory used
+# to fail after the safety gate had already passed (#210).
+CWD=$(git rev-parse --show-toplevel)
 BRANCH=$(git branch --show-current)
-CWD=$(pwd)
 
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-cleanup: on main — nothing to clean up from here." >&2
@@ -14,51 +22,203 @@ fi
 
 echo "🧹 pr-cleanup for branch '$BRANCH'"
 
-# 0. Safety gate — verify the PR was merged.
-echo "🔍 Verifying PR for '$BRANCH' was merged..."
-PR_INFO=$(gh pr list --head "$BRANCH" --state merged --json number,mergeCommit --jq '.[0]' 2>/dev/null || true)
-if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
-  PR_NUM=$(echo "$PR_INFO" | jq -r '.number')
-  PR_MERGE_SHA=$(echo "$PR_INFO" | jq -r '.mergeCommit.oid // empty')
-  if [ -n "$PR_MERGE_SHA" ] && git merge-base --is-ancestor "$PR_MERGE_SHA" origin/main 2>/dev/null; then
-    echo "   ✅ PR #$PR_NUM was merged into origin/main — safe to delete."
-  else
-    echo "   ❌ ERROR: PR #$PR_NUM is marked merged but not in origin/main." >&2
-    exit 1
-  fi
-else
-  if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
-    echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR found." >&2
-    exit 1
-  else
-    echo "   ℹ️  '$BRANCH' not on origin — proceeding."
-  fi
-fi
+# --- 0. locate the main clone ----------------------------------------------
+# `git worktree list | grep "\[main\]" | awk '{print $1}'` truncated any path
+# containing a space, and parsed human-readable output for machine state — the
+# Agent-First Output standard forbids exactly that. --porcelain is the contract.
+#
+# `-z` is not optional for machine parsing: without it git emits paths verbatim,
+# so a newline in a directory name splits one record across lines. With `-z`
+# every attribute line is NUL-terminated, which no path byte can be.
+#
+# PRIMARY_REF is captured alongside the path rather than assumed. Accepting
+# `master` here while hard-coding `origin/main` downstream would abort every
+# legitimate cleanup in a master-primary repo, with a message blaming the merge
+# commit — a wrong answer wearing a confident error.
+MAIN_CLONE=""
+PRIMARY_REF=""
+wt_path=""
+while IFS= read -r -d '' line; do
+  case "$line" in
+    "worktree "*) wt_path="${line#worktree }" ;;
+    "branch refs/heads/main")   MAIN_CLONE="$wt_path"; PRIMARY_REF="main";   break ;;
+    "branch refs/heads/master") MAIN_CLONE="$wt_path"; PRIMARY_REF="master"; break ;;
+  esac
+done < <(git worktree list --porcelain -z)
 
-# 1. Switch to main clone first (worktree can't delete itself while checked in)
-MAIN_CLONE=$(git worktree list | grep "\[main\]" | awk '{print $1}' | head -1)
 if [ -z "$MAIN_CLONE" ]; then
-  echo "   ❌ ERROR: no main worktree found. Switch to main clone and run from there." >&2
+  echo "   ❌ ERROR: no main/master worktree found. Switch to the main clone and run from there." >&2
   exit 1
 fi
 
-# 2. Remove this worktree (done from main clone)
-echo "🗑  Removing worktree $CWD..."
-git -C "$MAIN_CLONE" worktree remove "$CWD" 2>/dev/null || \
-  git -C "$MAIN_CLONE" worktree remove --force "$CWD" 2>/dev/null || {
-    echo "   ❌ ERROR: worktree removal failed." >&2
+# --- 1. freshen refs before judging anything -------------------------------
+# origin/main is a local cache; deciding "merged" against a stale one is a guess.
+if ! git -C "$MAIN_CLONE" fetch --quiet origin 2>/dev/null; then
+  echo "   ❌ ERROR: 'git fetch origin' failed — cannot verify merge state." >&2
+  exit 1
+fi
+
+# --- 2. safety gate: prove THIS branch tip was merged -----------------------
+echo "🔍 Verifying PR for '$BRANCH' was merged..."
+OWNER=$(gh repo view --json owner --jq '.owner.login')
+# `2>/dev/null || true` here would be the same fail-open hole as the ls-remote
+# one below: a gh outage yields an empty PR_INFO, which falls through to the
+# "no merged PR" branch and can reach deletion having verified nothing.
+if ! PR_INFO=$(gh pr list --head "$BRANCH" --state merged \
+  --json number,mergeCommit,headRefOid,headRepositoryOwner \
+  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\")] | .[0]"); then
+  echo "   ❌ ERROR: 'gh pr list' failed — cannot verify the PR for '$BRANCH'." >&2
+  exit 1
+fi
+
+if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
+  PR_NUM=$(echo "$PR_INFO" | jq -r '.number')
+  PR_MERGE_SHA=$(echo "$PR_INFO" | jq -r '.mergeCommit.oid // empty')
+  PR_HEAD_OID=$(echo "$PR_INFO" | jq -r '.headRefOid // empty')
+  LOCAL_TIP=$(git rev-parse HEAD)
+
+  if [ -z "$PR_MERGE_SHA" ] || ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$PR_MERGE_SHA" origin/"$PRIMARY_REF" 2>/dev/null; then
+    echo "   ❌ ERROR: PR #$PR_NUM is marked merged but its merge commit is not in origin/$PRIMARY_REF." >&2
     exit 1
-  }
+  fi
 
-# 3. Delete remote branch
+  # The gate above proves a PR with this branch NAME was merged. It says nothing
+  # about the commits in hand. Comparing the tip to the PR's headRefOid is what
+  # ties the two together, and catches both a reused branch name and commits
+  # pushed after the merge (#210).
+  #
+  # NOT `git merge-base --is-ancestor "$BRANCH" "$PR_MERGE_SHA"` — the suggested
+  # remedy on #204. We squash-merge, so the branch tip is never an ancestor of
+  # the squash commit and that check would refuse every legitimate cleanup.
+  if [ -z "$PR_HEAD_OID" ]; then
+    echo "   ❌ ERROR: PR #$PR_NUM reports no headRefOid — cannot tie it to this branch." >&2
+    exit 1
+  fi
+  if [ "$LOCAL_TIP" != "$PR_HEAD_OID" ]; then
+    echo "   ❌ ERROR: branch tip does not match what PR #$PR_NUM merged — unmerged work present." >&2
+    echo "      local tip:      $LOCAL_TIP" >&2
+    echo "      PR headRefOid:  $PR_HEAD_OID" >&2
+    echo "   Refusing to delete. Open a new PR for the extra commits, or reset the branch." >&2
+    exit 1
+  fi
+  # The local tip matching is not enough. Another clone can push to
+  # origin/$BRANCH after the PR merged; our tip is untouched, so the check above
+  # still passes, and step 4 would delete a remote ref carrying commits that
+  # exist nowhere else. Check what is actually ON the remote, here in the gate —
+  # before anything is destroyed, rather than at the delete itself.
+  # No `|| true` — that would swallow an ls-remote failure into an empty
+  # REMOTE_TIP, which reads as "no remote branch" and sails through the check
+  # below. Exactly the fail-open shape this script exists to remove, reintroduced
+  # by the commit that added this gate. Status separately from output, as
+  # everywhere else. (`set -o pipefail` makes the awk pipeline report ls-remote's
+  # failure rather than awk's success.)
+  if ! REMOTE_TIP=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null | awk 'NR==1 {print $1}'); then
+    echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify the remote tip for '$BRANCH'." >&2
+    echo "   Refusing to delete on an unverified remote state." >&2
+    exit 1
+  fi
+  if [ -n "$REMOTE_TIP" ] && [ "$REMOTE_TIP" != "$PR_HEAD_OID" ]; then
+    echo "   ❌ ERROR: origin/$BRANCH has moved since PR #$PR_NUM merged." >&2
+    echo "      remote tip:     $REMOTE_TIP" >&2
+    echo "      PR headRefOid:  $PR_HEAD_OID" >&2
+    echo "   Someone pushed after the merge. Those commits are not in any PR —" >&2
+    echo "   refusing to delete the remote branch. Fetch and review them first." >&2
+    exit 1
+  fi
+  echo "   ✅ PR #$PR_NUM merged into origin/$PRIMARY_REF, and its head matches this branch tip."
+else
+  # No merged PR. The branch being absent from origin is the ONLY reading that
+  # allows cleanup — and a failed ls-remote is not that reading. Testing exit
+  # status separately from output is the whole point: `… 2>/dev/null | grep -q`
+  # made an auth or network failure indistinguishable from "branch not found",
+  # and deleted local work on the strength of it (#210).
+  if LS_REMOTE_OUT=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null); then
+    if [ -n "$LS_REMOTE_OUT" ]; then
+      echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR was found." >&2
+      exit 1
+    fi
+    # Absence from origin is NOT authorization. A branch that was never pushed,
+    # or whose remote ref was deleted without merging, has no PR and no remote
+    # ref — and its commits exist nowhere else. With no PR to appeal to, the
+    # only proof left is that the tip carries nothing unique: it must already be
+    # contained in origin/main.
+    #
+    # (Ancestry is the right test *here* precisely because there is no squash
+    # commit in play. Where a PR was squash-merged, the branch above handles it
+    # via headRefOid — ancestry would wrongly refuse that case.)
+    if ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$(git rev-parse HEAD)" origin/"$PRIMARY_REF" 2>/dev/null; then
+      echo "   ❌ ERROR: no merged PR for '$BRANCH', and its commits are not in origin/$PRIMARY_REF." >&2
+      echo "   This branch's commits may exist nowhere else — refusing to delete." >&2
+      echo "   If the work is genuinely disposable, delete the branch by hand." >&2
+      exit 1
+    fi
+    echo "   ℹ️  '$BRANCH' not on origin, and its tip is already in origin/$PRIMARY_REF — safe to delete."
+  else
+    echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify '$BRANCH' on origin." >&2
+    echo "   Refusing to delete on an unverified remote state." >&2
+    exit 1
+  fi
+fi
+
+# --- 3. remove this worktree (from the main clone) --------------------------
+# No --force. git refusing a dirty worktree IS the safeguard; the old retry
+# overrode it one line later and destroyed uncommitted work on a routine
+# cleanup (#210). A merged PR says nothing about local-only edits.
+echo "🗑  Removing worktree $CWD..."
+if ! git -C "$MAIN_CLONE" worktree remove "$CWD" 2>/dev/null; then
+  echo "   ❌ ERROR: worktree removal refused — it likely has uncommitted or untracked changes." >&2
+  echo "   Inspect with: git -C \"$CWD\" status --short" >&2
+  echo "   Then commit, stash, or remove it by hand with --force once you are sure." >&2
+  exit 1
+fi
+
+# --- 4. delete the remote branch -------------------------------------------
+# Confirm the ref is actually gone rather than trusting the exit status alone:
+# auth, network and protected-ref rejections were all being reported as
+# "may already be deleted", under a final "✅ Cleanup complete" (#210).
+#
+# --force-with-lease pins the delete to the sha the gate verified, closing the
+# residual race between that check and this push: if someone lands a commit in
+# between, the push is REJECTED rather than silently taking their work with it.
 echo "🗑  Deleting remote branch origin/$BRANCH..."
-git -C "$MAIN_CLONE" push origin --delete "$BRANCH" 2>/dev/null || \
-  echo "   ℹ️  Remote branch may already be deleted."
+LEASE=()
+[ -n "${PR_HEAD_OID:-}" ] && LEASE=(--force-with-lease="refs/heads/$BRANCH:$PR_HEAD_OID")
+if git -C "$MAIN_CLONE" push "${LEASE[@]}" origin --delete "$BRANCH" 2>/dev/null; then
+  echo "   ✅ remote branch deleted."
+elif REMAINS=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null); then
+  if [ -n "$REMAINS" ]; then
+    echo "   ❌ ERROR: failed to delete remote branch origin/$BRANCH — it still exists." >&2
+    echo "   The worktree was removed; the branch refs were left intact." >&2
+    exit 1
+  fi
+  echo "   ℹ️  Remote branch was already deleted."
+else
+  echo "   ❌ ERROR: remote delete failed and 'ls-remote' could not confirm the branch state." >&2
+  exit 1
+fi
 
-# 4. Delete local branch
+# --- 5. delete the local branch --------------------------------------------
+# -D, not -d, and deliberately so. Under squash-merge git never considers the
+# branch merged, so `git branch -d` would refuse every single legitimate
+# cleanup. The proof of merge is the PR gate in step 2 — which is strictly
+# stronger than git's ancestry test, because it also pins the tip to the exact
+# commit the PR merged.
+#
+# The failure is checked against the ref, not inferred from the exit status —
+# same rule as every other gate here. A ref-lock error, a permissions problem or
+# the branch being checked out in another worktree all make `branch -D` fail
+# while the branch is still very much there, and reporting that as "already
+# gone" under a final "✅ Cleanup complete" is the exact fail-open shape this
+# script exists to remove.
 echo "🗑  Deleting local branch $BRANCH..."
-git -C "$MAIN_CLONE" branch -D "$BRANCH" 2>/dev/null || \
-  echo "   ℹ️  Local branch may already be deleted."
+if ! git -C "$MAIN_CLONE" branch -D "$BRANCH" 2>/dev/null; then
+  if git -C "$MAIN_CLONE" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    echo "   ❌ ERROR: failed to delete local branch '$BRANCH' — it still exists." >&2
+    echo "   Checked out in another worktree, or a ref lock / permissions problem." >&2
+    exit 1
+  fi
+  echo "   ℹ️  Local branch already gone."
+fi
 
 echo "✅ Cleanup complete. Now in $MAIN_CLONE"
 cd "$MAIN_CLONE"
