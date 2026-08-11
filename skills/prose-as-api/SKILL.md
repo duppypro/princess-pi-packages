@@ -123,9 +123,7 @@ maintainer guesses — and guesses conservatively, which means treating the pros
 
 ---
 
-## Auditing an existing surface
-
-## Where to look
+## Auditing an existing surface — where to look
 
 Start mechanical and cheap. These seeds over-match by design; judgement happens on the hits.
 
