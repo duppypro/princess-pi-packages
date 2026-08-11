@@ -34,13 +34,14 @@ function freshHome(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "iwt-home-"));
 }
 
-function run(home: string): { code: number; out: string } {
+function run(home: string, extraPath?: string): { code: number; out: string } {
 	let code = 0;
 	let out = "";
+	const path_ = extraPath ? `${extraPath}${path.delimiter}${process.env.PATH}` : process.env.PATH;
 	try {
 		out = execFileSync("bash", [INSTALLER], {
 			encoding: "utf8",
-			env: { ...process.env, HOME: home },
+			env: { ...process.env, HOME: home, PATH: path_ },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 	} catch (err: any) {
@@ -114,6 +115,38 @@ console.log("install-workflow-tools: removes nothing, reports stale tools (#235)
 
 	check(first.code === 0 && second.code === 0, "idempotent: exit 0 both runs", `${first.code}, ${second.code}`);
 	check(JSON.stringify(before) === JSON.stringify(after), "idempotent: $HOME/bin contents unchanged between runs", `${before.join(",")} vs ${after.join(",")}`);
+}
+
+// 5. Stale tool elsewhere on PATH — not in $HOME/bin at all — is still
+//    caught (#240 review: the original version only checked $INSTALL_DIR,
+//    so a stale copy in e.g. ~/.local/bin sat unreported).
+{
+	const home = freshHome();
+	fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+	const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-elsewhere-"));
+	const stalePath = path.join(elsewhere, "git-ship");
+	fs.writeFileSync(stalePath, "#!/bin/sh\necho old\n");
+	fs.chmodSync(stalePath, 0o755);
+
+	const { code, out } = run(home, elsewhere);
+
+	check(code === 0, "stale tool elsewhere on PATH → exit status still 0", `got ${code}`);
+	check(out.includes(stalePath), "stale tool elsewhere on PATH → reported with its real location, not assumed to be in ~/bin", out);
+}
+
+// 6. The converse of #5: a stale name that exists on disk but is NOT on
+//    PATH at all must not be reported — nothing can shadow it, so it isn't
+//    the "stale tool sitting on PATH unnoticed" risk this feature guards.
+{
+	const home = freshHome();
+	fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+	const notOnPath = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-not-on-path-"));
+	fs.writeFileSync(path.join(notOnPath, "merge"), "#!/bin/sh\necho old\n");
+
+	const { code, out } = run(home); // note: notOnPath never added to PATH
+
+	check(code === 0, "unreachable stale tool present on disk → exit status still 0", `got ${code}`);
+	check(!/stale/i.test(out), "stale name that exists but isn't on PATH anywhere → not reported", out);
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} install-workflow-tools no-delete: ${checks - failures} of ${checks} checks passed.`);

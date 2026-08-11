@@ -48,9 +48,19 @@ stale_found=0
 for entry in "${STALE[@]}"; do
   name="${entry%%:*}"
   note="${entry#*:}"
+  found=""
+  # Check $INSTALL_DIR explicitly first — on a fresh install it may not be on
+  # PATH yet, so `command -v` alone would miss a stale copy sitting right
+  # there. Then fall back to PATH generally, so a stale copy anywhere else
+  # (~/.local/bin, /usr/local/bin, ...) is still caught, not just ~/bin.
   if [ -f "$INSTALL_DIR/$name" ] || [ -L "$INSTALL_DIR/$name" ]; then
+    found="$INSTALL_DIR/$name"
+  elif found=$(command -v "$name" 2>/dev/null); then
+    :
+  fi
+  if [ -n "$found" ]; then
     stale_found=1
-    echo "⚠ stale: $INSTALL_DIR/$name ($note) — delete by hand"
+    echo "⚠ stale: $found ($note) — delete by hand"
   fi
 done
 if [ "$stale_found" -eq 1 ]; then
