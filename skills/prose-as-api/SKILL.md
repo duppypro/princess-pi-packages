@@ -1,6 +1,6 @@
 ---
 name: prose-as-api
-description: Audit code for state inferred by matching human-facing prose — substring/regex against error messages, stderr, status text, or log lines used to drive control flow. Reports each finding graded by who owns the producer, with the structured contract that should replace it. Use when the user says "check for prose parsing", "are we scraping human output", "audit output contracts", during code review of anything that shells out or handles errors, or before shipping a tool whose output another program reads.
+description: Applies the Agent-First Output standard to a specific surface. Two directions. Designing — choose the machine-readable mode a tool ships (--json, --porcelain, exit codes, typed err.code, column-addressable records), sized so an agent extracts the answer in minimal tokens and zero reasoning steps. Auditing — find state inferred from human-facing prose (error messages, stderr, status text, log lines) where a structured contract belongs, graded by who owns the producer, and file the required bug against any producer shipping no machine-readable mode. Use when applying Agent-First Output, designing or reviewing a tool's output surface, writing code that shells out or handles errors, or on "check for prose parsing", "are we scraping human output", "audit output contracts".
 ---
 
 # Prose as API
@@ -8,6 +8,11 @@ description: Audit code for state inferred by matching human-facing prose — su
 > **Where this file lives.** The copy in `princess-pi-packages/skills/prose-as-api/SKILL.md` is
 > the **source of truth**. `~/.claude/skills/prose-as-api/SKILL.md` is a **deploy copy** — edit the
 > repo copy, then copy it out. Never the reverse; the dotfile has no history to lose.
+
+This is the working end of **Agent-First Output** (`~/git-projects/CLAUDE.md`): every artifact has
+two readers, humans and agents, and neither surface is optional. That standard states the
+obligation; this skill is how you meet it on a specific surface — *designing* the contract before
+there is code, and *auditing* for the places prose ended up carrying state instead.
 
 **The rule.** A message written to be read by a human is not an API. Match on it and you have
 created an undeclared interface with no stability promise — the producer can reword, retone,
@@ -82,6 +87,44 @@ well-known argv flag, an env var the process sets — not a better substring.
 
 ---
 
+## Designing the contract — before there is code to audit
+
+Agent-First requires every surface another program may read to have a machine-readable mode.
+Shipping one is not the same as shipping a good one.
+
+**Pick the smallest contract that answers the question.** Reach for the top of this table first;
+most surfaces never need the bottom.
+
+| the question | contract | not |
+|---|---|---|
+| Did it work? | exit code | a success sentence |
+| What kind of failure? | typed code — `err.code`, HTTP status, documented exit code | message text |
+| One fact about one thing | one line, or one key | a document |
+| A list of things | one record per line, stable field order | a nested tree |
+| Genuinely a tree | JSON, flattest shape that stays honest | prose summary |
+
+**Budget the agent's tokens like you budget the human's attention.** Flat over nested, stable key
+names, no decoration, no ANSI. A `--json` that costs 4k tokens to answer *"is it running?"* has met
+the letter of the standard and missed the point. When the common question has an expensive answer,
+give it a cheap dedicated path — `--quiet`, a bare exit code, a single-field flag — rather than
+making every caller parse the whole document to reach one boolean.
+
+**Zero reasoning steps is the bar, not "parseable".** If the agent must join two fields, infer from
+absence, or know a convention you never wrote down, the surface still costs reasoning. Name the
+thing it will actually ask for.
+
+**Make the prose free.** The payoff of the structured mode is that human-facing copy becomes safe
+to reword, retone, translate, and rewrap without a version bump. If a reword would still break
+someone, the contract is not carrying its weight yet — find what they are parsing and add it.
+
+**Say what you promise.** Field names, key names, and exit codes are API and are versioned. Prose
+is not, and is explicitly disposable. State which is which in the tool's own docs, or the next
+maintainer guesses — and guesses conservatively, which means treating the prose as frozen.
+
+---
+
+## Auditing an existing surface
+
 ## Where to look
 
 Start mechanical and cheap. These seeds over-match by design; judgement happens on the hits.
@@ -142,19 +185,25 @@ export type DaemonHealthReason = "not-found" | "not-started" | "session-removed"
 ```
 
 **B. You own the producer, someone else consumes it** (your CLI, your library).
-→ Add the structured mode and say so: `--json`, `--porcelain`, a stable exit-code table, a typed
-`code` field on thrown errors. Keep the prose for humans; it is now free to change. This is the
-standing practice — **any output another program is expected to read gets a machine-readable
-option**.
+→ Add the structured mode, designed per the section above: `--json`, `--porcelain`, a stable
+exit-code table, a typed `code` field on thrown errors. Keep the prose for humans; it is now free
+to change. If it cannot ship in this change, **file the issue against your own repo before moving
+on** — an undeclared contract that everyone knows about is still undeclared.
 
 **C. Third party, structured mode exists.** → Use it. `git --porcelain`, `docker --format`,
 `systemctl --property`, `gh --json` all exist and most callers just never looked.
 
 **D. Third party, genuinely no structured mode.** → Real, and the honest answer is not "don't".
-Isolate it: one adapter function, nothing else parses; a comment recording the exact tool version
-whose output was observed; and a test against a captured fixture of that output so an upgrade
-fails loudly instead of silently. The parse is still a liability — it is now a *contained* one
-with a tripwire.
+Two obligations, both required:
+
+1. **File a bug upstream, in this session.** Agent-First makes this unconditional and it is the
+   only clause here that compounds — it is how the ecosystem grows structured modes instead of
+   just our corner of it. A conditional version ("when practical") decays to never.
+2. **Then contain the parse.** One adapter function, nothing else parses; a comment recording the
+   exact tool version whose output was observed; a test against a captured fixture so an upgrade
+   fails loudly instead of silently.
+
+The parse remains a liability. It is now a *contained* one, with a tripwire and a filed path out.
 
 ---
 
