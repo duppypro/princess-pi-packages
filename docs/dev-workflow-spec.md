@@ -222,6 +222,56 @@ Fix:
 3. `git push --force-with-lease`
 4. Re-run `pr-open`
 
+### A stacked PR conflicts after its parent merges
+
+GitHub reports conflicts on a PR you never touched, right after a *different* PR merged.
+
+**Why.** We squash-merge. A squash discards the branch's commits and writes one new
+commit with a new sha. Any branch built on top of that branch still carries the
+originals, and git has no idea they are the same work — it sees unmerged commits whose
+changes collide with content already in `main`. Every stacked PR breaks at once.
+
+Seen live: #212 merged, and #213 / #214 / #215 / #216 all went red simultaneously.
+
+`pr-open` warns about this *before* you open the PR — it names any unmerged branch your
+branch is built on and prints the rebase you will eventually need. It does not block:
+stacking is sometimes right. It was right during #207, when `main` was red and a fresh
+worktree could not even `bun install`.
+
+**Fix — parent already merged.** Replay only your own commits onto the new `main`:
+
+```
+git fetch origin
+git rebase --onto origin/main <old-base> <your-branch>
+git push --force-with-lease origin <your-branch>
+```
+
+`<old-base>` is the parent's tip *as your branch knew it* — the **newest** of the
+parent's commits, not the oldest, and not `origin/main`. `git rebase --onto` replays
+everything *after* `<old-base>`, so naming the oldest one leaves the rest of the
+parent's commits in the range, to be replayed onto a `main` that already contains their
+squashed equivalent — which is the repeated-conflict mess this recipe exists to avoid.
+
+`git log --oneline origin/main..<your-branch>` lists the parent's commits still riding
+along; the newest of those is the old parent tip.
+
+**Fix — parent still open.** Stay stacked, but re-point at the parent's rewritten tip:
+
+```
+git rebase --onto <parent-branch> <old-parent-tip> <your-branch>
+```
+
+**The trap.** If your branch *merged* the parent rather than branching from it, do
+**not** use the fork point as `<old-base>`. Rebase replays everything in
+`<old-base>..HEAD`, which then includes the parent's own commits — onto a base that
+already contains them. You resolve the same conflict over and over, and the merge
+resolution is discarded anyway, since rebase drops merge commits. Use the **old parent
+tip** as the base so only your own commits replay, and expect to resolve any genuine
+overlap exactly once.
+
+**Re-run the tests after any rebase.** A rebase replays patches against different
+content; clean application is not proof the result still works.
+
 ### Human rejects PR with changes requested
 
 1. Read the feedback on the PR
