@@ -293,12 +293,34 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 // Is a loopback port live? Used by reap-on-start to distinguish a still-running origin from
 // an orphaned edge entry left by a crash-without-kill.
 // ---
-function isPortLive(port) {
+function probePortOnce(port) {
 	return new Promise((resolve) => {
 		const sock = net.connect({ host: "127.0.0.1", port }, () => { sock.destroy(); resolve(true); });
 		sock.on("error", () => resolve(false));
 		sock.setTimeout(500, () => { sock.destroy(); resolve(false); });
 	});
+}
+
+// Retry before declaring a port dead (#181 §4.4).
+//
+// WHY: reap deletes the tunnel ingress rule for any serve-owned hostname whose port does not
+// answer. A single 500 ms probe cannot tell "gone" from "restarting" — a systemd-supervised
+// service tenant is down for a moment on every `systemctl restart` or deploy swap, and a
+// `serve` invocation landing in that window unpublishes it. Three probes over ~1.5 s costs
+// nothing on the common path (a live port answers on probe 1 and returns immediately) and
+// closes the window that actually exists.
+//
+// NOT the fix for princess-pi-brain #9 as originally written — that issue says reap matches
+// `ps aux` for `run-live-server`/`http-server`, which this reaper has never done (it has been
+// port-probe-based since 8ae6fde, Phase 6B). Correct liveness for a `kind = "service"` tenant
+// is a systemd question answered from its manifest `unit`; that stays a brain concern. This
+// only narrows the timing window, which is the real residual risk.
+async function isPortLive(port, attempts = 3, delayMs = 500) {
+	for (let i = 0; i < attempts; i++) {
+		if (await probePortOnce(port)) return true;
+		if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+	}
+	return false;
 }
 
 // ---

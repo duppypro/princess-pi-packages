@@ -370,16 +370,16 @@ var require_wcwidth = __commonJS((exports, module) => {
 });
 
 // bin/serve.ts
-import * as fs4 from "fs";
-import * as path6 from "path";
+import * as fs6 from "fs";
+import * as path7 from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 
 // extensions/lib/serve/process.ts
 import * as https from "node:https";
 import * as http from "node:http";
-import * as path2 from "node:path";
-import { exec } from "node:child_process";
+import * as net from "node:net";
+import { exec, execFile } from "node:child_process";
 
 // extensions/lib/serve/cloudflare.js
 import * as fs from "node:fs";
@@ -406,83 +406,177 @@ function flattenSubdomainToLabel(subdomain) {
   return label;
 }
 
+// extensions/lib/serve/registry.ts
+import * as fs2 from "node:fs";
+import * as os2 from "node:os";
+import * as path2 from "node:path";
+var SERVE_CONFIG_DIR2 = path2.join(os2.homedir(), ".config", "princess-pi-packages", "serve");
+var REGISTRY_PATH = path2.join(SERVE_CONFIG_DIR2, "servers.json");
+var REGISTRY_VERSION = 1;
+function readProcessStartTicks(pid) {
+  try {
+    const raw = fs2.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = raw.lastIndexOf(")");
+    if (close === -1)
+      return null;
+    const fields = raw.slice(close + 1).trim().split(/\s+/);
+    const ticks = Number(fields[19]);
+    return Number.isFinite(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+function pidExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+function verifyRecord(record) {
+  if (!pidExists(record.pid))
+    return "dead";
+  if (record.startTicks === null)
+    return "live";
+  const current = readProcessStartTicks(record.pid);
+  if (current === null)
+    return "recycled";
+  return current === record.startTicks ? "live" : "recycled";
+}
+function readRaw() {
+  try {
+    const parsed = JSON.parse(fs2.readFileSync(REGISTRY_PATH, "utf8"));
+    if (!parsed || parsed.version !== REGISTRY_VERSION)
+      return [];
+    return Array.isArray(parsed.servers) ? parsed.servers : [];
+  } catch {
+    return [];
+  }
+}
+function writeRaw(servers) {
+  try {
+    fs2.mkdirSync(SERVE_CONFIG_DIR2, { recursive: true });
+    const tmp = `${REGISTRY_PATH}.${process.pid}.tmp`;
+    fs2.writeFileSync(tmp, JSON.stringify({ version: REGISTRY_VERSION, servers }, null, 1), "utf8");
+    fs2.renameSync(tmp, REGISTRY_PATH);
+  } catch {}
+}
+function readRegistry() {
+  return readRaw();
+}
+function unregisterPid(pid) {
+  const all = readRaw();
+  const kept = all.filter((r) => r.pid !== pid);
+  if (kept.length !== all.length)
+    writeRaw(kept);
+}
+function liveServers() {
+  const all = readRaw();
+  const live = all.filter((r) => verifyRecord(r) === "live");
+  if (live.length !== all.length)
+    writeRaw(live);
+  return live;
+}
+
 // extensions/lib/serve/process.ts
 async function resolveIp() {
   return "127.0.0.1";
 }
-function discoverServers() {
-  return new Promise((resolve2) => {
-    exec("ps aux | grep -E 'http-server|run-live-server' | grep -v grep", async (error, stdout) => {
+async function discoverServers() {
+  const records = liveServers();
+  if (records.length === 0)
+    return [];
+  const subdomainMap = readSubdomainMap();
+  const servers = [];
+  for (const record of records) {
+    const subdomain = record.subdomain ?? subdomainMap[String(record.port)]?.[0];
+    const localUrl = `http://127.0.0.1:${record.port}`;
+    const url = subdomain ? `https://${flattenSubdomainToLabel(subdomain)}.princess-pi.dev/` : localUrl;
+    let title = "Index Page";
+    try {
+      title = await fetchPageTitle(localUrl);
+    } catch {}
+    servers.push({
+      port: record.port,
+      dir: record.dir,
+      url,
+      localUrl,
+      title,
+      isLive: record.kind === "live",
+      subdomain,
+      pid: record.pid
+    });
+  }
+  return servers;
+}
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", () => resolve(false));
+    probe.once("listening", () => probe.close(() => resolve(true)));
+    probe.listen(port, "127.0.0.1");
+  });
+}
+async function findFreePort(from, window = 100) {
+  for (let port = from;port < from + window; port++) {
+    if (await isPortFree(port))
+      return port;
+  }
+  return null;
+}
+var SERVER_LIKE_HINTS = ["http-server", "run-live-server"];
+function scanUnclaimedServerLike() {
+  return new Promise((resolve) => {
+    execFile("ps", ["-eo", "pid=,args="], (error, stdout) => {
       if (error || !stdout) {
-        resolve2([]);
+        resolve([]);
         return;
       }
-      const servers = [];
-      const lines = stdout.split(`
-`).filter((l) => l.trim().length > 0);
-      const ip = await resolveIp();
-      const subdomainMap = readSubdomainMap();
-      for (const line of lines) {
-        const portMatch = line.match(/-p\s+(\d+)/) || line.match(/--port\s+(\d+)/);
-        if (!portMatch)
+      const claimed = new Set(readRegistry().map((r) => r.pid));
+      const found = [];
+      for (const line of stdout.split(`
+`)) {
+        const trimmed = line.trim();
+        if (!trimmed)
           continue;
-        const port = parseInt(portMatch[1], 10);
-        if (servers.some((s) => s.port === port))
+        const spaceIdx = trimmed.indexOf(" ");
+        if (spaceIdx === -1)
           continue;
-        const parts = line.split(/\s+/);
-        const httpServerIdx = parts.findIndex((p) => p.includes("http-server") || p.includes("run-live-server"));
-        if (httpServerIdx === -1)
+        const pid = Number.parseInt(trimmed.slice(0, spaceIdx), 10);
+        if (!Number.isFinite(pid))
           continue;
-        const parsedPid = Number.parseInt(parts[1], 10);
-        const pid = Number.isNaN(parsedPid) ? undefined : parsedPid;
-        let dir = "current";
-        for (let i = httpServerIdx + 1;i < parts.length; i++) {
-          const part = parts[i];
-          if (part.startsWith("-")) {
-            if (part === "-p" || part === "-C" || part === "-K" || part === "-a") {
-              i++;
-            }
-            continue;
-          }
-          if (part.length > 0 && !part.includes("npx")) {
-            dir = part;
-            break;
-          }
-        }
-        const isLive = line.includes("run-live-server");
-        const localUrl = `http://127.0.0.1:${port}`;
-        const absoluteDir = path2.resolve(process.cwd(), dir);
-        const subdomainMatch = line.match(/--subdomain\s+(\S+)/);
-        let subdomain = subdomainMatch ? subdomainMatch[1] : undefined;
-        if (!subdomain) {
-          const mappedSubdomains = subdomainMap[String(port)];
-          if (mappedSubdomains && mappedSubdomains.length > 0)
-            subdomain = mappedSubdomains[0];
-        }
-        const url = subdomain ? `https://${flattenSubdomainToLabel(subdomain)}.princess-pi.dev/` : localUrl;
-        let title = "Index Page";
-        try {
-          title = await fetchPageTitle(localUrl);
-        } catch (e) {}
-        servers.push({ port, dir, url, localUrl, title, isLive, subdomain, pid });
+        const command = trimmed.slice(spaceIdx + 1);
+        if (!SERVER_LIKE_HINTS.some((hint) => command.includes(hint)))
+          continue;
+        if (claimed.has(pid))
+          continue;
+        if (pid === process.pid)
+          continue;
+        const portMatch = command.match(/-p\s+(\d+)/) || command.match(/--port\s+(\d+)/);
+        found.push({
+          pid,
+          port: portMatch ? Number.parseInt(portMatch[1], 10) : null,
+          command
+        });
       }
-      resolve2(servers);
+      resolve(found);
     });
   });
 }
 function findPidByPort(port) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve) => {
     exec(`lsof -t -i :${port}`, (error, stdout) => {
       if (error || !stdout) {
-        resolve2(null);
+        resolve(null);
         return;
       }
       const pids = stdout.split(`
 `).map((p) => p.trim()).filter((p) => p.length > 0);
       if (pids.length > 0) {
-        resolve2(parseInt(pids[0], 10));
+        resolve(parseInt(pids[0], 10));
       } else {
-        resolve2(null);
+        resolve(null);
       }
     });
   });
@@ -515,10 +609,13 @@ async function killServerInstance(server) {
   if (!pid)
     return false;
   killProcess(pid);
-  return confirmProcessKilled(pid);
+  const confirmed = await confirmProcessKilled(pid);
+  if (confirmed)
+    unregisterPid(pid);
+  return confirmed;
 }
 function fetchPageTitle(url) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve) => {
     const isSsl = url.startsWith("https");
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : undefined;
@@ -531,42 +628,95 @@ function fetchPageTitle(url) {
       res.on("end", () => {
         const match = data.match(/<title>([^<]+)<\/title>/i);
         if (match && match[1]) {
-          resolve2(match[1].trim());
+          resolve(match[1].trim());
         } else {
-          resolve2(isSsl ? "Secure HTTPS Page" : "Web Page");
+          resolve(isSsl ? "Secure HTTPS Page" : "Web Page");
         }
       });
     }).on("error", () => {
-      resolve2(isSsl ? "Secure HTTPS Page" : "Web Page");
+      resolve(isSsl ? "Secure HTTPS Page" : "Web Page");
     });
   });
 }
 function checkServerStatus(url) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve) => {
     const isSsl = url.startsWith("https");
     const getter = isSsl ? https.get : http.get;
     const agent = isSsl ? new https.Agent({ rejectUnauthorized: false }) : undefined;
     const req = getter(url, { agent, timeout: 400 }, (res) => {
       res.on("error", () => {});
       res.resume();
-      resolve2(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
+      resolve(`[+] Online (${res.statusCode} ${res.statusMessage || "OK"})`);
     });
     req.on("error", (err) => {
       if (err.code === "ECONNREFUSED") {
-        resolve2("[-] Offline (Connection Refused)");
+        resolve("[-] Offline (Connection Refused)");
       } else {
-        resolve2(`[-] Offline (${err.code || err.message})`);
+        resolve(`[-] Offline (${err.code || err.message})`);
       }
     });
   });
 }
 
-// extensions/lib/session-path-shortener.ts
+// extensions/lib/serve/registry.ts
+import * as fs3 from "node:fs";
+import * as os3 from "node:os";
 import * as path3 from "node:path";
+var SERVE_CONFIG_DIR3 = path3.join(os3.homedir(), ".config", "princess-pi-packages", "serve");
+var REGISTRY_PATH2 = path3.join(SERVE_CONFIG_DIR3, "servers.json");
+var REGISTRY_VERSION2 = 1;
+function readProcessStartTicks2(pid) {
+  try {
+    const raw = fs3.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = raw.lastIndexOf(")");
+    if (close === -1)
+      return null;
+    const fields = raw.slice(close + 1).trim().split(/\s+/);
+    const ticks = Number(fields[19]);
+    return Number.isFinite(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+function readRaw2() {
+  try {
+    const parsed = JSON.parse(fs3.readFileSync(REGISTRY_PATH2, "utf8"));
+    if (!parsed || parsed.version !== REGISTRY_VERSION2)
+      return [];
+    return Array.isArray(parsed.servers) ? parsed.servers : [];
+  } catch {
+    return [];
+  }
+}
+function writeRaw2(servers) {
+  try {
+    fs3.mkdirSync(SERVE_CONFIG_DIR3, { recursive: true });
+    const tmp = `${REGISTRY_PATH2}.${process.pid}.tmp`;
+    fs3.writeFileSync(tmp, JSON.stringify({ version: REGISTRY_VERSION2, servers }, null, 1), "utf8");
+    fs3.renameSync(tmp, REGISTRY_PATH2);
+  } catch {}
+}
+function registerServer(entry) {
+  const record = {
+    pid: entry.pid,
+    startTicks: readProcessStartTicks2(entry.pid),
+    port: entry.port,
+    dir: entry.dir,
+    kind: entry.kind,
+    subdomain: entry.subdomain ?? null,
+    startedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z")
+  };
+  const kept = readRaw2().filter((r) => r.pid !== record.pid && r.port !== record.port);
+  writeRaw2([...kept, record]);
+  return record;
+}
+
+// extensions/lib/session-path-shortener.ts
+import * as path4 from "node:path";
 function shortenPath(rawPath, cwd = process.cwd()) {
   let rel = rawPath;
-  if (path3.isAbsolute(rawPath)) {
-    rel = path3.relative(cwd, rawPath) || rawPath;
+  if (path4.isAbsolute(rawPath)) {
+    rel = path4.relative(cwd, rawPath) || rawPath;
   }
   if (rel.length > 25) {
     rel = "..." + rel.slice(-22);
@@ -576,9 +726,9 @@ function shortenPath(rawPath, cwd = process.cwd()) {
 
 // extensions/lib/serve/tui.ts
 var import_wcwidth = __toESM(require_wcwidth(), 1);
-import * as os2 from "node:os";
-import * as fs2 from "node:fs";
-import * as path4 from "node:path";
+import * as os4 from "node:os";
+import * as fs4 from "node:fs";
+import * as path5 from "node:path";
 function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }
@@ -606,7 +756,7 @@ function padVisual(str, targetLen) {
   }
   return str + " ".repeat(targetLen - currentLen);
 }
-var HOME = os2.homedir();
+var HOME = os4.homedir();
 function homeRelative(dir) {
   if (dir === HOME)
     return "~";
@@ -644,10 +794,10 @@ function formatServerCard(server) {
   const urlLine = `  \x1B[4m\x1B[34m${server.url}\x1B[0m`;
   const infoLine = `  ${typeColor}${typeLabel}\x1B[0m · logs: \x1B[36m${logPath}\x1B[0m`;
   let aclLine = null;
-  const aclFilePath = path4.join(server.dir, ".serve-acl");
+  const aclFilePath = path5.join(server.dir, ".serve-acl");
   try {
-    if (fs2.existsSync(aclFilePath)) {
-      const content = fs2.readFileSync(aclFilePath, "utf8");
+    if (fs4.existsSync(aclFilePath)) {
+      const content = fs4.readFileSync(aclFilePath, "utf8");
       const entries = content.split(/\r?\n/).map((l) => {
         const h = l.indexOf("#");
         return (h !== -1 ? l.substring(0, h) : l).trim();
@@ -720,22 +870,22 @@ function buildKilledSummary(killedList) {
 }
 
 // extensions/lib/serve/cloudflare.js
-import * as fs3 from "node:fs";
-import * as path5 from "node:path";
-import * as os3 from "node:os";
-import * as net from "node:net";
+import * as fs5 from "node:fs";
+import * as path6 from "node:path";
+import * as os5 from "node:os";
+import * as net2 from "node:net";
 import { execSync } from "node:child_process";
-var CONFIG_DIR2 = path5.join(os3.homedir(), ".config", "princess-pi");
-var CF_ENV_PATH2 = path5.join(CONFIG_DIR2, "cf.env");
-var LOCK_PATH2 = path5.join(CONFIG_DIR2, "tunnel-config.lock");
+var CONFIG_DIR2 = path6.join(os5.homedir(), ".config", "princess-pi");
+var CF_ENV_PATH2 = path6.join(CONFIG_DIR2, "cf.env");
+var LOCK_PATH2 = path6.join(CONFIG_DIR2, "tunnel-config.lock");
 var CF_API = "https://api.cloudflare.com/client/v4";
 var ZONE_SUFFIX = "princess-pi.dev";
-var SERVE_CONFIG_DIR2 = path5.join(os3.homedir(), ".config", "princess-pi-packages", "serve");
-var SUBDOMAIN_MAP_PATH2 = path5.join(SERVE_CONFIG_DIR2, "subdomains.json");
+var SERVE_CONFIG_DIR4 = path6.join(os5.homedir(), ".config", "princess-pi-packages", "serve");
+var SUBDOMAIN_MAP_PATH2 = path6.join(SERVE_CONFIG_DIR4, "subdomains.json");
 function readSubdomainMap2() {
   try {
-    if (fs3.existsSync(SUBDOMAIN_MAP_PATH2)) {
-      return JSON.parse(fs3.readFileSync(SUBDOMAIN_MAP_PATH2, "utf8"));
+    if (fs5.existsSync(SUBDOMAIN_MAP_PATH2)) {
+      return JSON.parse(fs5.readFileSync(SUBDOMAIN_MAP_PATH2, "utf8"));
     }
   } catch {}
   return {};
@@ -746,8 +896,8 @@ function writeSubdomainMap(port, subdomain) {
   if (!arr.includes(subdomain))
     arr.push(subdomain);
   map[String(port)] = arr;
-  fs3.mkdirSync(SERVE_CONFIG_DIR2, { recursive: true });
-  fs3.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
+  fs5.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
+  fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
 }
 function removeSubdomainFromMap(subdomain) {
   const map = readSubdomainMap2();
@@ -758,36 +908,36 @@ function removeSubdomainFromMap(subdomain) {
     else
       map[port] = arr;
   }
-  fs3.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
+  fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
 }
 var APP_PREFIX = "serve ";
 var FALLBACK_RESERVED2 = new Set(["www", "mail", "logger", "preview", "apex", "ns1", "ns2", "_dmarc", "_domainkey"]);
 var LOCK_TIMEOUT_MS = 15000;
 var LOCK_STALE_MS = 60000;
 function parseAclFile(targetDir) {
-  const homeDir = os3.homedir();
-  const gitIgnoreDir = path5.join(homeDir, ".config", "git");
-  const gitIgnorePath = path5.join(gitIgnoreDir, "ignore");
+  const homeDir = os5.homedir();
+  const gitIgnoreDir = path6.join(homeDir, ".config", "git");
+  const gitIgnorePath = path6.join(gitIgnoreDir, "ignore");
   try {
-    if (!fs3.existsSync(gitIgnoreDir))
-      fs3.mkdirSync(gitIgnoreDir, { recursive: true });
-    let ignoreContent = fs3.existsSync(gitIgnorePath) ? fs3.readFileSync(gitIgnorePath, "utf8") : "";
+    if (!fs5.existsSync(gitIgnoreDir))
+      fs5.mkdirSync(gitIgnoreDir, { recursive: true });
+    let ignoreContent = fs5.existsSync(gitIgnorePath) ? fs5.readFileSync(gitIgnorePath, "utf8") : "";
     if (!ignoreContent.includes(".serve-acl")) {
       const sep = ignoreContent.endsWith(`
 `) || ignoreContent === "" ? "" : `
 `;
-      fs3.appendFileSync(gitIgnorePath, `${sep}.serve-acl
+      fs5.appendFileSync(gitIgnorePath, `${sep}.serve-acl
 `);
     }
   } catch {}
-  const aclPath = path5.join(targetDir, ".serve-acl");
-  if (!fs3.existsSync(aclPath)) {
-    const configDir = path5.join(homeDir, ".config", "princess-pi");
-    const defaultAclPath = path5.join(configDir, "default-acl");
+  const aclPath = path6.join(targetDir, ".serve-acl");
+  if (!fs5.existsSync(aclPath)) {
+    const configDir = path6.join(homeDir, ".config", "princess-pi");
+    const defaultAclPath = path6.join(configDir, "default-acl");
     let defaultEmails = [];
-    if (fs3.existsSync(defaultAclPath)) {
+    if (fs5.existsSync(defaultAclPath)) {
       try {
-        defaultEmails = fs3.readFileSync(defaultAclPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+        defaultEmails = fs5.readFileSync(defaultAclPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
       } catch {}
     }
     if (defaultEmails.length === 0) {
@@ -799,9 +949,9 @@ function parseAclFile(targetDir) {
         gitEmail = "david@princess-pi.dev";
       defaultEmails = [gitEmail];
       try {
-        if (!fs3.existsSync(configDir))
-          fs3.mkdirSync(configDir, { recursive: true });
-        fs3.writeFileSync(defaultAclPath, `# Global default ACL for /serve
+        if (!fs5.existsSync(configDir))
+          fs5.mkdirSync(configDir, { recursive: true });
+        fs5.writeFileSync(defaultAclPath, `# Global default ACL for /serve
 ${gitEmail}
 `, "utf8");
       } catch {}
@@ -816,12 +966,12 @@ ${gitEmail}
       ].join(`
 `) + `
 `;
-      fs3.writeFileSync(aclPath, localContent, "utf8");
+      fs5.writeFileSync(aclPath, localContent, "utf8");
     } catch (err) {
       throw new Error(`Failed to auto-seed local .serve-acl file in "${targetDir}": ${err.message}`);
     }
   }
-  const content = fs3.readFileSync(aclPath, "utf8");
+  const content = fs5.readFileSync(aclPath, "utf8");
   const emails = [];
   for (const line of content.split(/\r?\n/)) {
     const hashIdx = line.indexOf("#");
@@ -853,7 +1003,7 @@ function flattenSubdomainToLabel2(subdomain) {
 function loadCfEnv(envPath = CF_ENV_PATH2) {
   let raw;
   try {
-    raw = fs3.readFileSync(envPath, "utf8");
+    raw = fs5.readFileSync(envPath, "utf8");
   } catch (err) {
     throw new Error(`Cloudflare token file not found or unreadable at ${envPath} (${err.code || err.message}). ` + `Create it (0600) with CF_API_TOKEN / CF_ACCOUNT_ID / CF_ZONE_ID / CF_TUNNEL_ID — see the runbook 6B.0.`);
   }
@@ -893,23 +1043,23 @@ async function cfFetch(cf, urlPath, { method = "GET", body } = {}) {
 }
 async function acquireLock() {
   try {
-    fs3.mkdirSync(CONFIG_DIR2, { recursive: true });
+    fs5.mkdirSync(CONFIG_DIR2, { recursive: true });
   } catch {}
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;; ) {
     try {
-      const fd = fs3.openSync(LOCK_PATH2, "wx");
-      fs3.writeSync(fd, `${process.pid} ${new Date().toISOString()}
+      const fd = fs5.openSync(LOCK_PATH2, "wx");
+      fs5.writeSync(fd, `${process.pid} ${new Date().toISOString()}
 `);
-      fs3.closeSync(fd);
+      fs5.closeSync(fd);
       return;
     } catch (err) {
       if (err.code !== "EEXIST")
         throw err;
       try {
-        const st = fs3.statSync(LOCK_PATH2);
+        const st = fs5.statSync(LOCK_PATH2);
         if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          fs3.unlinkSync(LOCK_PATH2);
+          fs5.unlinkSync(LOCK_PATH2);
           continue;
         }
       } catch {}
@@ -921,7 +1071,7 @@ async function acquireLock() {
 }
 function releaseLock() {
   try {
-    fs3.unlinkSync(LOCK_PATH2);
+    fs5.unlinkSync(LOCK_PATH2);
   } catch {}
 }
 async function withLock(fn) {
@@ -935,18 +1085,27 @@ async function withLock(fn) {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-function isPortLive(port) {
-  return new Promise((resolve2) => {
-    const sock = net.connect({ host: "127.0.0.1", port }, () => {
+function probePortOnce(port) {
+  return new Promise((resolve) => {
+    const sock = net2.connect({ host: "127.0.0.1", port }, () => {
       sock.destroy();
-      resolve2(true);
+      resolve(true);
     });
-    sock.on("error", () => resolve2(false));
+    sock.on("error", () => resolve(false));
     sock.setTimeout(500, () => {
       sock.destroy();
-      resolve2(false);
+      resolve(false);
     });
   });
+}
+async function isPortLive(port, attempts = 3, delayMs = 500) {
+  for (let i = 0;i < attempts; i++) {
+    if (await probePortOnce(port))
+      return true;
+    if (i < attempts - 1)
+      await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return false;
 }
 async function checkLabelAvailable(cf, label, activeLabels) {
   if (activeLabels && activeLabels.has(label)) {
@@ -1095,10 +1254,10 @@ async function reapOrphans() {
     return [];
   }
   try {
-    if (fs3.existsSync(LOCK_PATH2)) {
-      const st = fs3.statSync(LOCK_PATH2);
+    if (fs5.existsSync(LOCK_PATH2)) {
+      const st = fs5.statSync(LOCK_PATH2);
       if (Date.now() - st.mtimeMs > LOCK_STALE_MS)
-        fs3.unlinkSync(LOCK_PATH2);
+        fs5.unlinkSync(LOCK_PATH2);
     }
   } catch {}
   return withLock(async () => {
@@ -1150,8 +1309,8 @@ async function reapOrphans() {
         }
       }
       if (changed) {
-        fs3.mkdirSync(SERVE_CONFIG_DIR2, { recursive: true });
-        fs3.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
+        fs5.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
+        fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
       }
     }
     if (reaped.length) {
@@ -1164,14 +1323,34 @@ async function reapOrphans() {
 }
 
 // bin/serve.ts
+var jsonMode = false;
+function emitJson(payload) {
+  console.log(JSON.stringify(payload));
+}
 async function handleList() {
   const activeServers = await discoverServers();
+  if (jsonMode) {
+    emitJson({
+      schema: "serve/list@1",
+      servers: activeServers.map((s) => ({
+        pid: s.pid ?? null,
+        port: s.port,
+        dir: s.dir,
+        kind: s.isLive ? "live" : "static",
+        subdomain: s.subdomain ?? null,
+        url: s.url,
+        localUrl: s.localUrl ?? null,
+        title: s.title
+      }))
+    });
+    return;
+  }
   console.log(buildListSummary(activeServers));
 }
 function handleVersion() {
   try {
-    const manifestPath = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs4.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf8"));
     console.log(`${manifest.name} ${manifest.version}`);
   } catch (err) {
     console.error(`\u26A0\uFE0F Failed to load command manifest: ${err}`);
@@ -1180,8 +1359,8 @@ function handleVersion() {
 }
 function handleWhy() {
   try {
-    const manifestPath = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs4.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let text = `${manifest.name} - ${manifest.tagline}
 
@@ -1214,8 +1393,8 @@ function handleWhy() {
 }
 function handleHelp() {
   try {
-    const manifestPath = path6.join(path6.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs4.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let helpText = `${manifest.name} - ${manifest.tagline}
 
@@ -1254,25 +1433,40 @@ async function handleKill(trimmedArgs) {
   const targets = killArgs.split(/\s+/).map((t) => t.trim()).filter((t) => t.length > 0);
   const activeServers = await discoverServers();
   const killedList = [];
+  const failedList = [];
   const killAll = targets.some((t) => t.toLowerCase() === "all");
   if (targets.length === 0) {
+    if (jsonMode) {
+      emitJson({ schema: "serve/kill@1", killed: [], failed: [], unclaimed: [] });
+      process.exitCode = 2;
+      return;
+    }
     console.log("No targets given \u2014 nothing killed. Use --kill <port|dir|all> to target specific servers.");
+    process.exitCode = 2;
     return;
   }
+  const unclaimed = killAll ? await scanUnclaimedServerLike() : [];
   if (killAll) {
     if (activeServers.length === 0) {
-      console.warn("\u26A0\uFE0F No servers are currently running anywhere on this machine to kill.");
+      if (!jsonMode) {
+        console.warn("\u26A0\uFE0F No servers started by serve are currently running.");
+        reportUnclaimed(unclaimed);
+      } else {
+        emitJson({ schema: "serve/kill@1", killed: [], failed: [], unclaimed });
+      }
       return;
     }
     for (const server of activeServers) {
       const statusBefore = await checkServerStatus(server.localUrl || server.url);
       const killed = await killServerInstance(server);
       if (!killed) {
-        console.warn(`\u26A0\uFE0F Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`);
+        failedList.push({ pid: server.pid ?? null, port: server.port, reason: "not-confirmed-dead" });
+        if (!jsonMode)
+          console.warn(`\u26A0\uFE0F Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`);
         continue;
       }
       const statusAfter = await checkServerStatus(server.localUrl || server.url);
-      killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, subdomain: server.subdomain, title: server.title, statusBefore, statusAfter });
+      killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, subdomain: server.subdomain, title: server.title, pid: server.pid, statusBefore, statusAfter });
     }
   } else {
     for (const target of targets) {
@@ -1282,18 +1476,26 @@ async function handleKill(trimmedArgs) {
         const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
         const killed = await killServerInstance(matchedServer);
         if (!killed) {
-          console.warn(`\u26A0\uFE0F Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`);
+          failedList.push({ pid: matchedServer.pid ?? null, port: matchedServer.port, reason: "not-confirmed-dead" });
+          if (!jsonMode)
+            console.warn(`\u26A0\uFE0F Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`);
           continue;
         }
         const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-        killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, subdomain: matchedServer.subdomain, title: matchedServer.title, statusBefore, statusAfter });
+        killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, subdomain: matchedServer.subdomain, title: matchedServer.title, pid: matchedServer.pid, statusBefore, statusAfter });
       } else {
-        console.warn(`\u26A0\uFE0F Could not find any active server matching "${target}".`);
+        if (!jsonMode)
+          console.warn(`\u26A0\uFE0F Could not find any server started by serve matching "${target}".`);
       }
     }
   }
   if (killedList.length === 0) {
+    if (jsonMode) {
+      emitJson({ schema: "serve/kill@1", killed: [], failed: failedList, unclaimed });
+      return;
+    }
     console.warn("No servers were terminated.");
+    reportUnclaimed(unclaimed);
     return;
   }
   const killedSubdomains = [...new Set(killedList.map((k) => k.subdomain).filter((s) => !!s))];
@@ -1304,7 +1506,33 @@ async function handleKill(trimmedArgs) {
       console.warn(`\u26A0\uFE0F Killed local origin for "${subdomain}" but failed to unpublish from Cloudflare: ${err.message}`);
     }
   }
+  if (jsonMode) {
+    emitJson({
+      schema: "serve/kill@1",
+      killed: killedList.map((k) => ({
+        pid: k.pid ?? null,
+        port: k.port,
+        dir: k.dir,
+        subdomain: k.subdomain ?? null,
+        confirmed: true
+      })),
+      failed: failedList,
+      unclaimed
+    });
+    return;
+  }
   console.log(buildKilledSummary(killedList));
+  reportUnclaimed(unclaimed);
+}
+function reportUnclaimed(unclaimed) {
+  if (unclaimed.length === 0)
+    return;
+  console.warn(`
+\u2139\uFE0F  ${unclaimed.length} server-like process(es) NOT started by serve \u2014 left running:`);
+  for (const u of unclaimed) {
+    console.warn(`     PID ${u.pid}${u.port !== null ? ` port ${u.port}` : ""}  ${u.command}`);
+  }
+  console.warn("     serve only kills what it started. Stop these yourself if you meant to.");
 }
 async function handleStart(trimmedArgs) {
   let dirs = trimmedArgs.split(/\s+/).map((d) => d.trim()).filter((d) => d.length > 0);
@@ -1348,13 +1576,13 @@ async function handleStart(trimmedArgs) {
   }
   const activeLabels = new Set;
   for (const rawDir of dirs) {
-    const targetDir = path6.resolve(process.cwd(), rawDir);
-    if (!fs4.existsSync(targetDir) || !fs4.statSync(targetDir).isDirectory()) {
+    const targetDir = path7.resolve(process.cwd(), rawDir);
+    if (!fs6.existsSync(targetDir) || !fs6.statSync(targetDir).isDirectory()) {
       console.warn(`\u26A0\uFE0F Warning: Directory "${rawDir}" does not exist. Skipping.`);
       continue;
     }
     const activeServers = await discoverServers();
-    const existingServer = activeServers.find((s) => path6.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic);
+    const existingServer = activeServers.find((s) => path7.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic);
     if (existingServer) {
       if (overrideSubdomain) {
         try {
@@ -1371,22 +1599,34 @@ async function handleStart(trimmedArgs) {
       }
       continue;
     }
-    const envPath = path6.join(targetDir, ".env");
-    if (fs4.existsSync(envPath) && !force) {
+    const envPath = path7.join(targetDir, ".env");
+    if (fs6.existsSync(envPath) && !force) {
       console.warn(`\u26A0\uFE0F Found .env file in "${rawDir}"! Skipping (pass --force to serve anyway).`);
       continue;
     }
-    while (activeServers.some((s) => s.port === startPort))
-      startPort++;
-    const port = startPort++;
+    const port = await findFreePort(startPort);
+    if (port === null) {
+      console.warn(`\u26A0\uFE0F No free loopback port found at or above ${startPort}; skipping "${rawDir}".`);
+      continue;
+    }
+    startPort = port + 1;
     const subdomain = overrideSubdomain;
-    const __dirname2 = path6.dirname(fileURLToPath(import.meta.url));
-    const runnerPath = path6.resolve(__dirname2, "../extensions/lib/serve/run-live-server.js");
+    const __dirname2 = path7.dirname(fileURLToPath(import.meta.url));
+    const runnerPath = path7.resolve(__dirname2, "../extensions/lib/serve/run-live-server.js");
     const spawnCmd = isStatic ? "npx" : "node";
     const spawnArgs = isStatic ? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"] : [runnerPath, targetDir, ...subdomain ? ["--subdomain", subdomain] : [], "-p", String(port), "-a", "127.0.0.1"];
     const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
     serverProcess.unref();
     startedPorts.push(port);
+    if (serverProcess.pid) {
+      registerServer({
+        pid: serverProcess.pid,
+        port,
+        dir: path7.resolve(process.cwd(), targetDir),
+        kind: isStatic ? "static" : "live",
+        subdomain
+      });
+    }
     if (subdomain) {
       try {
         const emails = parseAclFile(targetDir);
@@ -1413,7 +1653,9 @@ async function handleStart(trimmedArgs) {
 }
 async function run() {
   await resolveIp();
-  const trimmedArgs = process.argv.slice(2).join(" ").trim();
+  const rawArgs = process.argv.slice(2);
+  jsonMode = rawArgs.includes("--json");
+  const trimmedArgs = rawArgs.filter((a) => a !== "--json").join(" ").trim();
   if (trimmedArgs === "--version")
     return handleVersion();
   if (trimmedArgs === "--why")

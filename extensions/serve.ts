@@ -13,7 +13,8 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "./lib/serve/process.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort } from "./lib/serve/process.js";
+import { registerServer } from "./lib/serve/registry.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
@@ -174,9 +175,22 @@ export default function serveExtension(pi: ExtensionAPI) {
 			return;
 		}
 
+		// #181: report server-like processes serve did not start; never kill them. Same
+		// advisory the CLI prints, same source — see scanUnclaimedServerLike().
+		const unclaimed = killAll ? await scanUnclaimedServerLike() : [];
+		const notifyUnclaimed = () => {
+			if (unclaimed.length === 0) return;
+			const lines = unclaimed.map(u => `  PID ${u.pid}${u.port !== null ? ` port ${u.port}` : ""}  ${u.command}`);
+			ctx.ui.notify(
+				`ℹ️ ${unclaimed.length} server-like process(es) NOT started by serve — left running:\n${lines.join("\n")}\n  serve only kills what it started.`,
+				"info",
+			);
+		};
+
 		if (killAll) {
 			if (activeServers.length === 0) {
-				ctx.ui.notify("⚠️ No servers are currently running anywhere on this machine to kill.", "warning");
+				ctx.ui.notify("⚠️ No servers started by serve are currently running.", "warning");
+				notifyUnclaimed();
 				return;
 			}
 
@@ -239,6 +253,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		if (killedList.length === 0) {
 			ctx.ui.notify("No servers were terminated.", "warning");
+			notifyUnclaimed();
 			return;
 		}
 
@@ -258,6 +273,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		const fullSummary = buildKilledSummary(killedList);
 		ctx.ui.notify(fullSummary, "info");
+		notifyUnclaimed();
 	}
 
 	async function handleStart(trimmedArgs: string, ctx: any): Promise<void> {
@@ -353,11 +369,15 @@ export default function serveExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			while (activeServers.some(s => s.port === startPort)) {
-				startPort++;
+			// #181: ask the port, not the process table. Discovery only knows about servers WE
+			// started, so it cannot tell us a systemd tenant or a hand-started server already
+			// holds this port — only a bind attempt can.
+			const port = await findFreePort(startPort);
+			if (port === null) {
+				ctx.ui.notify(`⚠️ No free loopback port found at or above ${startPort}; skipping "${rawDir}".`, "warning");
+				continue;
 			}
-
-			const port = startPort++;
+			startPort = port + 1;
 
 			// #66: publishing is opt-in via --pub. A subdomain ⟺ published to the edge; it flows to
 			// the runner's --subdomain (watcher target) AND the publish call. No --pub → local only.
@@ -389,6 +409,19 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 			startedPorts.push(port);
+
+			// #181: record identity NOW, while this PID is unambiguously ours. Discovery reads
+			// this instead of guessing from a `ps` substring, and `--kill` targets only what is
+			// recorded here.
+			if (serverProcess.pid) {
+				registerServer({
+					pid: serverProcess.pid,
+					port,
+					dir: path.resolve(process.cwd(), targetDir),
+					kind: isStatic ? "static" : "live",
+					subdomain,
+				});
+			}
 
 			// --- Phase 6B (#66): publish to the edge ONLY when --pub or --as names a sub-domain — tunnel
 			// ingress rule + per-subdomain Access app carrying the .serve-acl allow-list. Best-

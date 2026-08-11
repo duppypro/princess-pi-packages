@@ -10,7 +10,9 @@ Multi-tool repo for the Princess Pi coding agent: development server, cost track
 > terms have been sharpened — see "Rulings from the tenancy glossary" at the end of this section.
 
 **Server instance**:
-A running process that serves a local directory on a loopback port. Discovered by parsing `ps aux` for `run-live-server` or `http-server` processes.
+A running process **that `serve` started** to serve a local directory on a loopback port.
+Identified by its registry record, not by what its command line looks like (#181) — a process
+`serve` did not spawn is never a server instance, however much it resembles one.
 _Avoid_: Service, daemon, listener
 
 **Live server**:
@@ -22,7 +24,7 @@ A server instance running `npx http-server`. Serves files as-is — no injection
 _Avoid_: Production server, plain server
 
 **Sub-domain**:
-A short, URL-safe name that identifies a published preview. Passed via `--pub <subdomain>` (`--as` is a legacy synonym). The public URL is `https://<subdomain>.princess-pi.dev/`. Stored in the process cmdline (`--subdomain`) for servers started with `--pub`, and in `~/.config/princess-pi-packages/serve/subdomains.json` for servers published after start.
+A short, URL-safe name that identifies a published preview. Passed via `--pub <subdomain>` (`--as` is a legacy synonym). The public URL is `https://<subdomain>.princess-pi.dev/`. Recorded in the server registry for servers started with `--pub`, and in `~/.config/princess-pi-packages/serve/subdomains.json` for servers published after start. (It is still *passed* to the runner on the cmdline so the live-ACL watcher can see it — but nothing reads it back from there any more, #181.)
 _Avoid_: Slug, label, hostname, alias
 
 **Publish**:
@@ -38,15 +40,15 @@ Removing the Cloudflare ingress rule and Access application for a sub-domain. Do
 _Avoid_: Takedown, deregister, remove
 
 **Sub-domain map**:
-Persistence file at `~/.config/princess-pi-packages/serve/subdomains.json` mapping port numbers to arrays of sub-domains. Written on publish, read during server discovery, cleaned on unpublish. Exists so `--list` can show the public URL for servers that were published after they started (no `--subdomain` in their process cmdline).
+Persistence file at `~/.config/princess-pi-packages/serve/subdomains.json` mapping port numbers to arrays of sub-domains. Written on publish, read during server discovery, cleaned on unpublish. Exists so `--list` can show the public URL for servers published after they started. Deliberately **not** merged into the server registry: a sub-domain outlives the process that published it, so the two have different lifetimes.
 _Avoid_: Port registry, sub-domain cache
 
 **Orphan**:
-A Cloudflare Tunnel ingress rule whose corresponding local server process no longer exists. Created by crash-without-kill. Reaped on every `serve` invocation by `reapOrphans()`.
+A Cloudflare Tunnel ingress rule pointing at a loopback port that nothing is listening on. Created by crash-without-kill. Reaped on every `serve` invocation by `reapOrphans()`. Note the definition is about the **port**, not about any process identity — reap asks "does anything answer here", never "is this one of ours".
 _Avoid_: Stale rule, dangling ingress, zombie
 
 **Reap**:
-The process of scanning Cloudflare Tunnel ingress rules and deleting any that point to ports with no matching local process. Also cleans the local subdomain→port map and any stale advisory lock. Best-effort — failure does not block serving.
+Scanning Cloudflare Tunnel ingress rules and deleting those that are **serve-owned** (fronted by a `serve `-prefixed Access application, #66) **and** whose port fails a TCP probe — three attempts over ~1.5 s, so a restarting origin is not mistaken for a dead one (#181). Also cleans the local subdomain→port map and any stale advisory lock. Best-effort — failure does not block serving.
 _Avoid_: Cleanup, sweep, GC
 
 **Access application**:
@@ -66,12 +68,28 @@ Cloudflare's network. Handles TLS termination (HTTPS), Tunnel ingress routing, a
 _Avoid_: Cloudflare, CDN, proxy
 
 **Discovery**:
-The process of finding running server instances by scanning `ps aux` output (`discoverServers()` in `process.ts`). Runs on session start, on a 4-second tick for the widget, and on every `--list` / `--kill` invocation. Reads both process cmdline and the sub-domain map.
+Reading the server registry and returning the records that are still running (`discoverServers()` in `process.ts`). Runs on session start, on a 4-second tick for the widget, and on every `--list` / `--kill` invocation. Reads the registry and the sub-domain map — **never `ps`** (#181).
 _Avoid_: Scan, enumeration, detection
 
+**Server registry**:
+`~/.config/princess-pi-packages/serve/servers.json` — one flat record per server `serve` started, holding `pid`, `startTicks`, `port`, `dir`, `kind`, `subdomain`, `startedAt`. Written at spawn, pruned on discovery, entries removed on confirmed kill. It is the **only** answer to "is this process ours"; `port`/`dir`/`kind`/`subdomain` used to be re-derived from cmdline text on every discovery and are now simply recalled.
+_Avoid_: PID file, process table, server list
+
+**Process identity** (`(pid, startTicks)`):
+The pair that says a registry record still refers to the process it was written for. `startTicks` is `/proc/<pid>/stat` field 22 — the kernel's start-time-since-boot in clock ticks. A PID alone is not an identity: the kernel recycles them, so a dead server's PID can land on an unrelated process. Verification is three-way — `live`, `dead`, or **`recycled`** (PID exists, ticks differ), and a recycled PID is pruned and never signalled.
+_Avoid_: PID (alone), handle, process id
+
+**Unclaimed process**:
+A process whose command line *looks* server-like (contains `http-server` or `run-live-server`) but which the registry has no record of starting. Found by `scanUnclaimedServerLike()`. **Advisory only** — reported by `--kill all` in both human text and the `unclaimed` array of `--json`, and never killed. This is the old discovery predicate, demoted: the same guess, now allowed to produce a sentence instead of a SIGKILL target.
+_Avoid_: Foreign server, rogue process, orphan (reserved for the ingress sense above)
+
 **Health check**:
-An HTTP GET to a server's URL to determine if it's online. Used in `--kill` to report before/after status. Returns `[+] Online (200 OK)` or `[-] Offline (<reason>)`.
+An HTTP GET to a server's URL to determine if it's online. Used in `--kill` to report before/after status. Returns `[+] Online (200 OK)` or `[-] Offline (<reason>)`. Human-facing text — anything programmatic reads `--json` instead.
 _Avoid_: Probe, ping, status check
+
+**JSON mode**:
+`--json`, valid alongside `--list` and `--kill` (#181). Emits one document — `serve/list@1` or `serve/kill@1` — flat, one record per server, stable keys. It is the contract; the Card and Table renderings are copy and may change freely because it exists. Exit codes: `0` success (an empty result set is success), `1` operation failed, `2` usage error.
+_Avoid_: Machine mode, porcelain, raw output
 
 **Card**:
 A box-drawn status display for a single server instance. Used post-start (shows URL + type + log path), post-kill (shows URL + before/after health status), and on republish. Dynamic-width with gray borders. Rendered by `formatServerCard()` / `formatServerCardKilled()` in `tui.ts`.
@@ -110,11 +128,31 @@ sub-domain. Anything else → slug is fine.
 the CORS sense: scheme + host + port of the calling page. Both are load-bearing. **In deployment
 prose say "loopback service"** and reserve bare *origin* for CORS.
 
-> **Known bug this vocabulary exposes.** *Server instance* is defined as "discovered by parsing
-> `ps aux` for `run-live-server` or `http-server`." A **service tenant** matches neither, so `Reap`
-> classifies it as an `Orphan` and the next `serve` invocation silently unpublishes it. Latent only
-> until the first service tenant deploys. Tracked as **princess-pi-brain #9**; the other three
-> tenancy gaps are **#10**. Both fixes land in this repo.
+> **Correction — what the earlier "Known bug" note said, and what is actually true (#181).**
+> This block used to read: *Server instance* is defined by a `ps aux` match, a **service tenant**
+> matches neither substring, so `Reap` classifies it as an `Orphan` and the next `serve` invocation
+> silently unpublishes it. **That mechanism was never in the shipped reaper.** `reapOrphans()`
+> does not call `discoverServers()` at all — it gates on two independent facts: the hostname is
+> fronted by a `serve `-prefixed Access application (ownership, #66 Finding 2), and its port fails
+> a TCP probe. A systemd service tenant listening on its loopback port passes both and is kept.
+> `git log -S isPortLive` shows the port probe has been there since `reapOrphans` was written
+> (`8ae6fde`). The note was describing a coupling that did not exist.
+>
+> **What is true.** Two separate things, previously conflated:
+>
+> 1. *Identity* — the `ps` substring was real, and it was in `discoverServers()`, where its cost
+>    was that `--kill all` could SIGKILL a process `serve` never started. Fixed by the **Server
+>    registry** above (#181).
+> 2. *Liveness timing* — reap's port probe was a single 500 ms attempt, so a service tenant that
+>    is momentarily down (a `systemctl restart`, a deploy swap) looked dead for that instant and
+>    could be unpublished. Narrowed to three probes over ~1.5 s (#181 §4.4). Not eliminated:
+>    correct liveness for a `kind = "service"` tenant is a systemd question answered from the
+>    manifest's `unit` key, which stays a **princess-pi-brain** concern.
+>
+> Tracked as **princess-pi-brain #9**, re-scoped accordingly; the other three tenancy gaps are
+> **#10**. Getting this right matters beyond the wording — #9 is filed as *"the highest-severity
+> known gap"* in the tenancy standard's §11 table, and a severity built on the wrong mechanism
+> mis-ranks everything under it.
 
 ## Language — WTFT
 
