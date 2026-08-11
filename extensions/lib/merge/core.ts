@@ -290,20 +290,40 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 		throw new Error(`MERGE_BLOCKED: not pushed — target commit ${targetHash.substring(0, 7)} is not on origin/${currentBranch}. Push first.`);
 	}
 
-	// 6. Create a PR for the branch (instead of local merge to main).
+	// 6. Create a PR (instead of local merge to main).
 	// The human merges the PR via GitHub or \`gh pr merge\` from a separate shell.
+	//
+	// When a specific ref was given (merge <older-ancestor>), the PR must cover
+	// only up to that commit. Push targetHash to a temporary branch and open the
+	// PR from there — otherwise gh pr create uses the branch tip, which may include
+	// unapproved commits beyond the requested checkpoint.
+	let prBranch = currentBranch;
+	if (ref && targetHash !== localHash) {
+		const tmpBranch = `${currentBranch}-pr-${targetHash.substring(0, 7)}`;
+		logger.info(`📌 Creating temporary PR branch '${tmpBranch}' at ${targetHash.substring(0, 7)}...`);
+		execSync(`git push origin ${targetHash}:refs/heads/${tmpBranch}`, { cwd: currentCwd, stdio: "ignore" });
+		prBranch = tmpBranch;
+	}
+
 	logger.info("📡 Creating pull request...");
 	try {
-		const prUrl = execSync("gh pr create --fill --base main", {
+		const prUrl = execSync(`gh pr create --fill --base main --head ${prBranch}`, {
 			cwd: currentCwd,
 			encoding: "utf8",
 		}).trim();
 		logger.info(`\n✅ PR_CREATED: ${prUrl}`);
-		logger.info(`   branch: ${currentBranch}`);
+		logger.info(`   branch: ${prBranch}`);
 		logger.info(`   target: main`);
+		if (prBranch !== currentBranch) {
+			logger.info(`   ⚠️  PR from temporary branch '${prBranch}' — this branch will be deleted after merge.`);
+		}
 		logger.info(`\n⏳ Waiting for human to merge or reject the PR.`);
 		logger.info(`   After merge, clean up with: git branch -d ${currentBranch} && git push origin --delete ${currentBranch}`);
 	} catch (prErr: any) {
+		// Clean up the temporary branch on failure
+		if (prBranch !== currentBranch) {
+			try { execSync(`git push origin --delete ${prBranch}`, { cwd: currentCwd, stdio: "ignore" }); } catch { /* best-effort */ }
+		}
 		const detail = prErr?.stderr || prErr?.message || String(prErr);
 		throw new Error(`MERGE_BLOCKED: gh pr create failed.\ndetail: ${detail.trim()}`);
 	}
