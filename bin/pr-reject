@@ -36,9 +36,13 @@ fi
 # Same fork guard as pr-merge: `--head` matches by branch name across every
 # fork, so constrain to head branches in OUR OWN repo and refuse to guess.
 OWNER=$(gh repo view --json owner --jq '.owner.login')
-CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
+# Same as pr-merge: a failed lookup must not masquerade as "no PR found".
+if ! CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
   --json number,headRepositoryOwner \
-  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv" 2>/dev/null || true)
+  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv"); then
+  echo "pr-reject: 'gh pr list' failed — cannot determine the PR for '$BRANCH'." >&2
+  exit 1
+fi
 
 # shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
 PRS=($CANDIDATES)

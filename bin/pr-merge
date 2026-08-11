@@ -20,9 +20,15 @@ fi
 # a stranger's PR (#209). Constrain to head branches in OUR OWN repo, and refuse
 # rather than guess when more than one survives.
 OWNER=$(gh repo view --json owner --jq '.owner.login')
-CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
+# No `2>/dev/null || true` here: it would make a network outage, expired auth or
+# API error indistinguishable from "no PR found", and send the user hunting for
+# a missing PR instead of showing them the actual error. Fail loudly instead.
+if ! CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
   --json number,headRepositoryOwner \
-  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv" 2>/dev/null || true)
+  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv"); then
+  echo "pr-merge: 'gh pr list' failed — cannot determine the PR for '$BRANCH'." >&2
+  exit 1
+fi
 
 # shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
 PRS=($CANDIDATES)

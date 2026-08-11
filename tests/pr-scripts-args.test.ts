@@ -45,7 +45,7 @@ interface PrRow {
 }
 
 /** A repo on `branch`, plus a stub gh whose `pr list` returns `rows`. */
-function sandbox(branch: string, rows: PrRow[], ownerLogin = "duppypro") {
+function sandbox(branch: string, rows: PrRow[], ownerLogin = "duppypro", failGhList = false) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-args-"));
 	execFileSync("git", ["init", "-q", "-b", branch], { cwd: dir });
 	execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "init"], {
@@ -97,6 +97,7 @@ case "$1 $2" in
     if [ -n "$jqexpr" ]; then printf '%s' "$out" | jq -r "$jqexpr"; else printf '%s\\n' "$out"; fi
     exit 0 ;;
   "pr list")
+    ${failGhList ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : ":"}
     filtered=$(jq -c --arg h "$head" '[.[] | select($h == "" or .headRefName == $h)]' ${JSON.stringify(path.join(dir, "prlist.json"))})
     if [ -n "$jqexpr" ]; then printf '%s' "$filtered" | jq -r "$jqexpr"; else printf '%s\\n' "$filtered"; fi
     exit 0 ;;
@@ -114,8 +115,9 @@ function run(
 	rows: PrRow[],
 	args: string[],
 	ownerLogin = "duppypro",
+	failGhList = false,
 ): { code: number; out: string; argv: string[] } {
-	const { dir, binDir, argvLog } = sandbox(branch, rows, ownerLogin);
+	const { dir, binDir, argvLog } = sandbox(branch, rows, ownerLogin, failGhList);
 	let code = 0;
 	let out = "";
 	try {
@@ -209,6 +211,19 @@ console.log("\npr-merge:");
 	check(/\b7\b/.test(out) && /\b8\b/.test(out), "ambiguous match → names both candidates", out);
 }
 
+// 6b. A failed lookup must not masquerade as "no PR found" — the user would go
+//     hunting for a missing PR instead of seeing the network/auth error.
+{
+	const { code, out, argv } = run(PR_MERGE, "fix", [OURS(7, "fix")], [], "duppypro", true);
+	check(code !== 0, "gh pr list fails → non-zero", `got ${code}`);
+	check(actedOn(argv, "merge") === undefined, "gh pr list fails → merges nothing", argv.join("\n"));
+	check(
+		/failed/i.test(out) && !/no open PR found/i.test(out),
+		"gh pr list fails → reports the failure, not 'no open PR found'",
+		out,
+	);
+}
+
 // ---
 // pr-reject
 // ---
@@ -255,6 +270,18 @@ console.log("\npr-reject:");
 		actedOn(argv, "close")?.includes("--comment") !== true,
 		"pr-reject (no args) → closes with no comment",
 		argv.join("\n"),
+	);
+}
+
+// 10b. pr-reject inherits the same fail-loudly rule.
+{
+	const { code, out, argv } = run(PR_REJECT, "fix", [OURS(7, "fix")], ["nope"], "duppypro", true);
+	check(code !== 0, "pr-reject: gh pr list fails → non-zero", `got ${code}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject: gh pr list fails → closes nothing", argv.join("\n"));
+	check(
+		/failed/i.test(out) && !/no open PR found/i.test(out),
+		"pr-reject: gh pr list fails → reports the failure",
+		out,
 	);
 }
 

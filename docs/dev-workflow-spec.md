@@ -58,6 +58,8 @@ Labels are commit markers, not gates. Commit as often as needed.
 | `pr-open` | Discovers branch from cwd → ensures pushed → pre-checks → `gh pr create` |
 | `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → `gh pr merge --squash` (human command) |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
+| `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
+| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
 
 **Why the branch is positional on `pr-merge` but a flag on `pr-reject`:** `pr-merge`
 takes no other argument, so a bare word can only be a branch. `pr-reject` also takes a
@@ -70,9 +72,8 @@ with the branch name as the comment (#209).
 **Both refuse to guess between PRs.** `gh pr list --head` matches by branch *name*
 across every fork, so a fork branch called `fix` is an equal candidate to yours. Both
 scripts now keep only head branches in your own repo, and abort listing the candidates
-if more than one survives rather than taking `.[0]`.
-| `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
-| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
+if more than one survives rather than taking `.[0]`. A failed `gh pr list` is reported
+as a failure, never as "no PR found".
 
 **Note:** `git-snap` and `git-ship` have been replaced by `git-checkpoint`. The old
 names are deprecated — `git-checkpoint` does add + commit + push in one step.
