@@ -43,20 +43,25 @@ boundary.)
 
 ## Reproduced evidence
 
+The probe asks a fixed, generic question — never the sentinel itself — so a model can't
+answer correctly just by re-reading the prompt; it has to have actually seen the
+imported file. (Caught in review, PR #239: an earlier version embedded the token in the
+question, which would read "yes" for any truthful model regardless of whether the
+import expanded.)
+
 ```
 $ research/238-claude-md-imports/run-test.sh
 == Claude Code ==
--- basic relative import (expect: yes) --
-Yes.
-DISTINCTIVE_TOKEN_ABC789
+-- basic relative import (expect: FLAMINGO42) --
+FLAMINGO42
 -- import of a missing file (expect: no error, session proceeds) --
 OK.
--- external absolute-path import, headless/non-interactive (expect: no) --
-No.
+-- external absolute-path import, headless/non-interactive (expect: NONE) --
+NONE
 
 == Pi ==
--- same basic-import fixture (expect: no) --
-No.
+-- same basic-import fixture (expect: NONE) --
+NONE
 ```
 
 Re-run the script after either harness upgrades to re-check these still hold — this is
