@@ -75,6 +75,7 @@ across every fork, so a fork branch called `fix` is an equal candidate to yours.
 scripts now keep only head branches in your own repo, and abort listing the candidates
 if more than one survives rather than taking `.[0]`. A failed `gh pr list` is reported
 as a failure, never as "no PR found".
+
 ### `pr-cleanup` fails closed, by design
 
 Every gate aborts when it cannot **prove** its precondition. It never treats a failed

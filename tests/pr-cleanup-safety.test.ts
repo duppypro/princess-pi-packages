@@ -81,6 +81,8 @@ interface SandboxOpts {
 	remoteAdvanced?: boolean;
 	/** leave a stale ref lock so `git branch -D` cannot delete the ref */
 	staleRefLock?: boolean;
+	/** shim `git` so ONLY ls-remote fails — fetch still succeeds */
+	failLsRemote?: boolean;
 }
 
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
@@ -174,6 +176,24 @@ if [ -n "$jqexpr" ]; then printf '%s' "$out" | jq -r "$jqexpr"; else printf '%s\
 `;
 	fs.writeFileSync(path.join(binDir, "gh"), gh);
 	fs.chmodSync(path.join(binDir, "gh"), 0o755);
+
+	// Breaking the remote URL would abort at step 1's `git fetch`, never reaching
+	// the ls-remote gate — the test would pass for the wrong reason. A shim that
+	// fails ONLY ls-remote isolates the check under test.
+	if (opts.failLsRemote) {
+		const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+		const shim = `#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = "ls-remote" ]; then
+    echo "fatal: could not read from remote repository" >&2
+    exit 128
+  fi
+done
+exec ${JSON.stringify(realGit)} "$@"
+`;
+		fs.writeFileSync(path.join(binDir, "git"), shim);
+		fs.chmodSync(path.join(binDir, "git"), 0o755);
+	}
 
 	return { root, remote, mainClone, worktree, binDir, branch };
 }
@@ -342,6 +362,22 @@ console.log("\nremote branch advanced after the merge:");
 	check(fs.existsSync(sb.worktree), "remote advanced → worktree survives (gate is before teardown)", out);
 	check(localBranchExists(sb), "remote advanced → local branch survives", out);
 	check(/moved since|remote tip/i.test(out), "remote advanced → says why", out);
+}
+
+// --- ls-remote failing in the MERGED-PR arm must abort, not read as "no ref" ---
+//
+// A failed ls-remote yields an empty REMOTE_TIP, which is indistinguishable from
+// "the remote branch is already gone" — so the moved-since-merge check silently
+// passes and teardown proceeds on unverified remote state.
+console.log("\nls-remote fails while verifying the remote tip:");
+{
+	const sb = makeSandbox("42-feature", { failLsRemote: true });
+	const { code, out } = runCleanup(sb);
+	check(code !== 0, "ls-remote fails in the merged arm → non-zero", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "ls-remote fails → worktree survives", out);
+	check(remoteBranchExists(sb), "ls-remote fails → remote branch survives", out);
+	check(localBranchExists(sb), "ls-remote fails → local branch survives", out);
+	check(/ls-remote/.test(out), "ls-remote fails → names ls-remote, not the fetch", out);
 }
 
 // --- `git branch -D` failing must not be read as "already gone" ---

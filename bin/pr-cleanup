@@ -106,7 +106,17 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   # still passes, and step 4 would delete a remote ref carrying commits that
   # exist nowhere else. Check what is actually ON the remote, here in the gate —
   # before anything is destroyed, rather than at the delete itself.
-  REMOTE_TIP=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null | awk 'NR==1 {print $1}' || true)
+  # No `|| true` — that would swallow an ls-remote failure into an empty
+  # REMOTE_TIP, which reads as "no remote branch" and sails through the check
+  # below. Exactly the fail-open shape this script exists to remove, reintroduced
+  # by the commit that added this gate. Status separately from output, as
+  # everywhere else. (`set -o pipefail` makes the awk pipeline report ls-remote's
+  # failure rather than awk's success.)
+  if ! REMOTE_TIP=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null | awk 'NR==1 {print $1}'); then
+    echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify the remote tip for '$BRANCH'." >&2
+    echo "   Refusing to delete on an unverified remote state." >&2
+    exit 1
+  fi
   if [ -n "$REMOTE_TIP" ] && [ "$REMOTE_TIP" != "$PR_HEAD_OID" ]; then
     echo "   ❌ ERROR: origin/$BRANCH has moved since PR #$PR_NUM merged." >&2
     echo "      remote tip:     $REMOTE_TIP" >&2
