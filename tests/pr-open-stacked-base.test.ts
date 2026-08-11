@@ -16,7 +16,7 @@
 //
 // Run with: bun run test pr-open-stacked-base
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -94,22 +94,21 @@ echo "https://github.com/duppypro/princess-pi-packages/pull/999"
 	return { clone, binDir, argvLog };
 }
 
+/**
+ * spawnSync, NOT execFileSync — the warning under test goes to stderr, and
+ * execFileSync returns stdout ONLY on success. Capturing just stdout made every
+ * success-path assertion about output silently unfalsifiable: the three RED
+ * checks stayed red after the feature worked, because the test could not see it.
+ */
 function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean } {
-	let code = 0;
-	let out = "";
-	try {
-		out = execFileSync("bash", [PR_OPEN], {
-			cwd: sb.clone,
-			encoding: "utf8",
-			env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}` },
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-	} catch (err: any) {
-		code = err?.status ?? -1;
-		out = `${err?.stdout || ""}${err?.stderr || ""}`;
-	}
+	const r = spawnSync("bash", [PR_OPEN], {
+		cwd: sb.clone,
+		encoding: "utf8",
+		env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}` },
+	});
+	const out = `${r.stdout || ""}${r.stderr || ""}`;
 	const createdPr = fs.readFileSync(sb.argvLog, "utf8").includes("pr create");
-	return { code, out, createdPr };
+	return { code: r.status ?? -1, out, createdPr };
 }
 
 // ---
