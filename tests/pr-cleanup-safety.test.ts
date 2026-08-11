@@ -75,20 +75,23 @@ interface SandboxOpts {
 	failGhList?: boolean;
 	/** delete the branch from the remote before running (already cleaned up there) */
 	remoteBranchGone?: boolean;
+	/** primary branch name of the repo — 'master' exercises the non-main path */
+	primary?: string;
 }
 
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-cleanup-"));
+	const primary = opts.primary ?? "main";
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
-	git(remote, ["init", "-q", "--bare", "-b", "main"]);
+	git(remote, ["init", "-q", "--bare", "-b", primary]);
 
 	const mainClone = path.join(root, opts.cloneDirName ?? "clone");
 	git(root, ["clone", "-q", remote, mainClone]);
 	fs.writeFileSync(path.join(mainClone, "README.md"), "base\n");
 	git(mainClone, ["add", "-A"]);
 	git(mainClone, ["commit", "-q", "-m", "base"]);
-	git(mainClone, ["push", "-q", "origin", "main"]);
+	git(mainClone, ["push", "-q", "origin", primary]);
 
 	// feature branch, pushed, then "squash-merged" into main so the tip is
 	// deliberately NOT an ancestor of main — the real shape after a squash.
@@ -103,7 +106,7 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	fs.writeFileSync(path.join(mainClone, "feature.txt"), "work\n");
 	git(mainClone, ["add", "-A"]);
 	git(mainClone, ["commit", "-q", "-m", `squash: feature work (#1)`]);
-	git(mainClone, ["push", "-q", "origin", "main"]);
+	git(mainClone, ["push", "-q", "origin", primary]);
 	const mergeSha = git(mainClone, ["rev-parse", "HEAD"]);
 
 	if (opts.remoteBranchGone) git(remote, ["update-ref", "-d", `refs/heads/${branch}`]);
@@ -297,6 +300,31 @@ console.log("\nno merged PR, branch absent from origin:");
 	check(code === 0, "tip already in origin/main → exits 0", `got ${code}, output:\n${out}`);
 	check(!fs.existsSync(sb.worktree), "tip already in origin/main → worktree removed", out);
 	check(!localBranchExists(sb), "tip already in origin/main → local branch deleted", out);
+}
+
+// --- master-primary repo: the ref name must be discovered, not assumed ---
+//
+// The main-clone lookup accepts main OR master; hard-coding origin/main
+// downstream would abort every legitimate cleanup here, blaming the merge
+// commit — a wrong answer wearing a confident error message.
+console.log("\nmaster-primary repo:");
+{
+	const sb = makeSandbox("42-feature", { primary: "master" });
+	const { code, out } = runCleanup(sb);
+	check(code === 0, "master-primary → exits 0", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(sb.worktree), "master-primary → worktree removed", out);
+	check(!localBranchExists(sb), "master-primary → local branch deleted", out);
+	check(!/not in origin\/main/.test(out), "master-primary → no bogus origin/main complaint", out);
+}
+
+// --- newline in the main clone path (why --porcelain needs -z) ---
+console.log("\nmain clone path containing a newline:");
+{
+	const sb = makeSandbox("42-feature", { cloneDirName: "clone\nwith-newline" });
+	const { code, out } = runCleanup(sb);
+	check(code === 0, "path with a newline → exits 0", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(sb.worktree), "path with a newline → worktree removed", out);
+	check(!localBranchExists(sb), "path with a newline → local branch deleted", out);
 }
 
 // --- main clone path containing a space ---

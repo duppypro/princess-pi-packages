@@ -26,12 +26,28 @@ echo "🧹 pr-cleanup for branch '$BRANCH'"
 # `git worktree list | grep "\[main\]" | awk '{print $1}'` truncated any path
 # containing a space, and parsed human-readable output for machine state — the
 # Agent-First Output standard forbids exactly that. --porcelain is the contract.
-MAIN_CLONE=$(git worktree list --porcelain | awk '
-  /^worktree /            { p = substr($0, 10) }
-  $0 == "branch refs/heads/main" || $0 == "branch refs/heads/master" { print p; exit }
-')
+#
+# `-z` is not optional for machine parsing: without it git emits paths verbatim,
+# so a newline in a directory name splits one record across lines. With `-z`
+# every attribute line is NUL-terminated, which no path byte can be.
+#
+# PRIMARY_REF is captured alongside the path rather than assumed. Accepting
+# `master` here while hard-coding `origin/main` downstream would abort every
+# legitimate cleanup in a master-primary repo, with a message blaming the merge
+# commit — a wrong answer wearing a confident error.
+MAIN_CLONE=""
+PRIMARY_REF=""
+wt_path=""
+while IFS= read -r -d '' line; do
+  case "$line" in
+    "worktree "*) wt_path="${line#worktree }" ;;
+    "branch refs/heads/main")   MAIN_CLONE="$wt_path"; PRIMARY_REF="main";   break ;;
+    "branch refs/heads/master") MAIN_CLONE="$wt_path"; PRIMARY_REF="master"; break ;;
+  esac
+done < <(git worktree list --porcelain -z)
+
 if [ -z "$MAIN_CLONE" ]; then
-  echo "   ❌ ERROR: no main worktree found. Switch to the main clone and run from there." >&2
+  echo "   ❌ ERROR: no main/master worktree found. Switch to the main clone and run from there." >&2
   exit 1
 fi
 
@@ -61,8 +77,8 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   PR_HEAD_OID=$(echo "$PR_INFO" | jq -r '.headRefOid // empty')
   LOCAL_TIP=$(git rev-parse HEAD)
 
-  if [ -z "$PR_MERGE_SHA" ] || ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$PR_MERGE_SHA" origin/main 2>/dev/null; then
-    echo "   ❌ ERROR: PR #$PR_NUM is marked merged but its merge commit is not in origin/main." >&2
+  if [ -z "$PR_MERGE_SHA" ] || ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$PR_MERGE_SHA" origin/"$PRIMARY_REF" 2>/dev/null; then
+    echo "   ❌ ERROR: PR #$PR_NUM is marked merged but its merge commit is not in origin/$PRIMARY_REF." >&2
     exit 1
   fi
 
@@ -85,7 +101,7 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
     echo "   Refusing to delete. Open a new PR for the extra commits, or reset the branch." >&2
     exit 1
   fi
-  echo "   ✅ PR #$PR_NUM merged into origin/main, and its head matches this branch tip."
+  echo "   ✅ PR #$PR_NUM merged into origin/$PRIMARY_REF, and its head matches this branch tip."
 else
   # No merged PR. The branch being absent from origin is the ONLY reading that
   # allows cleanup — and a failed ls-remote is not that reading. Testing exit
@@ -106,13 +122,13 @@ else
     # (Ancestry is the right test *here* precisely because there is no squash
     # commit in play. Where a PR was squash-merged, the branch above handles it
     # via headRefOid — ancestry would wrongly refuse that case.)
-    if ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$(git rev-parse HEAD)" origin/main 2>/dev/null; then
-      echo "   ❌ ERROR: no merged PR for '$BRANCH', and its commits are not in origin/main." >&2
+    if ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$(git rev-parse HEAD)" origin/"$PRIMARY_REF" 2>/dev/null; then
+      echo "   ❌ ERROR: no merged PR for '$BRANCH', and its commits are not in origin/$PRIMARY_REF." >&2
       echo "   This branch's commits may exist nowhere else — refusing to delete." >&2
       echo "   If the work is genuinely disposable, delete the branch by hand." >&2
       exit 1
     fi
-    echo "   ℹ️  '$BRANCH' not on origin, and its tip is already in origin/main — safe to delete."
+    echo "   ℹ️  '$BRANCH' not on origin, and its tip is already in origin/$PRIMARY_REF — safe to delete."
   else
     echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify '$BRANCH' on origin." >&2
     echo "   Refusing to delete on an unverified remote state." >&2
