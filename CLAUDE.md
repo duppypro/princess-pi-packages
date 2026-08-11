@@ -32,7 +32,7 @@ Full spec: `docs/dev-workflow-spec.md`.
 
 | Script | Does |
 |---|---|
-| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
+| `git-checkpoint "msg"` | Add, commit, and push in one step (exact command in the spec) |
 | `git-overview` | Branch + status + diff stat + recent commits in one call |
 | `pr-open` | Ensures pushed → pre-checks → `gh pr create` (the one command to ship) |
 | `pr-merge [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**) |
