@@ -19,14 +19,20 @@ fi
 
 echo "🧹 post-merge cleanup for branch '$BRANCH'"
 
-# 0. Safety gate — verify branch is merged into origin/main before deleting.
-echo "🔍 Verifying '$BRANCH' is merged into origin/main..."
-if git merge-base --is-ancestor "origin/$BRANCH" origin/main 2>/dev/null; then
-  echo "   ✅ branch is an ancestor of origin/main — safe to delete."
+# 0. Safety gate — verify the PR for this branch was merged.
+#    (Squash-merge makes the branch commits non-ancestors of main, so
+#    ancestor-check is unreliable. Use gh to check PR state instead.)
+echo "🔍 Verifying '$BRANCH' PR was merged..."
+
+# Find the PR for this branch (search by head branch name)
+PR_INFO=$(gh pr list --head "$BRANCH" --state merged --json number,url --jq '.[0]' 2>/dev/null || true)
+if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
+  PR_NUM=$(echo "$PR_INFO" | jq -r '.number')
+  echo "   ✅ PR #$PR_NUM was merged — safe to delete."
 else
-  # Check if the branch still exists on remote at all
+  # PR not found as merged — check if branch even exists on remote
   if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
-    echo "   ❌ ERROR: '$BRANCH' exists on origin but is NOT merged into origin/main." >&2
+    echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR was found." >&2
     echo "   Refusing to delete. Verify the PR was merged before cleaning up." >&2
     exit 1
   else
