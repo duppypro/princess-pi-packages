@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# ---
+# pr-threads <pr#> [owner/repo] — unresolved review-conversation count for a PR.
+# Green light (✅, exit 0) when the count is 0; otherwise lists each unresolved
+# thread's file and URL and exits 1 (scriptable as a merge-gate check).
+#
+# Why: `gh pr view` has no unresolved-conversation field — thread resolution
+# state only exists in the GraphQL API. Pairs with the ruleset rule
+# required_review_thread_resolution (princess-pi-packages ruleset 18684693).
+# ---
+set -euo pipefail
+
+pr="${1:?usage: pr-threads <pr#> [owner/repo]}"
+repo="${2:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
+owner="${repo%%/*}"
+name="${repo##*/}"
+
+# Fetch ALL review threads with pagination. The GraphQL API returns max 100 per
+# page; we loop until we've seen totalCount threads.
+unresolved=()
+after="null"
+seen=0
+total=0
+
+while true; do
+  json=$(gh api graphql \
+    -F owner="$owner" -F name="$name" -F pr="$pr" \
+    -F after="$after" \
+    -f query='
+query($owner: String!, $name: String!, $pr: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100, after: $after) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          comments(first: 1) { nodes { path url author { login } } }
+        }
+      }
+    }
+  }
+}')
+
+  total=$(jq '.data.repository.pullRequest.reviewThreads.totalCount' <<<"$json")
+
+  # Collect unresolved
+  while IFS= read -r line; do
+    unresolved+=("$line")
+  done < <(jq -r '.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved | not)
+    | .comments.nodes[0]
+    | "  \(.author.login)  \(.path)\n    \(.url)"' <<<"$json")
+
+  seen=$((seen + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[]] | length' <<<"$json")))
+
+  hasNext=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$json")
+  if [ "$hasNext" != "true" ]; then
+    break
+  fi
+  after=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<<"$json")
+done
+
+if [ "${#unresolved[@]}" -eq 0 ]; then
+  echo "✅ $repo #$pr — 0 unresolved conversations ($total total, all resolved)"
+  exit 0
+fi
+
+echo "❌ $repo #$pr — ${#unresolved[@]} unresolved conversation(s):"
+for line in "${unresolved[@]}"; do
+  echo "$line"
+done
+exit 1
