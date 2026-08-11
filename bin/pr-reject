@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# pr-reject — close the PR for the current feature branch without merging.
+# Discovers the open PR from the branch name. Human-only command.
+set -euo pipefail
+
+BRANCH=$(git branch --show-current)
+REASON="${1:-}"
+
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "pr-reject: on main — pass a branch name or switch to a feature worktree." >&2
+  echo "  pr-reject <branch> [reason]" >&2
+  exit 1
+fi
+
+PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null)
+if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+  echo "pr-reject: no open PR found for branch '$BRANCH'." >&2
+  exit 1
+fi
+
+if [ -n "$REASON" ]; then
+  echo "❌ Closing PR #$PR with comment: $REASON"
+  gh pr close "$PR" --comment "$REASON"
+else
+  echo "❌ Closing PR #$PR (no comment)"
+  gh pr close "$PR"
+fi
