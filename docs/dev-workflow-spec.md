@@ -246,9 +246,14 @@ git rebase --onto origin/main <old-base> <your-branch>
 git push --force-with-lease origin <your-branch>
 ```
 
-`<old-base>` is the parent's tip *as your branch knew it*, not `origin/main`.
-`git log --oneline origin/main..<your-branch>` shows the parent's commits still riding
-along; the oldest of those is what you rebase past.
+`<old-base>` is the parent's tip *as your branch knew it* — the **newest** of the
+parent's commits, not the oldest, and not `origin/main`. `git rebase --onto` replays
+everything *after* `<old-base>`, so naming the oldest one leaves the rest of the
+parent's commits in the range, to be replayed onto a `main` that already contains their
+squashed equivalent — which is the repeated-conflict mess this recipe exists to avoid.
+
+`git log --oneline origin/main..<your-branch>` lists the parent's commits still riding
+along; the newest of those is the old parent tip.
 
 **Fix — parent still open.** Stay stacked, but re-point at the parent's rewritten tip:
 
