@@ -40,9 +40,10 @@ Full spec: `docs/dev-workflow-spec.md`.
 | `pr-cleanup` | Deletes branch + remote + worktree after the PR is merged |
 | `pr-threads <pr#>` | Unresolved review-conversation count (exit 0 = none; scriptable merge gate) |
 
-Removed, not merely deprecated — `install-workflow-tools` deletes these from `~/bin`:
-`git-snap` / `git-ship` (→ `git-checkpoint`), `merge` (→ `pr-open`, removed in #201),
-`post-merge-cleanup` (→ `pr-cleanup`, removed in #207).
+Removed, not merely deprecated — `git-snap` / `git-ship` (→ `git-checkpoint`), `merge`
+(→ `pr-open`, removed in #201), `post-merge-cleanup` (→ `pr-cleanup`, removed in #207).
+`install-workflow-tools` does not delete these (#235 — an installer that also deletes is
+doing two jobs); it reports a stale copy found on `PATH` and leaves removing it to you.
 
 - [Tool conventions](docs/agents/tool-conventions.md) — manifest-driven `--help`/`--why`, cross-harness architecture
 - [Development workflow](docs/agents/dev-workflow.md) — local testing, install methods, hot-swapping

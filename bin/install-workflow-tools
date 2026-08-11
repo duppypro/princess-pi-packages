@@ -16,6 +16,18 @@ SCRIPTS=(
   pr-threads
 )
 
+# Tools this installer used to delete from ~/bin on every run (#235 — an
+# installer that also deletes is doing two jobs, and this list only grows
+# staler). Discovery, not mutation: report a stale copy on PATH instead of
+# silently disappearing it, so a machine that never ran the old migration
+# (e.g. a fresh laptop install) still finds out.
+STALE=(
+  "git-ship:removed in #201, replaced by git-checkpoint"
+  "git-snap:removed in #201, replaced by git-checkpoint"
+  "merge:removed in #201, replaced by pr-open"
+  "post-merge-cleanup:removed in #207, replaced by pr-cleanup"
+)
+
 echo "📦 Installing workflow tools to $INSTALL_DIR..."
 
 mkdir -p "$INSTALL_DIR"
@@ -30,13 +42,17 @@ for script in "${SCRIPTS[@]}"; do
   fi
 done
 
-# Remove deprecated scripts
-DEPRECATED=(git-ship git-snap merge post-merge-cleanup)
-for old in "${DEPRECATED[@]}"; do
-  if [ -f "$INSTALL_DIR/$old" ] || [ -L "$INSTALL_DIR/$old" ]; then
-    rm -f "$INSTALL_DIR/$old"
-    echo "   🗑  Removed deprecated: $old"
+echo "✅ Done. Run 'hash -r' or open a new shell to refresh PATH."
+
+stale_found=0
+for entry in "${STALE[@]}"; do
+  name="${entry%%:*}"
+  note="${entry#*:}"
+  if [ -f "$INSTALL_DIR/$name" ] || [ -L "$INSTALL_DIR/$name" ]; then
+    stale_found=1
+    echo "⚠ stale: $INSTALL_DIR/$name ($note) — delete by hand"
   fi
 done
-
-echo "✅ Done. Run 'hash -r' or open a new shell to refresh PATH."
+if [ "$stale_found" -eq 1 ]; then
+  echo "⚠ install-workflow-tools no longer deletes anything — remove the stale tools above yourself if unwanted."
+fi
