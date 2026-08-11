@@ -122,9 +122,10 @@ Duppy: reviews → runs pr-merge → tells agent "done"
 Agent: pr-cleanup          # run from the feature worktree
 ```
 
-**`pr-cleanup` is the merge path only.** It refuses to run unless a merged PR exists
-whose head is this exact branch tip — deleting a branch is how work gets lost, and a
-closed-without-merging PR is not proof that anything is safe to delete.
+**`pr-cleanup` is the merge path only.** Deleting a branch is how work gets lost, so it
+deletes nothing until it can prove the commits survive elsewhere — a merged PR whose
+head is this exact branch tip, or failing that, a tip already contained in
+`origin/main`. A closed-without-merging PR is neither.
 
 After `pr-reject` there is nothing to clean up automatically, because the commits are
 still the only copy of that work. Either:
