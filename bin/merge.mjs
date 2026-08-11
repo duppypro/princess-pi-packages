@@ -3,177 +3,13 @@
 // Edits are overwritten on every build/prepare. Edit the .ts source instead.
 
 // bin/merge.ts
-import * as fs3 from "node:fs";
-import * as path2 from "node:path";
+import * as fs2 from "node:fs";
+import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 // extensions/lib/merge/core.ts
 import { execSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
-
-class BuildFailureError extends Error {
-  buildFailure = true;
-}
-function isStep5ApprovedMessage(commitMsg) {
-  const subject = (commitMsg.split(`
-`)[0] || "").toLowerCase();
-  const firstIndex = (re) => {
-    const m2 = re.exec(subject);
-    return m2 ? m2.index : -1;
-  };
-  const codeIdx = firstIndex(/\bcode\b/);
-  const specIdx = firstIndex(/\bspecs?\b|\bspecifications?\b/);
-  const notIdx = firstIndex(/\bnot\b/);
-  if (codeIdx === -1 || specIdx === -1)
-    return false;
-  const approvedRe = /\bapproved\b/g;
-  let m;
-  while ((m = approvedRe.exec(subject)) !== null) {
-    const i = m.index;
-    if (codeIdx < i && specIdx < i && (notIdx === -1 || notIdx > i))
-      return true;
-  }
-  return false;
-}
-var STEP5_RULE_TEXT = `A Step 5 subject line needs the word 'approved' preceded by both 'code' and 'spec' (or 'specification'), with no 'not' before it — e.g. "docs: Code and Spec Approved — <what> (#<issue>)".`;
-function hasBuildScript(cwd) {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
-    return typeof pkg?.scripts?.build === "string" && pkg.scripts.build.trim() !== "";
-  } catch {
-    return false;
-  }
-}
-function haveBun() {
-  try {
-    execSync("bun --version", { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-function rebuildArtifacts(cwd, targetHash, logger, opts) {
-  if (opts.skipBuild) {
-    logger.info("⏭️  Skipping post-merge rebuild (--no-build).");
-    return;
-  }
-  if (!hasBuildScript(cwd)) {
-    logger.info("⏭️  No 'build' script in package.json — nothing to regenerate.");
-    return;
-  }
-  if (!haveBun()) {
-    logger.info("⏭️  bun not found on PATH — skipping post-merge rebuild. If this repo tracks built output, it may now be stale.");
-    return;
-  }
-  logger.info("\uD83D\uDD28 Rebuilding tracked artifacts after the merge...");
-  try {
-    execSync("bun run build", { cwd, stdio: "ignore" });
-  } catch (err) {
-    const detail = err?.stderr?.toString?.() || err?.message || String(err);
-    throw new BuildFailureError(`The merged tree does not build, so it was NOT pushed.
-` + `The merge commit exists locally in ${cwd} — nothing is lost.
-` + `Fix the build there and push, or undo the merge commit if you prefer.
-` + `Underlying error:
-${detail}`);
-  }
-  const delta = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
-  if (delta === "") {
-    logger.info("✅ Build output already current — no rebuild commit needed.");
-    return;
-  }
-  execSync("git add -A", { cwd, stdio: "ignore" });
-  execSync(`git commit -m "build: regenerate tracked artifacts after merging ${targetHash.substring(0, 7)} (#177) \uD83D\uDC51π\uD83D\uDC31"`, { cwd, stdio: "ignore" });
-  logger.info(`✅ Rebuilt artifacts committed:
-${delta}`);
-}
-async function cleanupBranch(currentBranch, cwd, logger, autoCleanup = false, mainCwd = "") {
-  const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
-  if (status !== "") {
-    logger.info(`
-⚠️  Branch '${currentBranch}' has uncommitted changes. Cannot safely delete.`);
-    try {
-      const diffStat = execSync("git diff --stat", { cwd, encoding: "utf8" }).trim();
-      if (diffStat)
-        logger.info(`
-${diffStat}`);
-    } catch {}
-    logger.info(`
-\uD83D\uDCA1 To clean up manually after committing/stashing:
-   git checkout main
-   git branch -D ${currentBranch}
-   git push origin --delete ${currentBranch}`);
-    return;
-  }
-  try {
-    execSync(`git merge-base --is-ancestor ${currentBranch} origin/main`, { cwd, stdio: "ignore" });
-  } catch {
-    logger.info(`
-⚠️  Branch '${currentBranch}' is not an ancestor of origin/main. Refusing to delete.`);
-    logger.info(`\uD83D\uDCA1 Verify merge completed, then clean up manually.`);
-    return;
-  }
-  let answer = autoCleanup;
-  if (!autoCleanup) {
-    answer = await logger.prompt(`
-\uD83D\uDDD1️  Delete feature branch '${currentBranch}' (local + remote) and switch to main? [y/N] `);
-  }
-  if (!answer) {
-    logger.info(`
-\uD83D\uDCA1 Branch '${currentBranch}' kept. To clean up later:
-   git checkout main
-   git branch -D ${currentBranch}
-   git push origin --delete ${currentBranch}`);
-    return;
-  }
-  const inWorktreeLayout = !!mainCwd && mainCwd !== cwd;
-  if (inWorktreeLayout) {
-    logger.info(`\uD83D\uDD00 Detaching this worktree from '${currentBranch}' (main stays checked out at ${mainCwd})...`);
-    execSync("git checkout --detach main", { cwd, stdio: "ignore" });
-  } else {
-    logger.info(`\uD83D\uDD00 Switching to 'main' and deleting local branch '${currentBranch}'...`);
-    execSync("git checkout main", { cwd, stdio: "ignore" });
-  }
-  try {
-    execSync(`git branch -d ${currentBranch}`, { cwd, stdio: "ignore" });
-    logger.info(`✅ Local branch '${currentBranch}' deleted.`);
-  } catch (err) {
-    const msg = err?.stderr || err?.message || String(err);
-    logger.error(`⚠️  Failed to delete local branch '${currentBranch}': ${String(msg).trim()}`);
-    logger.info(`✅ The merge itself succeeded and was pushed — nothing needs undoing.`);
-    logger.info(`\uD83D\uDCA1 Remote branch 'origin/${currentBranch}' was left in place, so nothing is half-deleted. Re-run cleanup once resolved.`);
-    return;
-  }
-  logger.info(`\uD83D\uDCE1 Deleting remote branch 'origin/${currentBranch}'...`);
-  try {
-    execSync(`git push origin --delete ${currentBranch}`, { cwd, stdio: "ignore" });
-    logger.info(`✅ Remote branch 'origin/${currentBranch}' deleted.`);
-  } catch (err) {
-    const msg = err?.stderr || err?.message || String(err);
-    logger.error(`⚠️  Failed to delete remote branch: ${String(msg).trim()}`);
-    logger.info(`\uD83D\uDCA1 Local branch is already gone; finish with: git push origin --delete ${currentBranch}`);
-  }
-  if (inWorktreeLayout) {
-    logger.info(`\uD83D\uDCAA Ready for the next task! This worktree is on a detached HEAD at 'main'.`);
-    logger.info(`\uD83D\uDCA1 The worktree itself is still here — removing it is a manual step: git worktree remove ${cwd}`);
-  } else {
-    logger.info(`\uD83D\uDCAA Ready for the next task! You are on branch 'main'.`);
-  }
-}
-async function cleanupBranchBestEffort(currentBranch, cwd, logger, autoCleanup, mainCwd) {
-  try {
-    await cleanupBranch(currentBranch, cwd, logger, autoCleanup, mainCwd);
-  } catch (err) {
-    const msg = err?.stderr || err?.message || String(err);
-    logger.error(`
-⚠️  Branch cleanup failed — but the merge itself succeeded and was pushed.`);
-    logger.error(`   ${String(msg).trim()}`);
-    logger.info(`\uD83D\uDCA1 Nothing needs undoing. Clean up by hand when convenient:
-   git branch -d ${currentBranch}
-   git push origin --delete ${currentBranch}`);
-  }
-}
 async function runMerge(argsList, logger, autoCleanup = false, opts = {}) {
   logger.info("\uD83D\uDD04 Running merge validation checks...");
   const currentCwd = process.cwd();
@@ -183,11 +19,12 @@ async function runMerge(argsList, logger, autoCleanup = false, opts = {}) {
       logger.info("Already on 'main' — nothing to clean up.");
       return;
     }
-    throw new Error("You are already on the 'main' branch/worktree. Cannot merge main into itself.");
+    throw new Error("MERGE_BLOCKED: already on main — cannot merge main into itself. Switch to a feature worktree.");
   }
   const currentStatus = execSync("git status --porcelain", { cwd: currentCwd, encoding: "utf8" }).trim();
   if (currentStatus !== "") {
-    throw new Error(`Your current branch worktree (${currentBranch}) is not clean. Please commit or stash changes first.
+    throw new Error(`MERGE_BLOCKED: worktree not clean — commit or stash changes first.
+branch: ${currentBranch}
 ${currentStatus}`);
   }
   logger.info("\uD83D\uDCE1 Fetching origin to update remote tracking references...");
@@ -199,12 +36,12 @@ ${currentStatus}`);
     try {
       targetHash = execSync(`git rev-parse ${ref}`, { cwd: currentCwd, encoding: "utf8" }).trim();
     } catch {
-      throw new Error(`The provided reference '${ref}' is not a valid Git commit or branch name.`);
+      throw new Error(`MERGE_BLOCKED: invalid ref '${ref}' — not a valid Git commit or branch name.`);
     }
     try {
       execSync(`git merge-base --is-ancestor ${targetHash} HEAD`, { cwd: currentCwd });
     } catch {
-      throw new Error(`The target commit '${ref}' (${targetHash.substring(0, 7)}) is not in the history of the current branch '${currentBranch}'.`);
+      throw new Error(`MERGE_BLOCKED: target commit '${ref}' (${targetHash.substring(0, 7)}) is not an ancestor of branch '${currentBranch}'.`);
     }
   } else {
     targetHash = localHash;
@@ -217,119 +54,64 @@ ${currentStatus}`);
     isPushed = false;
   }
   if (!isPushed) {
-    throw new Error(`The target commit ${targetHash.substring(0, 7)} has not been pushed to 'origin/${currentBranch}'. Please push your changes first.`);
-  }
-  const targetCommitMsg = execSync(`git log -1 --pretty=%B ${targetHash}`, { cwd: currentCwd, encoding: "utf8" }).trim();
-  if (!isStep5ApprovedMessage(targetCommitMsg)) {
-    let suggestedStep5Hash = "";
-    let suggestedStep5Msg = "";
-    try {
-      const logLines = execSync('git log --pretty=format:"%H %s" -n 50', { cwd: currentCwd, encoding: "utf8" }).trim().split(`
-`);
-      for (const line of logLines) {
-        const spaceIdx = line.indexOf(" ");
-        if (spaceIdx !== -1) {
-          const hash = line.substring(0, spaceIdx).trim();
-          const msg = line.substring(spaceIdx + 1).trim();
-          if (isStep5ApprovedMessage(msg)) {
-            suggestedStep5Hash = hash;
-            suggestedStep5Msg = msg;
-            break;
-          }
-        }
-      }
-    } catch {}
-    let errorMsg = `The target commit ${targetHash.substring(0, 7)} is not a Step 5 (code + spec approved) commit.
-Target commit message: "${targetCommitMsg.split(`
-`)[0]}"
-Merges to main are only permitted for commits in the Step 5 Approved state.
-${STEP5_RULE_TEXT}`;
-    if (suggestedStep5Hash) {
-      errorMsg += `
-
-\uD83D\uDCA1 Suggestion: A previous Step 5 commit was found in your history:
-   Hash: \x1B[33m${suggestedStep5Hash.substring(0, 7)}\x1B[0m
-   Message: "${suggestedStep5Msg}"
-
-To merge up to that stable checkpoint, run:
-   \x1B[36mmerge ${suggestedStep5Hash.substring(0, 7)}\x1B[0m`;
+    if (ref && targetHash !== localHash) {
+      throw new Error(`MERGE_BLOCKED: target commit ${targetHash.substring(0, 7)} is not on origin/${currentBranch}.
+` + `When merging an older checkpoint, push it explicitly first:
+` + `  git push origin ${targetHash}:refs/heads/${currentBranch}`);
     }
-    throw new Error(errorMsg);
+    logger.info(`\uD83D\uDCE1 Pushing ${currentBranch} to origin...`);
+    execSync(`git push origin ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" });
   }
-  const worktreeLines = execSync("git worktree list", { cwd: currentCwd, encoding: "utf8" }).trim().split(`
-`);
-  let mainCwd = "";
-  for (const line of worktreeLines) {
-    if (line.includes("[main]")) {
-      const idx = line.lastIndexOf("[main]");
-      const beforeBranch = line.substring(0, idx).trim();
-      const spaceIdx = beforeBranch.lastIndexOf(" ");
-      mainCwd = spaceIdx !== -1 ? beforeBranch.substring(0, spaceIdx).trim() : beforeBranch;
-    }
+  let prBranch = currentBranch;
+  if (ref && targetHash !== localHash) {
+    const tmpBranch = `${currentBranch}-pr-${targetHash.substring(0, 7)}`;
+    logger.info(`\uD83D\uDCCC Creating temporary PR branch '${tmpBranch}' at ${targetHash.substring(0, 7)}...`);
+    execSync(`git push origin ${targetHash}:refs/heads/${tmpBranch}`, { cwd: currentCwd, stdio: "ignore" });
+    prBranch = tmpBranch;
   }
-  const haveMainWorktree = !!mainCwd && fs.existsSync(mainCwd) && mainCwd !== currentCwd;
-  if (haveMainWorktree) {
-    const mainStatus = execSync("git status --porcelain", { cwd: mainCwd, encoding: "utf8" }).trim();
-    if (mainStatus !== "") {
-      throw new Error(`The 'main' branch worktree at ${mainCwd} is not clean. Please clean or stash changes there first.
-${mainStatus}`);
+  logger.info("\uD83D\uDCE1 Creating pull request...");
+  try {
+    const prUrl = execSync(`gh pr create --fill --base main --head ${prBranch}`, {
+      cwd: currentCwd,
+      encoding: "utf8"
+    }).trim();
+    logger.info(`
+✅ PR_CREATED: ${prUrl}`);
+    logger.info(`   branch: ${prBranch}`);
+    logger.info(`   target: main`);
+    if (prBranch !== currentBranch) {
+      logger.info(`   ⚠️  PR from temporary branch '${prBranch}' — this branch will be deleted after merge.`);
     }
-    logger.info("\uD83D\uDCE1 Pulling latest 'main' from origin...");
-    execSync("git checkout main", { cwd: mainCwd, stdio: "ignore" });
-    execSync("git pull --ff-only origin main", { cwd: mainCwd, stdio: "ignore" });
-    logger.info(`\uD83D\uDD00 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`);
-    execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
-    rebuildArtifacts(mainCwd, targetHash, logger, opts);
-    logger.info("\uD83D\uDCE1 Pushing merged 'main' branch to origin...");
-    execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
-    logger.info(`\uD83C\uDF89 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-    await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, mainCwd);
-  } else {
-    logger.info("\uD83E\uDEB5 No dedicated 'main' worktree found — using in-place single-checkout merge.");
-    try {
-      let hasLocalMain = true;
+    logger.info(`
+⏳ Waiting for human to merge or reject the PR.`);
+    logger.info(`   After merge, clean up with: git branch -d ${currentBranch} && git push origin --delete ${currentBranch}`);
+  } catch (prErr) {
+    const stderr = prErr?.stderr || "";
+    const existingMatch = stderr.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+    if (existingMatch) {
+      logger.info(`
+✅ PR_EXISTS: ${existingMatch[0]}`);
+      logger.info(`   branch: ${prBranch}`);
+      logger.info(`   target: main`);
+      logger.info(`
+⏳ Waiting for human to merge or reject the PR.`);
+      return;
+    }
+    if (prBranch !== currentBranch) {
       try {
-        execSync("git rev-parse --verify --quiet refs/heads/main", { cwd: currentCwd, stdio: "ignore" });
-      } catch {
-        hasLocalMain = false;
-      }
-      logger.info("\uD83D\uDCE1 Checking out and updating 'main'...");
-      if (hasLocalMain) {
-        execSync("git checkout main", { cwd: currentCwd, stdio: "ignore" });
-        execSync("git pull --ff-only origin main", { cwd: currentCwd, stdio: "ignore" });
-      } else {
-        execSync("git checkout -b main origin/main", { cwd: currentCwd, stdio: "ignore" });
-      }
-      logger.info(`\uD83D\uDD00 Merging target commit ${targetHash.substring(0, 7)} into 'main'...`);
-      execSync(`git merge ${targetHash}`, { cwd: currentCwd, stdio: "ignore" });
-      rebuildArtifacts(currentCwd, targetHash, logger, opts);
-      logger.info("\uD83D\uDCE1 Pushing merged 'main' branch to origin...");
-      execSync("git push origin main", { cwd: currentCwd, stdio: "ignore" });
-    } catch (mergeErr) {
-      if (mergeErr?.buildFailure)
-        throw mergeErr;
-      try {
-        execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" });
-      } catch {}
-      const detail = mergeErr?.message || String(mergeErr);
-      throw new Error(`In-place merge into 'main' failed and was rolled back (you are back on '${currentBranch}').
-` + `Likely a merge conflict or a non-fast-forward 'main' (someone pushed). Fix by updating 'main' and re-running, ` + `or resolve manually.
-Underlying error:
-${detail}`);
-    } finally {
-      try {
-        execSync(`git checkout ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" });
+        execSync(`git push origin --delete ${prBranch}`, { cwd: currentCwd, stdio: "ignore" });
       } catch {}
     }
-    logger.info(`\uD83C\uDF89 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-    await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, "");
+    const detail = prErr?.stderr || prErr?.message || String(prErr);
+    throw new Error(`MERGE_BLOCKED: gh pr create failed.
+detail: ${detail.trim()}`);
   }
 }
 
 // extensions/lib/merge/help.ts
-import * as fs2 from "node:fs";
+import * as fs from "node:fs";
 function renderHelp(manifestPath, invokedAs) {
-  const manifestStr = fs2.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let helpText = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -354,7 +136,7 @@ function renderHelp(manifestPath, invokedAs) {
   return helpText;
 }
 function renderWhy(manifestPath, invokedAs) {
-  const manifestStr = fs2.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -393,13 +175,13 @@ function renderWhy(manifestPath, invokedAs) {
 
 // bin/merge.ts
 function manifestFile() {
-  return path2.join(path2.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "merge-cmd.json");
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "merge-cmd.json");
 }
 async function run() {
   const argsList = process.argv.slice(2).filter(Boolean);
   if (argsList.includes("--version")) {
     try {
-      const manifest = JSON.parse(fs3.readFileSync(manifestFile(), "utf8"));
+      const manifest = JSON.parse(fs2.readFileSync(manifestFile(), "utf8"));
       console.log(`${manifest.name} ${manifest.version}`);
     } catch (err) {
       console.error(`⚠️ Failed to load merge command manifest: ${err}`);
@@ -409,8 +191,8 @@ async function run() {
   }
   if (argsList.includes("-h") || argsList.includes("--help")) {
     try {
-      const scriptDir = path2.dirname(fileURLToPath(import.meta.url));
-      const manifestPath = path2.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
+      const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+      const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
       const helpText = renderHelp(manifestPath, "merge");
       console.log(helpText);
     } catch (err) {
@@ -421,8 +203,8 @@ async function run() {
   }
   if (argsList.includes("--why")) {
     try {
-      const scriptDir = path2.dirname(fileURLToPath(import.meta.url));
-      const manifestPath = path2.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
+      const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+      const manifestPath = path.join(scriptDir, "..", "docs", "manifests", "merge-cmd.json");
       const whyText = renderWhy(manifestPath, "merge");
       console.log(whyText);
     } catch (err) {
