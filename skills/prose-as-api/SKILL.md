@@ -9,10 +9,13 @@ description: Applies the Agent-First Output standard to a specific surface. Two 
 > the **source of truth**. `~/.claude/skills/prose-as-api/SKILL.md` is a **deploy copy** — edit the
 > repo copy, then copy it out. Never the reverse; the dotfile has no history to lose.
 
-This is the working end of **Agent-First Output** (`~/git-projects/CLAUDE.md`): every artifact has
-two readers, humans and agents, and neither surface is optional. That standard states the
-obligation; this skill is how you meet it on a specific surface — *designing* the contract before
-there is code, and *auditing* for the places prose ended up carrying state instead.
+This is the working end of the **Agent-First Output** standard: every artifact has two readers,
+humans and agents, and neither surface is optional. Humans get prose that is a pleasure to read;
+agents get a structured surface that is precise, concise, and extractable in zero reasoning steps.
+The standard states that obligation — recorded in `~/git-projects/CLAUDE.md` — and this skill is
+how you meet it on one specific surface: *designing* the contract before there is code, and
+*auditing* for the places prose ended up carrying state instead. The rule is restated in full
+below, so this file stands on its own if you arrived here without the standard in context.
 
 **The rule.** A message written to be read by a human is not an API. Match on it and you have
 created an undeclared interface with no stability promise — the producer can reword, retone,
