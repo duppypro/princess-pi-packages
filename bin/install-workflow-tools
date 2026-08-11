@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# install-workflow-tools — copy all workflow scripts from p-p-p/bin/ to ~/bin/.
+# Run from the princess-pi-packages repo root.
+set -euo pipefail
+
+REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
+INSTALL_DIR="$HOME/bin"
+
+SCRIPTS=(
+  git-checkpoint
+  git-overview
+  pr-open
+  pr-merge
+  pr-reject
+  pr-cleanup
+  pr-threads
+)
+
+echo "📦 Installing workflow tools to $INSTALL_DIR..."
+
+mkdir -p "$INSTALL_DIR"
+
+for script in "${SCRIPTS[@]}"; do
+  if [ -f "$REPO_DIR/bin/$script" ]; then
+    cp "$REPO_DIR/bin/$script" "$INSTALL_DIR/$script"
+    chmod +x "$INSTALL_DIR/$script"
+    echo "   ✅ $script"
+  else
+    echo "   ⚠️  $script not found in bin/ — skipping"
+  fi
+done
+
+# Remove deprecated scripts
+DEPRECATED=(git-ship git-snap merge post-merge-cleanup)
+for old in "${DEPRECATED[@]}"; do
+  if [ -f "$INSTALL_DIR/$old" ] || [ -L "$INSTALL_DIR/$old" ]; then
+    rm -f "$INSTALL_DIR/$old"
+    echo "   🗑  Removed deprecated: $old"
+  fi
+done
+
+echo "✅ Done. Run 'hash -r' or open a new shell to refresh PATH."

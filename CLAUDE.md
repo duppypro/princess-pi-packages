@@ -27,7 +27,8 @@ exits 0. `bun run test` runs each suite in its own process. See
 
 ## Shipped scripts
 
-Shell scripts in `bin/` are copied to `~/bin/` for use (on PATH):
+Run `bin/install-workflow-tools` to install all workflow scripts to `~/bin/`.
+Full spec: `docs/dev-workflow-spec.md`.
 
 | Script | Does |
 |---|---|

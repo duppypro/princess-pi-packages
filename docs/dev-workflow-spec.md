@@ -1,0 +1,199 @@
+# Development Workflow Spec — TDD + PR Merge
+
+> **Source of truth:** `princess-pi-packages/docs/dev-workflow-spec.md`
+> **Research origin:** `btw/research/dev-workflow-spec.md` (archived pointer)
+
+## Why this exists
+
+The old 5-step workflow had four problems the new workflow fixes:
+
+| Old problem | New solution |
+|---|---|
+| **Human gate between Spec and Code** slowed iteration. Spec couldn't evolve from code feedback without stopping for approval. | Spec Approved is the first commit. Spec Draft is optional. Spec evolves alongside code — no gate. |
+| **Commit-message regex gate** (`Code.*Spec.*Approved`, no `not`) was fragile — a hotfix commit that didn't match the pattern blocked merge. | No regex gate. The process guarantees readiness, not the commit wording. |
+| **Local merge to main** required the LLM to check out main, merge, rebuild, push — error-prone and token-heavy. | PR-based merge. LLM creates a PR. Human merges it. |
+| **Merge-checklist skill** was a post-hoc checklist the LLM ran before saying "ready." Checks were doubled — once in scripts, once in the skill. | Checks are built into scripts. No separate checklist. |
+| **No post-merge cleanup** left stale branches and worktrees after merging. | `pr-cleanup` handles 3-step hygiene. |
+
+## Flow diagram
+
+```
+Spec Approved ──────────────────────────────────────────────────┐
+  (first commit; Spec Draft optional — only for large/open       │
+   specs that need human clarification before coding)             │
+       │                                                          │
+  Write RED tests — Code Draft = tests that fail                 │
+  (load the tdd skill; one vertical slice at a time)              │
+       │                                                          │
+  Write code → all GREEN — Code Approved                         │
+       │                                                          │
+  Spec Reconciliation — always run spec-reconcile skill ←────────┘
+  (Code and Spec Approved commit)
+       │
+  pr-open
+       │
+  Human runs pr-merge or pr-reject → pr-cleanup
+```
+
+## Label definitions
+
+Labels are commit markers, not gates. Commit as often as needed.
+
+| Label | What it means | Commit message example |
+|---|---|---|
+| **Spec Approved** | Spec is clear enough to begin TDD. First commit on every issue. | `feat(wtft): Spec Approved — add --verbose flag (#42)` |
+| **Code Draft** | RED tests written. Tests fail — feature doesn't exist yet. | `test: Code Draft — RED: verbose output test (#42)` |
+| **Code Approved** | All tests GREEN. Automated tests pass. Code is solid. | `feat: Code Approved — --verbose implemented, tests GREEN (#42)` |
+| **Code and Spec Approved** | Spec-reconcile pass complete. All docs match code. No code changes after this. | `docs: Code and Spec Approved — spec-reconcile (#42)` |
+
+**After Code and Spec Approved:**
+- Update issue body with final resolution
+- Close issue, add `attention-needed` label
+- `pr-open` — creates PR (ensures pushed, pre-checks, gh pr create)
+
+## Scripts
+
+| Script | What it does |
+|---|---|
+| `pr-open` | Discovers branch from cwd → ensures pushed → pre-checks → `gh pr create` |
+| `pr-merge` | Discovers PR from current branch → `gh pr merge --squash` (human command) |
+| `pr-reject [reason]` | Discovers PR from current branch → `gh pr close` (human command) |
+| `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
+| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
+
+**Note:** `git-snap` and `git-ship` have been replaced by `git-checkpoint`. The old
+names are deprecated — `git-checkpoint` does add + commit + push in one step.
+There is never a reason to commit without pushing in the new workflow.
+
+## Happy path — small feature
+
+Issue #42: "wtft: add --verbose flag for extra debug output"
+
+### Commit 1: Spec Approved
+```
+feat(wtft): Spec Approved — add --verbose flag (#42)
+
+docs/spec-42-verbose-flag.md:
+  --verbose        Print extra debug output (default: short)
+                   Values: short | full
+                   With --verbose=full, includes stack traces.
+```
+
+### Commit 2: Code Draft (RED)
+```
+test: Code Draft — RED: --verbose test expects extra output (#42)
+
+tests/wtft-verbose.test.ts:
+  - Test: --verbose (no value) produces extra lines
+  - Test: --verbose=full produces stack traces
+  - Test: without --verbose, output is unchanged
+
+All 3 tests FAIL — --verbose doesn't exist yet.
+```
+
+### Commit 3: Code Approved (GREEN)
+```
+feat: Code Approved — --verbose flag implemented, tests GREEN (#42)
+
+extensions/wtft.ts:
+  + --verbose flag parsing (short | full)
+  + conditional debug output
+
+All 3 tests PASS.
+```
+
+### Commit 4: Code and Spec Approved
+```
+docs: Code and Spec Approved — spec-reconcile (#42)
+
+docs/EXT_WTFT.html:        updated --help output with --verbose
+docs/manifests/wtft-cmd.json: added --verbose entry
+Issue #42 body:            updated with resolution, closed
+```
+
+### Ship + merge
+```
+$ git-checkpoint "docs: Code and Spec Approved (#42)"
+$ gh pr create --fill --base main
+https://github.com/duppypro/princess-pi-packages/pull/43
+
+Duppy: reviews → merges PR #43 → tells agent "done"
+
+Agent: post-merge-cleanup 42-verbose-flag /path/to/worktree
+```
+
+## When things go wrong
+
+### Spec changes during coding
+
+You write code and realise the spec was wrong or incomplete. **Do not stop.**
+
+1. Update the spec doc to match what the code *should* do
+2. Continue coding to the corrected spec
+3. Note the drift in an issue comment: "Spec §3: --verbose defaults to 'short', not 'full' — found during impl"
+4. Spec-reconcile at the end catches any remaining drift
+
+**No human gate needed.** The spec evolves alongside the code. The Code and Spec
+Approved commit is where everything gets reconciled — not before.
+
+### Tests reveal a design flaw
+
+The RED test you wrote passes but the API feels wrong. **Pivot.**
+
+1. Update the spec with the better design
+2. Rewrite the RED test to match
+3. Force-push the amended commits (feature branch — rewriting is fine)
+4. Continue
+
+### Scope creep — discovered the issue is bigger
+
+Mid-implementation, you realise this needs 3 more features to be useful.
+
+1. Comment on the issue: "Discovered --verbose needs --output-format to be useful"
+2. File a **follow-up issue**: "#43: add --output-format flag"
+3. Keep **this** PR scoped to --verbose only
+4. Link the follow-up in the issue body
+
+**Never expand scope on a branch once code is committed.** File a follow-up.
+
+### Merge conflict with main
+
+```
+$ pr-open
+MERGE_BLOCKED: gh pr create failed.
+detail: Pull request has conflicts.
+```
+
+Fix:
+1. `git fetch origin && git rebase origin/main`
+2. Resolve conflicts
+3. `git push --force-with-lease`
+4. Re-run `pr-open`
+
+### Human rejects PR with changes requested
+
+1. Read the feedback on the PR
+2. Make changes on the same branch
+3. Commit + push (PR auto-updates)
+4. Re-run spec-reconcile if docs changed
+5. Tell Duppy "ready for re-review"
+
+### PR merge blocked by ruleset ("protected ref")
+
+The repository ruleset requires review threads to be resolved before merging.
+
+1. Resolve all review conversation threads (click "Resolve conversation" on each)
+2. If the UI still blocks: `gh pr merge <N> --squash --admin` (bypasses the block
+   if you have admin permissions)
+3. The `--admin` flag is temporary — the ruleset is doing its job; fix the root
+   cause (unresolved threads) rather than relying on bypass
+
+## What was removed
+
+| Removed | Why |
+|---|---|
+| Commit-message regex gate (`isStep5ApprovedMessage`) | Fragile — legitimate commits failed over word order. Process guarantees readiness, not wording. |
+| `pr-open` (was `merge`) | Post-hoc checklist. Same checks now live in the merge script. |
+| `pre-merge-checklist` skill | Redundant with merge-checklist. |
+| Local merge to main (`merge --cleanup`) | Replaced by PR merge. LLM runs `pr-open`, human runs `pr-merge`. |
+| Human gate between Spec Approved and Code Draft | Spec iterates alongside code. Gate moved to PR review. |
