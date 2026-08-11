@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# pr-cleanup — delete merged branch, its remote, and its worktree.
+# Auto-discovers branch and worktree from cwd. Run from the feature
+# worktree AFTER the PR was merged.
+set -euo pipefail
+
+BRANCH=$(git branch --show-current)
+CWD=$(pwd)
+
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "pr-cleanup: on main — nothing to clean up from here." >&2
+  exit 1
+fi
+
+echo "🧹 pr-cleanup for branch '$BRANCH'"
+
+# 0. Safety gate — verify the PR was merged.
+echo "🔍 Verifying PR for '$BRANCH' was merged..."
+PR_INFO=$(gh pr list --head "$BRANCH" --state merged --json number,mergeCommit --jq '.[0]' 2>/dev/null || true)
+if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
+  PR_NUM=$(echo "$PR_INFO" | jq -r '.number')
+  PR_MERGE_SHA=$(echo "$PR_INFO" | jq -r '.mergeCommit.oid // empty')
+  if [ -n "$PR_MERGE_SHA" ] && git merge-base --is-ancestor "$PR_MERGE_SHA" origin/main 2>/dev/null; then
+    echo "   ✅ PR #$PR_NUM was merged into origin/main — safe to delete."
+  else
+    echo "   ❌ ERROR: PR #$PR_NUM is marked merged but not in origin/main." >&2
+    exit 1
+  fi
+else
+  if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
+    echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR found." >&2
+    exit 1
+  else
+    echo "   ℹ️  '$BRANCH' not on origin — proceeding."
+  fi
+fi
+
+# 1. Switch to main clone first (worktree can't delete itself while checked in)
+MAIN_CLONE=$(git worktree list | grep "\[main\]" | awk '{print $1}' | head -1)
+if [ -z "$MAIN_CLONE" ]; then
+  echo "   ❌ ERROR: no main worktree found. Switch to main clone and run from there." >&2
+  exit 1
+fi
+
+# 2. Remove this worktree (done from main clone)
+echo "🗑  Removing worktree $CWD..."
+git -C "$MAIN_CLONE" worktree remove "$CWD" 2>/dev/null || \
+  git -C "$MAIN_CLONE" worktree remove --force "$CWD" 2>/dev/null || {
+    echo "   ❌ ERROR: worktree removal failed." >&2
+    exit 1
+  }
+
+# 3. Delete remote branch
+echo "🗑  Deleting remote branch origin/$BRANCH..."
+git -C "$MAIN_CLONE" push origin --delete "$BRANCH" 2>/dev/null || \
+  echo "   ℹ️  Remote branch may already be deleted."
+
+# 4. Delete local branch
+echo "🗑  Deleting local branch $BRANCH..."
+git -C "$MAIN_CLONE" branch -D "$BRANCH" 2>/dev/null || \
+  echo "   ℹ️  Local branch may already be deleted."
+
+echo "✅ Cleanup complete. Now in $MAIN_CLONE"
+cd "$MAIN_CLONE"
