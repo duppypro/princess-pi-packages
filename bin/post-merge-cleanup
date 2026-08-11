@@ -24,11 +24,20 @@ echo "🧹 post-merge cleanup for branch '$BRANCH'"
 #    ancestor-check is unreliable. Use gh to check PR state instead.)
 echo "🔍 Verifying '$BRANCH' PR was merged..."
 
-# Find the PR for this branch (search by head branch name)
-PR_INFO=$(gh pr list --head "$BRANCH" --state merged --json number,url --jq '.[0]' 2>/dev/null || true)
+# Find the PR for this branch (search by head branch name AND verify the
+# merge commit is in origin/main — guards against reused branch names
+# matching an old PR).
+PR_INFO=$(gh pr list --head "$BRANCH" --state merged --json number,url,mergeCommit --jq '.[0]' 2>/dev/null || true)
 if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   PR_NUM=$(echo "$PR_INFO" | jq -r '.number')
-  echo "   ✅ PR #$PR_NUM was merged — safe to delete."
+  PR_MERGE_SHA=$(echo "$PR_INFO" | jq -r '.mergeCommit.oid // empty')
+  if [ -n "$PR_MERGE_SHA" ] && git merge-base --is-ancestor "$PR_MERGE_SHA" origin/main 2>/dev/null; then
+    echo "   ✅ PR #$PR_NUM was merged into origin/main — safe to delete."
+  else
+    echo "   ❌ ERROR: PR #$PR_NUM is marked merged but its merge commit is not in origin/main." >&2
+    echo "   The branch name may have been reused. Verify before deleting." >&2
+    exit 1
+  fi
 else
   # PR not found as merged — check if branch even exists on remote
   if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
