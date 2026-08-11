@@ -305,6 +305,13 @@ function isGitWord(t: string): boolean {
   return t.slice(t.lastIndexOf("/") + 1) === "git";
 }
 
+// Both guarded programs. The benign-prefix walk stops at either, so a wrapper
+// it knows how to skip cannot hide one and expose the other (#208/#189).
+function isGuardedWord(t: string): boolean {
+  const base = t.slice(t.lastIndexOf("/") + 1);
+  return base === "git" || base === "gh";
+}
+
 // ---
 // Command substitutions ($(...) and backticks) EXECUTE their bodies — `echo
 // $(git push origin main)` runs the push, it isn't echo data. Single-quoted
@@ -312,13 +319,21 @@ function isGitWord(t: string): boolean {
 // (#105 / the command-substitution residual documented at findings 14+15).
 // ---
 function checkSubstitutions(s: string, hookCwd: string): string | null {
+  // Double-quote state is load-bearing (#208/#105): inside "…" an apostrophe is
+  // ORDINARY TEXT, not a quote delimiter, while $( ) and ` ` still expand. The
+  // scan used to treat every ' as opening a literal region, so the first
+  // apostrophe in `echo "it's $(git push)"` opened a skip that ran to the next
+  // ' and swallowed the substitution — the tokenizer then saw only `echo`.
+  let inDq = false;
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
-    if (ch === "'") {
+    if (ch === "\\") {
+      i++;
+    } else if (ch === '"') {
+      inDq = !inDq;
+    } else if (ch === "'" && !inDq) {
       i++;
       while (i < s.length && s[i] !== "'") i++;
-    } else if (ch === "\\") {
-      i++;
     } else if (ch === "$" && s[i + 1] === "(") {
       let j = i + 2;
       let depth = 1;
@@ -359,14 +374,33 @@ function checkSubstitutions(s: string, hookCwd: string): string | null {
   return null;
 }
 
-function checkGitSubcommand(T: string[], hookCwd: string): string | null {
+/**
+ * Result of walking past a command's benign prefix.
+ *  - "start": the prefix is stripped; T[i] is the real command word.
+ *  - "verdict": the walk answered the question by itself — either the prefix was
+ *    a nested shell string that has already been fully re-checked, or the line
+ *    is not a guarded invocation at all. `reason` is the final answer.
+ */
+type PrefixScan =
+  | { kind: "start"; i: number }
+  | { kind: "verdict"; reason: string | null };
 
-  // Skip a benign prefix — wrappers, their -options, VAR=val assignments,
-  // bare numbers (nice/timeout values) — until 'git'. Anything else means
-  // this is not a git invocation ('echo git push …' stays text).
+/**
+ * Skip a benign prefix — wrappers, their -options, VAR=val assignments, bare
+ * numbers (nice/timeout values) — and stop at the first real command word.
+ * Anything unrecognized means this is not a guarded invocation at all
+ * ('echo git push …' stays text).
+ *
+ * Shared by the git and gh checks on purpose (#208/#189). It used to live
+ * inside checkGitSubcommand, so `gh` was matched against a raw T[0] and every
+ * wrapper this function knows about — `sudo gh pr merge`, `env gh pr merge`,
+ * `GH_HOST=… gh pr merge` — walked straight through the human-only merge gate.
+ * One parser, two consumers: a wrapper learned here is understood by both.
+ */
+function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
   let i = 0;
   let wrapperArgOpts: Set<string> | null = null; // arg-consuming options of the wrapper we're inside
-  while (i < T.length && !isGitWord(T[i])) {
+  while (i < T.length && !isGuardedWord(T[i])) {
     const t = T[i];
     // Runners and wrappers must match by basename like git itself does —
     // /bin/sh and /usr/bin/env are still sh and env (finding 19)
@@ -379,15 +413,15 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
         const a = T[j];
         if (a === "-c" || /^-[A-Za-z]*c[A-Za-z]*$/.test(a)) {
           const nested = T[j + 1];
-          return nested ? checkGitCommand(nested, hookCwd) : null;
+          return { kind: "verdict", reason: nested ? checkGitCommand(nested, hookCwd) : null };
         }
         if (!a.startsWith("-")) break;
       }
-      return null;
+      return { kind: "verdict", reason: null };
     }
     if (t === "eval") {
       // eval concatenates and re-parses its arguments as a shell command
-      return checkGitCommand(T.slice(i + 1).join(" "), hookCwd);
+      return { kind: "verdict", reason: checkGitCommand(T.slice(i + 1).join(" "), hookCwd) };
     }
     const opts = GIT_WRAPPERS.get(base);
     if (opts) {
@@ -402,11 +436,19 @@ function checkGitSubcommand(T: string[], hookCwd: string): string | null {
     ) {
       i++;
     } else {
-      return null;
+      return { kind: "verdict", reason: null };
     }
   }
-  if (i >= T.length) return null;
-  i++;
+  if (i >= T.length) return { kind: "verdict", reason: null };
+  return { kind: "start", i };
+}
+
+/**
+ * Inspect a git invocation. `start` indexes the `git` word itself — the benign
+ * prefix before it has already been consumed by skipBenignPrefix.
+ */
+function checkGitSubcommand(T: string[], start: number, hookCwd: string): string | null {
+  let i = start + 1;
 
   // git global options before the subcommand; capture -C <path> and
   // --git-dir <path> (both select the affected repo — finding 17).
@@ -514,24 +556,30 @@ export function checkGitCommand(command: string, hookCwd: string): string | null
   const subs = splitOutsideQuotes(stripped);
   for (const sub of subs) {
     const toks = tokenize(sub);
-    const reason = checkGitSubcommand(toks, hookCwd);
+    if (toks.length === 0) continue;
+    // Strip the benign prefix ONCE, then dispatch on what is actually being run.
+    // Doing it once matters: the walk recurses into `bash -c` / `eval` bodies,
+    // and running it per-checker would re-walk every nested string twice.
+    const scan = skipBenignPrefix(toks, hookCwd);
+    if (scan.kind === "verdict") {
+      if (scan.reason) return scan.reason;
+      continue;
+    }
+    const reason = isGitWord(toks[scan.i])
+      ? checkGitSubcommand(toks, scan.i, hookCwd)
+      : checkGhSubcommand(toks, scan.i);
     if (reason) return reason;
-    const ghReason = checkGhSubcommand(toks);
-    if (ghReason) return ghReason;
   }
   return null;
 }
 
 /**
- * Check for dangerous gh (GitHub CLI) commands.
+ * Check for dangerous gh (GitHub CLI) commands. `start` indexes the `gh` word.
  * Separate from git guardrails because gh is not git — but gh pr merge
  * is the merge-to-main gate and must stay human-only.
  */
-function checkGhSubcommand(T: string[]): string | null {
-  if (T.length < 3) return null;
-  // Match by basename like git does (path-based invocations)
-  if (T[0].slice(T[0].lastIndexOf("/") + 1) !== "gh") return null;
-  if (T[1] === "pr" && T[2] === "merge") {
+function checkGhSubcommand(T: string[], start: number): string | null {
+  if (T[start + 1] === "pr" && T[start + 2] === "merge") {
     return "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell.";
   }
   return null;

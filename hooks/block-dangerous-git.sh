@@ -140,24 +140,37 @@ extract_and_check_substitutions() {
   # NB: ${#1}, NOT ${#s} — bash expands the whole `local` line before any
   # assignment runs, so ${#s} reads the OLD (unset) s and n becomes 0,
   # silently disabling the scan (the bug shipped in #105's original).
-  local s="$1" n=${#1} i=0 ch nch depth start body q
+  local s="$1" n=${#1} i=0 ch nch depth start body q indq=0
 
   while [ "$i" -lt "$n" ]; do
     ch="${s:$i:1}"
 
-    # Skip single-quoted regions entirely (substitutions are literal inside)
-    if [ "$ch" = "'" ]; then
+    # Skip escape sequences (checked first — a backslash hides the next char
+    # from every rule below, including the quote toggles)
+    if [ "$ch" = '\' ]; then
+      i=$((i + 2))
+      continue
+    fi
+
+    # Double-quote state is load-bearing (#208/#105): inside "…" an apostrophe
+    # is ORDINARY TEXT, not a quote delimiter, while $( ) and ` ` still expand.
+    # Without this, the first ' in `echo "it's $(git push)"` opened a literal
+    # region that ran to the next ' and swallowed the substitution whole — the
+    # tokenizer then saw only `echo` and the push was allowed.
+    if [ "$ch" = '"' ]; then
+      indq=$((1 - indq))
+      i=$((i + 1))
+      continue
+    fi
+
+    # Skip single-quoted regions entirely (substitutions are literal inside),
+    # but only where a ' actually opens one
+    if [ "$ch" = "'" ] && [ "$indq" -eq 0 ]; then
       i=$((i + 1))
       while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != "'" ]; do
         i=$((i + 1))
       done
       i=$((i + 1))
-      continue
-    fi
-
-    # Skip escape sequences (outside single quotes)
-    if [ "$ch" = '\' ]; then
-      i=$((i + 2))
       continue
     fi
 
@@ -381,20 +394,32 @@ tokenize() {
   if [ -n "$cur" ] || [ "$quoted" = 1 ]; then TOKENS+=("$cur"); fi
 }
 
-check_git_subcommand() {
-  local -a T=("${TOKENS[@]}")
+# Index of the real command word in TOKENS, set by skip_benign_prefix.
+PREFIX_START=0
 
-  # Skip a benign prefix — wrappers, their -options, VAR=val assignments,
-  # bare numbers (nice/timeout values) — until 'git'. Anything else means
-  # this is not a git invocation ('echo git push …' stays text).
-  local i=0 n=${#T[@]} t arg_opts=" "
+# ---
+# Skip a benign prefix — wrappers, their -options, VAR=val assignments, bare
+# numbers (nice/timeout values) — and stop at the first real command word.
+# Sets PREFIX_START and returns 0 when that word is git or gh. Returns 1 when
+# the line is not a guarded invocation ('echo git push …' stays text), or when
+# it was a nested shell string that has already been re-checked in full.
+#
+# Shared by the git and gh checks on purpose (#208/#189). It used to live inside
+# check_git_subcommand, so check_gh_command matched a raw T[0] and every wrapper
+# this function knows about — `sudo gh pr merge`, `env gh pr merge`,
+# `GH_HOST=… gh pr merge` — walked straight through the human-only merge gate.
+# One parser, two consumers: a wrapper learned here is understood by both.
+# ---
+skip_benign_prefix() {
+  local -a T=("${TOKENS[@]}")
+  local i=0 n=${#T[@]} t arg_opts=" " base
   while [ "$i" -lt "$n" ]; do
     t="${T[$i]}"
-    [ "${t##*/}" = "git" ] && break
+    base="${t##*/}"
+    if [ "$base" = "git" ] || [ "$base" = "gh" ]; then PREFIX_START=$i; return 0; fi
     if [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
     # Runners and wrappers match by basename like git itself does —
     # /bin/sh and /usr/bin/env are still sh and env (finding 19)
-    local base="${t##*/}"
     case "$SHELL_RUNNERS" in *" $base "*)
       # bash -c '<string>' runs a full nested shell command — recurse the
       # whole check on the -c argument (#74 review finding 14). Without -c
@@ -406,16 +431,16 @@ check_git_subcommand() {
           if [ $((j + 1)) -lt "$n" ]; then
             check_command_string "${T[$((j + 1))]}"
           fi
-          return 0
+          return 1
         fi
         case "$a" in -*) j=$((j + 1)) ;; *) break ;; esac
       done
-      return 0 ;;
+      return 1 ;;
     esac
     if [ "$t" = "eval" ]; then
       # eval concatenates and re-parses its arguments as a shell command
       check_command_string "${T[*]:$((i + 1))}"
-      return 0
+      return 1
     fi
     case "$GIT_WRAPPERS" in *" $base "*)
       arg_opts=$(wrapper_arg_opts "$base"); i=$((i + 1)); continue ;;
@@ -424,10 +449,19 @@ check_git_subcommand() {
     case "$arg_opts" in *" $t "*) i=$((i + 2)); continue ;; esac
     case "$t" in -*) i=$((i + 1)); continue ;; esac
     if [[ "$t" =~ ^[0-9]+[A-Za-z]*$ ]]; then i=$((i + 1)); continue; fi
-    return 0
+    return 1
   done
-  [ "$i" -lt "$n" ] || return 0
-  i=$((i + 1))
+  return 1
+}
+
+# ---
+# Inspect a git invocation. PREFIX_START indexes the 'git' word itself — the
+# benign prefix before it has already been consumed by skip_benign_prefix.
+# ---
+check_git_subcommand() {
+  local -a T=("${TOKENS[@]}")
+  local n=${#T[@]}
+  local i=$((PREFIX_START + 1))
 
   # git global options before the subcommand; capture -C <path> and
   # --git-dir <path> (both select the affected repo — finding 17)
@@ -536,12 +570,8 @@ check_git_subcommand() {
 # ---
 check_gh_command() {
   local -a T=("${TOKENS[@]}")
-  local n=${#T[@]} base
-  [ "$n" -lt 3 ] && return 0
-  # Match by basename, same convention as git subcommand check (#74 finding 19)
-  base="${T[0]##*/}"
-  [ "$base" != "gh" ] && return 0
-  if [ "${T[1]}" = "pr" ] && [ "${T[2]}" = "merge" ]; then
+  local s=$PREFIX_START
+  if [ "${T[$((s + 1))]:-}" = "pr" ] && [ "${T[$((s + 2))]:-}" = "merge" ]; then
     block "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell."
   fi
   return 0
@@ -561,8 +591,15 @@ check_command_string() {
   while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
     tokenize "$sub"
     [ ${#TOKENS[@]} -eq 0 ] && continue
-    check_git_subcommand
-    check_gh_command
+    # Strip the benign prefix ONCE, then dispatch on what is actually being run.
+    # Once matters: the walk recurses into `bash -c` / `eval` bodies, and running
+    # it per-checker would re-walk every nested string twice.
+    skip_benign_prefix || continue
+    if [ "${TOKENS[$PREFIX_START]##*/}" = "git" ]; then
+      check_git_subcommand
+    else
+      check_gh_command
+    fi
   done <<< "${subs}"$'\x1f'
   return 0
 }
