@@ -75,6 +75,27 @@ across every fork, so a fork branch called `fix` is an equal candidate to yours.
 scripts now keep only head branches in your own repo, and abort listing the candidates
 if more than one survives rather than taking `.[0]`. A failed `gh pr list` is reported
 as a failure, never as "no PR found".
+### `pr-cleanup` fails closed, by design
+
+Every gate aborts when it cannot **prove** its precondition. It never treats a failed
+command as evidence that deletion is safe. In practice that means `pr-cleanup` will
+refuse, and tell you why, when:
+
+| Situation | Why it refuses |
+|---|---|
+| The worktree has uncommitted or untracked changes | `git worktree remove` refusing IS the safeguard. There is no `--force` retry — a merged PR says nothing about local-only edits. Commit, stash, or force it by hand once you are sure. |
+| Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. |
+| `git fetch` or `git ls-remote` fails | An unreachable or unauthenticated remote is not proof the branch is gone. |
+| `git push --delete` fails and the ref is still on origin | Includes protected-ref rejections. It exits non-zero instead of printing `✅ Cleanup complete`. |
+
+Two things that look like bugs and are not:
+
+- **The merge check is the PR's `headRefOid`, not `git merge-base --is-ancestor`.**
+  We squash-merge, so a branch tip is *never* an ancestor of its own squash commit.
+  An ancestry test would refuse every legitimate cleanup.
+- **The local delete is `git branch -D`, not `-d`.** For the same reason: git never
+  considers a squash-merged branch merged, so `-d` would refuse every time. The PR gate
+  above is the stronger proof — it pins the tip to the exact merged commit.
 
 **Note:** `git-snap` and `git-ship` have been replaced by `git-checkpoint`. The old
 names are deprecated — `git-checkpoint` does add + commit + push in one step.
