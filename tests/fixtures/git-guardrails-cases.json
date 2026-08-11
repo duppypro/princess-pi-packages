@@ -799,6 +799,90 @@
       "branch": "my-feature",
       "verdict": "allow",
       "why": "#183: pushing to a feature branch (refspec not main/master) is allowed"
+    },
+    {
+      "id": "block-sudo-gh-pr-merge",
+      "command": "sudo gh pr merge --squash",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#208/#189: check_gh_command only inspected T[0]; sudo prefix bypassed the human-only merge gate"
+    },
+    {
+      "id": "block-env-gh-pr-merge",
+      "command": "env gh pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#208/#189: env is a GIT_WRAPPERS entry — skipped for git, must be skipped for gh too"
+    },
+    {
+      "id": "block-var-assign-gh-pr-merge",
+      "command": "GH_HOST=github.com gh pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#208/#189: VAR=val assignment prefix is benign and must not hide the gh merge"
+    },
+    {
+      "id": "block-nice-gh-pr-merge",
+      "command": "nice -n 10 gh pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#208/#189: wrapper plus its separate-argument option (-n 10) before gh"
+    },
+    {
+      "id": "block-sudo-u-gh-pr-merge",
+      "command": "sudo -u root gh pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#208/#189: sudo's arg-consuming long/short options must be consumed before matching gh"
+    },
+    {
+      "id": "block-bash-c-sudo-gh-pr-merge",
+      "command": "bash -c 'sudo gh pr merge'",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#208/#189: nested shell string recursion must still see the wrapped gh merge"
+    },
+    {
+      "id": "allow-sudo-gh-pr-create",
+      "command": "sudo gh pr create --base main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#208/#189 inverse: skipping the prefix must not turn every wrapped gh into a block"
+    },
+    {
+      "id": "allow-env-gh-pr-view",
+      "command": "env gh pr view 42",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#208/#189 inverse: only 'pr merge' is gated, not all wrapped gh commands"
+    },
+    {
+      "id": "block-dq-squote-substitution-push",
+      "command": "echo \"'$(git push origin main)'\"",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#208/#105: literal ' inside double quotes opened a bogus single-quote skip that swallowed the $( ) body"
+    },
+    {
+      "id": "block-dq-squote-substitution-bare-push",
+      "command": "echo \"it's $(git push) now\"",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#208/#105: apostrophe in double-quoted text must not suppress substitution scanning"
+    },
+    {
+      "id": "allow-dq-squote-substitution-feature",
+      "command": "echo \"'$(git push origin feat)'\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#208/#105 inverse: scanning the body must still judge by target — feat is allowed"
+    },
+    {
+      "id": "allow-squoted-substitution-is-literal",
+      "command": "echo '$(git push origin main)'",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#208/#105 inverse: a REAL single-quoted region keeps $( ) literal — must stay allowed"
     }
   ]
 }
