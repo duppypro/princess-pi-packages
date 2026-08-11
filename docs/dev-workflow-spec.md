@@ -117,10 +117,21 @@ $ git-checkpoint "docs: Code and Spec Approved (#42)"
 $ pr-open
 https://github.com/duppypro/princess-pi-packages/pull/43
 
-Duppy: reviews → runs pr-merge (or pr-reject) → tells agent "done"
+Duppy: reviews → runs pr-merge → tells agent "done"
 
 Agent: pr-cleanup          # run from the feature worktree
 ```
+
+**`pr-cleanup` is the merge path only.** It refuses to run unless a merged PR exists
+whose head is this exact branch tip — deleting a branch is how work gets lost, and a
+closed-without-merging PR is not proof that anything is safe to delete.
+
+After `pr-reject` there is nothing to clean up automatically, because the commits are
+still the only copy of that work. Either:
+
+- **revise** — keep the branch and worktree, push again, and the PR path resumes; or
+- **abandon** — tear the worktree down by hand, which is a deliberate act gated on
+  confirming `git -C <worktree> status --short` is clean.
 
 ## When things go wrong
 
