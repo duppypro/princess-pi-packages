@@ -321,6 +321,17 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 		logger.info(`\n⏳ Waiting for human to merge or reject the PR.`);
 		logger.info(`   After merge, clean up with: git branch -d ${currentBranch} && git push origin --delete ${currentBranch}`);
 	} catch (prErr: any) {
+		// If a PR already exists, gh pr create prints the URL to stderr and exits 1.
+		// Extract the URL and report it as success instead of failing.
+		const stderr = prErr?.stderr || "";
+		const existingMatch = stderr.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+		if (existingMatch) {
+			logger.info(`\n✅ PR_EXISTS: ${existingMatch[0]}`);
+			logger.info(`   branch: ${prBranch}`);
+			logger.info(`   target: main`);
+			logger.info(`\n⏳ Waiting for human to merge or reject the PR.`);
+			return;
+		}
 		// Clean up the temporary branch on failure
 		if (prBranch !== currentBranch) {
 			try { execSync(`git push origin --delete ${prBranch}`, { cwd: currentCwd, stdio: "ignore" }); } catch { /* best-effort */ }
