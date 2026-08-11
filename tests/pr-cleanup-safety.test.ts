@@ -273,6 +273,32 @@ console.log("\ngh pr list fails, branch already gone from origin:");
 	check(!/Cleanup complete/.test(out), "gh pr list fails → does not claim success", out);
 }
 
+// --- absence from origin is not authorization ---
+//
+// No merged PR and no remote ref is exactly the state of a branch that was
+// never pushed, or whose remote was deleted WITHOUT merging. Its commits then
+// exist nowhere else, and "nothing to verify" would authorize destroying the
+// only copy.
+console.log("\nno merged PR, branch absent from origin:");
+{
+	// unique local commits, nowhere else
+	const sb = makeSandbox("42-feature", { prMerged: false, remoteBranchGone: true });
+	const { code, out } = runCleanup(sb);
+	check(code !== 0, "unique local commits → non-zero", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "unique local commits → worktree survives", out);
+	check(localBranchExists(sb), "unique local commits → local branch survives", out);
+	check(/not in origin\/main|nowhere else/i.test(out), "unique local commits → says why", out);
+}
+{
+	// tip already contained in origin/main — nothing unique, so deletion is safe
+	const sb = makeSandbox("42-feature", { prMerged: false, remoteBranchGone: true });
+	git(sb.worktree, ["reset", "-q", "--hard", "origin/main"]);
+	const { code, out } = runCleanup(sb);
+	check(code === 0, "tip already in origin/main → exits 0", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(sb.worktree), "tip already in origin/main → worktree removed", out);
+	check(!localBranchExists(sb), "tip already in origin/main → local branch deleted", out);
+}
+
 // --- main clone path containing a space ---
 console.log("\nmain clone path with a space:");
 {

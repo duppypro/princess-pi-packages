@@ -85,7 +85,8 @@ refuse, and tell you why, when:
 |---|---|
 | The worktree has uncommitted or untracked changes | `git worktree remove` refusing IS the safeguard. There is no `--force` retry — a merged PR says nothing about local-only edits. Commit, stash, or force it by hand once you are sure. |
 | Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. |
-| `git fetch` or `git ls-remote` fails | An unreachable or unauthenticated remote is not proof the branch is gone. |
+| `git fetch`, `git ls-remote` or `gh pr list` fails | An unreachable or unauthenticated remote is not proof of anything. |
+| There is no merged PR, the branch is absent from origin, **and** its tip isn't in `origin/main` | Absence from origin is not authorization. That is exactly the state of a branch never pushed, or one whose remote ref was deleted *without* merging — its commits exist nowhere else. |
 | `git push --delete` fails and the ref is still on origin | Includes protected-ref rejections. It exits non-zero instead of printing `✅ Cleanup complete`. |
 
 Two things that look like bugs and are not:

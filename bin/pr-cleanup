@@ -97,7 +97,22 @@ else
       echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR was found." >&2
       exit 1
     fi
-    echo "   ℹ️  '$BRANCH' not on origin and no merged PR — nothing to verify, proceeding."
+    # Absence from origin is NOT authorization. A branch that was never pushed,
+    # or whose remote ref was deleted without merging, has no PR and no remote
+    # ref — and its commits exist nowhere else. With no PR to appeal to, the
+    # only proof left is that the tip carries nothing unique: it must already be
+    # contained in origin/main.
+    #
+    # (Ancestry is the right test *here* precisely because there is no squash
+    # commit in play. Where a PR was squash-merged, the branch above handles it
+    # via headRefOid — ancestry would wrongly refuse that case.)
+    if ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$(git rev-parse HEAD)" origin/main 2>/dev/null; then
+      echo "   ❌ ERROR: no merged PR for '$BRANCH', and its commits are not in origin/main." >&2
+      echo "   This branch's commits may exist nowhere else — refusing to delete." >&2
+      echo "   If the work is genuinely disposable, delete the branch by hand." >&2
+      exit 1
+    fi
+    echo "   ℹ️  '$BRANCH' not on origin, and its tip is already in origin/main — safe to delete."
   else
     echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify '$BRANCH' on origin." >&2
     echo "   Refusing to delete on an unverified remote state." >&2
