@@ -25,6 +25,19 @@ exits 0. `bun run test` runs each suite in its own process. See
 
 ## Conventions
 
+## Shipped scripts
+
+Shell scripts in `bin/` are copied to `~/bin/` for use (on PATH):
+
+| Script | Does |
+|---|---|
+| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
+| `git-overview` | Branch + status + diff stat + recent commits in one call |
+| `merge` | Ensures pushed → pre-checks → creates PR (the one command to ship) |
+| `post-merge-cleanup <branch> [worktree]` | Pull main → delete remote branch → delete local branch → remove worktree |
+
+`git-snap` and `git-ship` are deprecated — replaced by `git-checkpoint`.
+
 - [Tool conventions](docs/agents/tool-conventions.md) — manifest-driven `--help`/`--why`, cross-harness architecture
 - [Development workflow](docs/agents/dev-workflow.md) — local testing, install methods, hot-swapping
 - [Build & toolchain](docs/agents/build-and-toolchain.md) — `.mjs` generation rules, test expectations

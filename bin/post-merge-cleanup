@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# post-merge-cleanup — hygiene after a PR is merged.
+# Usage: post-merge-cleanup <branch> [worktree-path]
+#   <branch>       Feature branch name (e.g. 42-verbose-flag)
+#   [worktree]     Optional path to the worktree to remove
+#
+# Must be run from the main clone (not a worktree), with main checked out
+# and up-to-date. The agent pulls main BEFORE calling this script.
+set -euo pipefail
+
+BRANCH="${1:-}"
+WORKTREE="${2:-}"
+
+if [ -z "$BRANCH" ]; then
+  echo "Usage: post-merge-cleanup <branch> [worktree-path]" >&2
+  echo "  Run from the main clone with main checked out and up-to-date." >&2
+  exit 1
+fi
+
+echo "🧹 post-merge cleanup for branch '$BRANCH'"
+
+# 0. Safety gate — verify branch is merged into origin/main before deleting.
+echo "🔍 Verifying '$BRANCH' is merged into origin/main..."
+if git merge-base --is-ancestor "origin/$BRANCH" origin/main 2>/dev/null; then
+  echo "   ✅ branch is an ancestor of origin/main — safe to delete."
+else
+  # Check if the branch still exists on remote at all
+  if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
+    echo "   ❌ ERROR: '$BRANCH' exists on origin but is NOT merged into origin/main." >&2
+    echo "   Refusing to delete. Verify the PR was merged before cleaning up." >&2
+    exit 1
+  else
+    echo "   ℹ️  '$BRANCH' does not exist on origin (may already be deleted). Proceeding."
+  fi
+fi
+
+# 1. Remove worktree first (if specified) — branch can't be deleted while
+#    checked out in a worktree.
+if [ -n "$WORKTREE" ]; then
+  if [ -d "$WORKTREE" ]; then
+    echo "🗑  Removing worktree $WORKTREE..."
+    git worktree remove "$WORKTREE" || git worktree remove --force "$WORKTREE" || {
+      echo "   ❌ ERROR: worktree removal failed." >&2
+      exit 1
+    }
+  else
+    echo "   (worktree path '$WORKTREE' does not exist — skipping)"
+  fi
+fi
+
+# 2. Delete remote branch.
+echo "🗑  Deleting remote branch origin/$BRANCH..."
+if git push origin --delete "$BRANCH"; then
+  echo "   ✅ remote branch deleted."
+else
+  echo "   ℹ️  Remote branch may already be deleted — continuing."
+fi
+
+# 3. Delete local branch.
+echo "🗑  Deleting local branch $BRANCH..."
+if git branch -D "$BRANCH"; then
+  echo "   ✅ local branch deleted."
+else
+  echo "   ℹ️  Local branch may already be deleted — continuing."
+fi
+
+echo "✅ Cleanup complete."
