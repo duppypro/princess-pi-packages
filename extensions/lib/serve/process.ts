@@ -1,9 +1,10 @@
 import * as https from "node:https";
 import * as http from "node:http";
 import * as path from "node:path";
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { ServerInstance } from "./domain.js";
 import { flattenSubdomainToLabel, readSubdomainMap } from "./cloudflare.js";
+import { liveServers, readRegistry, unregisterPid, type UnclaimedProcess } from "./registry.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -33,84 +34,106 @@ function getPublicIp(): Promise<string> {
 	});
 }
 
-export function discoverServers(): Promise<ServerInstance[]> {
+/**
+ * Every server `serve` started that is still running (#181).
+ *
+ * Identity comes from the registry — a fact we recorded at spawn — and liveness from
+ * (pid, startTicks) against the kernel. Nothing here reads `ps`, and nothing here infers
+ * what a process IS from what its command line SAYS.
+ *
+ * What this replaced: `ps aux | grep -E 'http-server|run-live-server' | grep -v grep`, plus
+ * a port regex, an index walk skipping flag values, and a `--subdomain` regex to re-derive
+ * fields we already knew. The narrowing is deliberate — a hand-started `npx http-server` is
+ * no longer reported as ours, and therefore no longer killed by `--kill all`. It surfaces
+ * through scanUnclaimedServerLike() instead.
+ */
+export async function discoverServers(): Promise<ServerInstance[]> {
+	const records = liveServers();
+	if (records.length === 0) return [];
+
+	// Sub-domain map for servers published after start (#119) — a sub-domain outlives the
+	// process that published it, so the map stays the authority for that case.
+	const subdomainMap = readSubdomainMap();
+
+	const servers: ServerInstance[] = [];
+	for (const record of records) {
+		const subdomain = record.subdomain ?? subdomainMap[String(record.port)]?.[0];
+		const localUrl = `http://127.0.0.1:${record.port}`;
+		// #66: a published server's public URL is its own <subdomain>.princess-pi.dev; an
+		// unpublished (local-only) server has no public URL, only the loopback.
+		// Why no ?token=: the static bypass token was a committed backdoor (#38 F2 → #59).
+		const url = subdomain ? `https://${flattenSubdomainToLabel(subdomain)}.princess-pi.dev/` : localUrl;
+
+		let title = "Index Page";
+		try {
+			title = await fetchPageTitle(localUrl);
+		} catch {
+			// ignore — a title is decoration, its absence is not a discovery failure
+		}
+
+		servers.push({
+			port: record.port,
+			dir: record.dir,
+			url,
+			localUrl,
+			title,
+			isLive: record.kind === "live",
+			subdomain,
+			pid: record.pid,
+		});
+	}
+	return servers;
+}
+
+/** The substrings the old predicate matched on. Kept ONLY as an advisory heuristic (#181). */
+const SERVER_LIKE_HINTS = ["http-server", "run-live-server"];
+
+/**
+ * Server-like processes the registry has no memory of starting. **Advisory only.**
+ *
+ * This is the old `ps` predicate, demoted. It is still a guess about identity from free
+ * text — the difference is what the guess is allowed to do. Before, it selected SIGKILL
+ * targets; now its entire output is a warning for a human and a `unclaimed` array for an
+ * agent. A guess is fine when it produces a sentence; it is not fine when it produces a
+ * kill target.
+ *
+ * `ps -eo pid=,args=` rather than `ps aux | grep … | grep -v grep`: headerless, exactly two
+ * columns, and no shell pipeline — which is why the `grep -v grep` is gone too. That second
+ * grep only ever existed to undo the pipeline's own footprint.
+ *
+ * Never throws and never kills. A scan failure yields an empty advisory.
+ */
+export function scanUnclaimedServerLike(): Promise<UnclaimedProcess[]> {
 	return new Promise((resolve) => {
-		exec("ps aux | grep -E 'http-server|run-live-server' | grep -v grep", async (error, stdout) => {
+		execFile("ps", ["-eo", "pid=,args="], (error, stdout) => {
 			if (error || !stdout) {
 				resolve([]);
 				return;
 			}
+			const claimed = new Set(readRegistry().map(r => r.pid));
+			const found: UnclaimedProcess[] = [];
 
-			const servers: ServerInstance[] = [];
-			const lines = stdout.split("\n").filter(l => l.trim().length > 0);
-			const ip = await resolveIp();
+			for (const line of stdout.split("\n")) {
+				const trimmed = line.trim();
+				if (!trimmed) continue;
+				const spaceIdx = trimmed.indexOf(" ");
+				if (spaceIdx === -1) continue;
+				const pid = Number.parseInt(trimmed.slice(0, spaceIdx), 10);
+				if (!Number.isFinite(pid)) continue;
+				const command = trimmed.slice(spaceIdx + 1);
 
-			// Subdomain map for servers published after start (#119)
-			const subdomainMap = readSubdomainMap();
+				if (!SERVER_LIKE_HINTS.some(hint => command.includes(hint))) continue;
+				if (claimed.has(pid)) continue;      // ours — accounted for, not unclaimed
+				if (pid === process.pid) continue;   // never report the scanning process
 
-			for (const line of lines) {
-				const portMatch = line.match(/-p\s+(\d+)/) || line.match(/--port\s+(\d+)/);
-				if (!portMatch) continue;
-				const port = parseInt(portMatch[1], 10);
-
-				if (servers.some(s => s.port === port)) continue;
-
-				const parts = line.split(/\s+/);
-				const httpServerIdx = parts.findIndex(p => p.includes("http-server") || p.includes("run-live-server"));
-				if (httpServerIdx === -1) continue;
-
-				// `ps aux` columns: USER(0) PID(1) ... — capture the PID here so the kill path
-				// uses the SAME source as discovery, instead of a fragile second `lsof` lookup (#39).
-				const parsedPid = Number.parseInt(parts[1], 10);
-				const pid = Number.isNaN(parsedPid) ? undefined : parsedPid;
-
-				let dir = "current";
-				for (let i = httpServerIdx + 1; i < parts.length; i++) {
-					const part = parts[i];
-					if (part.startsWith("-")) {
-						if (part === "-p" || part === "-C" || part === "-K" || part === "-a") {
-							i++; // skip value
-						}
-						continue;
-					}
-					if (part.length > 0 && !part.includes("npx")) {
-						dir = part;
-						break;
-					}
-				}
-
-				const isLive = line.includes("run-live-server");
-				const localUrl = `http://127.0.0.1:${port}`;
-				
-				const absoluteDir = path.resolve(process.cwd(), dir);
-				// #66: the sub-domain is the runner's ACTUAL --subdomain arg (from `serve --as`),
-				// not a re-derivation from the dir — else kill/unpublish targets the wrong host.
-				const subdomainMatch = line.match(/--subdomain\s+(\S+)/);
-				let subdomain = subdomainMatch ? subdomainMatch[1] : undefined;
-
-				// Check sub-domain map for subdomains published after server start (#119)
-				if (!subdomain) {
-					const mappedSubdomains = subdomainMap[String(port)];
-					if (mappedSubdomains && mappedSubdomains.length > 0) subdomain = mappedSubdomains[0];
-				}
-
-				// Why no ?token=: the static bypass token was a committed backdoor (#38 F2 → #59).
-				// Access is via the real gate (Cloudflare Access), not a shared query secret.
-				// #66: a published server's public URL is its own <subdomain>.princess-pi.dev; an
-				// unpublished (local-only) server has no public URL, only the loopback.
-				const url = subdomain ? `https://${flattenSubdomainToLabel(subdomain)}.princess-pi.dev/` : localUrl;
-
-				let title = "Index Page";
-				try {
-					title = await fetchPageTitle(localUrl);
-				} catch (e) {
-					// ignore
-				}
-
-				servers.push({ port, dir, url, localUrl, title, isLive, subdomain, pid });
+				const portMatch = command.match(/-p\s+(\d+)/) || command.match(/--port\s+(\d+)/);
+				found.push({
+					pid,
+					port: portMatch ? Number.parseInt(portMatch[1], 10) : null,
+					command,
+				});
 			}
-
-			resolve(servers);
+			resolve(found);
 		});
 	});
 }
@@ -171,7 +194,11 @@ export async function killServerInstance(server: ServerInstance): Promise<boolea
 	const pid = server.pid ?? (await findPidByPort(server.port));
 	if (!pid) return false;
 	killProcess(pid);
-	return confirmProcessKilled(pid);
+	const confirmed = await confirmProcessKilled(pid);
+	// Drop the record only once the process is confirmed gone (#181). Unregistering a
+	// still-running server would make it unkillable AND invisible — the worst of both.
+	if (confirmed) unregisterPid(pid);
+	return confirmed;
 }
 
 export function fetchPageTitle(url: string): Promise<string> {

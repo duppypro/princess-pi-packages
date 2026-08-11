@@ -14,7 +14,8 @@ import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
 import { type KilledServerInstance } from "../extensions/lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance } from "../extensions/lib/serve/process.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike } from "../extensions/lib/serve/process.js";
+import { registerServer } from "../extensions/lib/serve/registry.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
 // --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
@@ -22,9 +23,44 @@ import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans } from 
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
+// ---
+// AGENT-FIRST OUTPUT (#181)
+//
+// serve shipped with no machine-readable mode at all, so anything scripting it had to parse
+// a box-drawn TUI table — the exact "prose is load-bearing" failure the standard names. The
+// JSON below is the contract; the human rendering is free to change because it exists.
+// Flat, one record per server, stable keys, no decoration.
+//
+// Exit codes: 0 success (an EMPTY result set is success), 1 operation failed, 2 usage error.
+// ---
+
+/** True when --json was passed. Set once by run(), read by the handlers. */
+let jsonMode = false;
+
+/** Emit one JSON document on stdout. Single writer so the shape stays in one place. */
+function emitJson(payload: unknown): void {
+	console.log(JSON.stringify(payload));
+}
+
 // #119: --list always shows every server on the box, full paths with ~/ prefix.
 async function handleList(): Promise<void> {
 	const activeServers = await discoverServers();
+	if (jsonMode) {
+		emitJson({
+			schema: "serve/list@1",
+			servers: activeServers.map((s) => ({
+				pid: s.pid ?? null,
+				port: s.port,
+				dir: s.dir,
+				kind: s.isLive ? "live" : "static",
+				subdomain: s.subdomain ?? null,
+				url: s.url,
+				localUrl: s.localUrl ?? null,
+				title: s.title,
+			})),
+		});
+		return;
+	}
 	console.log(buildListSummary(activeServers));
 }
 
@@ -112,27 +148,42 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 
 	const activeServers = await discoverServers();
 	const killedList: KilledServerInstance[] = [];
+	const failedList: { pid: number | null; port: number; reason: string }[] = [];
 	const killAll = targets.some((t) => t.toLowerCase() === "all");
 
 	if (targets.length === 0) {
+		if (jsonMode) { emitJson({ schema: "serve/kill@1", killed: [], failed: [], unclaimed: [] }); process.exitCode = 2; return; }
 		console.log("No targets given — nothing killed. Use --kill <port|dir|all> to target specific servers.");
+		process.exitCode = 2;
 		return;
 	}
 
+	// #181: `--kill all` used to mean "every process whose cmdline contains http-server or
+	// run-live-server" — including processes serve never started. It now kills only what the
+	// registry claims, and REPORTS what it cannot account for. Warning/info only: the scan is
+	// still a substring heuristic, and a heuristic may produce a sentence, never a SIGKILL.
+	const unclaimed = killAll ? await scanUnclaimedServerLike() : [];
+
 	if (killAll) {
 		if (activeServers.length === 0) {
-			console.warn("⚠️ No servers are currently running anywhere on this machine to kill.");
+			if (!jsonMode) {
+				console.warn("⚠️ No servers started by serve are currently running.");
+				reportUnclaimed(unclaimed);
+			} else {
+				emitJson({ schema: "serve/kill@1", killed: [], failed: [], unclaimed });
+			}
 			return;
 		}
 		for (const server of activeServers) {
 			const statusBefore = await checkServerStatus(server.localUrl || server.url);
 			const killed = await killServerInstance(server);
 			if (!killed) {
-				console.warn(`⚠️ Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`);
+				failedList.push({ pid: server.pid ?? null, port: server.port, reason: "not-confirmed-dead" });
+				if (!jsonMode) console.warn(`⚠️ Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`);
 				continue;
 			}
 			const statusAfter = await checkServerStatus(server.localUrl || server.url);
-			killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, subdomain: server.subdomain, title: server.title, statusBefore, statusAfter });
+			killedList.push({ port: server.port, dir: server.dir, url: server.url, localUrl: server.localUrl, subdomain: server.subdomain, title: server.title, pid: server.pid, statusBefore, statusAfter });
 		}
 	} else {
 		for (const target of targets) {
@@ -146,19 +197,22 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 				const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
 				const killed = await killServerInstance(matchedServer);
 				if (!killed) {
-					console.warn(`⚠️ Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`);
+					failedList.push({ pid: matchedServer.pid ?? null, port: matchedServer.port, reason: "not-confirmed-dead" });
+					if (!jsonMode) console.warn(`⚠️ Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`);
 					continue;
 				}
 				const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-				killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, subdomain: matchedServer.subdomain, title: matchedServer.title, statusBefore, statusAfter });
+				killedList.push({ port: matchedServer.port, dir: matchedServer.dir, url: matchedServer.url, localUrl: matchedServer.localUrl, subdomain: matchedServer.subdomain, title: matchedServer.title, pid: matchedServer.pid, statusBefore, statusAfter });
 			} else {
-				console.warn(`⚠️ Could not find any active server matching "${target}".`);
+				if (!jsonMode) console.warn(`⚠️ Could not find any server started by serve matching "${target}".`);
 			}
 		}
 	}
 
 	if (killedList.length === 0) {
+		if (jsonMode) { emitJson({ schema: "serve/kill@1", killed: [], failed: failedList, unclaimed }); return; }
 		console.warn("No servers were terminated.");
+		reportUnclaimed(unclaimed);
 		return;
 	}
 
@@ -173,7 +227,38 @@ async function handleKill(trimmedArgs: string): Promise<void> {
 			console.warn(`⚠️ Killed local origin for "${subdomain}" but failed to unpublish from Cloudflare: ${(err as Error).message}`);
 		}
 	}
+	if (jsonMode) {
+		emitJson({
+			schema: "serve/kill@1",
+			killed: killedList.map((k) => ({
+				pid: k.pid ?? null,
+				port: k.port,
+				dir: k.dir,
+				subdomain: k.subdomain ?? null,
+				confirmed: true,
+			})),
+			failed: failedList,
+			unclaimed,
+		});
+		return;
+	}
 	console.log(buildKilledSummary(killedList));
+	reportUnclaimed(unclaimed);
+}
+
+/**
+ * Human half of the unclaimed advisory (#181). The JSON half carries the same array under
+ * `unclaimed` whenever this would print, so the two surfaces never disagree about what was
+ * found. Says plainly that nothing was killed — the point is that serve no longer touches
+ * processes it did not start.
+ */
+function reportUnclaimed(unclaimed: { pid: number; port: number | null; command: string }[]): void {
+	if (unclaimed.length === 0) return;
+	console.warn(`\nℹ️  ${unclaimed.length} server-like process(es) NOT started by serve — left running:`);
+	for (const u of unclaimed) {
+		console.warn(`     PID ${u.pid}${u.port !== null ? ` port ${u.port}` : ""}  ${u.command}`);
+	}
+	console.warn("     serve only kills what it started. Stop these yourself if you meant to.");
 }
 
 async function handleStart(trimmedArgs: string): Promise<void> {
@@ -283,6 +368,19 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		serverProcess.unref();
 		startedPorts.push(port);
 
+		// #181: record identity NOW, while this PID is unambiguously ours. Discovery reads
+		// this instead of guessing from a `ps` substring, and `--kill` targets only what is
+		// recorded here.
+		if (serverProcess.pid) {
+			registerServer({
+				pid: serverProcess.pid,
+				port,
+				dir: path.resolve(process.cwd(), targetDir),
+				kind: isStatic ? "static" : "live",
+				subdomain,
+			});
+		}
+
 		// --- Phase 6B (#66): publish to the edge ONLY when --pub or --as names a sub-domain. Upserts the
 		// tunnel ingress rule (<subdomain>.princess-pi.dev → this loopback port) + a per-subdomain Access
 		// app carrying the .serve-acl allow-list. Best-effort: the loopback origin is already
@@ -316,7 +414,11 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 
 async function run(): Promise<void> {
 	await resolveIp();
-	const trimmedArgs = process.argv.slice(2).join(" ").trim();
+	const rawArgs = process.argv.slice(2);
+	// --json is a modifier, valid alongside any command — strip it before dispatch so every
+	// existing exact-match branch below keeps working unchanged.
+	jsonMode = rawArgs.includes("--json");
+	const trimmedArgs = rawArgs.filter((a) => a !== "--json").join(" ").trim();
 
 	if (trimmedArgs === "--version") return handleVersion();
 	if (trimmedArgs === "--why") return handleWhy();
