@@ -56,8 +56,21 @@ Labels are commit markers, not gates. Commit as often as needed.
 | Script | What it does |
 |---|---|
 | `pr-open` | Discovers branch from cwd → ensures pushed → pre-checks → `gh pr create` |
-| `pr-merge` | Discovers PR from current branch → `gh pr merge --squash` (human command) |
-| `pr-reject [reason]` | Discovers PR from current branch → `gh pr close` (human command) |
+| `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → `gh pr merge --squash` (human command) |
+| `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
+
+**Why the branch is positional on `pr-merge` but a flag on `pr-reject`:** `pr-merge`
+takes no other argument, so a bare word can only be a branch. `pr-reject` also takes a
+free-text reason, and the two cannot be told apart positionally — `pr-reject fix-thing`
+is genuinely ambiguous. The old script resolved that ambiguity by silently treating
+every first argument as the reason while its own error message advertised
+`pr-reject <branch> [reason]`, so naming a branch closed the *current* branch's PR
+with the branch name as the comment (#209).
+
+**Both refuse to guess between PRs.** `gh pr list --head` matches by branch *name*
+across every fork, so a fork branch called `fix` is an equal candidate to yours. Both
+scripts now keep only head branches in your own repo, and abort listing the candidates
+if more than one survives rather than taking `.[0]`.
 | `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
 

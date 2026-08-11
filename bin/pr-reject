@@ -1,22 +1,59 @@
 #!/usr/bin/env bash
-# pr-reject — close the PR for the current feature branch without merging.
-# Discovers the open PR from the branch name. Human-only command.
+# pr-reject [-b <branch>] [<reason>] — close a feature branch's PR without merging.
+# Defaults to the current branch. Human-only command.
 set -euo pipefail
 
-BRANCH=$(git branch --show-current)
-REASON="${1:-}"
+# The branch is a FLAG here, not a positional, because the reason is free text
+# and the two cannot be told apart positionally. The old script advertised
+# `pr-reject <branch> [reason]` while assigning $1 to REASON, so
+# `pr-reject some-branch "wrong approach"` closed the CURRENT branch's PR with
+# the comment "some-branch" and dropped the real reason (#209). pr-merge keeps a
+# positional branch — it takes no other argument, so nothing is ambiguous there.
+BRANCH=""
+REASON=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -b|--branch)
+      BRANCH="${2:-}"
+      if [ -z "$BRANCH" ]; then
+        echo "pr-reject: -b needs a branch name." >&2
+        exit 1
+      fi
+      shift 2 ;;
+    --) shift; REASON="${1:-}"; break ;;
+    *)  REASON="$1"; shift ;;
+  esac
+done
+[ -n "$BRANCH" ] || BRANCH=$(git branch --show-current)
 
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-reject: on main — pass a branch name or switch to a feature worktree." >&2
-  echo "  pr-reject <branch> [reason]" >&2
+  echo "  pr-reject -b <branch> [reason]" >&2
   exit 1
 fi
 
-PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null)
-if [ -z "$PR" ] || [ "$PR" = "null" ]; then
-  echo "pr-reject: no open PR found for branch '$BRANCH'." >&2
+# --- select the PR ---------------------------------------------------------
+# Same fork guard as pr-merge: `--head` matches by branch name across every
+# fork, so constrain to head branches in OUR OWN repo and refuse to guess.
+OWNER=$(gh repo view --json owner --jq '.owner.login')
+CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
+  --json number,headRepositoryOwner \
+  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv" 2>/dev/null || true)
+
+# shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
+PRS=($CANDIDATES)
+
+if [ "${#PRS[@]}" -eq 0 ]; then
+  echo "pr-reject: no open PR found for branch '$BRANCH' in $OWNER's repo." >&2
   exit 1
 fi
+if [ "${#PRS[@]}" -gt 1 ]; then
+  echo "pr-reject: ambiguous — ${#PRS[@]} open PRs share head branch '$BRANCH':" >&2
+  for p in "${PRS[@]}"; do echo "  #$p" >&2; done
+  echo "  Refusing to guess. Close the intended one via 'gh pr close <N>'." >&2
+  exit 1
+fi
+PR="${PRS[0]}"
 
 if [ -n "$REASON" ]; then
   echo "❌ Closing PR #$PR with comment: $REASON"

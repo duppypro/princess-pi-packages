@@ -1,22 +1,43 @@
 #!/usr/bin/env bash
-# pr-merge — squash-merge the PR for the current feature branch.
-# Discovers the open PR from the branch name. Human-only command.
+# pr-merge [<branch>] — squash-merge the PR for a feature branch.
+# Defaults to the current branch. Human-only command.
 set -euo pipefail
 
-BRANCH=$(git branch --show-current)
+# The advertised `pr-merge <branch>` form used to be a lie: BRANCH was hardcoded
+# to the current branch, so the argument was ignored — on main it still errored,
+# and on a feature branch it merged that branch instead of the one named (#209).
+BRANCH="${1:-$(git branch --show-current)}"
 
-# Allow running from main too — use the most recent branch
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-merge: on main — pass a branch name or switch to a feature worktree." >&2
   echo "  pr-merge <branch>" >&2
   exit 1
 fi
 
-PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null)
-if [ -z "$PR" ] || [ "$PR" = "null" ]; then
-  echo "pr-merge: no open PR found for branch '$BRANCH'." >&2
+# --- select the PR ---------------------------------------------------------
+# `gh pr list --head` matches by head branch NAME across every fork, so a fork
+# with the same branch name is an equal candidate and `.[0]` could squash-merge
+# a stranger's PR (#209). Constrain to head branches in OUR OWN repo, and refuse
+# rather than guess when more than one survives.
+OWNER=$(gh repo view --json owner --jq '.owner.login')
+CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
+  --json number,headRepositoryOwner \
+  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv" 2>/dev/null || true)
+
+# shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
+PRS=($CANDIDATES)
+
+if [ "${#PRS[@]}" -eq 0 ]; then
+  echo "pr-merge: no open PR found for branch '$BRANCH' in $OWNER's repo." >&2
   exit 1
 fi
+if [ "${#PRS[@]}" -gt 1 ]; then
+  echo "pr-merge: ambiguous — ${#PRS[@]} open PRs share head branch '$BRANCH':" >&2
+  for p in "${PRS[@]}"; do echo "  #$p" >&2; done
+  echo "  Refusing to guess. Merge the intended one via 'gh pr merge <N> --squash'." >&2
+  exit 1
+fi
+PR="${PRS[0]}"
 
 echo "🔀 Squash-merging PR #$PR (branch: $BRANCH)..."
 gh pr merge "$PR" --squash
