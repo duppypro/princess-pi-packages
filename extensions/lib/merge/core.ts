@@ -27,35 +27,16 @@ export class BuildFailureError extends Error {
 }
 
 // ---
-// Step 5 acceptance is word-rule based, not phrase based (#100) — the old exact
-// "Code and Spec Approved" leading-phrase regex rejected legitimate Step 5
-// commits over word order. Rules (subject line only, case-insensitive,
-// whole words): some "approved" with "code" AND a spec-word before it, and
-// no "not" anywhere before it. Subject-only on purpose: Step 4 commit bodies
-// routinely mention specs and would false-positive.
+// isStep5ApprovedMessage is DEPRECATED (#188).
+//
+// Kept as an exported symbol for backward-compatibility with the test suite,
+// but no longer called by the merge flow — the commit-message regex gate has
+// been removed. The merge script now trusts the process (TDD → spec-reconcile
+// → PR) rather than pattern-matching commit messages.
 // ---
-export function isStep5ApprovedMessage(commitMsg: string): boolean {
-	const subject = (commitMsg.split("\n")[0] || "").toLowerCase();
-	const firstIndex = (re: RegExp): number => {
-		const m = re.exec(subject);
-		return m ? m.index : -1;
-	};
-	const codeIdx = firstIndex(/\bcode\b/);
-	const specIdx = firstIndex(/\bspecs?\b|\bspecifications?\b/);
-	const notIdx = firstIndex(/\bnot\b/);
-	if (codeIdx === -1 || specIdx === -1) return false;
-
-	const approvedRe = /\bapproved\b/g;
-	let m: RegExpExecArray | null;
-	while ((m = approvedRe.exec(subject)) !== null) {
-		const i = m.index;
-		if (codeIdx < i && specIdx < i && (notIdx === -1 || notIdx > i)) return true;
-	}
-	return false;
+export function isStep5ApprovedMessage(_commitMsg: string): boolean {
+	return true;
 }
-
-const STEP5_RULE_TEXT =
-	"A Step 5 subject line needs the word 'approved' preceded by both 'code' and 'spec' (or 'specification'), with no 'not' before it — e.g. \"docs: Code and Spec Approved — <what> (#<issue>)\".";
 
 // ---
 // Post-merge artifact rebuild (#177).
@@ -261,13 +242,13 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 			logger.info("Already on 'main' — nothing to clean up.");
 			return;
 		}
-		throw new Error("You are already on the 'main' branch/worktree. Cannot merge main into itself.");
+		throw new Error("MERGE_BLOCKED: already on main — cannot merge main into itself. Switch to a feature worktree.");
 	}
 
 	// 2. Check that current worktree is clean
 	const currentStatus = execSync("git status --porcelain", { cwd: currentCwd, encoding: "utf8" }).trim();
 	if (currentStatus !== "") {
-		throw new Error(`Your current branch worktree (${currentBranch}) is not clean. Please commit or stash changes first.\n${currentStatus}`);
+		throw new Error(`MERGE_BLOCKED: worktree not clean — commit or stash changes first.\nbranch: ${currentBranch}\n${currentStatus}`);
 	}
 
 	// 3. Fetch remote first to ensure our remote-tracking reference is current
@@ -283,14 +264,14 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 		try {
 			targetHash = execSync(`git rev-parse ${ref}`, { cwd: currentCwd, encoding: "utf8" }).trim();
 		} catch {
-			throw new Error(`The provided reference '${ref}' is not a valid Git commit or branch name.`);
+			throw new Error(`MERGE_BLOCKED: invalid ref '${ref}' — not a valid Git commit or branch name.`);
 		}
 
 		// Verify targetHash is an ancestor of local HEAD
 		try {
 			execSync(`git merge-base --is-ancestor ${targetHash} HEAD`, { cwd: currentCwd });
 		} catch {
-			throw new Error(`The target commit '${ref}' (${targetHash.substring(0, 7)}) is not in the history of the current branch '${currentBranch}'.`);
+			throw new Error(`MERGE_BLOCKED: target commit '${ref}' (${targetHash.substring(0, 7)}) is not an ancestor of branch '${currentBranch}'.`);
 		}
 	} else {
 		targetHash = localHash;
@@ -306,41 +287,10 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 	}
 
 	if (!isPushed) {
-		throw new Error(`The target commit ${targetHash.substring(0, 7)} has not been pushed to 'origin/${currentBranch}'. Please push your changes first.`);
+		throw new Error(`MERGE_BLOCKED: not pushed — target commit ${targetHash.substring(0, 7)} is not on origin/${currentBranch}. Push first.`);
 	}
 
-	// 6. Validate that the target commit was a Step 5 (code + spec approved) commit
-	const targetCommitMsg = execSync(`git log -1 --pretty=%B ${targetHash}`, { cwd: currentCwd, encoding: "utf8" }).trim();
-	if (!isStep5ApprovedMessage(targetCommitMsg)) {
-		let suggestedStep5Hash = "";
-		let suggestedStep5Msg = "";
-		try {
-			const logLines = execSync('git log --pretty=format:"%H %s" -n 50', { cwd: currentCwd, encoding: "utf8" }).trim().split("\n");
-			for (const line of logLines) {
-				const spaceIdx = line.indexOf(" ");
-				if (spaceIdx !== -1) {
-					const hash = line.substring(0, spaceIdx).trim();
-					const msg = line.substring(spaceIdx + 1).trim();
-					if (isStep5ApprovedMessage(msg)) {
-						suggestedStep5Hash = hash;
-						suggestedStep5Msg = msg;
-						break;
-					}
-				}
-			}
-		} catch {
-			// ignore
-		}
-
-		let errorMsg = `The target commit ${targetHash.substring(0, 7)} is not a Step 5 (code + spec approved) commit.\nTarget commit message: "${targetCommitMsg.split("\n")[0]}"\nMerges to main are only permitted for commits in the Step 5 Approved state.\n${STEP5_RULE_TEXT}`;
-
-		if (suggestedStep5Hash) {
-			errorMsg += `\n\n💡 Suggestion: A previous Step 5 commit was found in your history:\n   Hash: \x1b[33m${suggestedStep5Hash.substring(0, 7)}\x1b[0m\n   Message: "${suggestedStep5Msg}"\n\nTo merge up to that stable checkpoint, run:\n   \x1b[36mmerge ${suggestedStep5Hash.substring(0, 7)}\x1b[0m`;
-		}
-		throw new Error(errorMsg);
-	}
-
-	// 7. Locate a dedicated 'main' worktree, if one exists.
+	// 6. Locate a dedicated 'main' worktree, if one exists.
 	const worktreeLines = execSync("git worktree list", { cwd: currentCwd, encoding: "utf8" }).trim().split("\n");
 	let mainCwd = "";
 	for (const line of worktreeLines) {
@@ -356,7 +306,7 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 	if (haveMainWorktree) {
 		const mainStatus = execSync("git status --porcelain", { cwd: mainCwd, encoding: "utf8" }).trim();
 		if (mainStatus !== "") {
-			throw new Error(`The 'main' branch worktree at ${mainCwd} is not clean. Please clean or stash changes there first.\n${mainStatus}`);
+			throw new Error(`MERGE_BLOCKED: main worktree not clean — stash or commit changes at ${mainCwd}.\n${mainStatus}`);
 		}
 		logger.info("📡 Pulling latest 'main' from origin...");
 		execSync("git checkout main", { cwd: mainCwd, stdio: "ignore" });
@@ -398,9 +348,9 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 			try { execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" }); } catch { /* not mid-merge */ }
 			const detail = mergeErr?.message || String(mergeErr);
 			throw new Error(
-				`In-place merge into 'main' failed and was rolled back (you are back on '${currentBranch}').\n` +
-				`Likely a merge conflict or a non-fast-forward 'main' (someone pushed). Fix by updating 'main' and re-running, ` +
-				`or resolve manually.\nUnderlying error:\n${detail}`
+				`MERGE_BLOCKED: in-place merge into main failed (rolled back to '${currentBranch}').\n` +
+				`Likely a merge conflict or non-ff main (someone pushed). Update main and re-run.\n` +
+				`detail: ${detail}`
 			);
 		} finally {
 			try { execSync(`git checkout ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" }); } catch { /* best-effort */ }
