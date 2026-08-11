@@ -167,6 +167,19 @@ names, and reconciling them retired it.
 _Avoid_: bare "log parser" (always promote to "log parser daemon"), watcher, background process,
 session parser
 
+**Daemon health reason** (the code) / **status text** (the sentence):
+Two different things, deliberately (#179). A **health reason** is one of six machine-readable
+codes on the `DaemonHealthReason` union — `not-started`, `starting`, `waiting-session`,
+`not-found`, `idle-timeout`, `restart-failed`. It is the contract: control flow compares codes,
+and `tsc` rejects a typo'd comparison. **Status text** is what the user sees, looked up from
+`DAEMON_REASON_TEXT` by `daemonReasonText()` and rendered only inside `renderDaemonStatus()`.
+Reword the text freely — nothing reads it. Renaming a code is a breaking change.
+
+Say "health reason" (or "the code") when you mean the value a program branches on; say "status
+text" when you mean the words in the indicator. They were one `string` field until #179, which is
+what let a rename in #165 nearly regress #124's startup grace window.
+_Avoid_: using "reason" alone for the displayed sentence; "status string" for the code
+
 **Interval**:
 The user-specified size+unit that decides how interactions are grouped — the `-i, --interval`
 value (e.g. `4h`, `5t`), parsed by `parseInterval()` into an `IntervalConfig`. An interval is a

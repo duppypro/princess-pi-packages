@@ -3736,15 +3736,26 @@ function getModelCacheTtlMs(model) {
   }
   return 5 * 60 * 1000;
 }
+var DAEMON_REASON_TEXT = {
+  "not-started": "daemon not started",
+  starting: "starting...",
+  "waiting-session": "waiting for session .jsonl...",
+  "not-found": "daemon not found",
+  "idle-timeout": "idle timeout",
+  "restart-failed": "restart failed"
+};
+function daemonReasonText(reason) {
+  return reason && DAEMON_REASON_TEXT[reason] || "unknown";
+}
 function renderDaemonStatus(status, restarting = false) {
-  if (status.waiting) {
-    return "  \x1B[33m●\x1B[0m waiting for session .jsonl...";
+  if (status.reason === "waiting-session") {
+    return `  \x1B[33m●\x1B[0m ${daemonReasonText("waiting-session")}`;
   }
-  if (restarting || status.starting) {
-    return "  \x1B[33m●\x1B[0m starting...";
+  if (restarting || status.reason === "starting") {
+    return `  \x1B[33m●\x1B[0m ${daemonReasonText("starting")}`;
   }
   if (!status.alive) {
-    const label = status.lastHbTime ? `stopped ${status.lastHbTime}` : status.reason || "unknown";
+    const label = status.lastHbTime ? `stopped ${status.lastHbTime}` : daemonReasonText(status.reason);
     return `  \x1B[31m●\x1B[0m ${label}`;
   }
   if (status.idle) {
@@ -3891,13 +3902,13 @@ function checkDaemonHealth(sessionPath, tagPath) {
     }
   } catch {}
   if (lastHbMs === 0) {
-    return { alive: false, reason: "daemon not found" };
+    return { alive: false, reason: "not-found" };
   }
   const d = new Date(lastHbMs);
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
   const timeStr = `${hh}:${mm}`;
-  return { alive: false, reason: "idle timeout", lastHbTime: timeStr };
+  return { alive: false, reason: "idle-timeout", lastHbTime: timeStr };
 }
 function restartDaemon(sessionPath, daemonPath) {
   const pidPath = getDaemonPidPath(sessionPath);
@@ -3967,7 +3978,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   };
   process.on("SIGINT", exitWatch);
   let daemonDead = false;
-  let daemonStopReason = "";
+  let daemonStopReason = null;
   let daemonStopTime = "";
   let daemonRestarting = false;
   let daemonIdle = false;
@@ -3981,7 +3992,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       if (health2.alive) {
         daemonRestarting = false;
         daemonDead = false;
-        daemonStopReason = "";
+        daemonStopReason = null;
         daemonStopTime = "";
         daemonIdle = false;
       }
@@ -3995,19 +4006,19 @@ async function watchTagFile(sessionPath, tagPath, settings) {
           return;
       } catch {}
       daemonDead = true;
-      daemonStopReason = health.reason || "unknown";
+      daemonStopReason = health.reason ?? null;
       daemonStopTime = health.lastHbTime || "";
       daemonIdle = false;
     } else if (health.idle) {
       daemonDead = false;
-      daemonStopReason = "";
+      daemonStopReason = null;
       daemonStopTime = "";
       daemonIdle = true;
       daemonIdleMs = health.idleMs || 0;
       daemonCacheTtlMs = health.cacheTtlMs;
     } else {
       daemonDead = false;
-      daemonStopReason = "";
+      daemonStopReason = null;
       daemonStopTime = "";
       daemonIdle = false;
     }
@@ -4025,7 +4036,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
         if (!ok) {
           daemonRestarting = false;
           daemonDead = true;
-          daemonStopReason = "restart failed";
+          daemonStopReason = "restart-failed";
         }
         needsRedraw = true;
         render();
@@ -4127,7 +4138,7 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       } else if (daemonRestarting) {
         daemonStatusStr = renderDaemonStatus({ alive: true }, true);
       } else if (daemonDead) {
-        daemonStatusStr = renderDaemonStatus({ alive: false, reason: daemonStopReason || undefined, lastHbTime: daemonStopTime || undefined }, false);
+        daemonStatusStr = renderDaemonStatus({ alive: false, reason: daemonStopReason ?? undefined, lastHbTime: daemonStopTime || undefined }, false);
       } else if (daemonIdle) {
         daemonStatusStr = renderDaemonStatus({ alive: true, idle: true, idleMs: daemonIdleMs, cacheTtlMs: daemonCacheTtlMs }, false);
       } else {
