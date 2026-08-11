@@ -13,7 +13,7 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike } from "./lib/serve/process.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort } from "./lib/serve/process.js";
 import { registerServer } from "./lib/serve/registry.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
@@ -369,11 +369,15 @@ export default function serveExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			while (activeServers.some(s => s.port === startPort)) {
-				startPort++;
+			// #181: ask the port, not the process table. Discovery only knows about servers WE
+			// started, so it cannot tell us a systemd tenant or a hand-started server already
+			// holds this port — only a bind attempt can.
+			const port = await findFreePort(startPort);
+			if (port === null) {
+				ctx.ui.notify(`⚠️ No free loopback port found at or above ${startPort}; skipping "${rawDir}".`, "warning");
+				continue;
 			}
-
-			const port = startPort++;
+			startPort = port + 1;
 
 			// #66: publishing is opt-in via --pub. A subdomain ⟺ published to the edge; it flows to
 			// the runner's --subdomain (watcher target) AND the publish call. No --pub → local only.

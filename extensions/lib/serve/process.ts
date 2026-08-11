@@ -1,6 +1,7 @@
 import * as https from "node:https";
 import * as http from "node:http";
 import * as path from "node:path";
+import * as net from "node:net";
 import { exec, execFile } from "node:child_process";
 import { ServerInstance } from "./domain.js";
 import { flattenSubdomainToLabel, readSubdomainMap } from "./cloudflare.js";
@@ -83,6 +84,39 @@ export async function discoverServers(): Promise<ServerInstance[]> {
 		});
 	}
 	return servers;
+}
+
+/**
+ * Is this loopback port actually free? (#181)
+ *
+ * WHY this exists now. Port selection used to read `while (activeServers.some(s => s.port
+ * === startPort)) startPort++` — which only worked because discovery returned every
+ * server-like process on the box. Once discovery correctly narrowed to servers WE started,
+ * that loop stopped seeing anything else and would hand out a port already held by a
+ * systemd tenant or a hand-started server; the spawn then died on EADDRINUSE, silently.
+ *
+ * The narrowing did not cause this — it exposed it. "Is this port free" was always the
+ * question being asked, and answering it by scanning a process table was the same
+ * infer-from-a-proxy mistake as the substring predicate. Bind and find out.
+ */
+export function isPortFree(port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const probe = net.createServer();
+		probe.once("error", () => resolve(false));          // EADDRINUSE (or unusable) → taken
+		probe.once("listening", () => probe.close(() => resolve(true)));
+		probe.listen(port, "127.0.0.1");
+	});
+}
+
+/**
+ * The first free loopback port at or above `from`. Bounded so a saturated range fails loudly
+ * instead of spinning; returns null when nothing in the window is available.
+ */
+export async function findFreePort(from: number, window = 100): Promise<number | null> {
+	for (let port = from; port < from + window; port++) {
+		if (await isPortFree(port)) return port;
+	}
+	return null;
 }
 
 /** The substrings the old predicate matched on. Kept ONLY as an advisory heuristic (#181). */

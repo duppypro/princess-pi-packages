@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
 import { type KilledServerInstance } from "../extensions/lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike } from "../extensions/lib/serve/process.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort } from "../extensions/lib/serve/process.js";
 import { registerServer } from "../extensions/lib/serve/registry.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
@@ -348,8 +348,15 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 			continue;
 		}
 
-		while (activeServers.some((s) => s.port === startPort)) startPort++;
-		const port = startPort++;
+		// #181: ask the port, not the process table. Discovery only knows about servers WE
+		// started, so it cannot tell us a systemd tenant or a hand-started server already holds
+		// this port — only a bind attempt can.
+		const port = await findFreePort(startPort);
+		if (port === null) {
+			console.warn(`⚠️ No free loopback port found at or above ${startPort}; skipping "${rawDir}".`);
+			continue;
+		}
+		startPort = port + 1;
 
 		// #66: publishing is opt-in via --pub. A subdomain ⟺ this preview is published to the edge:
 		// it flows to the runner's --subdomain (live-ACL watcher target) AND the publish call, so

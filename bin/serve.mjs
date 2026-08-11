@@ -378,6 +378,7 @@ import { spawn } from "child_process";
 // extensions/lib/serve/process.ts
 import * as https from "node:https";
 import * as http from "node:http";
+import * as net from "node:net";
 import { exec, execFile } from "node:child_process";
 
 // extensions/lib/serve/cloudflare.js
@@ -508,6 +509,21 @@ async function discoverServers() {
     });
   }
   return servers;
+}
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", () => resolve(false));
+    probe.once("listening", () => probe.close(() => resolve(true)));
+    probe.listen(port, "127.0.0.1");
+  });
+}
+async function findFreePort(from, window = 100) {
+  for (let port = from;port < from + window; port++) {
+    if (await isPortFree(port))
+      return port;
+  }
+  return null;
 }
 var SERVER_LIKE_HINTS = ["http-server", "run-live-server"];
 function scanUnclaimedServerLike() {
@@ -857,7 +873,7 @@ function buildKilledSummary(killedList) {
 import * as fs5 from "node:fs";
 import * as path6 from "node:path";
 import * as os5 from "node:os";
-import * as net from "node:net";
+import * as net2 from "node:net";
 import { execSync } from "node:child_process";
 var CONFIG_DIR2 = path6.join(os5.homedir(), ".config", "princess-pi");
 var CF_ENV_PATH2 = path6.join(CONFIG_DIR2, "cf.env");
@@ -1071,7 +1087,7 @@ function sleep(ms) {
 }
 function probePortOnce(port) {
   return new Promise((resolve) => {
-    const sock = net.connect({ host: "127.0.0.1", port }, () => {
+    const sock = net2.connect({ host: "127.0.0.1", port }, () => {
       sock.destroy();
       resolve(true);
     });
@@ -1588,9 +1604,12 @@ async function handleStart(trimmedArgs) {
       console.warn(`\u26A0\uFE0F Found .env file in "${rawDir}"! Skipping (pass --force to serve anyway).`);
       continue;
     }
-    while (activeServers.some((s) => s.port === startPort))
-      startPort++;
-    const port = startPort++;
+    const port = await findFreePort(startPort);
+    if (port === null) {
+      console.warn(`\u26A0\uFE0F No free loopback port found at or above ${startPort}; skipping "${rawDir}".`);
+      continue;
+    }
+    startPort = port + 1;
     const subdomain = overrideSubdomain;
     const __dirname2 = path7.dirname(fileURLToPath(import.meta.url));
     const runnerPath = path7.resolve(__dirname2, "../extensions/lib/serve/run-live-server.js");
