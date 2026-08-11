@@ -290,72 +290,21 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 		throw new Error(`MERGE_BLOCKED: not pushed — target commit ${targetHash.substring(0, 7)} is not on origin/${currentBranch}. Push first.`);
 	}
 
-	// 6. Locate a dedicated 'main' worktree, if one exists.
-	const worktreeLines = execSync("git worktree list", { cwd: currentCwd, encoding: "utf8" }).trim().split("\n");
-	let mainCwd = "";
-	for (const line of worktreeLines) {
-		if (line.includes("[main]")) {
-			const idx = line.lastIndexOf("[main]");
-			const beforeBranch = line.substring(0, idx).trim();
-			const spaceIdx = beforeBranch.lastIndexOf(" ");
-			mainCwd = spaceIdx !== -1 ? beforeBranch.substring(0, spaceIdx).trim() : beforeBranch;
-		}
-	}
-	const haveMainWorktree = !!mainCwd && fs.existsSync(mainCwd) && mainCwd !== currentCwd;
-
-	if (haveMainWorktree) {
-		const mainStatus = execSync("git status --porcelain", { cwd: mainCwd, encoding: "utf8" }).trim();
-		if (mainStatus !== "") {
-			throw new Error(`MERGE_BLOCKED: main worktree not clean — stash or commit changes at ${mainCwd}.\n${mainStatus}`);
-		}
-		logger.info("📡 Pulling latest 'main' from origin...");
-		execSync("git checkout main", { cwd: mainCwd, stdio: "ignore" });
-		execSync("git pull --ff-only origin main", { cwd: mainCwd, stdio: "ignore" });
-		logger.info(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main' in the main worktree...`);
-		execSync(`git merge ${targetHash}`, { cwd: mainCwd, stdio: "ignore" });
-		// Rebuild BEFORE the push so a single push carries the merge and its artifacts (#177).
-		rebuildArtifacts(mainCwd, targetHash, logger, opts);
-		logger.info("📡 Pushing merged 'main' branch to origin...");
-		execSync("git push origin main", { cwd: mainCwd, stdio: "ignore" });
-		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-		await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, mainCwd);
-	} else {
-		logger.info("🪵 No dedicated 'main' worktree found — using in-place single-checkout merge.");
-		try {
-			let hasLocalMain = true;
-			try {
-				execSync("git rev-parse --verify --quiet refs/heads/main", { cwd: currentCwd, stdio: "ignore" });
-			} catch {
-				hasLocalMain = false;
-			}
-			logger.info("📡 Checking out and updating 'main'...");
-			if (hasLocalMain) {
-				execSync("git checkout main", { cwd: currentCwd, stdio: "ignore" });
-				execSync("git pull --ff-only origin main", { cwd: currentCwd, stdio: "ignore" });
-			} else {
-				execSync("git checkout -b main origin/main", { cwd: currentCwd, stdio: "ignore" });
-			}
-			logger.info(`🔀 Merging target commit ${targetHash.substring(0, 7)} into 'main'...`);
-			execSync(`git merge ${targetHash}`, { cwd: currentCwd, stdio: "ignore" });
-			// Rebuild BEFORE the push so a single push carries the merge and its artifacts (#177).
-			rebuildArtifacts(currentCwd, targetHash, logger, opts);
-			logger.info("📡 Pushing merged 'main' branch to origin...");
-			execSync("git push origin main", { cwd: currentCwd, stdio: "ignore" });
-		} catch (mergeErr: any) {
-			// A build failure is not a merge failure — the merge landed, nothing was
-			// rolled back, and only the push was withheld. Let it through untouched.
-			if (mergeErr?.buildFailure) throw mergeErr;
-			try { execSync("git merge --abort", { cwd: currentCwd, stdio: "ignore" }); } catch { /* not mid-merge */ }
-			const detail = mergeErr?.message || String(mergeErr);
-			throw new Error(
-				`MERGE_BLOCKED: in-place merge into main failed (rolled back to '${currentBranch}').\n` +
-				`Likely a merge conflict or non-ff main (someone pushed). Update main and re-run.\n` +
-				`detail: ${detail}`
-			);
-		} finally {
-			try { execSync(`git checkout ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" }); } catch { /* best-effort */ }
-		}
-		logger.info(`🎉 Success! Merged target commit ${targetHash.substring(0, 7)} into 'main' and pushed to origin.`);
-		await cleanupBranchBestEffort(currentBranch, currentCwd, logger, autoCleanup, "");
+	// 6. Create a PR for the branch (instead of local merge to main).
+	// The human merges the PR via GitHub or \`gh pr merge\` from a separate shell.
+	logger.info("📡 Creating pull request...");
+	try {
+		const prUrl = execSync("gh pr create --fill --base main", {
+			cwd: currentCwd,
+			encoding: "utf8",
+		}).trim();
+		logger.info(`\n✅ PR_CREATED: ${prUrl}`);
+		logger.info(`   branch: ${currentBranch}`);
+		logger.info(`   target: main`);
+		logger.info(`\n⏳ Waiting for human to merge or reject the PR.`);
+		logger.info(`   After merge, clean up with: git branch -d ${currentBranch} && git push origin --delete ${currentBranch}`);
+	} catch (prErr: any) {
+		const detail = prErr?.stderr || prErr?.message || String(prErr);
+		throw new Error(`MERGE_BLOCKED: gh pr create failed.\ndetail: ${detail.trim()}`);
 	}
 }
