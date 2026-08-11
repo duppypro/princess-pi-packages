@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# post-merge-cleanup — hygiene after a PR is merged.
+# Usage: post-merge-cleanup <branch> [worktree-path]
+#   <branch>       Feature branch name (e.g. 42-verbose-flag)
+#   [worktree]     Optional path to the worktree to remove
+set -euo pipefail
+
+BRANCH="${1:-}"
+WORKTREE="${2:-}"
+
+if [ -z "$BRANCH" ]; then
+  echo "Usage: post-merge-cleanup <branch> [worktree-path]" >&2
+  echo "  Deletes the remote branch, local branch, and optionally the worktree." >&2
+  exit 1
+fi
+
+echo "🧹 post-merge cleanup for branch '$BRANCH'"
+
+# 1. Update local main
+echo "📡 Pulling latest main..."
+git checkout main
+git pull origin main
+
+# 2. Delete remote branch
+echo "🗑  Deleting remote branch origin/$BRANCH..."
+git push origin --delete "$BRANCH" 2>/dev/null || echo "   (remote branch may already be deleted)"
+
+# 3. Delete local branch
+echo "🗑  Deleting local branch $BRANCH..."
+git branch -D "$BRANCH" 2>/dev/null || echo "   (local branch may already be deleted)"
+
+# 4. Remove worktree if specified
+if [ -n "$WORKTREE" ]; then
+  if [ -d "$WORKTREE" ]; then
+    echo "🗑  Removing worktree $WORKTREE..."
+    git worktree remove "$WORKTREE" 2>/dev/null || git worktree remove --force "$WORKTREE" 2>/dev/null || echo "   (worktree removal failed — remove manually)"
+  else
+    echo "   (worktree path '$WORKTREE' does not exist — skipping)"
+  fi
+fi
+
+echo "✅ Cleanup complete."
