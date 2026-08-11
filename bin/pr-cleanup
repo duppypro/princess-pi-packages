@@ -45,9 +45,15 @@ fi
 # --- 2. safety gate: prove THIS branch tip was merged -----------------------
 echo "🔍 Verifying PR for '$BRANCH' was merged..."
 OWNER=$(gh repo view --json owner --jq '.owner.login')
-PR_INFO=$(gh pr list --head "$BRANCH" --state merged \
+# `2>/dev/null || true` here would be the same fail-open hole as the ls-remote
+# one below: a gh outage yields an empty PR_INFO, which falls through to the
+# "no merged PR" branch and can reach deletion having verified nothing.
+if ! PR_INFO=$(gh pr list --head "$BRANCH" --state merged \
   --json number,mergeCommit,headRefOid,headRepositoryOwner \
-  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\")] | .[0]" 2>/dev/null || true)
+  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\")] | .[0]"); then
+  echo "   ❌ ERROR: 'gh pr list' failed — cannot verify the PR for '$BRANCH'." >&2
+  exit 1
+fi
 
 if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   PR_NUM=$(echo "$PR_INFO" | jq -r '.number')

@@ -71,6 +71,10 @@ interface SandboxOpts {
 	breakRemote?: boolean;
 	/** make the bare repo reject branch deletions */
 	denyDeletes?: boolean;
+	/** stub gh exits non-zero on `pr list` (outage / expired auth) */
+	failGhList?: boolean;
+	/** delete the branch from the remote before running (already cleaned up there) */
+	remoteBranchGone?: boolean;
 }
 
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
@@ -102,6 +106,7 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	git(mainClone, ["push", "-q", "origin", "main"]);
 	const mergeSha = git(mainClone, ["rev-parse", "HEAD"]);
 
+	if (opts.remoteBranchGone) git(remote, ["update-ref", "-d", `refs/heads/${branch}`]);
 	if (opts.denyDeletes) git(remote, ["config", "receive.denyDeletes", "true"]);
 	if (opts.breakRemote) {
 		git(mainClone, ["remote", "set-url", "origin", path.join(root, "gone.git")]);
@@ -132,7 +137,8 @@ for a in "$@"; do
 done
 case "$1 $2" in
   "repo view") out='{"owner":{"login":"duppypro"},"nameWithOwner":"duppypro/princess-pi-packages"}' ;;
-  "pr list")   out=$(cat ${JSON.stringify(path.join(root, "prlist.json"))}) ;;
+  "pr list")   ${opts.failGhList ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : ":"}
+               out=$(cat ${JSON.stringify(path.join(root, "prlist.json"))}) ;;
   *) exit 0 ;;
 esac
 if [ -n "$jqexpr" ]; then printf '%s' "$out" | jq -r "$jqexpr"; else printf '%s\\n' "$out"; fi
@@ -249,6 +255,22 @@ console.log("\nremote rejects the delete:");
 	check(code !== 0, "remote delete rejected → non-zero", `got ${code}, output:\n${out}`);
 	check(remoteBranchExists(sb), "remote delete rejected → remote branch still there (precondition)", out);
 	check(!/Cleanup complete/.test(out), "remote delete rejected → does not claim success", out);
+}
+
+// --- gh itself failing must not fall through to the "no merged PR" branch ---
+//
+// The remote branch must ALREADY be gone for this to bite. With it still on
+// origin, the ls-remote arm catches the case anyway ("exists on origin but no
+// merged PR") and the hole never opens — a version of this test without
+// remoteBranchGone passes against the unfixed script and proves nothing.
+console.log("\ngh pr list fails, branch already gone from origin:");
+{
+	const sb = makeSandbox("42-feature", { failGhList: true, remoteBranchGone: true });
+	const { code, out } = runCleanup(sb);
+	check(code !== 0, "gh pr list fails → non-zero", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "gh pr list fails → worktree survives", out);
+	check(localBranchExists(sb), "gh pr list fails → local branch survives", out);
+	check(!/Cleanup complete/.test(out), "gh pr list fails → does not claim success", out);
 }
 
 // --- main clone path containing a space ---
