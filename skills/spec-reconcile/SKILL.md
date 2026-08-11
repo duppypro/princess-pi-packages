@@ -6,11 +6,12 @@ description: Find and FIX every readable artifact that contradicts the actual co
 # Spec Reconcile
 
 > **Where this file lives.** The copy in `princess-pi-packages/skills/spec-reconcile/SKILL.md`
-> is the **source of truth**. `~/.claude/skills/spec-reconcile/SKILL.md` is a **downstream
-> deploy copy** — edit the repo copy, then copy it out to `~/.claude`. Never the reverse.
-> If the two differ, the repo copy wins; the dotfile has no history to lose. The backtest
-> corpus and harness that keep §4 honest live in the same repo (`research/spec-reconcile-backtest/`),
-> which is why the skill lives there rather than in `dotfiles`.
+> is the **source of truth**. `~/.claude/skills/spec-reconcile/SKILL.md` and
+> `~/.pi/agent/skills/spec-reconcile/SKILL.md` are **downstream deploy copies** — edit the
+> repo copy, then copy it out to both harness targets. Never the reverse. If the two differ,
+> the repo copy wins; the dotfile has no history to lose. The backtest corpus and harness
+> that keep §4 honest live in the same repo (`research/spec-reconcile-backtest/`), which is
+> why the skill lives here rather than in `dotfiles`.
 
 Step 5 of the 5-step flow says: *update the Spec artifacts to perfectly mirror the
 tested Code*. "Perfectly mirror" is unfalsifiable — you cannot fail it, so you cannot

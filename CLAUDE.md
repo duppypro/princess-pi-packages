@@ -28,3 +28,23 @@ exits 0. `bun run test` runs each suite in its own process. See
 - [Tool conventions](docs/agents/tool-conventions.md) — manifest-driven `--help`/`--why`, cross-harness architecture
 - [Development workflow](docs/agents/dev-workflow.md) — local testing, install methods, hot-swapping
 - [Build & toolchain](docs/agents/build-and-toolchain.md) — `.mjs` generation rules, test expectations
+
+## Skills — cross-harness install
+
+Skills in `skills/` are **repo-sourced** and deployed to two harness targets:
+
+| Harness | Target directory |
+|---------|-----------------|
+| Claude Code | `~/.claude/skills/<skill-name>/SKILL.md` |
+| Pi | `~/.pi/agent/skills/<skill-name>/SKILL.md` |
+
+**Rule:** edit only the repo copy (`skills/<skill>/SKILL.md`). Copy it out to **both**
+harness targets after changing. Never edit the dotfile copies — they have no git history.
+
+Every skill's SKILL.md should state this rule in its header (see `skills/spec-reconcile/SKILL.md`
+for the canonical wording). When adding a new skill, include the header and deploy to both
+harnesses.
+
+To verify both harnesses see a skill:
+- Claude: check `~/.claude/skills/<name>/SKILL.md` exists
+- Pi: check `~/.pi/agent/skills/<name>/SKILL.md` exists, restart Pi session to reload
