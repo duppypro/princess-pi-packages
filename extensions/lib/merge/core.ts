@@ -277,7 +277,7 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 		targetHash = localHash;
 	}
 
-	// 5. Check if target commit has been pushed to remote
+	// 5. Ensure the branch is pushed. Push if not — merge is the ship command.
 	let isPushed = false;
 	try {
 		execSync(`git merge-base --is-ancestor ${targetHash} origin/${currentBranch}`, { cwd: currentCwd });
@@ -287,7 +287,8 @@ export async function runMerge(argsList: string[], logger: MergeLogger, autoClea
 	}
 
 	if (!isPushed) {
-		throw new Error(`MERGE_BLOCKED: not pushed — target commit ${targetHash.substring(0, 7)} is not on origin/${currentBranch}. Push first.`);
+		logger.info(`📡 Pushing ${currentBranch} to origin...`);
+		execSync(`git push origin ${currentBranch}`, { cwd: currentCwd, stdio: "ignore" });
 	}
 
 	// 6. Create a PR (instead of local merge to main).

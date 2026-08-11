@@ -33,6 +33,7 @@ Shell scripts in `bin/` are installed to `~/.bun/bin/` (on PATH):
 |---|---|
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
 | `git-overview` | Branch + status + diff stat + recent commits in one call |
+| `merge` | Ensures pushed → pre-checks → creates PR (the one command to ship) |
 | `post-merge-cleanup <branch> [worktree]` | Pull main → delete remote branch → delete local branch → remove worktree |
 
 `git-snap` and `git-ship` are deprecated — replaced by `git-checkpoint`.

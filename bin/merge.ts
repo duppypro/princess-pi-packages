@@ -2,7 +2,7 @@
 /**
  * @package princess-pi-packages
  * @command merge
- * @description Standalone CLI port of extensions/merge.ts (Git→main Merger).
+ * @description Ship a feature branch: ensures pushed → pre-checks → creates PR. Replaces local merge.
  * Reuses extensions/lib/merge/* directly (no duplicated logic).
  */
 import * as fs from "node:fs";
