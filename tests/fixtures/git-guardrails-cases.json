@@ -757,6 +757,48 @@
       "branch": "feat",
       "verdict": "allow",
       "why": "inverse fix: the old substring regex ('git checkout \\.') false-blocked dotfile pathspecs; only the bare '.' token discards everything"
+    },
+    {
+      "id": "allow-gh-pr-create",
+      "command": "gh pr create --base main --title 'fix stuff'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#183: gh pr create is the LLM's PR creation path — allowed"
+    },
+    {
+      "id": "block-gh-pr-merge",
+      "command": "gh pr merge --squash",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#183: gh pr merge is human-only — must stay blocked"
+    },
+    {
+      "id": "block-gh-pr-merge-path",
+      "command": "/usr/bin/gh pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#183: path-based gh invocation still matches by basename"
+    },
+    {
+      "id": "allow-gh-pr-merge-in-text",
+      "command": "echo 'dont run gh pr merge automatically'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#183: 'gh pr merge' in a quoted echo is data, not a command"
+    },
+    {
+      "id": "allow-git-branch-D-feature",
+      "command": "git branch -D feat",
+      "branch": "other",
+      "verdict": "allow",
+      "why": "#183: force-deleting a feature branch (not main) is allowed"
+    },
+    {
+      "id": "allow-git-push-feature",
+      "command": "git push origin my-feature",
+      "branch": "my-feature",
+      "verdict": "allow",
+      "why": "#183: pushing to a feature branch (refspec not main/master) is allowed"
     }
   ]
 }
