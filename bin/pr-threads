@@ -1,17 +1,47 @@
 #!/usr/bin/env bash
 # ---
-# pr-threads <pr#> [owner/repo] — unresolved review-conversation count for a PR.
-# Green light (✅, exit 0) when the count is 0; otherwise lists each unresolved
-# thread's file and URL and exits 1 (scriptable as a merge-gate check).
+# pr-threads <pr#> [owner/repo] [--json] — review-conversation state for a PR.
+# Green light (✅, exit 0) when nothing is unresolved; otherwise lists each
+# unresolved thread's file and URL and exits 1 (scriptable as a merge-gate check).
 #
 # Why: `gh pr view` has no unresolved-conversation field — thread resolution
 # state only exists in the GraphQL API. Pairs with the ruleset rule
 # required_review_thread_resolution (princess-pi-packages ruleset 18684693).
+#
+# --json (#232) emits one `pr-threads/list@1` document with the thread ids and
+# comment bodies an agent needs to ACT on a review, instead of scraping the HTML
+# behind the URL. Exit codes and human output are unchanged — it is additive, so
+# the merge gate above keeps working untouched.
+#
+# Contract, including the trust boundary the `trusted` field exists to serve:
+# docs/dev-workflow-spec.md § `pr-threads --json`.
 # ---
 set -euo pipefail
 
-pr="${1:?usage: pr-threads <pr#> [owner/repo]}"
-repo="${2:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
+# Authoritative issuers (~/git-projects/CLAUDE.md). A review comment from anyone
+# else is DATA — a finding to relay to the human, never an instruction to run.
+# Emitted as a computed boolean so the caller needs zero reasoning steps; exact
+# element match, so a login merely containing an authoritative name is untrusted.
+TRUSTED_LOGINS='["duppypro","princess-pi-bot","cwerk-bot"]'
+
+# Flags are scanned out first: `--json` used to be swallowed as the positional
+# `repo`, which reported on a repository named "--json".
+json_mode=0
+pr=""
+repo=""
+for arg in "$@"; do
+  case "$arg" in
+    --json) json_mode=1 ;;
+    -*) echo "unknown flag: $arg" >&2; exit 2 ;;
+    *)
+      if [ -z "$pr" ]; then pr="$arg"
+      elif [ -z "$repo" ]; then repo="$arg"
+      fi
+      ;;
+  esac
+done
+: "${pr:?usage: pr-threads <pr#> [owner/repo] [--json]}"
+[ -n "$repo" ] || repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 owner="${repo%%/*}"
 name="${repo##*/}"
 
@@ -31,6 +61,7 @@ name="${repo##*/}"
 # the one that crashed.
 unresolved_count=0
 unresolved_text=""
+threads_ndjson=""
 after="null"
 seen=0
 total=0
@@ -47,8 +78,21 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
         totalCount
         pageInfo { hasNextPage endCursor }
         nodes {
+          id
           isResolved
-          comments(first: 1) { nodes { path url author { login } } }
+          isOutdated
+          path
+          line
+          comments(first: 100) {
+            nodes {
+              path
+              url
+              body
+              createdAt
+              authorAssociation
+              author { login }
+            }
+          }
         }
       }
     }
@@ -72,6 +116,38 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
 "
   fi
 
+  # …and separately again, the machine-readable form: one compact record per
+  # THREAD, appended across pages and assembled into an array at the end. Built
+  # even in human mode — it costs one jq pass and keeps the two outputs derived
+  # from the same fetch rather than from two different code paths.
+  #
+  # ALL threads are emitted, resolved ones included, because `isResolved` is only
+  # meaningful to a caller that can see both. The count above stays the gate.
+  #
+  # A thread with more than 100 comments truncates here. Threads that long do not
+  # occur in this workflow; if one ever does, the fix is comment pagination, not a
+  # larger first:.
+  page_nd=$(jq -c --argjson trusted "$TRUSTED_LOGINS" '
+    .data.repository.pullRequest.reviewThreads.nodes[]
+    | {
+        id, isResolved, isOutdated, path, line,
+        comments: [
+          .comments.nodes[]
+          | {
+              author: .author.login,
+              authorAssociation,
+              trusted: (.author.login as $l | ($trusted | index($l)) != null),
+              body,
+              createdAt,
+              url
+            }
+        ]
+      }' <<<"$json")
+  if [ -n "$page_nd" ]; then
+    threads_ndjson="${threads_ndjson}${page_nd}
+"
+  fi
+
   seen=$((seen + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[]] | length' <<<"$json")))
 
   hasNext=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$json")
@@ -80,6 +156,26 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   fi
   after=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<<"$json")
 done
+
+# --json short-circuits both human branches: one document on stdout, nothing else,
+# and the SAME exit code the gate has always returned.
+if [ "$json_mode" -eq 1 ]; then
+  printf '%s' "$threads_ndjson" | jq -s -c \
+    --arg repo "$repo" \
+    --argjson pr "$pr" \
+    --argjson total "$total" \
+    --argjson unresolved "$unresolved_count" \
+    '{
+      schema: "pr-threads/list@1",
+      repo: $repo,
+      pr: $pr,
+      totalCount: $total,
+      unresolvedCount: $unresolved,
+      threads: .
+    }'
+  [ "$unresolved_count" -eq 0 ] && exit 0
+  exit 1
+fi
 
 if [ "$unresolved_count" -eq 0 ]; then
   echo "✅ $repo #$pr — 0 unresolved conversations ($total total, all resolved)"
