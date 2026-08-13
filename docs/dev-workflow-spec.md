@@ -75,14 +75,33 @@ audits.
 `.claude/worktrees/` — never let it create. Instead: (1) from the main clone,
 `git worktree add ~/git-projects/worktrees/<repo>/<branch> -b <branch>`; (2)
 `EnterWorktree { path: ... }` to switch the session in; (3) `ExitWorktree` cannot remove
-a path-entered worktree — exit with `action: "keep"`. Teardown stays a manual, confirmed
-step (below), not something `ExitWorktree` does for you.
+a path-entered worktree — exit with `action: "keep"`. Teardown is a separate step
+(below), not something `ExitWorktree` does for you.
 
-**Teardown is confirm-first, not routine cleanup.** Deleting a merged *branch* is
-routine; removing a *worktree* tears down a workspace and needs a yes. Safe sequence
-once approved:
+**Merging a branch's PRs IS the authorization to remove its worktree.** Worktrees are
+1:1 with branches. Once every PR raised from a branch is merged, tear the worktree down
+without asking again — the confirmation was a question the merge had already answered.
+The reasoning is that the agent only proposes teardown when it believes the branch is
+finished, and the merge is the human ratifying exactly that belief; prompting again adds
+a round-trip and no information.
+
+The gate is **branch completion, not issue completion.** A branch may span several
+issues, and issue state is the wrong signal: dotfiles-doctor's `4-first-snapshot` was
+complete and merged while its issue #4 still had steps 3–7 outstanding. Umbrella issues
+(per-host work, standing "Project status" issues) never close by design, and gating on
+them would pin worktrees open forever.
+
+**Still needs an explicit yes:** a branch whose PR was *rejected* or closed unmerged, or
+one that never had a PR at all. That is where real work loss lives, and `pr-cleanup`
+already fails closed on both — with no merged PR it refuses unless the tip is already an
+ancestor of `origin/main`.
+
+Sequence:
 
 0. Get every live session **out** of the worktree first — `ExitWorktree { action: "keep" }`.
+   This is a **safety precondition, not a permission question**, and it survives the
+   relaxation above unchanged: removing a worktree with a session inside strands that
+   session's transcript regardless of who authorized the removal.
 1. Confirm `git -C <worktree> status --short` is clean — nothing uncommitted is lost.
 2. Confirm the worktree's branch is an ancestor of `origin/main` (its work is merged).
 3. `git worktree remove <path>` from the main clone.
