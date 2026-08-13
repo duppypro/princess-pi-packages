@@ -1,19 +1,23 @@
 {
-  "$comment": "Spec-as-fixture for issue #74: git-guardrails push-target parsing. Each case is run against BOTH harness copies (extensions/git-guardrails.ts and hooks/block-dangerous-git.sh) — verdicts must match (parity gate). 'branch' = the current branch of the repo the command would act on ('' = not a repo / branch unresolvable). 'cwd_branch' vs 'c_path_branch' distinguish the shell cwd repo from a `git -C <path>` target repo.",
+  "$comment": "Spec-as-fixture for issue #74: git-guardrails push-target parsing. Each case is run against BOTH harness copies (extensions/git-guardrails.ts and hooks/block-dangerous-git.sh) — verdicts must match (parity gate). 'branch' = the current branch of the repo the command would act on ('' = not a repo / branch unresolvable). 'cwd_branch' vs 'c_path_branch' distinguish the shell cwd repo from a `git -C <path>` target repo. OPTIONAL WITNESS FIELDS (#260): 'pre74' records what the FROZEN pre-#74 ancestor (tests/fixtures/block-dangerous-git.pre-74.sh) actually returned for this case — measured by research/260-measure-pre74-verdicts.ts, not asserted from memory — and 'pre74_class' names which historical defect it demonstrates: greedy-push-regex, cwd-only-branch, or substring-checkout-dot. A case WITHOUT these fields makes no historical claim. Of 124 cases the ancestor agreed on 79 and differed on 45; only the 24 differences traceable to a defect it had BY ITS OWN STATED INTENT are annotated. The other 21 are rules that did not exist yet (gh pr merge, --all/--mirror/--branches, HEAD/@ and matching refspecs, branch flag clusters, --repo, clean --force) — the ancestor was not wrong about those, it had no opinion, and calling them bugs would overstate the case.",
   "cases": [
     {
       "id": "allow-compound-push-then-pr-base-main",
       "command": "git push origin feat && gh pr create --base main",
       "branch": "feat",
       "verdict": "allow",
-      "why": "#74 false-positive class 1: greedy regex spans the && chain; the push targets feat, 'main' belongs to gh pr create"
+      "why": "#74 false-positive class 1: greedy regex spans the && chain; the push targets feat, 'main' belongs to gh pr create",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "allow-branch-name-starting-with-main-token",
       "command": "git push origin main-refactor",
       "branch": "main-refactor",
       "verdict": "allow",
-      "why": "#74 false-positive class 2: \\bmain\\b matches at the hyphen; ref token must EQUAL main/master, not contain it"
+      "why": "#74 false-positive class 2: \\bmain\\b matches at the hyphen; ref token must EQUAL main/master, not contain it",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "allow-word-cooccurrence-no-git-push",
@@ -34,14 +38,18 @@
       "command": "echo \"x; git push origin main\"",
       "branch": "feat",
       "verdict": "allow",
-      "why": "a ; inside double quotes is data, not a command separator"
+      "why": "a ; inside double quotes is data, not a command separator",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "allow-commit-message-mentioning-push",
       "command": "git commit -m \"see: git push origin main\"",
       "branch": "feat",
       "verdict": "allow",
-      "why": "quoted commit message stays one token; the git subcommand is commit"
+      "why": "quoted commit message stays one token; the git subcommand is commit",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "block-quoted-main-ref",
@@ -62,7 +70,9 @@
       "command": "cat > /tmp/notes.md <<'EOF'\ngit push origin main is blocked by the ruleset\nEOF",
       "branch": "feat",
       "verdict": "allow",
-      "why": "#74 false-positive class 3: heredoc body text is not a git invocation"
+      "why": "#74 false-positive class 3: heredoc body text is not a git invocation",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "block-heredoc-dash-tab-terminator-then-push",
@@ -76,14 +86,18 @@
       "command": "cat <<-EOF\n\tgit push origin main\n\tEOF",
       "branch": "feat",
       "verdict": "allow",
-      "why": "tab-indented body of a <<- heredoc is still data; terminator must now be recognized so nothing AFTER leaks, but the body itself never blocks"
+      "why": "tab-indented body of a <<- heredoc is still data; terminator must now be recognized so nothing AFTER leaks, but the body itself never blocks",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "allow-plain-heredoc-tab-eof-is-body",
       "command": "cat <<EOF\n\tEOF\ngit push origin main\nEOF",
       "branch": "feat",
       "verdict": "allow",
-      "why": "without the dash, a tab-indented EOF is NOT a terminator in real shells — the push line is heredoc data, matching bash semantics"
+      "why": "without the dash, a tab-indented EOF is NOT a terminator in real shells — the push line is heredoc data, matching bash semantics",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "block-quoted-heredoc-opener-then-push",
@@ -97,14 +111,18 @@
       "command": "cat <<123\ngit push origin main\n123",
       "branch": "feat",
       "verdict": "allow",
-      "why": "review finding 13b: heredoc delimiters are general shell WORDs — the identifier-only charset left <<123 unstripped, so body text falsely blocked"
+      "why": "review finding 13b: heredoc delimiters are general shell WORDs — the identifier-only charset left <<123 unstripped, so body text falsely blocked",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "allow-dashed-heredoc-delim",
       "command": "cat <<my-delim.1\ngit push origin main\nmy-delim.1",
       "branch": "feat",
       "verdict": "allow",
-      "why": "dashes and dots are valid in heredoc delimiters too"
+      "why": "dashes and dots are valid in heredoc delimiters too",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "block-arith-shift-not-heredoc",
@@ -189,7 +207,9 @@
       "command": "echo git push origin main",
       "branch": "feat",
       "verdict": "allow",
-      "why": "echo is not a wrapper — prefix skipping stops at unknown words so quoted-less text stays text"
+      "why": "echo is not a wrapper — prefix skipping stops at unknown words so quoted-less text stays text",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "block-bash-c-push-main",
@@ -301,7 +321,9 @@
       "command": "echo '$(git push origin main)'",
       "branch": "feat",
       "verdict": "allow",
-      "why": "inside single quotes a substitution is literal text — nothing executes"
+      "why": "inside single quotes a substitution is literal text — nothing executes",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     },
     {
       "id": "allow-subst-safe-git",
@@ -491,7 +513,9 @@
       "c_path_branch": "main",
       "cwd_branch": "",
       "verdict": "block",
-      "why": "NEW (#74 under-block, Phase G escape 2026-07-13): hook resolved branch from shell cwd (non-repo, ''), not the -C target on main; only the server ruleset (GH006) stopped it"
+      "why": "NEW (#74 under-block, Phase G escape 2026-07-13): hook resolved branch from shell cwd (non-repo, ''), not the -C target on main; only the server ruleset (GH006) stopped it",
+      "pre74": "allow",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "block-c-relative-bare-push-on-main",
@@ -500,7 +524,9 @@
       "c_path_rel": "rel-repo",
       "cwd_branch": "",
       "verdict": "block",
-      "why": "relative -C must resolve against the TOOL-CALL cwd, not the guard process's own cwd — otherwise the wrong repo (or none) is inspected and a main push slips through"
+      "why": "relative -C must resolve against the TOOL-CALL cwd, not the guard process's own cwd — otherwise the wrong repo (or none) is inspected and a main push slips through",
+      "pre74": "allow",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "allow-c-relative-bare-push-on-feature",
@@ -518,7 +544,9 @@
       "c_path_rel": "rel-repo/sub",
       "cwd_branch": "",
       "verdict": "block",
-      "why": "review finding 9: git resolves each -C relative to the directory established by the previous one — overwriting cpath inspected cwd/sub (nonexistent → '' → not-main) instead of cwd/rel-repo/sub on main"
+      "why": "review finding 9: git resolves each -C relative to the directory established by the previous one — overwriting cpath inspected cwd/sub (nonexistent → '' → not-main) instead of cwd/rel-repo/sub on main",
+      "pre74": "allow",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "allow-multi-c-chained-bare-push-on-feature",
@@ -535,7 +563,9 @@
       "c_path_branch": "main",
       "cwd_branch": "feat",
       "verdict": "block",
-      "why": "finding 17 (r3591855555): --git-dir selects the affected repo exactly like -C — skipping it fell back to the hook cwd (on feat) and the main push escaped"
+      "why": "finding 17 (r3591855555): --git-dir selects the affected repo exactly like -C — skipping it fell back to the hook cwd (on feat) and the main push escaped",
+      "pre74": "allow",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "block-git-dir-separate-arg-bare-push-on-main",
@@ -543,7 +573,9 @@
       "c_path_branch": "main",
       "cwd_branch": "feat",
       "verdict": "block",
-      "why": "--git-dir also takes a SEPARATE argument; the old generic -* skip left '/repo/.git' as the subcommand and 'push' invisible"
+      "why": "--git-dir also takes a SEPARATE argument; the old generic -* skip left '/repo/.git' as the subcommand and 'push' invisible",
+      "pre74": "allow",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "allow-git-dir-eq-bare-push-on-feature",
@@ -551,7 +583,9 @@
       "c_path_branch": "feat",
       "cwd_branch": "main",
       "verdict": "allow",
-      "why": "inverse: the targeted repo is on feat even though the hook cwd is on main — --git-dir must win over cwd in BOTH directions"
+      "why": "inverse: the targeted repo is on feat even though the hook cwd is on main — --git-dir must win over cwd in BOTH directions",
+      "pre74": "block",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "block-sudo-long-user-push-main",
@@ -587,7 +621,9 @@
       "c_path_branch": "feat",
       "cwd_branch": "",
       "verdict": "block",
-      "why": "-C plus explicit main destination; explicit ref wins regardless of branch"
+      "why": "-C plus explicit main destination; explicit ref wins regardless of branch",
+      "pre74": "allow",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "block-compound-second-subcommand-pushes-main",
@@ -686,7 +722,9 @@
       "c_path_branch": "main",
       "cwd_branch": "",
       "verdict": "block",
-      "why": "-C resolution applies to reset --hard too, same under-block shape as push"
+      "why": "-C resolution applies to reset --hard too, same under-block shape as push",
+      "pre74": "allow",
+      "pre74_class": "cwd-only-branch"
     },
     {
       "id": "allow-reset-hard-on-feature",
@@ -707,21 +745,27 @@
       "command": "git checkout    .",
       "branch": "feat",
       "verdict": "block",
-      "why": "review finding 3: literal-space regex missed multi-space/tab separation; tokenizer is whitespace-agnostic"
+      "why": "review finding 3: literal-space regex missed multi-space/tab separation; tokenizer is whitespace-agnostic",
+      "pre74": "allow",
+      "pre74_class": "substring-checkout-dot"
     },
     {
       "id": "block-checkout-dashdash-dot",
       "command": "git checkout -- .",
       "branch": "feat",
       "verdict": "block",
-      "why": "review finding 3: the -- pathspec separator split the dot into its own token past the old regex"
+      "why": "review finding 3: the -- pathspec separator split the dot into its own token past the old regex",
+      "pre74": "allow",
+      "pre74_class": "substring-checkout-dot"
     },
     {
       "id": "block-restore-dashdash-dot",
       "command": "git restore -- .",
       "branch": "feat",
       "verdict": "block",
-      "why": "same -- separator escape for restore"
+      "why": "same -- separator escape for restore",
+      "pre74": "allow",
+      "pre74_class": "substring-checkout-dot"
     },
     {
       "id": "block-clean-split-flags",
@@ -756,7 +800,9 @@
       "command": "git checkout .gitignore",
       "branch": "feat",
       "verdict": "allow",
-      "why": "inverse fix: the old substring regex ('git checkout \\.') false-blocked dotfile pathspecs; only the bare '.' token discards everything"
+      "why": "inverse fix: the old substring regex ('git checkout \\.') false-blocked dotfile pathspecs; only the bare '.' token discards everything",
+      "pre74": "block",
+      "pre74_class": "substring-checkout-dot"
     },
     {
       "id": "allow-gh-pr-create",
@@ -882,7 +928,9 @@
       "command": "echo '$(git push origin main)'",
       "branch": "main",
       "verdict": "allow",
-      "why": "#208/#105 inverse: a REAL single-quoted region keeps $( ) literal — must stay allowed"
+      "why": "#208/#105 inverse: a REAL single-quoted region keeps $( ) literal — must stay allowed",
+      "pre74": "block",
+      "pre74_class": "greedy-push-regex"
     }
   ]
 }
