@@ -127,6 +127,11 @@ describe("install-workflow-tools deploys itself (#263)", () => {
 		const fixtureRepo = path.join(home, "git-projects", "princess-pi-packages");
 		fs.mkdirSync(path.join(fixtureRepo, "bin"), { recursive: true });
 		fs.mkdirSync(path.join(fixtureRepo, "hooks"), { recursive: true });
+		// resolve_repo_dir's identity check (#267 finding) requires package.json's
+		// "name" field, not just bin/+hooks/ shape — a bare bin+hooks pair is not
+		// enough to prove this candidate really is the repo (that gap is what let
+		// $HOME itself pass when an unrelated ~/hooks happened to exist).
+		fs.writeFileSync(path.join(fixtureRepo, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
 		for (const s of ["git-checkpoint", "git-overview", "pr-open", "pr-merge", "pr-reject", "pr-cleanup", "pr-threads", "install-workflow-tools"]) {
 			fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fixtureRepo, "bin", s));
 		}

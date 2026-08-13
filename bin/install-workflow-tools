@@ -30,6 +30,27 @@ set -euo pipefail
 #      by bare name instead of merely present on PATH.
 # INSTALL_WORKFLOW_TOOLS_REPO_DIR is an explicit override for both: tests use
 # it to point at a fixture repo without faking a real git-projects layout.
+#
+# is_this_repo() proves IDENTITY, not just shape (bug found by macroscopeapp
+# on PR #267, rated Low-but-real): the bare-name self-install path resolves
+# $0 to ~/bin/install-workflow-tools, so `dirname "$0"/..` is exactly $HOME —
+# and `[ -d "$candidate/bin" ] && [ -d "$candidate/hooks" ]` accepts $HOME
+# outright the moment an unrelated `~/hooks` directory exists (a dotfiles
+# checkout, a scratch dir, anything). `[ "$candidate" != "$HOME" ]` would only
+# special-case that one wrong directory rather than establishing that the
+# candidate really IS this repo — checking package.json's "name" field is a
+# marker any OTHER directory (including $HOME) is vanishingly unlikely to
+# share by accident, and rejecting $HOME falls out of that as a side effect
+# rather than being the rule itself.
+is_this_repo() {
+  local candidate="$1"
+  [ -d "$candidate/bin" ] || return 1
+  [ -d "$candidate/hooks" ] || return 1
+  [ -f "$candidate/package.json" ] || return 1
+  local name
+  name=$(jq -r '.name // empty' "$candidate/package.json" 2>/dev/null)
+  [ "$name" = "princess-pi-packages" ]
+}
 resolve_repo_dir() {
   if [ -n "${INSTALL_WORKFLOW_TOOLS_REPO_DIR:-}" ]; then
     echo "$INSTALL_WORKFLOW_TOOLS_REPO_DIR"
@@ -37,12 +58,12 @@ resolve_repo_dir() {
   fi
   local candidate
   candidate=$(cd "$(dirname "$0")/.." && pwd)
-  if [ -d "$candidate/bin" ] && [ -d "$candidate/hooks" ]; then
+  if is_this_repo "$candidate"; then
     echo "$candidate"
     return
   fi
   candidate="$HOME/git-projects/princess-pi-packages"
-  if [ -d "$candidate/bin" ] && [ -d "$candidate/hooks" ]; then
+  if is_this_repo "$candidate"; then
     echo "$candidate"
     return
   fi

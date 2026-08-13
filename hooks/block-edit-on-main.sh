@@ -17,11 +17,24 @@ FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
 # Resolve the directory that holds the target file (relative paths hang off cwd).
+#
+# Canonicalize BEFORE taking dirname (#267 finding, macroscopeapp on PR #267):
+# `dirname` does not dereference a symlink. A symlink sitting in a feature
+# worktree but pointing at a file physically inside a DIFFERENT clone (e.g.
+# the main clone this hook exists to protect) used to resolve DIR to the
+# worktree — `git -C "$DIR" branch --show-current` then reported the feature
+# branch and allowed the edit, while the bytes actually written landed in the
+# other clone, on whatever branch IT is on. `realpath -m` resolves every
+# symlink in the path (including ancestor directories) while still tolerating
+# a FILE that doesn't exist yet (new-file creation, handled by the
+# nearest-existing-parent walk below) — a plain `realpath` would error on that
+# case instead of normalizing it.
 if [ -n "$FILE" ]; then
   case "$FILE" in
-    /*) DIR=$(dirname "$FILE") ;;
-    *)  DIR=$(dirname "${CWD:-.}/$FILE") ;;
+    /*) RESOLVED=$(realpath -m "$FILE") ;;
+    *)  RESOLVED=$(realpath -m "${CWD:-.}/$FILE") ;;
   esac
+  DIR=$(dirname "$RESOLVED")
 else
   DIR="${CWD:-.}"
 fi

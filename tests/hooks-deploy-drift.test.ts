@@ -166,6 +166,9 @@ console.log("hooks deploy + drift gate (#249)");
 	const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-deploy-repo-"));
 	fs.mkdirSync(path.join(fakeRepo, "bin"), { recursive: true });
 	fs.mkdirSync(path.join(fakeRepo, "hooks"), { recursive: true }); // present but EMPTY
+	// resolve_repo_dir's identity check (#267 finding) requires package.json's
+	// "name" field, not just bin/+hooks/ shape.
+	fs.writeFileSync(path.join(fakeRepo, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
 	fs.copyFileSync(INSTALLER, path.join(fakeRepo, "bin", "install-workflow-tools"));
 	for (const s of ["git-checkpoint", "git-overview", "pr-open", "pr-merge", "pr-reject", "pr-cleanup", "pr-threads"]) {
 		fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fakeRepo, "bin", s));
@@ -224,6 +227,17 @@ console.log("hooks deploy + drift gate (#249)");
 
 	check(verdict(path.join(mainRepo, "f.txt"), mainRepo) === 2, "block-edit-on-main.sh blocks an edit inside a repo on 'main' (exit 2)");
 	check(verdict(path.join(featRepo, "f.txt"), featRepo) === 0, "block-edit-on-main.sh allows an edit inside a repo on a feature branch (exit 0)");
+
+	// Symlink bypass (#267 finding, macroscopeapp on PR #267): a symlink SITS
+	// in the feature worktree but its TARGET is physically inside mainRepo.
+	// `dirname` on the symlink path alone resolves to featRepo — the bug this
+	// closes let `git -C featRepo` report the feature branch and allow an edit
+	// that actually lands in mainRepo, on 'main'.
+	fs.symlinkSync(path.join(mainRepo, "f.txt"), path.join(featRepo, "symlink-to-main.txt"));
+	check(
+		verdict(path.join(featRepo, "symlink-to-main.txt"), featRepo) === 2,
+		"block-edit-on-main.sh blocks a symlink in a feature worktree whose target is inside a repo on 'main' (exit 2)",
+	);
 	check(verdict(path.join(nonRepo, "f.txt"), nonRepo) === 0, "block-edit-on-main.sh allows an edit outside any git work tree (exit 0)");
 }
 

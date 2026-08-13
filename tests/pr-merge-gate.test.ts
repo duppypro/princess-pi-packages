@@ -78,6 +78,15 @@ interface SandboxOpts {
 	failGhList?: boolean;
 	/** stub `gh pr list` finds MORE THAN ONE open PR sharing the branch's head — ambiguous selection */
 	multiPr?: boolean;
+	/**
+	 * stub `gh pr view --json headRefOid` reports a DIFFERENT sha on the second
+	 * call than the first — simulates a push landing between the pr-threads
+	 * gate and the merge call (#258 TOCTOU guard, macroscopeapp finding on PR
+	 * #267). First call is always "sha0000head", second is "sha1111moved".
+	 */
+	headMovesBetweenGateAndMerge?: boolean;
+	/** stub `gh pr view` itself fails (outage / expired auth) */
+	failGhView?: boolean;
 }
 
 /** A real git repo with a feature branch — pr-merge only needs `git branch --show-current` to work. */
@@ -107,11 +116,22 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 						{ number: 43, headRepositoryOwner: { login: "duppypro" } },
 					])
 				: JSON.stringify([{ number: 42, headRepositoryOwner: { login: "duppypro" } }]);
+	const headCallCounter = path.join(root, "prview-callcount");
+	fs.writeFileSync(headCallCounter, "0");
 	const gh = `#!/usr/bin/env bash
 case "$1 $2" in
   "repo view") echo '{"owner":{"login":"duppypro"}}' ;;
   "pr list")
     ${opts.failGhList ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : `echo ${JSON.stringify(prJson)} | jq -r '[.[] | select(.headRepositoryOwner.login == "duppypro") | .number] | @tsv'`}
+    ;;
+  "pr view")
+    ${
+			opts.failGhView
+				? 'echo "gh: could not connect to api.github.com" >&2; exit 1'
+				: opts.headMovesBetweenGateAndMerge
+					? `n=$(cat ${JSON.stringify(headCallCounter)}); echo $((n + 1)) > ${JSON.stringify(headCallCounter)}; if [ "$n" -eq 0 ]; then echo "sha0000head"; else echo "sha1111moved"; fi`
+					: 'echo "sha0000head"'
+		}
     ;;
   "pr merge") touch ${JSON.stringify(mergedFlag)} ;;
   *) exit 0 ;;
@@ -271,6 +291,32 @@ console.log("\nregression: ambiguous PR selection (multiple open PRs share the b
 	check(code === 6, "ambiguous PR selection → exit 6 (safety gate refused)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "ambiguous PR selection → gh pr merge never called", out);
 	check(/ambiguous/i.test(out), "ambiguous PR selection → says so", out);
+}
+
+// 6. TOCTOU guard (#258 follow-up, macroscopeapp finding on PR #267): the
+//    branch moves between the pr-threads gate and the merge call. pr-threads
+//    itself reports clean (it saw the sha at gate-time) — the guard has to
+//    catch the move independently, via the second `gh pr view` call
+//    immediately before `gh pr merge`.
+console.log("\nbranch moves between the gate and the merge (TOCTOU guard):");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", headMovesBetweenGateAndMerge: true });
+	const { code, out } = runPrMerge(sb);
+	check(code === 6, "head moved during verification → exit 6 (safety gate refused)", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "head moved during verification → gh pr merge never called", out);
+	check(/moved during verification/i.test(out), "head moved → message names the actual problem", out);
+	check(out.includes("sha0000"), "head moved → names the sha the gate approved", out);
+	check(out.includes("sha1111"), "head moved → names the new (unverified) sha", out);
+}
+
+// 7. Regression: `gh pr view` itself fails (outage / expired auth) — the new
+//    resolve_head() call, same fail-closed treatment as `gh pr list` failing.
+console.log("\nregression: gh pr view itself fails:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", failGhView: true });
+	const { code, out } = runPrMerge(sb);
+	check(code === 5, "gh pr view fails → exit 5 (remote/API failure)", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "gh pr view fails → gh pr merge never called", out);
 }
 
 // ---

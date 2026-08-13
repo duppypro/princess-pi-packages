@@ -220,7 +220,13 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
 
   if [ "$head_extracted" -eq 0 ]; then
     jq_or_die head_sha -r '.data.repository.pullRequest.headRefOid // empty'
-    jq_or_die reviews_json -c '[.data.repository.pullRequest.reviews.nodes[]? | .commit.oid // empty
+    # PENDING (unsubmitted draft) reviews come back in this connection with
+    # submittedAt: null — visible only to their own author, but a bot polling
+    # its own drafts would otherwise cover a head it never actually submitted
+    # a review against. Filter to submitted reviews only.
+    jq_or_die reviews_json -c '[.data.repository.pullRequest.reviews.nodes[]?
+      | select(.submittedAt != null)
+      | .commit.oid // empty
       | select(. != "")]'
     head_extracted=1
   fi

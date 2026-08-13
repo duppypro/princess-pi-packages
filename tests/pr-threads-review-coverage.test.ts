@@ -56,6 +56,8 @@ interface FixtureOpts {
 	headRefOid?: string;
 	/** commit oids of reviews that have been submitted, in submission order */
 	reviewCommits?: string[];
+	/** commit oids of PENDING (unsubmitted draft) reviews — submittedAt: null */
+	pendingReviewCommits?: string[];
 	unresolvedThreads?: number;
 	totalThreads?: number;
 	/** omit reviews/headRefOid entirely — the pre-#254 fixture shape */
@@ -95,10 +97,16 @@ function page(opts: FixtureOpts = {}): string {
 	if (!opts.legacy) {
 		pullRequest.headRefOid = opts.headRefOid ?? "head0000";
 		pullRequest.reviews = {
-			nodes: (opts.reviewCommits ?? []).map((oid, i) => ({
-				commit: { oid },
-				submittedAt: `2026-08-1${i}T00:00:00Z`,
-			})),
+			nodes: [
+				...(opts.reviewCommits ?? []).map((oid, i) => ({
+					commit: { oid },
+					submittedAt: `2026-08-1${i}T00:00:00Z`,
+				})),
+				...(opts.pendingReviewCommits ?? []).map((oid) => ({
+					commit: { oid },
+					submittedAt: null,
+				})),
+			],
 		};
 	}
 
@@ -185,6 +193,49 @@ console.log("\nno reviews at all (advisory, does not block):");
 	check(code === 0, "no reviews ever → exit 0 (advisory, not blocking)", `got ${code}, output:\n${out}`);
 	check(!out.includes("✅"), "no reviews ever → withholds the authorizing ✅ (head genuinely unreviewed)", out);
 	check(/no review/i.test(out), "no reviews ever → says so plainly", out);
+}
+
+// 3b. PENDING (unsubmitted draft) review at head, no submitted reviews at
+//     all: the GraphQL reviews connection returns drafts to their own author
+//     with submittedAt: null. Must NOT count as coverage — a bot's own
+//     unpublished draft is not a review anyone (including a human) can see.
+//     Falls back to the same "no reviews recorded" advisory as case 3, not a
+//     false "reviewedHead: true".
+console.log("\nPENDING draft review at head, nothing submitted (advisory, not covered):");
+{
+	const p = page({ headRefOid: "fa8a8fb", pendingReviewCommits: ["fa8a8fb"], unresolvedThreads: 0 });
+	const { code, out } = runPrThreads([p]);
+	check(code === 0, "pending draft only → exit 0 (advisory, not blocking)", `got ${code}, output:\n${out}`);
+	check(!out.includes("✅"), "pending draft only → withholds the authorizing ✅", out);
+	check(/no review/i.test(out), "pending draft only → treated as 'no reviews recorded'", out);
+
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.reviewedHead === false, "pending draft only --json → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.latestReviewCommit === null, "pending draft only --json → latestReviewCommit: null (draft excluded)", JSON.stringify(doc));
+}
+
+// 3c. PENDING draft at head ALONGSIDE a genuine stale submitted review: the
+//     draft must not paper over the fact that the submitted review is stale —
+//     still blocks, and latestReviewCommit names the submitted one, not the draft.
+console.log("\nPENDING draft at head PLUS a stale submitted review (still blocks):");
+{
+	const p = page({
+		headRefOid: "fa8a8fb",
+		reviewCommits: ["1284eaf"],
+		pendingReviewCommits: ["fa8a8fb"],
+		unresolvedThreads: 0,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code !== 0, "draft + stale submitted review → non-zero (still blocks)", `got ${code}, output:\n${out}`);
+	check(!out.includes("✅"), "draft + stale submitted review → does NOT print the authorizing ✅", out);
+
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.reviewedHead === false, "draft + stale submitted → reviewedHead: false", JSON.stringify(doc));
+	check(
+		doc?.latestReviewCommit === "1284eaf",
+		"draft + stale submitted → latestReviewCommit is the SUBMITTED review, not the draft",
+		JSON.stringify(doc),
+	);
 }
 
 // 4. Unresolved threads AND a stale review together: still blocks, still
