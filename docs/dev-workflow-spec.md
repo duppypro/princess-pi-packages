@@ -75,6 +75,13 @@ convention follows it rather than the other way round.
 `ExitWorktree` with `action: "keep"` leaves the worktree on disk; teardown is a separate
 step (below), not something `ExitWorktree` does for you.
 
+Pass **no start-point ref** to `git worktree add`. Adding `origin/main` looks harmless and
+sets the new branch's upstream to `origin/main`, after which `git-checkpoint`'s bare
+`git push` refuses (it will not push a branch to a differently-named upstream) — every
+checkpoint commits and then fails at the push. Recover with
+`git push -u origin <branch>`, which the guardrail hook allows: it blocks by push
+*destination*, and a feature branch is not `main`.
+
 **The one cost, and it is a footgun rather than an inconvenience:** a nested checkout
 sits inside the clone, and `git-checkpoint` runs `git add -A`. `.gitignore` carries
 `.claude/worktrees/` for that reason, and `tests/worktree-location-convention.test.ts`
@@ -158,6 +165,13 @@ both its lookup paths (physical location, last-recorded cwd) point at a path tha
 gone. The session becomes invisible until someone exits the worktree — impossible from a
 directory that doesn't exist. Symptom: a session you're *currently in* doesn't show up
 in the session picker. Recovery is `ExitWorktree { action: "keep" }`.
+
+Moving worktrees in-tree (#257) changed nothing here, which was checked rather than
+assumed. The mechanism keys on the directory ceasing to exist, not on its name, and the
+in-tree slug is the *motivating* case for session discovery — `tests/wtft-issue-144-145-
+164-session-discovery.test.ts` V2 gates `.claude/worktrees` encoding to the double-dash
+form and discovering a session filed under it. The one stranded transcript this repo has
+actually produced was under the out-of-tree layout.
 
 `pr-cleanup` currently has a known gap here (#221) — it can remove the worktree its own
 session is inside, stranding the transcript the same way. Fixed there, not duplicated
