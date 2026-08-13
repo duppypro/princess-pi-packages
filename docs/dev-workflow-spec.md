@@ -69,16 +69,30 @@ All worktrees for a repo live **inside its clone**, at
 layout, and the tool trusts exactly that one path — which is the whole reason the
 convention follows it rather than the other way round.
 
-**How (Claude Code):** let `EnterWorktree` create it — `EnterWorktree { name: <branch> }`
-— or, when the branch already exists, `git worktree add .claude/worktrees/<branch>
--b <branch>` from the clone followed by `EnterWorktree { path: ... }`. Either way
-`ExitWorktree` with `action: "keep"` leaves the worktree on disk; teardown is a separate
-step (below), not something `ExitWorktree` does for you.
+**How (Claude Code):** the short path is `EnterWorktree { name: <branch> }` — it creates
+the worktree in the right place and switches the session in, with no prompt. By hand,
+from the clone, the two cases take different commands and mixing them up fails:
 
-Pass **no start-point ref** to `git worktree add`. Adding `origin/main` looks harmless and
-sets the new branch's upstream to `origin/main`, after which `git-checkpoint`'s bare
-`git push` refuses (it will not push a branch to a differently-named upstream) — every
-checkpoint commits and then fails at the push. Recover with
+| situation | command |
+|---|---|
+| branch does not exist yet | `git worktree add .claude/worktrees/<branch> -b <branch>` |
+| branch already exists (pushed earlier, or from another machine) | `git worktree add .claude/worktrees/<branch> <branch>` |
+
+`-b` *creates* — it fails outright if the branch is already there. Without `-b` the final
+argument is the existing branch to check out. Then `EnterWorktree { path: ... }` to switch
+in. Either way `ExitWorktree` with `action: "keep"` leaves the worktree on disk; teardown
+is a separate step (below), not something `ExitWorktree` does for you.
+
+In the `-b` form, add **no start-point ref** after `<branch>`. Appending `origin/main`
+looks harmless and is not: it sets the new branch's upstream to `origin/main`, and
+`git-checkpoint`'s bare `git push` then refuses to push a branch to a differently-named
+upstream — every checkpoint commits and then fails at the push.
+
+The reason the *absence* of a start point is safe rather than merely less wrong is
+`push.autoSetupRemote=true` (set globally on this host): a branch with **no** upstream
+gets the correct one created on its first bare push. A start point defeats exactly that
+by supplying a wrong upstream up front, which leaves nothing for autoSetupRemote to fill
+in. Recovery either way — and on any host lacking that setting — is
 `git push -u origin <branch>`, which the guardrail hook allows: it blocks by push
 *destination*, and a feature branch is not `main`.
 
