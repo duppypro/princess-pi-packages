@@ -35,13 +35,19 @@ const AX_PATTERN = /\bax\b|surrealdb|127\.0\.0\.1:8521|ax-db-start/i;
 const installerSrc = fs.readFileSync(INSTALLER, "utf8");
 check(!AX_PATTERN.test(installerSrc), "install-workflow-tools itself has no ax/SurrealDB reference", installerSrc);
 
-const arrayMatch = installerSrc.match(/SCRIPTS=\(([\s\S]*?)\)/);
+// Anchor the closing paren to its own line, and drop comment lines. A bash
+// array may legally carry comments, and a non-greedy match on a bare `\)`
+// stops at the FIRST parenthetical it meets — including one inside a comment
+// (#263 added `# Itself (#263): ...` above the real closing paren), which then
+// reads `# Itself (#263` as a script name and asserts bin/ contains a file by
+// that name. Same fragility, same fix, as tests/dev-workflow-spec-consistency.
+const arrayMatch = installerSrc.match(/SCRIPTS=\(([\s\S]*?)\n\)/);
 check(arrayMatch !== null, "SCRIPTS array found in install-workflow-tools");
 const scripts = arrayMatch
 	? arrayMatch[1]
 			.split("\n")
 			.map((l) => l.trim())
-			.filter(Boolean)
+			.filter((l) => l.length > 0 && !l.startsWith("#"))
 	: [];
 check(scripts.length > 0, "SCRIPTS array is non-empty");
 
