@@ -185,7 +185,7 @@ console.log("\nbehind origin (another session pushed) — the bug:");
 	// does (push to reconcile, or refuse), it must not do THAT.
 	const silentlyProceeded = createdPr && localTip(sb) !== remoteTip(sb);
 	check(!silentlyProceeded, "does not silently proceed to gh pr create while local != remote", out);
-	check(code !== 0, "refuses — non-zero exit", `got ${code}, output:\n${out}`);
+	check(code === 6, "refuses — safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(!createdPr, "gh pr create did NOT run", out);
 	check(/diverg/i.test(out), "message names the divergence", out);
 	check(remoteTip(sb) === otherTip, "the other session's commit on origin is untouched", out);
@@ -254,7 +254,7 @@ console.log("\ndiverged (amended after pushing):");
 	git(sb.clone, ["commit", "-q", "--amend", "-m", "work (amended)"]);
 
 	const { code, out, createdPr } = runPrOpen(sb);
-	check(code !== 0, "exits non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "exits with the safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(!createdPr, "gh pr create did NOT run", out);
 	check(out.includes("--force-with-lease"), "message names --force-with-lease", out);
 	check(out.includes("pr-open:"), "message is pr-open's own, not a raw git rejection", out);

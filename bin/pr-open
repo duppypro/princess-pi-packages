@@ -29,19 +29,34 @@
 #
 # Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md):
 #   0  success
-#   2  usage error
-#   3  precondition not met (protected branch, dirty worktree)
-#   4  not found
-#   5  remote/API failure — state could not be determined (e.g. fetch failed)
+#   2  usage error — not run inside a git repository
+#   3  precondition not met — on a protected branch (main/master), detached
+#      HEAD with no branch to open a PR from, or the worktree isn't clean
+#   4  (not used by pr-open — nothing here is a "not found" case)
+#   5  remote/API failure — state could not be determined (fetch failed, or
+#      `gh pr create` itself failed)
 #   6  safety gate refused (diverged branch — declined to auto force-push)
 # 5 vs 6 is the load-bearing distinction: "I could not check" (5) vs "I
 # checked and it says no" (6).
 # ---
 set -euo pipefail
 
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "pr-open: not inside a git repository." >&2
+  exit 2
+fi
+
 BRANCH=$(git branch --show-current)
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-open: cannot create a PR from '$BRANCH'. Switch to a feature branch." >&2
+  exit 3
+fi
+# `git branch --show-current` is empty on detached HEAD — the check above
+# passes right through it (empty != "main"), and BRANCH="" then reaches
+# `git push origin ""` at exit 128, git's raw rejection. Matches
+# bin/pr-cleanup's own detached-HEAD handling (#264/E-4).
+if [ -z "$BRANCH" ]; then
+  echo "pr-open: cwd is not on any branch (detached HEAD) — nothing to open a PR from." >&2
   exit 3
 fi
 
@@ -130,4 +145,7 @@ fi
 
 # 6. Create the PR
 echo "📡 Creating pull request..."
-gh pr create --fill --base main
+if ! gh pr create --fill --base main; then
+  echo "pr-open: 'gh pr create' failed — see gh's output above." >&2
+  exit 5
+fi

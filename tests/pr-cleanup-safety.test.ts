@@ -371,6 +371,32 @@ console.log("\nbranch exists, worktree already removed (post ExitWorktree{action
 	check(!/nothing to clean up/i.test(out), "worktree already gone → does not dead-end", out);
 }
 
+// --- adversarial review of #221 (finding A): a missing local branch used to
+// crash with git's raw exit 128 instead of a table code, because the
+// cwd-first `git rev-parse` fallback's own stderr leaked and its failure
+// wasn't caught under `set -e`. Two triggering states, both must now exit 4
+// with an actionable message instead of a bare git error. ---
+console.log("\nmissing local branch — typo'd name, never existed:");
+{
+	const sb = makeSandbox("42-feature", { prMerged: false });
+	const { code, out } = runCleanup(sb, sb.mainClone, "99-never-existed");
+	check(code === 4, "typo'd branch name → not-found code (4), not git's raw 128", `got ${code}, output:\n${out}`);
+	check(/no local branch/i.test(out), "typo'd branch name → names the missing local branch", out);
+	check(!/fatal:|unknown revision/i.test(out), "typo'd branch name → not git's raw rev-parse error text", out);
+}
+
+console.log("\nmissing local branch — PR merged, worktree gone, branch deleted by hand, remote ref still there:");
+{
+	const sb = makeSandbox("42-feature");
+	git(sb.mainClone, ["worktree", "remove", sb.worktree]);
+	git(sb.mainClone, ["branch", "-D", sb.branch]);
+	const { code, out } = runCleanup(sb, sb.mainClone, sb.branch);
+	check(code === 4, "local branch already deleted → not-found code (4), not git's raw 128", `got ${code}, output:\n${out}`);
+	check(/no local branch/i.test(out), "local branch already deleted → names the missing local branch", out);
+	check(!/fatal:|unknown revision/i.test(out), "local branch already deleted → not git's raw rev-parse error text", out);
+	check(remoteBranchExists(sb), "local branch already deleted → remote ref untouched (never reached teardown)", out);
+}
+
 // --- CRITICAL: --force retry destroys uncommitted work ---
 console.log("\ndirty worktree (the --force retry):");
 {
@@ -378,7 +404,7 @@ console.log("\ndirty worktree (the --force retry):");
 	const scratch = path.join(sb.worktree, "UNCOMMITTED.txt");
 	fs.writeFileSync(scratch, "work that only exists here\n");
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "dirty worktree → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "dirty worktree → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(scratch), "dirty worktree → uncommitted file SURVIVES", out);
 	check(fs.existsSync(sb.worktree), "dirty worktree → worktree not removed", out);
 	check(!/Cleanup complete/.test(out), "dirty worktree → does not claim success", out);
@@ -389,7 +415,7 @@ console.log("\nunreachable remote (ls-remote failure vs branch absent):");
 {
 	const sb = makeSandbox("42-feature", { prMerged: false, breakRemote: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "ls-remote fails → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "ls-remote fails → remote/API-failure code (5) — fetch itself fails first", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "ls-remote fails → worktree not removed", out);
 	check(localBranchExists(sb), "ls-remote fails → local branch survives", out);
 }
@@ -403,7 +429,7 @@ console.log("\nbranch tip ahead of the merged PR (reused name / later commits):"
 	git(sb.worktree, ["add", "-A"]);
 	git(sb.worktree, ["commit", "-q", "-m", "work done after the merge"]);
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "tip ahead of headRefOid → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "tip ahead of headRefOid → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "tip ahead of headRefOid → worktree survives", out);
 	check(localBranchExists(sb), "tip ahead of headRefOid → local branch survives", out);
 	check(/unmerged|not.*merged|ahead|does not match/i.test(out),
@@ -415,7 +441,7 @@ console.log("\nremote rejects the delete:");
 {
 	const sb = makeSandbox("42-feature", { denyDeletes: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "remote delete rejected → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "remote delete rejected → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(remoteBranchExists(sb), "remote delete rejected → remote branch still there (precondition)", out);
 	check(!/Cleanup complete/.test(out), "remote delete rejected → does not claim success", out);
 }
@@ -430,7 +456,7 @@ console.log("\ngh pr list fails, branch already gone from origin:");
 {
 	const sb = makeSandbox("42-feature", { failGhList: true, remoteBranchGone: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "gh pr list fails → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "gh pr list fails → remote/API-failure code (5)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "gh pr list fails → worktree survives", out);
 	check(localBranchExists(sb), "gh pr list fails → local branch survives", out);
 	check(!/Cleanup complete/.test(out), "gh pr list fails → does not claim success", out);
@@ -447,7 +473,7 @@ console.log("\nno merged PR, branch absent from origin:");
 	// unique local commits, nowhere else
 	const sb = makeSandbox("42-feature", { prMerged: false, remoteBranchGone: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "unique local commits → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "unique local commits → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "unique local commits → worktree survives", out);
 	check(localBranchExists(sb), "unique local commits → local branch survives", out);
 	check(/not in origin\/main|nowhere else/i.test(out), "unique local commits → says why", out);
@@ -471,7 +497,7 @@ console.log("\nremote branch advanced after the merge:");
 {
 	const sb = makeSandbox("42-feature", { remoteAdvanced: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "remote advanced → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "remote advanced → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(remoteBranchExists(sb), "remote advanced → remote branch SURVIVES", out);
 	check(fs.existsSync(sb.worktree), "remote advanced → worktree survives (gate is before teardown)", out);
 	check(localBranchExists(sb), "remote advanced → local branch survives", out);
@@ -487,7 +513,7 @@ console.log("\nls-remote fails while verifying the remote tip:");
 {
 	const sb = makeSandbox("42-feature", { failLsRemote: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "ls-remote fails in the merged arm → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "ls-remote fails in the merged arm → remote/API-failure code (5)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "ls-remote fails → worktree survives", out);
 	check(remoteBranchExists(sb), "ls-remote fails → remote branch survives", out);
 	check(localBranchExists(sb), "ls-remote fails → local branch survives", out);
@@ -499,7 +525,7 @@ console.log("\nlocal branch delete blocked by a stale ref lock:");
 {
 	const sb = makeSandbox("42-feature", { staleRefLock: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "branch -D fails → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "branch -D fails → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(localBranchExists(sb), "branch -D fails → branch still exists (precondition)", out);
 	check(!/Cleanup complete/.test(out), "branch -D fails → does not claim success", out);
 }
@@ -544,7 +570,7 @@ console.log("\nno merged PR, branch still on origin:");
 {
 	const sb = makeSandbox("42-feature", { prMerged: false });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "no merged PR → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "no merged PR → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "no merged PR → worktree survives", out);
 	check(localBranchExists(sb), "no merged PR → local branch survives", out);
 }

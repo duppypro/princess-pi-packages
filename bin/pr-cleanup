@@ -27,13 +27,16 @@
 # Exit codes (shared pr-* contract, #224 — full table in
 # docs/dev-workflow-spec.md):
 #   0  success
-#   2  usage error — bad flags/arguments, or a protected branch named explicitly
+#   2  usage error — bad flags/arguments, a protected branch named explicitly,
+#      or not run inside a git repository at all
 #   3  precondition not met — on a protected branch with nothing to discover,
 #      detached HEAD with no branch given, or cwd is inside the worktree this
 #      run would remove (#221)
-#   4  not found — no main/master worktree registered
+#   4  not found — no main/master worktree registered, or no local branch
+#      '$BRANCH' in the main clone (typo'd name, or deleted by hand — #264)
 #   5  remote/API failure — state could NOT be determined (network down, gh
-#      outage, an incomplete API response)
+#      outage, an incomplete API response, or a merge-base check that could
+#      not even run)
 #   6  safety gate refused — state WAS determined, and it says no (unmerged
 #      work, remote moved since the merge, a dirty or EnterWorktree-locked
 #      worktree refusing removal, a rejected push, a ref that will not delete)
@@ -197,9 +200,32 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   PR_NUM=$(echo "$PR_INFO" | jq -r '.number')
   PR_MERGE_SHA=$(echo "$PR_INFO" | jq -r '.mergeCommit.oid // empty')
   PR_HEAD_OID=$(echo "$PR_INFO" | jq -r '.headRefOid // empty')
-  LOCAL_TIP=$(git rev-parse "refs/heads/$BRANCH" 2>/dev/null || git -C "$MAIN_CLONE" rev-parse "refs/heads/$BRANCH")
+  # `-C "$MAIN_CLONE"` alone is sufficient — worktrees share refs/heads, so a
+  # cwd-first attempt buys nothing. Not wrapped in an `if`/`||` fallback: the
+  # fallback's own stderr used to leak and its failure went uncaught under
+  # `set -e`, so a missing local branch (typo'd name, or deleted by hand after
+  # the worktree was already torn down) crashed with git's raw text at exit
+  # 128 — a code outside this script's table (#264/adversarial review of #221).
+  if ! LOCAL_TIP=$(git -C "$MAIN_CLONE" rev-parse --verify -q "refs/heads/$BRANCH"); then
+    echo "   ❌ ERROR: no local branch '$BRANCH' in $MAIN_CLONE." >&2
+    exit 4
+  fi
 
-  if [ -z "$PR_MERGE_SHA" ] || ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$PR_MERGE_SHA" origin/"$PRIMARY_REF" 2>/dev/null; then
+  # See the E-2 note below on the second `--is-ancestor` call: 128 means "could
+  # not check" (bad/absent object) and must not be read the same as 1, "checked,
+  # and it's not an ancestor". An empty $PR_MERGE_SHA never reaches merge-base at
+  # all — that is its own "could not check" and stays folded into the same exit.
+  if [ -z "$PR_MERGE_SHA" ]; then
+    echo "   ❌ ERROR: PR #$PR_NUM is marked merged but reports no merge commit." >&2
+    exit 5
+  fi
+  mb_status=0
+  git -C "$MAIN_CLONE" merge-base --is-ancestor "$PR_MERGE_SHA" origin/"$PRIMARY_REF" 2>/dev/null || mb_status=$?
+  if [ "$mb_status" -eq 128 ]; then
+    echo "   ❌ ERROR: could not check whether PR #$PR_NUM's merge commit is in origin/$PRIMARY_REF (merge-base failed)." >&2
+    exit 5
+  fi
+  if [ "$mb_status" -ne 0 ]; then
     echo "   ❌ ERROR: PR #$PR_NUM is marked merged but its merge commit is not in origin/$PRIMARY_REF." >&2
     exit 6
   fi
@@ -268,8 +294,27 @@ else
     # (Ancestry is the right test *here* precisely because there is no squash
     # commit in play. Where a PR was squash-merged, the branch above handles it
     # via headRefOid — ancestry would wrongly refuse that case.)
-    LOCAL_TIP=$(git rev-parse "refs/heads/$BRANCH" 2>/dev/null || git -C "$MAIN_CLONE" rev-parse "refs/heads/$BRANCH")
-    if ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$LOCAL_TIP" origin/"$PRIMARY_REF" 2>/dev/null; then
+    # `-C "$MAIN_CLONE"` alone is sufficient — worktrees share refs/heads, so a
+    # cwd-first attempt buys nothing. Not wrapped in an `if`/`||` fallback: its
+    # own stderr used to leak and its failure went uncaught under `set -e`, so
+    # a missing local branch crashed with git's raw text at exit 128 — a code
+    # outside this script's table (#264/adversarial review of #221).
+    if ! LOCAL_TIP=$(git -C "$MAIN_CLONE" rev-parse --verify -q "refs/heads/$BRANCH"); then
+      echo "   ❌ ERROR: no local branch '$BRANCH' in $MAIN_CLONE." >&2
+      exit 4
+    fi
+    # `merge-base --is-ancestor` exits 1 for "not an ancestor" (a real, checked
+    # "no") but 128 for a bad/absent object (could not even run the check).
+    # Collapsing both into exit 6 asserted the negative on a check that never
+    # happened. Capture the status explicitly rather than trusting `!` alone —
+    # 128 maps to 5 ("could not check"), 1 stays 6 ("checked, and it says no").
+    mb_status=0
+    git -C "$MAIN_CLONE" merge-base --is-ancestor "$LOCAL_TIP" origin/"$PRIMARY_REF" 2>/dev/null || mb_status=$?
+    if [ "$mb_status" -eq 128 ]; then
+      echo "   ❌ ERROR: could not check whether '$BRANCH' is contained in origin/$PRIMARY_REF (merge-base failed)." >&2
+      exit 5
+    fi
+    if [ "$mb_status" -ne 0 ]; then
       echo "   ❌ ERROR: no merged PR for '$BRANCH', and its commits are not in origin/$PRIMARY_REF." >&2
       echo "   This branch's commits may exist nowhere else — refusing to delete." >&2
       echo "   If the work is genuinely disposable, delete the branch by hand." >&2
@@ -293,7 +338,14 @@ fi
 # straight to branch deletion instead of dead-ending on "nothing to clean up".
 if [ -n "$TARGET_WT" ]; then
   echo "🗑  Removing worktree $TARGET_WT..."
-  if ! git -C "$MAIN_CLONE" worktree remove "$TARGET_WT" 2>/dev/null; then
+  # Capture git's own stderr instead of discarding it: the interpretation
+  # below is a best guess (locked vs. dirty), and #262's whole complaint was
+  # a guessed diagnosis standing in for the real one. Printing git's message
+  # ALONGSIDE the guess lets a permissions problem, a submodule snag, or a
+  # missing directory be told apart from an actually-dirty tree at a glance.
+  if ! WT_REMOVE_ERR=$(git -C "$MAIN_CLONE" worktree remove "$TARGET_WT" 2>&1); then
+    echo "   git says:" >&2
+    echo "$WT_REMOVE_ERR" | sed 's/^/     /' >&2
     if [ "$TARGET_LOCKED" -eq 1 ]; then
       # A locked worktree is not a dirty one — git refuses it for an entirely
       # different reason, most often EnterWorktree holding it open for a live
@@ -306,7 +358,9 @@ if [ -n "$TARGET_WT" ]; then
       echo "     git -C \"$MAIN_CLONE\" worktree unlock \"$TARGET_WT\"" >&2
       echo "     pr-cleanup $BRANCH" >&2
     else
-      echo "   ❌ ERROR: worktree removal refused — it likely has uncommitted or untracked changes." >&2
+      echo "   ❌ ERROR: worktree removal refused — likely has uncommitted or untracked changes," >&2
+      echo "   but see git's message above: a permissions problem, a submodule, or a missing" >&2
+      echo "   directory produces this same failure and needs a different fix." >&2
       echo "   Inspect with: git -C \"$TARGET_WT\" status --short" >&2
       echo "   Then commit, stash, or remove it by hand with --force once you are sure." >&2
     fi
@@ -326,7 +380,17 @@ fi
 # between, the push is REJECTED rather than silently taking their work with it.
 echo "🗑  Deleting remote branch origin/$BRANCH..."
 LEASE=()
-[ -n "${PR_HEAD_OID:-}" ] && LEASE=(--force-with-lease="refs/heads/$BRANCH:$PR_HEAD_OID")
+if [ -n "${PR_HEAD_OID:-}" ]; then
+  LEASE=(--force-with-lease="refs/heads/$BRANCH:$PR_HEAD_OID")
+else
+  # No-merged-PR arm: PR_HEAD_OID is never set here, so this used to push a
+  # bare `--delete` with no lease at all. The gate above proved
+  # origin/$BRANCH was absent at ls-remote time, so pin the delete to exactly
+  # that with the must-not-exist lease form (empty expected value) — a branch
+  # pushed by someone else in the race window between that check and this
+  # push is then REJECTED, not silently swept up (#264/E-3).
+  LEASE=(--force-with-lease="refs/heads/$BRANCH:")
+fi
 if git -C "$MAIN_CLONE" push "${LEASE[@]}" origin --delete "$BRANCH" 2>/dev/null; then
   echo "   ✅ remote branch deleted."
 elif REMAINS=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null); then
