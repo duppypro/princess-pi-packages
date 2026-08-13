@@ -1,28 +1,84 @@
 #!/usr/bin/env bash
+# ---
 # pr-open — create a PR for the current feature branch.
 # Auto-discovers branch from cwd. Ensures pushed, checks pre-conditions,
 # then runs "gh pr create".
+#
+# Push decision (step 3, #223): compares RESOLVED SHAS, not containment.
+# `git merge-base --is-ancestor HEAD "origin/$BRANCH"` used to decide "already
+# pushed", but that predicate tests CONTAINMENT — it is also true when local
+# HEAD is BEHIND origin (local's tip is an ancestor of the remote's, since the
+# remote just has more commits on top). A branch behind origin then skipped
+# the push and opened a PR whose head ref carried another session's commits
+# under this session's PR description. Fixed to `git rev-parse` both sides and
+# push whenever they differ — including when `origin/$BRANCH` doesn't resolve
+# at all (a first push) — and skip ONLY on exact sha equality.
+#
+# Diverged branches (remote ref exists and is not an ancestor of HEAD — a
+# behind, amended, or rebased branch) are refused BEFORE the push is attempted,
+# with pr-open's own message naming `--force-with-lease`, rather than left to
+# `set -euo pipefail` killing the script on git's raw non-fast-forward
+# rejection. The spec endorses force-pushing a feature branch as normal
+# (docs/dev-workflow-spec.md § "Tests reveal a design flaw"), so pr-open must
+# hand the user the exact command, not a crash.
+#
+# Step 2's `git fetch origin` carries `--prune`: without it, a stale
+# `origin/<branch>` left behind by a prior `pr-cleanup` keeps reading as a live
+# remote branch at its last-known sha, and the push decision above is made
+# against a ref that no longer exists upstream.
+#
+# Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md):
+#   0  success
+#   2  usage error
+#   3  precondition not met (protected branch, dirty worktree)
+#   4  not found
+#   5  remote/API failure — state could not be determined (e.g. fetch failed)
+#   6  safety gate refused (diverged branch — declined to auto force-push)
+# 5 vs 6 is the load-bearing distinction: "I could not check" (5) vs "I
+# checked and it says no" (6).
+# ---
 set -euo pipefail
 
 BRANCH=$(git branch --show-current)
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-open: cannot create a PR from '$BRANCH'. Switch to a feature branch." >&2
-  exit 1
+  exit 3
 fi
 
 # 1. Worktree must be clean
 if [ -n "$(git status --porcelain)" ]; then
   echo "pr-open: worktree not clean — commit or stash changes first." >&2
   git status --short
-  exit 1
+  exit 3
 fi
 
-# 2. Fetch to get latest remote state
+# 2. Fetch to get latest remote state. --prune: see header — a deleted
+# upstream branch must stop reading as a live one.
 echo "📡 Fetching origin..."
-git fetch origin
+if ! git fetch origin --prune; then
+  echo "pr-open: could not fetch origin — remote state undetermined." >&2
+  exit 5
+fi
 
-# 3. Ensure branch is pushed
-if ! git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
+# 3. Ensure branch is pushed. Equality on resolved shas, not containment
+# (#223) — see header. REMOTE_SHA is legitimately empty on a first push.
+LOCAL_SHA=$(git rev-parse HEAD)
+# --verify -q: a bare `git rev-parse origin/$BRANCH` on a ref that does not
+# exist still exits non-zero but ALSO echoes the literal arg to stdout — so a
+# plain `2>/dev/null || echo ""` captured "origin/$BRANCH" as the sha on a
+# first push instead of empty. `--verify -q` fails silent on both streams.
+REMOTE_SHA=$(git rev-parse --verify -q "origin/$BRANCH" 2>/dev/null || echo "")
+
+if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+  if [ -n "$REMOTE_SHA" ] && ! git merge-base --is-ancestor "$REMOTE_SHA" "$LOCAL_SHA" 2>/dev/null; then
+    # origin/$BRANCH exists and HEAD does not build on it — a plain push
+    # would be a non-fast-forward. Refuse with pr-open's own message instead
+    # of letting `set -e` surface git's raw rejection mid-flow.
+    echo "pr-open: '$BRANCH' has diverged from origin/$BRANCH — local and remote" >&2
+    echo "  history do not agree (rebase, amend, or another session pushed here)." >&2
+    echo "  Re-run after: git push --force-with-lease origin $BRANCH" >&2
+    exit 6
+  fi
   echo "📡 Pushing $BRANCH to origin..."
   git push origin "$BRANCH"
 fi

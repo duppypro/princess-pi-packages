@@ -1,28 +1,81 @@
 #!/usr/bin/env bash
-# pr-cleanup — delete a merged branch, its remote, and its worktree.
-# Auto-discovers branch and worktree from cwd. Run from the feature
-# worktree AFTER the PR was merged.
+# pr-cleanup [<branch>] — delete a merged branch, its remote, and its worktree.
+#
+# Two invocations:
+#   pr-cleanup            Discover the branch from cwd (today's default
+#                          mechanism). Only reaches a successful cleanup when
+#                          cwd is NOT inside the worktree that run would
+#                          remove — see the containment gate below (#221).
+#   pr-cleanup <branch>   Operate on <branch> without requiring cwd to be a
+#                          feature worktree. THE PRIMARY PATH (#262): a
+#                          session that entered the worktree via EnterWorktree
+#                          cannot complete cleanup from inside it (the
+#                          worktree is locked) or from a plain `cd` back to
+#                          main (nothing to discover from cwd). The supported
+#                          sequence is `ExitWorktree { action: "remove" }`,
+#                          then `pr-cleanup <branch>` from the main clone.
+#                          This also handles "branch exists, worktree already
+#                          removed" (#262 fix 3) — it deletes the local +
+#                          remote branch even when there is no worktree left
+#                          to tear down.
 #
 # Governing rule (#210): every gate fails CLOSED. A check that cannot PROVE its
 # precondition aborts — it never assumes the safe-to-delete case. Each of the
 # three Critical findings on #204 was the same mistake in a different costume:
 # a command failing, and the failure being read as "nothing to worry about."
+#
+# Exit codes (shared pr-* contract, #224 — full table in
+# docs/dev-workflow-spec.md):
+#   0  success
+#   2  usage error — bad flags/arguments, or a protected branch named explicitly
+#   3  precondition not met — on a protected branch with nothing to discover,
+#      detached HEAD with no branch given, or cwd is inside the worktree this
+#      run would remove (#221)
+#   4  not found — no main/master worktree registered
+#   5  remote/API failure — state could NOT be determined (network down, gh
+#      outage, an incomplete API response)
+#   6  safety gate refused — state WAS determined, and it says no (unmerged
+#      work, remote moved since the merge, a dirty or EnterWorktree-locked
+#      worktree refusing removal, a rejected push, a ref that will not delete)
+# The load-bearing distinction is 5 vs 6: "I could not check" vs "I checked
+# and it says no." Collapsing both into a bare `exit 1` is the same fail-open
+# shape #210 removed from the gates themselves — it had just moved to the
+# boundary where callers (agents especially) read the outcome.
 set -euo pipefail
 
-# `pwd` is wherever the human happened to be standing; `git worktree remove`
-# only accepts the registered top level, so running from any subdirectory used
-# to fail after the safety gate had already passed (#210).
-CWD=$(git rev-parse --show-toplevel)
-BRANCH=$(git branch --show-current)
+# --- argument parsing --------------------------------------------------------
+if [ $# -gt 1 ]; then
+  echo "usage: pr-cleanup [<branch>]" >&2
+  exit 2
+fi
+BRANCH_ARG="${1:-}"
 
-if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
-  echo "pr-cleanup: on main — nothing to clean up from here." >&2
-  exit 1
+if [ -n "$BRANCH_ARG" ]; then
+  if [ "$BRANCH_ARG" = "main" ] || [ "$BRANCH_ARG" = "master" ]; then
+    echo "pr-cleanup: refusing to target the protected branch '$BRANCH_ARG'." >&2
+    exit 2
+  fi
+  BRANCH="$BRANCH_ARG"
+else
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "pr-cleanup: not inside a git repository — pass a branch name explicitly: pr-cleanup <branch>" >&2
+    exit 2
+  fi
+  BRANCH=$(git branch --show-current)
+  if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+    echo "pr-cleanup: on '$BRANCH' with no branch given — nothing to discover from here." >&2
+    echo "   Pass a branch explicitly: pr-cleanup <branch>" >&2
+    exit 3
+  fi
+  if [ -z "$BRANCH" ]; then
+    echo "pr-cleanup: cwd is not on any branch (detached HEAD) — pass a branch name explicitly." >&2
+    exit 3
+  fi
 fi
 
 echo "🧹 pr-cleanup for branch '$BRANCH'"
 
-# --- 0. locate the main clone ----------------------------------------------
+# --- 0. locate the main clone AND this branch's worktree (if it still has one)
 # `git worktree list | grep "\[main\]" | awk '{print $1}'` truncated any path
 # containing a space, and parsed human-readable output for machine state — the
 # Agent-First Output standard forbids exactly that. --porcelain is the contract.
@@ -35,32 +88,101 @@ echo "🧹 pr-cleanup for branch '$BRANCH'"
 # `master` here while hard-coding `origin/main` downstream would abort every
 # legitimate cleanup in a master-primary repo, with a message blaming the merge
 # commit — a wrong answer wearing a confident error.
+#
+# The same pass also records TARGET_WT: the worktree (if any) currently
+# checked out onto $BRANCH, and whether git reports it `locked`. Empty
+# TARGET_WT means the worktree is already gone (#262 fix 3) — step 3 below
+# skips straight to branch deletion instead of dead-ending. A locked TARGET_WT
+# is how step 3 tells "EnterWorktree still has this open" apart from "this is
+# genuinely dirty" (#262 fix 1) — those are different problems with different
+# fixes, and misdiagnosing one as the other sends an agent hunting for phantom
+# uncommitted files.
 MAIN_CLONE=""
 PRIMARY_REF=""
+TARGET_WT=""
+TARGET_LOCKED=0
+
 wt_path=""
+wt_branch=""
+wt_locked=0
+
+record_worktree() {
+  if [ -n "$wt_path" ]; then
+    if [ -z "$MAIN_CLONE" ] && { [ "$wt_branch" = "refs/heads/main" ] || [ "$wt_branch" = "refs/heads/master" ]; }; then
+      MAIN_CLONE="$wt_path"
+      PRIMARY_REF="${wt_branch#refs/heads/}"
+    fi
+    if [ "$wt_branch" = "refs/heads/$BRANCH" ]; then
+      TARGET_WT="$wt_path"
+      TARGET_LOCKED=$wt_locked
+    fi
+  fi
+}
+
 while IFS= read -r -d '' line; do
   case "$line" in
-    "worktree "*) wt_path="${line#worktree }" ;;
-    "branch refs/heads/main")   MAIN_CLONE="$wt_path"; PRIMARY_REF="main";   break ;;
-    "branch refs/heads/master") MAIN_CLONE="$wt_path"; PRIMARY_REF="master"; break ;;
+    "worktree "*)
+      record_worktree
+      wt_path="${line#worktree }"
+      wt_branch=""
+      wt_locked=0
+      ;;
+    "branch "*) wt_branch="${line#branch }" ;;
+    "locked"|"locked "*) wt_locked=1 ;;
   esac
 done < <(git worktree list --porcelain -z)
+record_worktree
 
 if [ -z "$MAIN_CLONE" ]; then
   echo "   ❌ ERROR: no main/master worktree found. Switch to the main clone and run from there." >&2
-  exit 1
+  exit 4
+fi
+
+# --- containment gate (#221) -------------------------------------------------
+# Removing the worktree a session is standing in strands that session's own
+# transcript (entering a worktree MOVES the transcript there; only
+# ExitWorktree moves it back — nothing hooks `git worktree remove`). This
+# check is purely local (no network, no `gh`), so it runs before ANY gate that
+# costs an API call — a refusal here should never cost a `git fetch` or a
+# `gh pr list`. Containment, not equality: a nested subdirectory of the
+# worktree counts too, so `pwd -P` is compared as a path prefix, not a string
+# equal to the worktree root.
+if [ -n "$TARGET_WT" ]; then
+  PWD_REAL=$(pwd -P)
+  TARGET_WT_REAL=$( (cd "$TARGET_WT" 2>/dev/null && pwd -P) || printf '%s' "$TARGET_WT" )
+  contained=0
+  if [ "$PWD_REAL" = "$TARGET_WT_REAL" ]; then
+    contained=1
+  else
+    case "$PWD_REAL" in
+      "$TARGET_WT_REAL"/*) contained=1 ;;
+    esac
+  fi
+  if [ "$contained" -eq 1 ]; then
+    echo "   ❌ pr-cleanup: cwd is inside the worktree this run would remove:" >&2
+    echo "      $TARGET_WT" >&2
+    echo "   Removing it out from under yourself strands your own session's transcript." >&2
+    echo "   Recovery:" >&2
+    echo "     1. ExitWorktree { action: \"keep\" }   (or { action: \"remove\" } if supported)" >&2
+    echo "     2. cd into the main clone: $MAIN_CLONE" >&2
+    echo "     3. Re-run: pr-cleanup $BRANCH" >&2
+    exit 3
+  fi
 fi
 
 # --- 1. freshen refs before judging anything -------------------------------
 # origin/main is a local cache; deciding "merged" against a stale one is a guess.
+echo "🔍 Verifying PR for '$BRANCH' was merged..."
 if ! git -C "$MAIN_CLONE" fetch --quiet origin 2>/dev/null; then
   echo "   ❌ ERROR: 'git fetch origin' failed — cannot verify merge state." >&2
-  exit 1
+  exit 5
 fi
 
 # --- 2. safety gate: prove THIS branch tip was merged -----------------------
-echo "🔍 Verifying PR for '$BRANCH' was merged..."
-OWNER=$(gh repo view --json owner --jq '.owner.login')
+if ! OWNER=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null); then
+  echo "   ❌ ERROR: 'gh repo view' failed — cannot determine repository owner." >&2
+  exit 5
+fi
 # `2>/dev/null || true` here would be the same fail-open hole as the ls-remote
 # one below: a gh outage yields an empty PR_INFO, which falls through to the
 # "no merged PR" branch and can reach deletion having verified nothing.
@@ -68,18 +190,18 @@ if ! PR_INFO=$(gh pr list --head "$BRANCH" --state merged \
   --json number,mergeCommit,headRefOid,headRepositoryOwner \
   --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\")] | .[0]"); then
   echo "   ❌ ERROR: 'gh pr list' failed — cannot verify the PR for '$BRANCH'." >&2
-  exit 1
+  exit 5
 fi
 
 if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   PR_NUM=$(echo "$PR_INFO" | jq -r '.number')
   PR_MERGE_SHA=$(echo "$PR_INFO" | jq -r '.mergeCommit.oid // empty')
   PR_HEAD_OID=$(echo "$PR_INFO" | jq -r '.headRefOid // empty')
-  LOCAL_TIP=$(git rev-parse HEAD)
+  LOCAL_TIP=$(git rev-parse "refs/heads/$BRANCH" 2>/dev/null || git -C "$MAIN_CLONE" rev-parse "refs/heads/$BRANCH")
 
   if [ -z "$PR_MERGE_SHA" ] || ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$PR_MERGE_SHA" origin/"$PRIMARY_REF" 2>/dev/null; then
     echo "   ❌ ERROR: PR #$PR_NUM is marked merged but its merge commit is not in origin/$PRIMARY_REF." >&2
-    exit 1
+    exit 6
   fi
 
   # The gate above proves a PR with this branch NAME was merged. It says nothing
@@ -92,14 +214,14 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   # the squash commit and that check would refuse every legitimate cleanup.
   if [ -z "$PR_HEAD_OID" ]; then
     echo "   ❌ ERROR: PR #$PR_NUM reports no headRefOid — cannot tie it to this branch." >&2
-    exit 1
+    exit 5
   fi
   if [ "$LOCAL_TIP" != "$PR_HEAD_OID" ]; then
     echo "   ❌ ERROR: branch tip does not match what PR #$PR_NUM merged — unmerged work present." >&2
     echo "      local tip:      $LOCAL_TIP" >&2
     echo "      PR headRefOid:  $PR_HEAD_OID" >&2
     echo "   Refusing to delete. Open a new PR for the extra commits, or reset the branch." >&2
-    exit 1
+    exit 6
   fi
   # The local tip matching is not enough. Another clone can push to
   # origin/$BRANCH after the PR merged; our tip is untouched, so the check above
@@ -115,7 +237,7 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
   if ! REMOTE_TIP=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null | awk 'NR==1 {print $1}'); then
     echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify the remote tip for '$BRANCH'." >&2
     echo "   Refusing to delete on an unverified remote state." >&2
-    exit 1
+    exit 5
   fi
   if [ -n "$REMOTE_TIP" ] && [ "$REMOTE_TIP" != "$PR_HEAD_OID" ]; then
     echo "   ❌ ERROR: origin/$BRANCH has moved since PR #$PR_NUM merged." >&2
@@ -123,7 +245,7 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
     echo "      PR headRefOid:  $PR_HEAD_OID" >&2
     echo "   Someone pushed after the merge. Those commits are not in any PR —" >&2
     echo "   refusing to delete the remote branch. Fetch and review them first." >&2
-    exit 1
+    exit 6
   fi
   echo "   ✅ PR #$PR_NUM merged into origin/$PRIMARY_REF, and its head matches this branch tip."
 else
@@ -135,7 +257,7 @@ else
   if LS_REMOTE_OUT=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null); then
     if [ -n "$LS_REMOTE_OUT" ]; then
       echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR was found." >&2
-      exit 1
+      exit 6
     fi
     # Absence from origin is NOT authorization. A branch that was never pushed,
     # or whose remote ref was deleted without merging, has no PR and no remote
@@ -146,30 +268,52 @@ else
     # (Ancestry is the right test *here* precisely because there is no squash
     # commit in play. Where a PR was squash-merged, the branch above handles it
     # via headRefOid — ancestry would wrongly refuse that case.)
-    if ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$(git rev-parse HEAD)" origin/"$PRIMARY_REF" 2>/dev/null; then
+    LOCAL_TIP=$(git rev-parse "refs/heads/$BRANCH" 2>/dev/null || git -C "$MAIN_CLONE" rev-parse "refs/heads/$BRANCH")
+    if ! git -C "$MAIN_CLONE" merge-base --is-ancestor "$LOCAL_TIP" origin/"$PRIMARY_REF" 2>/dev/null; then
       echo "   ❌ ERROR: no merged PR for '$BRANCH', and its commits are not in origin/$PRIMARY_REF." >&2
       echo "   This branch's commits may exist nowhere else — refusing to delete." >&2
       echo "   If the work is genuinely disposable, delete the branch by hand." >&2
-      exit 1
+      exit 6
     fi
     echo "   ℹ️  '$BRANCH' not on origin, and its tip is already in origin/$PRIMARY_REF — safe to delete."
   else
     echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify '$BRANCH' on origin." >&2
     echo "   Refusing to delete on an unverified remote state." >&2
-    exit 1
+    exit 5
   fi
 fi
 
-# --- 3. remove this worktree (from the main clone) --------------------------
+# --- 3. remove this branch's worktree, if it still has one ------------------
 # No --force. git refusing a dirty worktree IS the safeguard; the old retry
 # overrode it one line later and destroyed uncommitted work on a routine
 # cleanup (#210). A merged PR says nothing about local-only edits.
-echo "🗑  Removing worktree $CWD..."
-if ! git -C "$MAIN_CLONE" worktree remove "$CWD" 2>/dev/null; then
-  echo "   ❌ ERROR: worktree removal refused — it likely has uncommitted or untracked changes." >&2
-  echo "   Inspect with: git -C \"$CWD\" status --short" >&2
-  echo "   Then commit, stash, or remove it by hand with --force once you are sure." >&2
-  exit 1
+#
+# TARGET_WT empty means the worktree is already gone — the #262 "branch
+# exists, worktree already removed" case. There is nothing to remove; skip
+# straight to branch deletion instead of dead-ending on "nothing to clean up".
+if [ -n "$TARGET_WT" ]; then
+  echo "🗑  Removing worktree $TARGET_WT..."
+  if ! git -C "$MAIN_CLONE" worktree remove "$TARGET_WT" 2>/dev/null; then
+    if [ "$TARGET_LOCKED" -eq 1 ]; then
+      # A locked worktree is not a dirty one — git refuses it for an entirely
+      # different reason, most often EnterWorktree holding it open for a live
+      # session. Reporting this as "likely has uncommitted or untracked
+      # changes" is a wrong diagnosis an agent will act on: it goes hunting for
+      # phantom dirty files instead of looking for the thing that locked it (#262).
+      echo "   ❌ ERROR: worktree removal refused — it is LOCKED, most likely by EnterWorktree" >&2
+      echo "   while a session is still inside it." >&2
+      echo "   Once that session has exited (ExitWorktree), unlock and retry:" >&2
+      echo "     git -C \"$MAIN_CLONE\" worktree unlock \"$TARGET_WT\"" >&2
+      echo "     pr-cleanup $BRANCH" >&2
+    else
+      echo "   ❌ ERROR: worktree removal refused — it likely has uncommitted or untracked changes." >&2
+      echo "   Inspect with: git -C \"$TARGET_WT\" status --short" >&2
+      echo "   Then commit, stash, or remove it by hand with --force once you are sure." >&2
+    fi
+    exit 6
+  fi
+else
+  echo "ℹ️  No worktree registered for '$BRANCH' — already removed. Deleting the branch only."
 fi
 
 # --- 4. delete the remote branch -------------------------------------------
@@ -189,12 +333,12 @@ elif REMAINS=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/nu
   if [ -n "$REMAINS" ]; then
     echo "   ❌ ERROR: failed to delete remote branch origin/$BRANCH — it still exists." >&2
     echo "   The worktree was removed; the branch refs were left intact." >&2
-    exit 1
+    exit 6
   fi
   echo "   ℹ️  Remote branch was already deleted."
 else
   echo "   ❌ ERROR: remote delete failed and 'ls-remote' could not confirm the branch state." >&2
-  exit 1
+  exit 5
 fi
 
 # --- 5. delete the local branch --------------------------------------------
@@ -215,10 +359,16 @@ if ! git -C "$MAIN_CLONE" branch -D "$BRANCH" 2>/dev/null; then
   if git -C "$MAIN_CLONE" show-ref --verify --quiet "refs/heads/$BRANCH"; then
     echo "   ❌ ERROR: failed to delete local branch '$BRANCH' — it still exists." >&2
     echo "   Checked out in another worktree, or a ref lock / permissions problem." >&2
-    exit 1
+    exit 6
   fi
   echo "   ℹ️  Local branch already gone."
 fi
 
-echo "✅ Cleanup complete. Now in $MAIN_CLONE"
-cd "$MAIN_CLONE"
+# A script cannot change its caller's shell — a trailing `cd` here only moves
+# this process, which then exits, and claiming otherwise is simply false
+# (#220). The containment gate above also means, on every documented path,
+# the caller's cwd was never inside the worktree just removed — so unlike the
+# bug this replaces, there is nothing here for a vanished cwd to break. Name
+# where the operator should go; do not pretend to have taken them there.
+echo "✅ Cleanup complete for '$BRANCH'. Main clone: $MAIN_CLONE"
+exit 0
