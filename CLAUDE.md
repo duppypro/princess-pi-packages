@@ -27,7 +27,8 @@ exits 0. `bun run test` runs each suite in its own process. See
 
 ## Shipped scripts
 
-Run `bin/install-workflow-tools` to install all workflow scripts to `~/bin/`.
+Run `bin/install-workflow-tools` to sync this host: scripts → `~/bin/`, guardrail hooks
+(`hooks/`) → `~/.claude/hooks/`. `--check` reports drift and writes nothing.
 Full spec: `docs/dev-workflow-spec.md`.
 
 | Script | Does |

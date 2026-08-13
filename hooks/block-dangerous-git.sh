@@ -17,6 +17,11 @@
 #
 # Canonical source: princess-pi-packages/hooks/block-dangerous-git.sh
 # Install target:  ~/.claude/hooks/block-dangerous-git.sh (Claude Code PreToolUse)
+# Deployed by:     bin/install-workflow-tools — NOT by hand. `--check` reports a
+#   deployed copy that differs, and tests/hooks-deploy-drift.test.ts fails the
+#   suite on it. Editing here without deploying leaves the host ungated: the
+#   copy above sat 56 lines behind this file for weeks (#249/#217), missing
+#   check_gh_command entirely, while the parity test ran this copy and passed.
 # Cross-harness twin: extensions/git-guardrails.ts — keep logic in sync;
 # tests/git-guardrails-parity.test.ts runs the same fixture against both.
 # ---
