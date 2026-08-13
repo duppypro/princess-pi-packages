@@ -44,7 +44,13 @@
 #      This is the code that used to collide with 1: under `set -e`, a failed
 #      `gh api graphql` used to propagate gh's own exit status (usually 1),
 #      indistinguishable from "unresolved threads found". #258 needs 1 vs 5 to
-#      be unambiguous, so every gh call below is now wrapped explicitly.
+#      be unambiguous, so every gh call below is now wrapped explicitly. Also
+#      covers a jq parse failure or a truncated/inconsistent paginated
+#      response (post-#258 finding: a failed `jq` nested inside `$((...))`
+#      does not trip `set -e` — it silently zeroed the count instead of
+#      failing the check. Every jq call in the pagination loop is now wrapped
+#      the same explicit way as the gh calls, and `seen` is reconciled
+#      against `total` after the loop as a second backstop).
 #   3, 6  not used by this script — reserved by the #224 table for other pr-*
 #      scripts (precondition-not-met, safety-gate-refused).
 # ---
@@ -82,6 +88,24 @@ fi
 # warning breaking `jq` downstream on the SUCCESS path too).
 gh_err_file=$(mktemp)
 trap 'rm -f "$gh_err_file"' EXIT
+
+# jq_or_die <outvar> [jq-args...] — run jq against the current page's $json
+# and either populate $outvar or exit 5. A failing command substitution
+# nested inside `$(( ))` does NOT trip `set -e` (bash only checks the
+# arithmetic command's own exit status, not the substitution's) — that gap is
+# exactly what let a partial/null GraphQL page report as a clean, mergeable
+# PR. Every jq call that feeds the pagination loop goes through here instead
+# of being inlined directly into an arithmetic or string expansion.
+jq_or_die() {
+  local __outvar="$1"; shift
+  local __result
+  if ! __result=$(jq "$@" <<<"$json" 2>"$gh_err_file"); then
+    echo "pr-threads: jq failed parsing the API response for $repo #$pr (page $page_num):" >&2
+    cat "$gh_err_file" >&2
+    exit 5
+  fi
+  printf -v "$__outvar" '%s' "$__result"
+}
 
 if [ -z "$repo" ]; then
   if ! repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>"$gh_err_file"); then
@@ -172,33 +196,59 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   # null pullRequest for a missing PR number, so this has to be checked
   # explicitly rather than folded into the wrapper above. Only worth checking
   # on the first page.
+  #
+  # A jq PARSE failure here is a DIFFERENT state than "no such PR" (post-#258
+  # finding): the old `2>/dev/null || echo false` fail-open (the literal #210
+  # anti-pattern) turned a malformed/non-JSON gh response into a false "not
+  # found" (exit 4) — sending a human hunting for a PR that actually exists.
+  # jq failing to parse at all means the check could not run, full stop: 5,
+  # quoting the raw response. Only a jq SUCCESS that evaluates to `false`
+  # means "checked, and there's no such PR": 4.
   if [ "$page_num" -eq 0 ]; then
-    pr_found=$(jq -r '.data.repository.pullRequest != null' <<<"$json" 2>/dev/null || echo false)
-    if [ "$pr_found" != "true" ]; then
+    if ! pr_found_raw=$(jq -r '.data.repository.pullRequest != null' <<<"$json" 2>"$gh_err_file"); then
+      echo "pr-threads: could not parse the API response for $repo #$pr (malformed JSON):" >&2
+      cat "$gh_err_file" >&2
+      echo "raw response was:" >&2
+      echo "$json" >&2
+      exit 5
+    fi
+    if [ "$pr_found_raw" != "true" ]; then
       echo "pr-threads: $repo #$pr not found." >&2
       exit 4
     fi
   fi
 
   if [ "$head_extracted" -eq 0 ]; then
-    head_sha=$(jq -r '.data.repository.pullRequest.headRefOid // empty' <<<"$json")
-    reviews_json=$(jq -c '[.data.repository.pullRequest.reviews.nodes[]? | .commit.oid // empty
-      | select(. != "")]' <<<"$json")
+    jq_or_die head_sha -r '.data.repository.pullRequest.headRefOid // empty'
+    jq_or_die reviews_json -c '[.data.repository.pullRequest.reviews.nodes[]? | .commit.oid // empty
+      | select(. != "")]'
     head_extracted=1
   fi
 
-  total=$(jq '.data.repository.pullRequest.reviewThreads.totalCount' <<<"$json")
+  jq_or_die total -r '.data.repository.pullRequest.reviewThreads.totalCount'
+  # totalCount comes back `null` (not an error) when reviewThreads itself is
+  # null — e.g. a partial API response. Validate it is a real integer here
+  # rather than letting a non-numeric $total blow up later arithmetic or, worse,
+  # compare equal to itself and slip through the post-loop reconciliation.
+  case "$total" in
+    ''|*[!0-9]*)
+      echo "pr-threads: $repo #$pr — reviewThreads.totalCount was not a number ('$total');" >&2
+      echo "  the API response could not be interpreted as a review-thread page." >&2
+      exit 5
+      ;;
+  esac
 
   # Count unresolved threads (one number per THREAD — jq counts the nodes, so
   # the multi-line rendering below cannot influence it)
-  unresolved_count=$((unresolved_count + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
-    | select(.isResolved | not)] | length' <<<"$json")))
+  jq_or_die unresolved_page '[.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved | not)] | length'
+  unresolved_count=$((unresolved_count + unresolved_page))
 
   # …and separately accumulate the human-readable listing
-  page_text=$(jq -r '.data.repository.pullRequest.reviewThreads.nodes[]
+  jq_or_die page_text -r '.data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved | not)
     | .comments.nodes[0]
-    | "  \(.author.login)  \(.path)\n    \(.url)"' <<<"$json")
+    | "  \(.author.login)  \(.path)\n    \(.url)"'
   if [ -n "$page_text" ]; then
     unresolved_text="${unresolved_text}${page_text}
 "
@@ -215,7 +265,7 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   # A thread with more than 100 comments truncates here. Threads that long do not
   # occur in this workflow; if one ever does, the fix is comment pagination, not a
   # larger first:.
-  page_nd=$(jq -c --argjson trusted "$TRUSTED_LOGINS" '
+  jq_or_die page_nd -c --argjson trusted "$TRUSTED_LOGINS" '
     .data.repository.pullRequest.reviewThreads.nodes[]
     | {
         id, isResolved, isOutdated, path, line,
@@ -230,21 +280,36 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
               url
             }
         ]
-      }' <<<"$json")
+      }'
   if [ -n "$page_nd" ]; then
     threads_ndjson="${threads_ndjson}${page_nd}
 "
   fi
 
-  seen=$((seen + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[]] | length' <<<"$json")))
+  jq_or_die seen_page '[.data.repository.pullRequest.reviewThreads.nodes[]] | length'
+  seen=$((seen + seen_page))
 
-  hasNext=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$json")
+  jq_or_die hasNext -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage'
   page_num=$((page_num + 1))
   if [ "$hasNext" != "true" ]; then
     break
   fi
-  after=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<<"$json")
+  jq_or_die after -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor'
 done
+
+# #258 post-merge finding (#4): this loop's own header comment claims "we loop
+# until we've seen totalCount threads", but `seen` was write-only — accumulated
+# every page and never actually compared to `total`. Termination was purely
+# `hasNextPage`. This is the cheapest backstop against a partial page: even if
+# a malformed response somehow produced well-formed-but-truncated pages (so
+# every jq_or_die above succeeds), a `seen` that doesn't match `total` is
+# caught here rather than silently reported as a complete, clean fetch.
+if [ "$seen" -ne "$total" ]; then
+  echo "pr-threads: $repo #$pr — retrieved $seen of $total review threads;" >&2
+  echo "  pagination stopped before the fetch completed. Treating this as" >&2
+  echo "  undetermined state, not a clean result." >&2
+  exit 5
+fi
 
 # --- #254: review coverage of the current head ------------------------------
 # head_known is false only for pre-#254 test fixtures that don't stub

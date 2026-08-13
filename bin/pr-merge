@@ -26,11 +26,13 @@
 #   0  success — merged
 #   2  usage error (not used today — kept for the shared table)
 #   3  precondition not met — on main/master
-#   4  not found — no open PR for this branch, or ambiguous PR selection
+#   4  not found — no open PR for this branch
 #   5  remote/API failure — `gh pr list` (or pr-threads itself) could not
 #      determine state
-#   6  safety gate refused — pr-threads found unresolved threads and/or an
-#      uncovered review head; the merge is refused before the network call
+#   6  safety gate refused — either pr-threads found unresolved threads and/or
+#      an uncovered review head (the merge is refused before the network
+#      call), or PR selection was ambiguous (more than one open PR shares the
+#      branch's head — refusing to guess which one to merge)
 # ---
 set -euo pipefail
 

@@ -76,6 +76,8 @@ interface SandboxOpts {
 	noPr?: boolean;
 	/** stub `gh pr list` itself fails (outage / expired auth) */
 	failGhList?: boolean;
+	/** stub `gh pr list` finds MORE THAN ONE open PR sharing the branch's head — ambiguous selection */
+	multiPr?: boolean;
 }
 
 /** A real git repo with a feature branch — pr-merge only needs `git branch --show-current` to work. */
@@ -94,11 +96,17 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 
 	// --- stub gh: repo view / pr list / pr merge ---
 	const noPr = opts.noPr ?? false;
+	const multiPr = opts.multiPr ?? false;
 	const prJson = opts.failGhList
 		? ""
 		: noPr
 			? "[]"
-			: JSON.stringify([{ number: 42, headRepositoryOwner: { login: "duppypro" } }]);
+			: multiPr
+				? JSON.stringify([
+						{ number: 42, headRepositoryOwner: { login: "duppypro" } },
+						{ number: 43, headRepositoryOwner: { login: "duppypro" } },
+					])
+				: JSON.stringify([{ number: 42, headRepositoryOwner: { login: "duppypro" } }]);
 	const gh = `#!/usr/bin/env bash
 case "$1 $2" in
   "repo view") echo '{"owner":{"login":"duppypro"}}' ;;
@@ -171,7 +179,10 @@ console.log("\nunresolved threads:");
 {
 	const sb = makeSandbox("42-feature", { threadState: "unresolved" });
 	const { code, out } = runPrMerge(sb);
-	check(code !== 0, "unresolved threads → non-zero", `got ${code}, output:\n${out}`);
+	// Pinned to the #224 exit-code table, not just "non-zero" (post-#258
+	// finding: regex-only assertions on stderr prose would stay green even if
+	// 5 and 6 were swapped, or if the wording changed under the reader).
+	check(code === 6, "unresolved threads → exit 6 (safety gate refused)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "unresolved threads → gh pr merge never called", out);
 	check(out.includes("bin/pr-merge"), "unresolved threads → thread path/URL printed", out);
 	check(out.includes("discussion_r"), "unresolved threads → thread URL printed", out);
@@ -197,7 +208,7 @@ console.log("\npr-threads exits broken (gh/API failure, not unresolved):");
 {
 	const sb = makeSandbox("42-feature", { threadState: "broken" });
 	const { code, out } = runPrMerge(sb);
-	check(code !== 0, "pr-threads broken → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "pr-threads broken → exit 5 (remote/API failure)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "pr-threads broken → gh pr merge never called", out);
 	check(
 		/could not verify|cannot verify/i.test(out),
@@ -212,7 +223,7 @@ console.log("\npr-threads missing from PATH entirely:");
 {
 	const sb = makeSandbox("42-feature", { threadState: "missing" });
 	const { code, out } = runPrMerge(sb);
-	check(code !== 0, "pr-threads missing → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "pr-threads missing → exit 5 (remote/API failure)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "pr-threads missing → gh pr merge never called", out);
 	check(
 		/could not verify|cannot verify/i.test(out),
@@ -227,7 +238,7 @@ console.log("\nregression: no open PR (unrelated to the gate):");
 {
 	const sb = makeSandbox("42-feature", { threadState: "clean", noPr: true });
 	const { code, out } = runPrMerge(sb);
-	check(code !== 0, "no open PR → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 4, "no open PR → exit 4 (not found)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "no open PR → gh pr merge never called", out);
 	check(/no open PR/i.test(out), "no open PR → says so", out);
 }
@@ -236,7 +247,7 @@ console.log("\nregression: gh pr list itself fails:");
 {
 	const sb = makeSandbox("42-feature", { threadState: "clean", failGhList: true });
 	const { code, out } = runPrMerge(sb);
-	check(code !== 0, "gh pr list fails → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "gh pr list fails → exit 5 (remote/API failure)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "gh pr list fails → gh pr merge never called", out);
 }
 
@@ -244,9 +255,22 @@ console.log("\nregression: on main refuses before any PR lookup:");
 {
 	const sb = makeSandbox("main", { threadState: "clean" });
 	const { code, out } = runPrMerge(sb);
-	check(code !== 0, "on main → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 3, "on main → exit 3 (precondition not met)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "on main → gh pr merge never called", out);
 	check(/on main/i.test(out), "on main → says so", out);
+}
+
+// 5. Ambiguous PR selection: more than one open PR shares the branch's head.
+//    Untested before this fix (#224 table and pr-merge's own header both say
+//    6 here — the header used to say 4, contradicting both; see bin/pr-merge
+//    header comment history). Refuses to guess, never calls `gh pr merge`.
+console.log("\nregression: ambiguous PR selection (multiple open PRs share the branch):");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", multiPr: true });
+	const { code, out } = runPrMerge(sb);
+	check(code === 6, "ambiguous PR selection → exit 6 (safety gate refused)", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "ambiguous PR selection → gh pr merge never called", out);
+	check(/ambiguous/i.test(out), "ambiguous PR selection → says so", out);
 }
 
 // ---

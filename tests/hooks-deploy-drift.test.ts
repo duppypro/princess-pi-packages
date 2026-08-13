@@ -230,14 +230,28 @@ console.log("hooks deploy + drift gate (#249)");
 // 5c. preedit-reread-check.py (#237) — converts a doomed exact-match edit
 // into an actionable retry instead of the native tool's terse "not found".
 // Same load-bearing-only scope as 5b.
+//
+// HOME is sandboxed here (unlike 5b's block-edit-on-main.sh, which touches no
+// filesystem state outside its own git repos): preedit-reread-check.py
+// self-logs every evaluated decision to ~/.claude/hooks/logs/preedit.jsonl
+// (its own header calls this "the FAITHFUL measurement" read at the next ax
+// retro). Without a HOME override this suite was appending real records to
+// THIS host's live log every run — benign to the host, corrosive to the
+// evidence ax reads later. Every other sandbox in this file already sets
+// HOME; this was the one leak (post-#258 finding).
 {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-preedit-"));
 	const target = path.join(dir, "file.txt");
 	fs.writeFileSync(target, "unique line one\nunique line two\n");
+	const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-preedit-home-"));
 
 	const verdict = (oldString: string): number => {
 		const payload = JSON.stringify({ tool_input: { file_path: target, old_string: oldString, new_string: "x" } });
-		return spawnSync("python3", [TRACKED_PREEDIT_CHECK], { input: payload, encoding: "utf8" }).status ?? -1;
+		return spawnSync("python3", [TRACKED_PREEDIT_CHECK], {
+			input: payload,
+			encoding: "utf8",
+			env: { ...process.env, HOME: tmpHome },
+		}).status ?? -1;
 	};
 
 	check(verdict("does not appear anywhere") === 2, "preedit-reread-check.py blocks an old_string that is absent (exit 2)");
