@@ -20,7 +20,7 @@
 //
 // Run with: bun test install-workflow-tools-self-deploy
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -34,21 +34,63 @@ function freshHome(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "iwt-self-home-"));
 }
 
+// A PATH with every directory intact EXCEPT that jq is unreachable anywhere
+// on it (#267 finding: is_this_repo() used to shell out to jq to read
+// package.json's "name" field, so a host without jq rejected a VALID
+// checkout with a misleading "can't find the repo" — jq's 2>/dev/null'd
+// absence read as a wrong-repo error, not a missing-dependency one). Simply
+// removing jq's directory from PATH would also remove bash/cp/mkdir/etc if
+// they live alongside it (as they do here) and break the harness itself, so
+// this shadows just jq: a fresh directory symlinking every OTHER entry from
+// jq's directory, spliced in ahead of that directory (which is then dropped)
+// so nothing named jq resolves anywhere on the resulting PATH.
+function pathWithoutJq(): string {
+	const parts = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+	const hasJq = (dir: string) => {
+		try {
+			return fs.existsSync(path.join(dir, "jq"));
+		} catch {
+			return false;
+		}
+	};
+	// Drop EVERY PATH entry that resolves a "jq" file, not just the first
+	// match — /bin is commonly a symlink to /usr/bin (as it is here), so both
+	// appear as distinct PATH entries serving the identical binary. Dropping
+	// only the one `command -v` happened to report would leave the other
+	// alias reachable and this whole test would silently not exercise the
+	// jq-absent path it claims to.
+	const jqDirs = parts.filter(hasJq);
+	if (jqDirs.length === 0) return process.env.PATH ?? "";
+	const shadowDir = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-"));
+	for (const entry of fs.readdirSync(jqDirs[0])) {
+		if (entry === "jq") continue;
+		try {
+			fs.symlinkSync(path.join(jqDirs[0], entry), path.join(shadowDir, entry));
+		} catch {
+			// broken symlink target etc — not needed for this test's purposes
+		}
+	}
+	const rest = parts.filter((p) => !jqDirs.includes(p));
+	return [shadowDir, ...rest].join(path.delimiter);
+}
+
 function run(
 	installerPath: string,
 	env: Record<string, string | undefined>,
 	args: string[] = [],
 ): { code: number; out: string } {
-	try {
-		const out = execFileSync("bash", [installerPath, ...args], {
-			encoding: "utf8",
-			env: { ...process.env, ...env },
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		return { code: 0, out };
-	} catch (err: any) {
-		return { code: err?.status ?? -1, out: `${err?.stdout || ""}${err?.stderr || ""}` };
-	}
+	// spawnSync, not execFileSync: execFileSync's return value on a SUCCESSFUL
+	// (exit 0) run is stdout only — stderr is only ever surfaced via the
+	// thrown error's `.stderr`, so a warning the installer prints to stderr on
+	// an otherwise-clean run (e.g. the jq-missing notice) would be silently
+	// dropped from `out` exactly on the success path most likely to emit it.
+	// spawnSync always returns both streams regardless of exit code.
+	const result = spawnSync("bash", [installerPath, ...args], {
+		encoding: "utf8",
+		env: { ...process.env, ...env },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	return { code: result.status ?? -1, out: `${result.stdout || ""}${result.stderr || ""}` };
 }
 
 describe("install-workflow-tools deploys itself (#263)", () => {
@@ -151,5 +193,60 @@ describe("install-workflow-tools deploys itself (#263)", () => {
 		expect(code, out).toBe(0);
 		expect(fs.existsSync(path.join(bin, "pr-open"))).toBe(true);
 		expect(fs.readFileSync(deployed, "utf8")).toBe(INSTALLER_SRC);
+	});
+
+	test("identity check works with jq absent from PATH (#267 finding)", () => {
+		// A valid checkout — bin/, hooks/, package.json naming this repo —
+		// invoked with $0 pointing INTO it (not via INSTALL_WORKFLOW_TOOLS_REPO_DIR,
+		// which would bypass is_this_repo() entirely and defeat the point of
+		// this test). Before the fix, jq's absence made is_this_repo() silently
+		// treat "unknown" as "not this repo" and the installer died claiming it
+		// couldn't find a repo that was right there.
+		const home = freshHome();
+		const fixtureRepo = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-repo-"));
+		fs.mkdirSync(path.join(fixtureRepo, "bin"), { recursive: true });
+		fs.mkdirSync(path.join(fixtureRepo, "hooks"), { recursive: true });
+		fs.writeFileSync(path.join(fixtureRepo, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
+		for (const s of ["git-checkpoint", "git-overview", "pr-open", "pr-merge", "pr-reject", "pr-cleanup", "pr-threads", "install-workflow-tools"]) {
+			fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fixtureRepo, "bin", s));
+		}
+		for (const h of fs.readdirSync(path.join(REPO_ROOT, "hooks")).filter((f) => f.endsWith(".sh") || f.endsWith(".py"))) {
+			fs.copyFileSync(path.join(REPO_ROOT, "hooks", h), path.join(fixtureRepo, "hooks", h));
+		}
+
+		const { code, out } = run(
+			path.join(fixtureRepo, "bin", "install-workflow-tools"),
+			{ HOME: home, PATH: pathWithoutJq(), INSTALL_WORKFLOW_TOOLS_REPO_DIR: undefined },
+		);
+
+		expect(code, out).toBe(0);
+		expect(out).not.toContain("can't find the princess-pi-packages repo");
+		expect(fs.existsSync(path.join(home, "bin", "pr-open"))).toBe(true);
+		// The missing-dependency warning still fires — jq is absent, and the
+		// tools this installer deploys (pr-threads, pr-merge, pr-cleanup) do
+		// need it at runtime even though the installer itself no longer does.
+		expect(out).toContain("jq not found on PATH");
+	});
+
+	test("identity check still rejects $HOME with jq absent from PATH", () => {
+		// Reproduces the exact shape #267 originally exploited: $0 resolved to
+		// ~/bin/install-workflow-tools, so dirname($0)/.. IS $HOME, and an
+		// unrelated ~/hooks (no matching package.json) must still be rejected
+		// — with no ~/git-projects/princess-pi-packages fallback present
+		// either, so there is truly nowhere valid to land. Same jq-free PATH
+		// as the previous test: proves the grep-based replacement still
+		// discriminates real vs. unrelated, not just that it stopped erroring.
+		const home = freshHome();
+		const bin = path.join(home, "bin");
+		fs.mkdirSync(bin, { recursive: true });
+		fs.mkdirSync(path.join(home, "hooks"), { recursive: true }); // unrelated dir, no package.json
+		const deployed = path.join(bin, "install-workflow-tools");
+		fs.copyFileSync(INSTALLER, deployed);
+		fs.chmodSync(deployed, 0o755);
+
+		const { code, out } = run(deployed, { HOME: home, PATH: pathWithoutJq(), INSTALL_WORKFLOW_TOOLS_REPO_DIR: undefined });
+
+		expect(code).toBe(1);
+		expect(out).toContain("can't find the princess-pi-packages repo");
 	});
 });

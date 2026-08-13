@@ -121,10 +121,26 @@ name="${repo##*/}"
 # since it does not change across pages) the head sha and every review's
 # commit — the #254 review-coverage check. The GraphQL API returns max 100
 # per page for reviewThreads; we loop until we've seen totalCount threads.
-# `reviews` is fetched first:100 without its own pagination — a PR with more
-# than 100 reviews does not occur in this workflow; the fix if one ever does
-# is review pagination, not a bigger `first:` (same call as the existing
-# 100-comments-per-thread cap below).
+#
+# `reviews` is fetched `last: 100` — deliberately the TAIL of the connection,
+# not the head — without its own cursor pagination (macroscopeapp finding on
+# PR #267, rated High): a PR can accumulate more than 100 reviews over its
+# life (a bot re-reviewing every push adds up fast), and `first: 100` reads
+# the OLDEST 100 — on a PR past that count, the review that actually covers
+# the CURRENT head is exactly the one most likely to be missing, which turned
+# a review-coverage gate that should pass into one that wrongly blocks
+# (fails closed — an availability bug, not a safety hole, but a real one).
+# `last: 100` is sufficient without full pagination because of how the
+# connection is ordered and how heads move: the GraphQL `reviews` connection
+# is returned in submission order (oldest first), and any review that covers
+# the CURRENT head must have been SUBMITTED at or after that head was pushed
+# — so it cannot be older than every review of every prior head. That makes
+# it impossible for a head-covering review to fall outside the newest 100,
+# UNLESS the PR has had over 100 reviews submitted against that SAME head
+# since it became current (re-review churn without a new commit) — a
+# vanishingly unlikely shape for this workflow, same class of edge case as
+# the 100-comments-per-thread cap below. If that shape is ever hit in
+# practice, the fix is cursor pagination on `reviews`, not a bigger `last:`.
 #
 # The count is tallied as an integer, deliberately kept separate from the text
 # we print (#211). It used to be `${#unresolved[@]}` over an array built by
@@ -157,7 +173,7 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
       headRefOid
-      reviews(first: 100) {
+      reviews(last: 100) {
         nodes {
           commit { oid }
           submittedAt

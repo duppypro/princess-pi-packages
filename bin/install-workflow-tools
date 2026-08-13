@@ -42,14 +42,25 @@ set -euo pipefail
 # marker any OTHER directory (including $HOME) is vanishingly unlikely to
 # share by accident, and rejecting $HOME falls out of that as a side effect
 # rather than being the rule itself.
+#
+# grep, not jq (second macroscopeapp finding on the same PR, rated High):
+# this is the BOOTSTRAP tool — the first thing run on a fresh host, and the
+# thing that puts every other script (including the ones that genuinely do
+# need jq) onto PATH. Requiring jq just to recognize a valid checkout is a
+# chicken-and-egg a fresh host may not have crossed yet. The old `jq -r
+# '.name // empty' ... 2>/dev/null` also silently swallowed jq's absence: a
+# missing jq quietly became name="" here, which then reported as "can't find
+# the princess-pi-packages repo" — a misdiagnosis of a VALID checkout, same
+# anti-pattern as #262's phantom-dirty-files message. A plain anchored grep
+# on the "name" line needs nothing beyond POSIX text tools, already a hard
+# dependency of this script, and preserves the exact rejection this check
+# exists for (a bare bin/+hooks/ pair, e.g. $HOME with an unrelated ~/hooks).
 is_this_repo() {
   local candidate="$1"
   [ -d "$candidate/bin" ] || return 1
   [ -d "$candidate/hooks" ] || return 1
   [ -f "$candidate/package.json" ] || return 1
-  local name
-  name=$(jq -r '.name // empty' "$candidate/package.json" 2>/dev/null)
-  [ "$name" = "princess-pi-packages" ]
+  grep -Eq '"name"[[:space:]]*:[[:space:]]*"princess-pi-packages"' "$candidate/package.json" 2>/dev/null
 }
 resolve_repo_dir() {
   if [ -n "${INSTALL_WORKFLOW_TOOLS_REPO_DIR:-}" ]; then
@@ -78,6 +89,21 @@ if [ -z "$REPO_DIR" ]; then
 fi
 INSTALL_DIR="$HOME/bin"
 HOOKS_DIR="$HOME/.claude/hooks"
+
+# This installer no longer needs jq itself (see is_this_repo() above), but
+# most of what it DEPLOYS does: pr-threads, pr-merge, and pr-cleanup all lean
+# on it heavily to parse `gh`'s GraphQL/JSON output. A host that reaches this
+# point without jq will get every script placed on PATH successfully and then
+# hit a confusing failure the first time one of them runs — check it here,
+# explicitly and by name, rather than let that surface as an unrelated error
+# three tools downstream. Warn, don't block: installing the scripts is still
+# useful even before jq is installed, and this is the bootstrap tool — failing
+# it over a dependency it doesn't itself need would recreate the same
+# chicken-and-egg this fix removed from the identity check.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "⚠ jq not found on PATH — pr-threads, pr-merge, and pr-cleanup require it at runtime." >&2
+  echo "  Install it (e.g. 'apt install jq' / 'brew install jq') before using those tools." >&2
+fi
 
 MODE=install
 case "${1:-}" in

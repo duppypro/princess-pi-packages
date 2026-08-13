@@ -299,6 +299,87 @@ console.log("\nlegacy fixture with no head/review data at all:");
 	check(doc?.reviewedHead === false, "legacy shape --json → reviewedHead: false (not true, not unknown)", JSON.stringify(doc));
 }
 
+// 7. >100 reviews on a PR (#267 finding, rated High): `reviews` is fetched
+//    without cursor pagination, so which ~100 reviews the GraphQL API hands
+//    back depends entirely on `first:` vs `last:` in the query — this stub
+//    harness can't execute that query text, so each case below feeds the
+//    fixture EXACTLY what the real API would return under each argument,
+//    to isolate the effect of that one choice.
+//
+// The GraphQL `reviews` connection returns submissions oldest-first. Any
+// review covering the CURRENT head must have been submitted at or after that
+// head was pushed, so it cannot be older than reviews of every prior head —
+// making it impossible for a head-covering review to be excluded by `last:
+// 100` (the newest 100) under normal (non-force-push) operation, while
+// `first: 100` (the oldest 100) drops it the moment total reviews exceed 100.
+console.log("\n>100 reviews on the PR (#267):");
+{
+	// 150 reviews submitted over the PR's life; the current head's covering
+	// review is the very last one submitted (index 149, the common case: the
+	// most recent push got the most recent review).
+	const allCommits = Array.from({ length: 150 }, (_, i) => `c${String(i).padStart(4, "0")}`);
+	const headSha = allCommits[149];
+
+	// 7a. What `reviews(first: 100)` (the OLD, buggy query) would have hand
+	//     back: the oldest 100 — commit index 149 is not among them. This is
+	//     the reported defect reproduced: a review DOES cover the current
+	//     head, but the query never even fetched it, so pr-threads reports no
+	//     coverage and blocks a merge that should be clean.
+	const firstHundred = page({ headRefOid: headSha, reviewCommits: allCommits.slice(0, 100), unresolvedThreads: 0 });
+	{
+		const { code, out } = runPrThreads([firstHundred]);
+		check(
+			code !== 0,
+			">100 reviews, head covered but only oldest 100 fetched (first:100 shape) → wrongly blocks",
+			`got ${code}, output:\n${out}`,
+		);
+		const doc = parse(runPrThreads([firstHundred], ["1", "--json"]).out);
+		check(
+			doc?.reviewedHead === false,
+			">100 reviews, first:100 shape → reviewedHead: false (the bug: a covering review exists but wasn't in the fetched page)",
+			JSON.stringify(doc),
+		);
+	}
+
+	// 7b. What `reviews(last: 100)` (the FIX applied to bin/pr-threads) hands
+	//     back: the newest 100 — commit index 149 IS among them (it's the
+	//     newest of all). Same underlying data, same script, only the slice
+	//     of the connection changes — proving `last: 100` alone resolves the
+	//     defect without needing full cursor pagination.
+	const lastHundred = page({ headRefOid: headSha, reviewCommits: allCommits.slice(50, 150), unresolvedThreads: 0 });
+	{
+		const { code, out } = runPrThreads([lastHundred]);
+		check(
+			code === 0,
+			">100 reviews, head covered and newest 100 fetched (last:100 shape) → correctly clean",
+			`got ${code}, output:\n${out}`,
+		);
+		check(out.includes("✅"), ">100 reviews, last:100 shape → prints the authorizing ✅", out);
+		const doc = parse(runPrThreads([lastHundred], ["1", "--json"]).out);
+		check(doc?.reviewedHead === true, ">100 reviews, last:100 shape → reviewedHead: true", JSON.stringify(doc));
+		check(doc?.latestReviewCommit === headSha, ">100 reviews, last:100 shape → latestReviewCommit is the head", JSON.stringify(doc));
+	}
+
+	// 7c. Sanity check on the actual deployed query: confirms bin/pr-threads
+	//     itself asks for `last: 100`, not `first: 100` — a source-text pin so
+	//     a future edit can't silently revert the fix while 7a/7b keep passing
+	//     against hand-fed fixtures that no longer reflect what the script
+	//     really requests.
+	const src = fs.readFileSync(PR_THREADS, "utf8");
+	check(/reviews\(last:\s*100\)/.test(src), "bin/pr-threads requests reviews(last: 100), not first:100", src.match(/reviews\([^)]*\)/)?.[0]);
+}
+//
+// Known, deliberately unhandled edge: a force-push that REVERTS the head to
+// a commit SHA already reviewed more than 100 reviews ago, with 100+ more
+// reviews submitted against later heads in between. `last: 100` would miss
+// that old review too — but reaching that shape requires a force-push revert
+// to an old commit in a workflow that otherwise always advances forward, and
+// even then the "coverage" it would have proven is a review of a stale
+// snapshot from long before the intervening history. Not constructed here
+// because it does not occur in this workflow (same standard this file
+// already applies to the 100-comments-per-thread and 100-reviews-flat caps);
+// the fix if it ever does is cursor pagination on `reviews`, not this test.
+
 // ---
 
 console.log(
