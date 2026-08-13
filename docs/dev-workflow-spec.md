@@ -64,19 +64,82 @@ they live in this repo's `CLAUDE.md`, not here, because they can be violated in 
 agent's very first tool call, before it has read anything else. This section covers the
 mechanics once a branch exists.
 
-All worktrees for a repo `~/git-projects/<repo>` live at
-`~/git-projects/worktrees/<repo>/<branch-name>/` — **never inside the clone**. In-tree
-worktrees caused a real cascade: a dirty `git status` needing `.gitignore`/`info/exclude`
-patches, search tools blind to worktree files, dotted paths breaking session tooling.
-One central `worktrees/` parent also gives a single sweep point for stale-workspace
-audits.
+All worktrees for a repo live **inside its clone**, at
+`~/git-projects/<repo>/.claude/worktrees/<branch-name>/`. This is Claude Code's native
+layout, and the tool trusts exactly that one path — which is the whole reason the
+convention follows it rather than the other way round.
 
-**How (Claude Code):** `EnterWorktree` without a path hard-codes creation under
-`.claude/worktrees/` — never let it create. Instead: (1) from the main clone,
-`git worktree add ~/git-projects/worktrees/<repo>/<branch> -b <branch>`; (2)
-`EnterWorktree { path: ... }` to switch the session in; (3) `ExitWorktree` cannot remove
-a path-entered worktree — exit with `action: "keep"`. Teardown is a separate step
-(below), not something `ExitWorktree` does for you.
+**How (Claude Code):** the short path is `EnterWorktree { name: <branch> }` — it creates
+the worktree in the right place and switches the session in, with no prompt. By hand,
+from the clone, the two cases take different commands and mixing them up fails:
+
+| situation | command |
+|---|---|
+| branch does not exist yet | `git worktree add .claude/worktrees/<branch> -b <branch>` |
+| branch already exists (pushed earlier, or from another machine) | `git worktree add .claude/worktrees/<branch> <branch>` |
+
+`-b` *creates* — it fails outright if the branch is already there. Without `-b` the final
+argument is the existing branch to check out. Then `EnterWorktree { path: ... }` to switch
+in. Either way `ExitWorktree` with `action: "keep"` leaves the worktree on disk; teardown
+is a separate step (below), not something `ExitWorktree` does for you.
+
+In the `-b` form, add **no start-point ref** after `<branch>`. Appending `origin/main`
+looks harmless and is not: it sets the new branch's upstream to `origin/main`, and
+`git-checkpoint`'s bare `git push` then refuses to push a branch to a differently-named
+upstream — every checkpoint commits and then fails at the push.
+
+The reason the *absence* of a start point is safe rather than merely less wrong is
+`push.autoSetupRemote=true` (set globally on this host): a branch with **no** upstream
+gets the correct one created on its first bare push. A start point defeats exactly that
+by supplying a wrong upstream up front, which leaves nothing for autoSetupRemote to fill
+in. Recovery either way — and on any host lacking that setting — is
+`git push -u origin <branch>`, which the guardrail hook allows: it blocks by push
+*destination*, and a feature branch is not `main`.
+
+**The one cost, and it is a footgun rather than an inconvenience:** a nested checkout
+sits inside the clone, and `git-checkpoint` runs `git add -A`. `.gitignore` carries
+`.claude/worktrees/` for that reason, and `tests/worktree-location-convention.test.ts`
+gates it — including the part that is easy to get wrong, that the ignore must live in the
+**tracked** `.gitignore` and not in a per-clone `.git/info/exclude` that no other machine
+inherits.
+
+### Why this reverses the out-of-tree rule (#257)
+
+From #139 until 2026-08-12 the rule was the exact opposite: worktrees at
+`~/git-projects/worktrees/<repo>/<branch>/`, never inside the clone. It was reversed on
+measurement, so the measurements stay here.
+
+What out-of-tree cost, every day:
+
+- **A permission-root relocation prompt on every first entry.** `EnterWorktree` in
+  `permissions.allow` does not cover it — the tool is allowed, the root move is asked
+  separately. `permissions.additionalDirectories` does not suppress it either (tested
+  live; the prompt still appeared).
+- **Worktree→worktree switching refused outright** — a hard error, not a prompt, because
+  the target was not under the clone's `.claude/worktrees`. Hopping branches meant
+  `ExitWorktree {keep}` → `EnterWorktree`, an out-and-back through the launch directory.
+- **A standing "never let `EnterWorktree` create" rule**, which existed only because the
+  layout disagreed with the tool's.
+
+What in-tree was recorded as costing — the "cascade" this section used to assert — versus
+what it measures as:
+
+| recorded harm | measured 2026-08-12 |
+|---|---|
+| dirty `git status` needing ignore patches | Real, and the only real one. One tracked `.gitignore` line closes it. |
+| search tools blind to worktree files from the clone root | Cuts both ways, and the other way is worse: *un*-ignored, `rg`/`fd` from the clone root return one hit per worktree for every file and an agent edits the wrong copy. `rg` inside a worktree is unaffected either way. |
+| dotted paths breaking session tooling | **Falsified.** Residue is layout-independent: both in-tree project dirs and 5 of 7 out-of-tree ones held a stale `wtft-tags/` and no transcript. One *stranded transcript* was found — under the out-of-tree layout. Stranding tracks removing a worktree with a session inside (step 0 below), not path shape. |
+| loss of one central sweep point | `~/git-projects/*/.claude/worktrees/*` globs fine. |
+
+In-tree also makes session-display compaction *exact* rather than a guess:
+`extensions/lib/session-path-shortener.ts` splits the in-tree slug on the literal
+`--claude-worktrees-` marker, while the out-of-tree slug is lossy enough that it has to
+guess where `<repo>` ends and `<branch>` begins.
+
+**Road not taken — symlink `<clone>/.claude/worktrees/<branch>` at an out-of-tree
+directory.** Would keep files physically outside the clone while presenting a path Claude
+Code trusts, if its check is a string prefix rather than a realpath. Moot once the files
+move in-tree, and it would have added a layer whose only job was to lie about a location.
 
 **Merging a branch's PRs IS the authorization to remove its worktree.** Worktrees are
 1:1 with branches. Once every PR raised from a branch is merged, tear the worktree down
@@ -116,6 +179,13 @@ both its lookup paths (physical location, last-recorded cwd) point at a path tha
 gone. The session becomes invisible until someone exits the worktree — impossible from a
 directory that doesn't exist. Symptom: a session you're *currently in* doesn't show up
 in the session picker. Recovery is `ExitWorktree { action: "keep" }`.
+
+Moving worktrees in-tree (#257) changed nothing here, which was checked rather than
+assumed. The mechanism keys on the directory ceasing to exist, not on its name, and the
+in-tree slug is the *motivating* case for session discovery — `tests/wtft-issue-144-145-
+164-session-discovery.test.ts` V2 gates `.claude/worktrees` encoding to the double-dash
+form and discovering a session filed under it. The one stranded transcript this repo has
+actually produced was under the out-of-tree layout.
 
 `pr-cleanup` currently has a known gap here (#221) — it can remove the worktree its own
 session is inside, stranding the transcript the same way. Fixed there, not duplicated

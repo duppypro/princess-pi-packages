@@ -96,7 +96,7 @@ export function buildDisplayPath(
 /** The in-tree worktree layout leaves this literal marker in the slug. */
 const IN_TREE_WORKTREE_MARKER = "--claude-worktrees-";
 
-/** The out-of-tree layout is ~/git-projects/worktrees/<repo>/<branch>. */
+/** The out-of-tree layout was ~/git-projects/worktrees/<repo>/<branch>. */
 const OUT_OF_TREE_WORKTREE_PREFIX = "worktrees-";
 
 /**
@@ -104,8 +104,12 @@ const OUT_OF_TREE_WORKTREE_PREFIX = "worktrees-";
  * its repo rather than as an unrelated project with a very long name.
  *
  * Both layouts this machine has used collapse to the same shape:
- *   <repo>--claude-worktrees-<branch>   (in-tree, the old .claude/worktrees/)
- *   worktrees-<repo>-<branch>           (out-of-tree, the current standard)
+ *   <repo>--claude-worktrees-<branch>   (in-tree .claude/worktrees/ — the standard, #257)
+ *   worktrees-<repo>-<branch>           (out-of-tree — retired, sessions survive)
+ *
+ * Both arms stay: the standard reversed twice (in-tree → out-of-tree at #139,
+ * back at #257), and sessions recorded under either slug are still on disk.
+ * Dropping an arm would not break discovery, only render those rows long.
  *
  * The in-tree split is on a literal marker and is exact. The out-of-tree one
  * cannot be: the slug is lossy, so `<repo>` and `<branch>` are separated by a
@@ -113,7 +117,8 @@ const OUT_OF_TREE_WORKTREE_PREFIX = "worktrees-";
  * all-digit segment — the `<issue#>` that opens every branch name under this
  * repo's `<issue#>-<slug>` naming standard — and leaves the string untouched
  * when there is none. Deliberately a *display* heuristic: being wrong costs an
- * uglier row, never a missing session.
+ * uglier row, never a missing session. That the surviving standard is the
+ * exact arm rather than the guessing one is a small dividend of #257.
  */
 function compactWorktreeProject(projectName: string): string {
 	const marker = projectName.indexOf(IN_TREE_WORKTREE_MARKER);
