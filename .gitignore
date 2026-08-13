@@ -12,6 +12,14 @@ node_modules
 # (even with --no-save) — ignore it so it can't dirty the tree or get committed.
 package-lock.json
 
+# Worktrees live in-tree at .claude/worktrees/<branch> (#257) — Claude Code's native
+# layout, the only one it enters without a permission-root prompt. That puts a full
+# nested checkout inside the clone, and `git-checkpoint` runs `git add -A`, so without
+# this line every checkpoint would commit the whole repo a second time. The pattern was
+# already in .git/info/exclude on the machine where #257 was written — untracked,
+# per-clone, and therefore protection nobody else inherits. Tracked is the point.
+.claude/worktrees/
+
 debug/
 sessions/
 *.log
