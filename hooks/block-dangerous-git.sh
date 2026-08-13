@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ---
 # Block dangerous git commands — branch-aware AND push-target-aware (#70, #74)
-#   Always block: checkout ., restore ., clean -f/-fd (discard work, any branch)
+#   Always block: checkout ., restore ., clean -f/-fd, worktree remove --force/-f
+#     (discard work, any branch — #225 gap 2: `worktree remove` alone was
+#     entirely unguarded, and teardown is meant to be confirm-first per
+#     ~/git-projects/CLAUDE.md § Worktree Teardown. Plain `remove` stays
+#     allowed — git's own refusal on a dirty tree is the safeguard there.)
 #   Block on main/master only: push whose DESTINATION ref is main/master,
 #     bare push / reset --hard when the affected repo is on main/master,
 #     branch -D main/master.
@@ -563,6 +567,28 @@ check_git_subcommand() {
           -*f*) block "discards untracked files (forced git clean, always blocked)." ;;
         esac
       done
+      ;;
+    # `worktree remove --force` discards uncommitted/untracked work in the
+    # worktree unconditionally — same class as `clean -f` above (#225 gap 2).
+    # Scoped to the `remove` subcommand only: `worktree add --force` overrides
+    # git's "already checked out elsewhere" refusal, not a data-loss guard, so
+    # it stays unblocked. Plain `worktree remove` (no force) also stays
+    # allowed — git itself refuses on a dirty tree; that refusal is the
+    # existing safeguard (#210's reasoning in pr-cleanup).
+    worktree)
+      local tok5 wt_removing=0
+      for tok5 in "${T[@]:$i}"; do
+        [ "$tok5" = "remove" ] && wt_removing=1
+      done
+      if [ "$wt_removing" = 1 ]; then
+        for tok5 in "${T[@]:$i}"; do
+          case "$tok5" in
+            --force) block "discards uncommitted work (forced git worktree remove, always blocked)." ;;
+            --*) ;;
+            -*f*) block "discards uncommitted work (forced git worktree remove, always blocked)." ;;
+          esac
+        done
+      fi
       ;;
   esac
   return 0

@@ -931,6 +931,41 @@
       "why": "#208/#105 inverse: a REAL single-quoted region keeps $( ) literal — must stay allowed",
       "pre74": "block",
       "pre74_class": "greedy-push-regex"
+    },
+    {
+      "id": "block-worktree-remove-force",
+      "command": "git worktree remove --force .claude/worktrees/foo",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#225 gap 2: `worktree remove --force` discards uncommitted/untracked work unconditionally, same class as `clean -f` — previously entirely unguarded (`rg -c worktree hooks/block-dangerous-git.sh` was 0)"
+    },
+    {
+      "id": "block-worktree-remove-short-f",
+      "command": "git worktree remove -f .claude/worktrees/foo",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#225 gap 2: short-flag spelling of the same force-remove must be caught too"
+    },
+    {
+      "id": "allow-worktree-remove-plain",
+      "command": "git worktree remove .claude/worktrees/foo",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#225 gap 2 implementation step 3: plain `remove` (no force) stays allowed — git's own refusal on a dirty tree is the existing safeguard (#210's reasoning in pr-cleanup)"
+    },
+    {
+      "id": "allow-worktree-add-force",
+      "command": "git worktree add -f .claude/worktrees/foo somebranch",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#225 gap 2 scoping: `worktree add --force` overrides git's \"already checked out elsewhere\" refusal, not a data-loss guard — only `remove --force` is gated"
+    },
+    {
+      "id": "allow-opaque-script-invocation-hides-git-push",
+      "command": "git-checkpoint \"wip\"",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#225 gap 3 (documented, NOT fixed): the hook only inspects the Bash tool's literal command string. `git-checkpoint`'s body (git add -A; git commit; git push) is invisible to it — the guard never even resolves the branch, since the first token isn't 'git' or 'gh'. This is a load-bearing bypass, not a bug: pr-open and git-checkpoint depend on being opaque script names to run at all. A future 'fix' that tries to peek into script files would break the workflow this fixture exists to protect."
     }
   ]
 }

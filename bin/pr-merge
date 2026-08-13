@@ -1,6 +1,37 @@
 #!/usr/bin/env bash
 # pr-merge [<branch>] — squash-merge the PR for a feature branch.
 # Defaults to the current branch. Human-only command.
+#
+# --- #258: gated on pr-threads before the network call -----------------
+# `pr-threads` has been the documented scriptable merge gate since #232, and
+# nothing called it — pr-merge went straight to `gh pr merge --squash` and let
+# the server's required_review_thread_resolution ruleset be the one to say no.
+# The server is still the enforcement (current_user_can_bypass: never); this
+# gate exists so the human finds out WHAT is blocking and WHERE the unresolved
+# threads are, before a raw "rule violation" API error sends them hunting.
+#
+# No override flag: the server refuses regardless, so a flag here would only
+# buy a slower failure. `pr-open` does not get this check — opening a PR with
+# unresolved threads from an earlier review is normal.
+#
+# Fails CLOSED (#210's governing rule, applied via pr-threads' own exit
+# contract — see bin/pr-threads header): pr-threads exit 1 means "checked, and
+# it says no" — print the details and refuse to merge. Any OTHER non-zero exit
+# (2/4/5 — usage error, PR not found, gh/API failure) means the check itself
+# could not run, and pr-merge aborts just as hard, but says so differently: it
+# could not verify, not that it found a problem.
+# ---
+#
+# --- Exit codes (#224 table) ---
+#   0  success — merged
+#   2  usage error (not used today — kept for the shared table)
+#   3  precondition not met — on main/master
+#   4  not found — no open PR for this branch, or ambiguous PR selection
+#   5  remote/API failure — `gh pr list` (or pr-threads itself) could not
+#      determine state
+#   6  safety gate refused — pr-threads found unresolved threads and/or an
+#      uncovered review head; the merge is refused before the network call
+# ---
 set -euo pipefail
 
 # The advertised `pr-merge <branch>` form used to be a lie: BRANCH was hardcoded
@@ -11,7 +42,7 @@ BRANCH="${1:-$(git branch --show-current)}"
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-merge: on main — pass a branch name or switch to a feature worktree." >&2
   echo "  pr-merge <branch>" >&2
-  exit 1
+  exit 3
 fi
 
 # --- select the PR ---------------------------------------------------------
@@ -19,7 +50,10 @@ fi
 # with the same branch name is an equal candidate and `.[0]` could squash-merge
 # a stranger's PR (#209). Constrain to head branches in OUR OWN repo, and refuse
 # rather than guess when more than one survives.
-OWNER=$(gh repo view --json owner --jq '.owner.login')
+if ! OWNER=$(gh repo view --json owner --jq '.owner.login'); then
+  echo "pr-merge: 'gh repo view' failed — cannot determine the repo owner." >&2
+  exit 5
+fi
 # No `2>/dev/null || true` here: it would make a network outage, expired auth or
 # API error indistinguishable from "no PR found", and send the user hunting for
 # a missing PR instead of showing them the actual error. Fail loudly instead.
@@ -27,7 +61,7 @@ if ! CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
   --json number,headRepositoryOwner \
   --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv"); then
   echo "pr-merge: 'gh pr list' failed — cannot determine the PR for '$BRANCH'." >&2
-  exit 1
+  exit 5
 fi
 
 # shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
@@ -35,15 +69,40 @@ PRS=($CANDIDATES)
 
 if [ "${#PRS[@]}" -eq 0 ]; then
   echo "pr-merge: no open PR found for branch '$BRANCH' in $OWNER's repo." >&2
-  exit 1
+  exit 4
 fi
 if [ "${#PRS[@]}" -gt 1 ]; then
   echo "pr-merge: ambiguous — ${#PRS[@]} open PRs share head branch '$BRANCH':" >&2
   for p in "${PRS[@]}"; do echo "  #$p" >&2; done
   echo "  Refusing to guess. Merge the intended one via 'gh pr merge <N> --squash'." >&2
-  exit 1
+  exit 6
 fi
 PR="${PRS[0]}"
+
+# --- #258: pr-threads gate, reusing the PR number resolved above -----------
+# pr-threads' exit codes are documented in its own header: 0 = clean, 1 =
+# checked-and-found-a-problem (unresolved threads and/or an uncovered review
+# head), anything else = the check itself could not run. Only 1 gets the
+# "here is what to fix" framing; everything else gets "could not verify".
+set +e
+THREAD_OUTPUT=$(pr-threads "$PR" 2>&1)
+THREAD_STATUS=$?
+set -e
+
+if [ "$THREAD_STATUS" -eq 1 ]; then
+  echo "❌ pr-merge: PR #$PR is not clear to merge — pr-threads found unresolved" >&2
+  echo "   threads and/or a review that doesn't cover the current head:" >&2
+  echo "$THREAD_OUTPUT" | sed 's/^/   /' >&2
+  echo "   The server ruleset (required_review_thread_resolution) will refuse this" >&2
+  echo "   merge too — there is no override flag here." >&2
+  exit 6
+elif [ "$THREAD_STATUS" -ne 0 ]; then
+  echo "⚠️  pr-merge: could not verify review state for PR #$PR — pr-threads exited" >&2
+  echo "   $THREAD_STATUS (not 'found a problem', the check itself failed). Aborting" >&2
+  echo "   rather than merging blind:" >&2
+  echo "$THREAD_OUTPUT" | sed 's/^/   /' >&2
+  exit 5
+fi
 
 echo "🔀 Squash-merging PR #$PR (branch: $BRANCH)..."
 gh pr merge "$PR" --squash

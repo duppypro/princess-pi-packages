@@ -23,11 +23,18 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
 const HOOKS_SRC = path.join(REPO_ROOT, "hooks");
 const TRACKED_GIT_HOOK = path.join(HOOKS_SRC, "block-dangerous-git.sh");
+const TRACKED_MAIN_GUARD = path.join(HOOKS_SRC, "block-edit-on-main.sh");
+const TRACKED_PREEDIT_CHECK = path.join(HOOKS_SRC, "preedit-reread-check.py");
 
-/** Every tracked hook — read from disk, so a new hook is covered without editing this test. */
+/**
+ * Every tracked hook — read from disk, so a new hook is covered without
+ * editing this test. `.sh` and `.py` only (#237): hooks/ is a flat dir of
+ * PreToolUse scripts, not a place for support files like `logs/` (which is
+ * runtime output, not source, and never lives in the repo).
+ */
 const TRACKED_HOOKS = fs
 	.readdirSync(HOOKS_SRC)
-	.filter((f) => f.endsWith(".sh"))
+	.filter((f) => f.endsWith(".sh") || f.endsWith(".py"))
 	.sort();
 
 let failures = 0;
@@ -93,8 +100,10 @@ console.log("hooks deploy + drift gate (#249)");
 	const { code, out } = run(home, ["--check"]);
 
 	check(code === 1, "--check with nothing deployed → exit 1", `got ${code}, out:\n${out}`);
-	check(out.includes("block-dangerous-git.sh"), "--check names the missing hook", out);
-	check(!fs.existsSync(path.join(home, ".claude", "hooks", "block-dangerous-git.sh")), "--check deployed nothing", out);
+	for (const hook of TRACKED_HOOKS) {
+		check(out.includes(hook), `--check names the missing hook '${hook}'`, out);
+		check(!fs.existsSync(path.join(home, ".claude", "hooks", hook)), `--check deployed nothing for '${hook}'`, out);
+	}
 	check(!fs.existsSync(path.join(home, "bin", "pr-open")), "--check installed no bin scripts either", out);
 }
 
@@ -178,7 +187,9 @@ console.log("hooks deploy + drift gate (#249)");
 
 	const install = runFake();
 	check(install.code !== 0, "install with a hook missing from source → nonzero exit", `got ${install.code}, out:\n${install.out}`);
-	check(install.out.includes("block-dangerous-git.sh"), "install names the hook missing from source", install.out);
+	for (const hook of TRACKED_HOOKS) {
+		check(install.out.includes(hook), `install names '${hook}' missing from source`, install.out);
+	}
 
 	const checked = runFake(["--check"]);
 	check(checked.code === 1, "--check with a hook missing from source → exit 1, not 'in sync'", `got ${checked.code}, out:\n${checked.out}`);
@@ -195,11 +206,53 @@ console.log("hooks deploy + drift gate (#249)");
 	check(res.status === 2, "tracked hook blocks `gh pr merge 5 --squash` (exit 2)", `got ${res.status}: ${res.stdout}${res.stderr}`);
 }
 
-// 6. THIS host. Compare against the hook `settings.json` actually wires, not an
-//    assumed path — a host that wires the repo copy directly is in sync by
+// 5b. block-edit-on-main.sh (#237) — the enforcement behind the HARD GATE
+// that feature work starts on a branch. Load-bearing load-bearing cases only
+// (full matrix is in #237's issue body); a deploy-drift suite's job is
+// "does the tracked copy still gate", not re-proving every #237 edge case.
+{
+	const mainRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-main-"));
+	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: mainRepo });
+	const featRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-feat-"));
+	execFileSync("git", ["init", "-q", "-b", "42-slug"], { cwd: featRepo });
+	const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-nonrepo-"));
+
+	const verdict = (filePath: string, cwd: string): number => {
+		const payload = JSON.stringify({ tool_input: { file_path: filePath }, cwd });
+		return spawnSync("bash", [TRACKED_MAIN_GUARD], { input: payload, encoding: "utf8" }).status ?? -1;
+	};
+
+	check(verdict(path.join(mainRepo, "f.txt"), mainRepo) === 2, "block-edit-on-main.sh blocks an edit inside a repo on 'main' (exit 2)");
+	check(verdict(path.join(featRepo, "f.txt"), featRepo) === 0, "block-edit-on-main.sh allows an edit inside a repo on a feature branch (exit 0)");
+	check(verdict(path.join(nonRepo, "f.txt"), nonRepo) === 0, "block-edit-on-main.sh allows an edit outside any git work tree (exit 0)");
+}
+
+// 5c. preedit-reread-check.py (#237) — converts a doomed exact-match edit
+// into an actionable retry instead of the native tool's terse "not found".
+// Same load-bearing-only scope as 5b.
+{
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-preedit-"));
+	const target = path.join(dir, "file.txt");
+	fs.writeFileSync(target, "unique line one\nunique line two\n");
+
+	const verdict = (oldString: string): number => {
+		const payload = JSON.stringify({ tool_input: { file_path: target, old_string: oldString, new_string: "x" } });
+		return spawnSync("python3", [TRACKED_PREEDIT_CHECK], { input: payload, encoding: "utf8" }).status ?? -1;
+	};
+
+	check(verdict("does not appear anywhere") === 2, "preedit-reread-check.py blocks an old_string that is absent (exit 2)");
+	check(verdict("unique line one") === 0, "preedit-reread-check.py allows an old_string present exactly once (exit 0)");
+}
+
+// 6. THIS host. Compare against the hooks `settings.json` actually wires, not
+//    an assumed path — a host that wires the repo copy directly is in sync by
 //    construction, and a host that wires nothing is disarmed no matter what
 //    sits in ~/.claude/hooks. Skipped only where there is no Claude Code
-//    config at all (then there is no PreToolUse hook to be behind).
+//    config at all (then there is no PreToolUse hook to be behind). Loops
+//    every tracked hook (#237 brought block-edit-on-main.sh and
+//    preedit-reread-check.py in alongside block-dangerous-git.sh) so a hook
+//    that stops being wired, or drifts on just THIS host, is caught the same
+//    way the original #249 gap was.
 {
 	const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
 	if (!fs.existsSync(settingsPath)) {
@@ -209,18 +262,22 @@ console.log("hooks deploy + drift gate (#249)");
 		const commands: string[] = (settings?.hooks?.PreToolUse ?? []).flatMap((entry: any) =>
 			(entry?.hooks ?? []).map((h: any) => String(h?.command ?? "")),
 		);
-		const wired = commands.find((c) => c.includes("block-dangerous-git.sh"));
-		check(wired !== undefined, "settings.json wires block-dangerous-git.sh as a PreToolUse hook", `PreToolUse commands: ${commands.join(" | ")}`);
 
-		if (wired) {
-			const match = wired.match(/(\S*block-dangerous-git\.sh)/);
-			const wiredPath = (match?.[1] ?? "").replace(/^~/, os.homedir());
-			const live = fs.existsSync(wiredPath) ? fs.readFileSync(wiredPath, "utf8") : null;
-			check(
-				live === fs.readFileSync(TRACKED_GIT_HOOK, "utf8"),
-				"the hook this host actually runs matches hooks/block-dangerous-git.sh",
-				`${wiredPath} is ${live === null ? "MISSING" : "BEHIND/AHEAD of"} source — the merge gate may be disarmed.\nFix: bin/install-workflow-tools`,
-			);
+		for (const hook of TRACKED_HOOKS) {
+			const escaped = hook.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			const wired = commands.find((c) => c.includes(hook));
+			check(wired !== undefined, `settings.json wires ${hook} as a PreToolUse hook`, `PreToolUse commands: ${commands.join(" | ")}`);
+
+			if (wired) {
+				const match = wired.match(new RegExp(`(\\S*${escaped})`));
+				const wiredPath = (match?.[1] ?? "").replace(/^~/, os.homedir());
+				const live = fs.existsSync(wiredPath) ? fs.readFileSync(wiredPath, "utf8") : null;
+				check(
+					live === fs.readFileSync(path.join(HOOKS_SRC, hook), "utf8"),
+					`the ${hook} this host actually runs matches hooks/${hook}`,
+					`${wiredPath} is ${live === null ? "MISSING" : "BEHIND/AHEAD of"} source — the guardrail may be disarmed.\nFix: bin/install-workflow-tools`,
+				);
+			}
 		}
 	}
 }

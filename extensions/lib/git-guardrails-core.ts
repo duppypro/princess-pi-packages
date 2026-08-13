@@ -535,6 +535,20 @@ function checkGitSubcommand(T: string[], start: number, hookCwd: string): string
       }
     }
   }
+  // `worktree remove --force` discards uncommitted/untracked work in the
+  // worktree unconditionally — same class as `clean -f` above (#225 gap 2).
+  // Scoped to the `remove` subcommand only: `worktree add --force` overrides
+  // git's "already checked out elsewhere" refusal, not a data-loss guard, so
+  // it stays unblocked. Plain `worktree remove` (no force) also stays
+  // allowed — git itself refuses on a dirty tree; that refusal is the
+  // existing safeguard (#210's reasoning in pr-cleanup).
+  if (cmd === "worktree" && rest.includes("remove")) {
+    for (const t of rest) {
+      if (t === "--force" || (t.startsWith("-") && !t.startsWith("--") && t.includes("f"))) {
+        return "discards uncommitted work (forced git worktree remove, always blocked).";
+      }
+    }
+  }
   return null;
 }
 

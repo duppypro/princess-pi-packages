@@ -1,20 +1,52 @@
 #!/usr/bin/env bash
 # ---
-# pr-threads <pr#> [owner/repo] [--json] — review-conversation state for a PR.
-# Green light (✅, exit 0) when nothing is unresolved; otherwise lists each
-# unresolved thread's file and URL and exits 1 (scriptable as a merge-gate check).
+# pr-threads <pr#> [owner/repo] [--json] — review state for a PR: unresolved
+# conversations AND whether any review actually covers the current head.
 #
-# Why: `gh pr view` has no unresolved-conversation field — thread resolution
-# state only exists in the GraphQL API. Pairs with the ruleset rule
-# required_review_thread_resolution (princess-pi-packages ruleset 18684693).
+# Green light (✅, exit 0) only when BOTH are true: nothing unresolved, and
+# either a review covers the current head or the PR has never been reviewed at
+# all (nothing to gate on yet). Otherwise prints the unresolved threads and/or
+# a review-coverage warning, and exits 1 — scriptable as a merge-gate check.
+#
+# Why the coverage half exists (#254): zero unresolved threads used to be one
+# output wearing two different states — "reviewer looked at this head and had
+# nothing to say" and "reviewer has never seen this head". A bot that reviews
+# once per PR (not once per push) means the commits most likely to need a
+# second look — the ones written in response to a finding — are exactly the
+# ones that escaped the gate. `head` and `reviewedHead` close that gap.
+#
+# Why the thread half exists: `gh pr view` has no unresolved-conversation
+# field — thread resolution state only exists in the GraphQL API. Pairs with
+# the ruleset rule required_review_thread_resolution (ruleset 18684693).
 #
 # --json (#232) emits one `pr-threads/list@1` document with the thread ids and
 # comment bodies an agent needs to ACT on a review, instead of scraping the HTML
-# behind the URL. Exit codes and human output are unchanged — it is additive, so
-# the merge gate above keeps working untouched.
+# behind the URL. #254 added three top-level fields to the SAME document: head,
+# reviewedHead, latestReviewCommit — see docs/dev-workflow-spec.md.
 #
 # Contract, including the trust boundary the `trusted` field exists to serve:
 # docs/dev-workflow-spec.md § `pr-threads --json`.
+#
+# --- Exit codes ---
+# pr-threads predates the #224 shared table and reserves exit 1 specially,
+# outside that table, because #258's pr-merge gate depends on distinguishing
+# it from every other failure:
+#
+#   0  clean — nothing unresolved, and head is either reviewed or never
+#      reviewed by anyone.
+#   1  NOT clean, but the check itself SUCCEEDED — unresolved threads and/or
+#      no review covers the current head. This is "look at the output", never
+#      "broken". #258's pr-merge treats this as the one code that means print
+#      details and refuse to merge, not abort-in-confusion.
+#   2  usage error (bad flag).
+#   4  not found — no such PR (or repo) at all.
+#   5  remote/API failure — gh itself failed; state could NOT be determined.
+#      This is the code that used to collide with 1: under `set -e`, a failed
+#      `gh api graphql` used to propagate gh's own exit status (usually 1),
+#      indistinguishable from "unresolved threads found". #258 needs 1 vs 5 to
+#      be unambiguous, so every gh call below is now wrapped explicitly.
+#   3, 6  not used by this script — reserved by the #224 table for other pr-*
+#      scripts (precondition-not-met, safety-gate-refused).
 # ---
 set -euo pipefail
 
@@ -40,13 +72,35 @@ for arg in "$@"; do
       ;;
   esac
 done
-: "${pr:?usage: pr-threads <pr#> [owner/repo] [--json]}"
-[ -n "$repo" ] || repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+if [ -z "$pr" ]; then
+  echo "usage: pr-threads <pr#> [owner/repo] [--json]" >&2
+  exit 2
+fi
+
+# stderr from wrapped gh calls lands here so a failure can be reported without
+# corrupting the JSON captured on stdout (mixing 2>&1 would risk a stray gh
+# warning breaking `jq` downstream on the SUCCESS path too).
+gh_err_file=$(mktemp)
+trap 'rm -f "$gh_err_file"' EXIT
+
+if [ -z "$repo" ]; then
+  if ! repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>"$gh_err_file"); then
+    echo "pr-threads: could not determine repo (gh repo view failed):" >&2
+    cat "$gh_err_file" >&2
+    exit 5
+  fi
+fi
 owner="${repo%%/*}"
 name="${repo##*/}"
 
-# Fetch ALL review threads with pagination. The GraphQL API returns max 100 per
-# page; we loop until we've seen totalCount threads.
+# Fetch ALL review threads with pagination, plus (on the first page only,
+# since it does not change across pages) the head sha and every review's
+# commit — the #254 review-coverage check. The GraphQL API returns max 100
+# per page for reviewThreads; we loop until we've seen totalCount threads.
+# `reviews` is fetched first:100 without its own pagination — a PR with more
+# than 100 reviews does not occur in this workflow; the fix if one ever does
+# is review pagination, not a bigger `first:` (same call as the existing
+# 100-comments-per-thread cap below).
 #
 # The count is tallied as an integer, deliberately kept separate from the text
 # we print (#211). It used to be `${#unresolved[@]}` over an array built by
@@ -65,15 +119,26 @@ threads_ndjson=""
 after="null"
 seen=0
 total=0
+head_sha=""
+head_extracted=0
+reviews_json="[]"
+page_num=0
 
 while true; do
-  json=$(gh api graphql \
+  if ! json=$(gh api graphql \
     -F owner="$owner" -F name="$name" -F pr="$pr" \
     -F after="$after" \
     -f query='
 query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
+      headRefOid
+      reviews(first: 100) {
+        nodes {
+          commit { oid }
+          submittedAt
+        }
+      }
       reviewThreads(first: 100, after: $after) {
         totalCount
         pageInfo { hasNextPage endCursor }
@@ -97,7 +162,30 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
       }
     }
   }
-}')
+}' 2>"$gh_err_file"); then
+    echo "pr-threads: gh api graphql failed for $repo #$pr:" >&2
+    cat "$gh_err_file" >&2
+    exit 5
+  fi
+
+  # Not-found is not a gh-command failure — GitHub returns HTTP 200 with a
+  # null pullRequest for a missing PR number, so this has to be checked
+  # explicitly rather than folded into the wrapper above. Only worth checking
+  # on the first page.
+  if [ "$page_num" -eq 0 ]; then
+    pr_found=$(jq -r '.data.repository.pullRequest != null' <<<"$json" 2>/dev/null || echo false)
+    if [ "$pr_found" != "true" ]; then
+      echo "pr-threads: $repo #$pr not found." >&2
+      exit 4
+    fi
+  fi
+
+  if [ "$head_extracted" -eq 0 ]; then
+    head_sha=$(jq -r '.data.repository.pullRequest.headRefOid // empty' <<<"$json")
+    reviews_json=$(jq -c '[.data.repository.pullRequest.reviews.nodes[]? | .commit.oid // empty
+      | select(. != "")]' <<<"$json")
+    head_extracted=1
+  fi
 
   total=$(jq '.data.repository.pullRequest.reviewThreads.totalCount' <<<"$json")
 
@@ -151,37 +239,103 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   seen=$((seen + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[]] | length' <<<"$json")))
 
   hasNext=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$json")
+  page_num=$((page_num + 1))
   if [ "$hasNext" != "true" ]; then
     break
   fi
   after=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<<"$json")
 done
 
-# --json short-circuits both human branches: one document on stdout, nothing else,
-# and the SAME exit code the gate has always returned.
+# --- #254: review coverage of the current head ------------------------------
+# head_known is false only for pre-#254 test fixtures that don't stub
+# headRefOid at all — the real GraphQL API always returns it. In that legacy
+# case we fall back to the old thread-only behaviour rather than guessing.
+head_known=false
+[ -n "$head_sha" ] && head_known=true
+
+reviewed_head=false
+if $head_known; then
+  reviewed_head=$(jq -r --arg h "$head_sha" 'index($h) != null' <<<"$reviews_json")
+fi
+
+no_reviews=$(jq -r 'length == 0' <<<"$reviews_json")
+latest_review_commit=$(jq -r '.[-1] // empty' <<<"$reviews_json")
+
+# review_blocked: a reviewer HAS looked at this PR, just not at this head —
+# the dotfiles-doctor#11 case. This blocks (exit 1) because it is a
+# determined bad state, not an indeterminate one.
+#
+# review_advisory: nobody has EVER reviewed this PR. Treated as "nothing to
+# gate on" rather than blocking, so a repo with no review bot installed does
+# not have every PR permanently stuck at non-zero. See this script's header
+# and docs/dev-workflow-spec.md for the reasoning; #254 left this as an open
+# design question and this is the resolution.
+review_blocked=false
+review_advisory=false
+if $head_known && [ "$reviewed_head" != "true" ]; then
+  if [ "$no_reviews" = "true" ]; then
+    review_advisory=true
+  else
+    review_blocked=true
+  fi
+fi
+
+head_short="${head_sha:0:7}"
+latest_review_short="${latest_review_commit:0:7}"
+head_suffix=""
+$head_known && head_suffix=" @ $head_short"
+
+# --json short-circuits both human branches: one document on stdout, nothing else.
 if [ "$json_mode" -eq 1 ]; then
   printf '%s' "$threads_ndjson" | jq -s -c \
     --arg repo "$repo" \
     --argjson pr "$pr" \
     --argjson total "$total" \
     --argjson unresolved "$unresolved_count" \
+    --arg head "$head_sha" \
+    --argjson reviewedHead "$reviewed_head" \
+    --arg latestReviewCommit "$latest_review_commit" \
     '{
       schema: "pr-threads/list@1",
       repo: $repo,
       pr: $pr,
       totalCount: $total,
       unresolvedCount: $unresolved,
+      head: ($head | if . == "" then null else . end),
+      reviewedHead: $reviewedHead,
+      latestReviewCommit: ($latestReviewCommit | if . == "" then null else . end),
       threads: .
     }'
-  [ "$unresolved_count" -eq 0 ] && exit 0
+  if [ "$unresolved_count" -eq 0 ] && ! $review_blocked; then
+    exit 0
+  fi
   exit 1
 fi
 
 if [ "$unresolved_count" -eq 0 ]; then
-  echo "✅ $repo #$pr — 0 unresolved conversations ($total total, all resolved)"
+  if $review_blocked; then
+    if [ -n "$latest_review_commit" ]; then
+      echo "⚠️  $repo #$pr — 0 unresolved conversations ($total total), but no review covers head $head_short (latest review: $latest_review_short)"
+    else
+      echo "⚠️  $repo #$pr — 0 unresolved conversations ($total total), but no review covers head $head_short"
+    fi
+    exit 1
+  fi
+  if $review_advisory; then
+    echo "ℹ️  $repo #$pr — 0 unresolved conversations ($total total, all resolved)$head_suffix; no reviews recorded yet — nothing to gate on"
+    exit 0
+  fi
+  echo "✅ $repo #$pr — 0 unresolved conversations ($total total, all resolved)$head_suffix"
   exit 0
 fi
 
-echo "❌ $repo #$pr — $unresolved_count unresolved conversation(s):"
+echo "❌ $repo #$pr — $unresolved_count unresolved conversation(s)$head_suffix:"
 printf '%s' "$unresolved_text"
+if $review_blocked; then
+  if [ -n "$latest_review_commit" ]; then
+    echo "⚠️  additionally, no review covers head $head_short (latest review: $latest_review_short)"
+  else
+    echo "⚠️  additionally, no review covers head $head_short"
+  fi
+fi
 exit 1
