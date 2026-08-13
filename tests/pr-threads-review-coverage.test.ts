@@ -58,6 +58,12 @@ interface FixtureOpts {
 	reviewCommits?: string[];
 	/** commit oids of PENDING (unsubmitted draft) reviews — submittedAt: null */
 	pendingReviewCommits?: string[];
+	/**
+	 * count of SUBMITTED reviews whose `commit` is null (macroscopeapp finding
+	 * on PR #267): the review happened but which commit it covers cannot be
+	 * resolved — a force-pushed-over or GC'd object, typically.
+	 */
+	nullCommitReviews?: number;
 	unresolvedThreads?: number;
 	totalThreads?: number;
 	/** omit reviews/headRefOid entirely — the pre-#254 fixture shape */
@@ -105,6 +111,10 @@ function page(opts: FixtureOpts = {}): string {
 				...(opts.pendingReviewCommits ?? []).map((oid) => ({
 					commit: { oid },
 					submittedAt: null,
+				})),
+				...Array.from({ length: opts.nullCommitReviews ?? 0 }, (_, i) => ({
+					commit: null,
+					submittedAt: `2026-08-2${i}T00:00:00Z`,
 				})),
 			],
 		};
@@ -379,6 +389,130 @@ console.log("\n>100 reviews on the PR (#267):");
 // because it does not occur in this workflow (same standard this file
 // already applies to the 100-comments-per-thread and 100-reviews-flat caps);
 // the fix if it ever does is cursor pagination on `reviews`, not this test.
+
+// 8. macroscopeapp finding on PR #267 (rated High): a SUBMITTED review whose
+//    `commit` is null used to be silently dropped by the `.commit.oid //
+//    empty` map, and if that emptied reviews_json entirely, the script took
+//    the ADVISORY exit-0 path even though a review DID happen — a fail-open
+//    ("could not determine coverage" reported as "nothing to determine").
+//    Four states, exact exit codes per the #224 precedent this script
+//    already follows (not `!== 0` — a wrong-but-nonzero code would pass that
+//    assertion just as easily as the right one):
+console.log("\n#267 null-commit review coverage (exact exit codes):");
+
+// 8a. Coverage PROVEN despite a null-commit review elsewhere: some OTHER
+//     submitted review has a usable oid that matches head. The null-commit
+//     review must not veto proof that already exists — exit 0, unchanged.
+{
+	const p = page({
+		headRefOid: "fa8a8fb",
+		reviewCommits: ["fa8a8fb"],
+		nullCommitReviews: 1,
+		unresolvedThreads: 0,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 0, "proven-despite-a-null → exit 0 exactly", `got ${code}, output:\n${out}`);
+	check(out.includes("✅"), "proven-despite-a-null → prints the authorizing ✅", out);
+
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.reviewedHead === true, "proven-despite-a-null --json → reviewedHead: true", JSON.stringify(doc));
+	check(
+		doc?.nullCommitReviewCount === 1,
+		"proven-despite-a-null --json → nullCommitReviewCount still reported (1)",
+		JSON.stringify(doc),
+	);
+}
+
+// 8b. INDETERMINATE: the only submitted review(s) have no resolvable commit,
+//     and nothing else proves coverage. Distinct from both "no reviews exist"
+//     (advisory, 0) and "reviews exist but none covers head" (blocking, 1) —
+//     #210's undetermined-state rule says this is exit 5, never a permissive 0.
+{
+	const p = page({ headRefOid: "fa8a8fb", reviewCommits: [], nullCommitReviews: 1, unresolvedThreads: 0 });
+	const { code, out } = runPrThreads([p]);
+	check(code === 5, "indeterminate (only null-commit review) → exit 5 exactly", `got ${code}, output:\n${out}`);
+	check(!out.includes("✅"), "indeterminate → withholds the authorizing ✅", out);
+	check(!/no reviews recorded/i.test(out), "indeterminate → does NOT say 'no reviews' (one did happen)", out);
+	check(
+		/could not determine|indeterminate/i.test(out),
+		"indeterminate → message names the actual state, not 'no reviews' or 'stale'",
+		out,
+	);
+	check(/1 submitted review/.test(out), "indeterminate → message gives the count", out);
+
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.reviewedHead === false, "indeterminate --json → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.nullCommitReviewCount === 1, "indeterminate --json → nullCommitReviewCount: 1", JSON.stringify(doc));
+}
+
+// 8b'. Indeterminate wins over "blocking" when BOTH a stale usable-oid review
+//      AND a null-commit review exist, neither covering head: the coverage
+//      question genuinely cannot be resolved from what's fetchable, so this
+//      must not silently collapse into the more confident-sounding "blocked".
+{
+	const p = page({
+		headRefOid: "fa8a8fb",
+		reviewCommits: ["1284eaf"],
+		nullCommitReviews: 1,
+		unresolvedThreads: 0,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 5, "stale review + null-commit review → exit 5 exactly (indeterminate wins)", `got ${code}, output:\n${out}`);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.nullCommitReviewCount === 1, "stale + null-commit --json → nullCommitReviewCount: 1", JSON.stringify(doc));
+}
+
+// 8c. BLOCKING, precisely: reviews exist, all with usable oids, none matches
+//     head, and no null-commit reviews at all — exit 1 exactly (this is
+//     already covered loosely by case 1 above; pinned here to an EXACT code
+//     alongside its 5/0 siblings so the four states are provable side by side).
+{
+	const p = page({ headRefOid: "fa8a8fb", reviewCommits: ["1284eaf"], unresolvedThreads: 0 });
+	const { code, out } = runPrThreads([p]);
+	check(code === 1, "blocking (stale review, no nulls) → exit 1 exactly", `got ${code}, output:\n${out}`);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.nullCommitReviewCount === 0, "blocking --json → nullCommitReviewCount: 0", JSON.stringify(doc));
+}
+
+// 8d. ADVISORY, precisely: zero submitted reviews at all, no null-commit ones
+//     either — exit 0 exactly (already covered loosely by case 3; pinned here
+//     to an EXACT code for the same side-by-side reason as 8c).
+{
+	const p = page({ headRefOid: "fa8a8fb", reviewCommits: [], unresolvedThreads: 0 });
+	const { code, out } = runPrThreads([p]);
+	check(code === 0, "advisory (zero reviews, no nulls) → exit 0 exactly", `got ${code}, output:\n${out}`);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.nullCommitReviewCount === 0, "advisory --json → nullCommitReviewCount: 0", JSON.stringify(doc));
+}
+
+// 8e. Unresolved threads are a determined bad state on their own — they win
+//     the exit code (1) even when coverage is ALSO indeterminate, but the
+//     indeterminate warning still gets printed alongside the thread listing
+//     rather than silently dropped.
+{
+	const p = page({
+		headRefOid: "fa8a8fb",
+		reviewCommits: [],
+		nullCommitReviews: 1,
+		unresolvedThreads: 1,
+		totalThreads: 1,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 1, "unresolved threads + indeterminate coverage → exit 1 exactly (threads dominate)", `got ${code}, output:\n${out}`);
+	check(/\b1 unresolved conversation\(s\)/.test(out), "unresolved + indeterminate → still reports thread count", out);
+	check(
+		/could not|indeterminate/i.test(out),
+		"unresolved + indeterminate → still surfaces the coverage warning",
+		out,
+	);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.unresolvedCount === 1, "unresolved + indeterminate --json → unresolvedCount: 1", JSON.stringify(doc));
+	check(
+		doc?.nullCommitReviewCount === 1,
+		"unresolved + indeterminate --json → nullCommitReviewCount still reported",
+		JSON.stringify(doc),
+	);
+}
 
 // ---
 

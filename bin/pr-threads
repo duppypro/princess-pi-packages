@@ -51,6 +51,19 @@
 #      failing the check. Every jq call in the pagination loop is now wrapped
 #      the same explicit way as the gh calls, and `seen` is reconciled
 #      against `total` after the loop as a second backstop).
+#      Also covers review COVERAGE being indeterminate rather than merely
+#      "not proven" — a SUBMITTED review whose `commit` is null (macroscopeapp
+#      finding on PR #267, rated High): the review happened, but which commit
+#      it covers cannot be resolved (typically a force-pushed-over or GC'd
+#      commit). That is not the same fact as "no reviews exist" (which is
+#      genuinely advisory, exit 0) or "reviews exist, none match head" (which
+#      is a determined bad state, exit 1) — it is "coverage could not be
+#      checked", which belongs with every other undetermined-state case on
+#      this list, never folded into the exit-0 advisory path. See the
+#      reviews_json/null_commit_review_count comment below for the full rule,
+#      including the one case where a null-commit review does NOT block: some
+#      OTHER submitted review with a usable commit already proves coverage of
+#      the current head.
 #   3, 6  not used by this script — reserved by the #224 table for other pr-*
 #      scripts (precondition-not-met, safety-gate-refused).
 # ---
@@ -162,6 +175,7 @@ total=0
 head_sha=""
 head_extracted=0
 reviews_json="[]"
+null_commit_review_count=0
 page_num=0
 
 while true; do
@@ -244,6 +258,33 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
       | select(.submittedAt != null)
       | .commit.oid // empty
       | select(. != "")]'
+    # macroscopeapp finding on PR #267 (rated High): a SUBMITTED review whose
+    # `commit` is null — real but uncommon; typically a review whose commit no
+    # longer resolves (force-push, GC'd object) — was silently dropped by the
+    # `.commit.oid // empty` map above. If that emptied reviews_json entirely,
+    # `no_reviews` downstream read `true` and the script took the ADVISORY
+    # exit-0 path ("nobody has ever reviewed this PR") even though a review
+    # DID happen and its coverage is simply unresolvable — a fail-open in the
+    # merge gate: "could not determine coverage" reported as "nothing to
+    # determine". Count these separately instead of just dropping them.
+    #
+    # The obvious fix — `.commit.oid // error(...)` — aborts the ENTIRE run
+    # (exit 5) the instant ANY submitted review has an unresolvable commit,
+    # even one buried deep in history that current coverage does not depend
+    # on. That is fail-closed but over-broad: coverage is PROVEN the moment
+    # some OTHER submitted review with a usable oid matches head, and a
+    # single stale unresolvable review should not block a merge that other
+    # evidence already clears. So this is a three-way partition, not a
+    # boolean: reviews_json (usable oids, checked against head below) is
+    # tried FIRST: if it proves coverage, that's exit 0 exactly as before, no
+    # matter how many null-commit reviews also exist. Only when reviews_json
+    # does NOT prove coverage does null_commit_review_count get consulted, to
+    # tell "genuinely no reviews" (0) apart from "coverage indeterminate" (>0)
+    # — see the review_indeterminate / review_blocked / review_advisory
+    # partition below.
+    jq_or_die null_commit_review_count '[.data.repository.pullRequest.reviews.nodes[]?
+      | select(.submittedAt != null)
+      | select((.commit.oid // "") == "")] | length'
     head_extracted=1
   fi
 
@@ -357,10 +398,23 @@ latest_review_commit=$(jq -r '.[-1] // empty' <<<"$reviews_json")
 # not have every PR permanently stuck at non-zero. See this script's header
 # and docs/dev-workflow-spec.md for the reasoning; #254 left this as an open
 # design question and this is the resolution.
+#
+# review_indeterminate (#267 follow-up): at least one submitted review has no
+# resolvable commit, and no OTHER submitted review with a usable oid proved
+# coverage of head either. Checked FIRST, ahead of review_advisory: a
+# null-commit review is real evidence that review activity happened, so
+# `no_reviews` (which counts only usable-oid reviews) must not be trusted to
+# mean "genuinely zero reviews" until null_commit_review_count is also zero.
+# This is #210's undetermined-state rule — exit 5, never exit 0 — applied to
+# review coverage specifically, distinct from both review_advisory (provably
+# zero reviews) and review_blocked (provably stale reviews only).
 review_blocked=false
 review_advisory=false
+review_indeterminate=false
 if $head_known && [ "$reviewed_head" != "true" ]; then
-  if [ "$no_reviews" = "true" ]; then
+  if [ "$null_commit_review_count" -gt 0 ]; then
+    review_indeterminate=true
+  elif [ "$no_reviews" = "true" ]; then
     review_advisory=true
   else
     review_blocked=true
@@ -373,6 +427,16 @@ head_suffix=""
 $head_known && head_suffix=" @ $head_short"
 
 # --json short-circuits both human branches: one document on stdout, nothing else.
+#
+# nullCommitReviewCount (#267 follow-up) is a COUNT, not a boolean: the human
+# message below needs the count anyway ("N submitted review(s) have no
+# resolvable commit"), and a count degrades to plain truthiness for a caller
+# that only wants to know indeterminate-or-not — `reviewCoverage: "..."` as an
+# enum was the other option on the table, but it would either duplicate
+# reviewedHead/latestReviewCommit (both already answer "proven" vs "blocking"
+# vs "advisory") or require restating them, for no reader this document does
+# not already serve. One new flat number closes the gap without touching the
+# #232 contract's existing shape.
 if [ "$json_mode" -eq 1 ]; then
   printf '%s' "$threads_ndjson" | jq -s -c \
     --arg repo "$repo" \
@@ -382,6 +446,7 @@ if [ "$json_mode" -eq 1 ]; then
     --arg head "$head_sha" \
     --argjson reviewedHead "$reviewed_head" \
     --arg latestReviewCommit "$latest_review_commit" \
+    --argjson nullCommitReviewCount "$null_commit_review_count" \
     '{
       schema: "pr-threads/list@1",
       repo: $repo,
@@ -391,15 +456,30 @@ if [ "$json_mode" -eq 1 ]; then
       head: ($head | if . == "" then null else . end),
       reviewedHead: $reviewedHead,
       latestReviewCommit: ($latestReviewCommit | if . == "" then null else . end),
+      nullCommitReviewCount: $nullCommitReviewCount,
       threads: .
     }'
-  if [ "$unresolved_count" -eq 0 ] && ! $review_blocked; then
-    exit 0
+  # Unresolved threads are a determined bad state regardless of review
+  # coverage, so they win the exit code outright (1) — same precedence as the
+  # human-readable branch below. Only once threads are clean does coverage
+  # get to decide between 5 (indeterminate), 1 (blocked), 0 (advisory/proven).
+  if [ "$unresolved_count" -gt 0 ]; then
+    exit 1
   fi
-  exit 1
+  if $review_indeterminate; then
+    exit 5
+  fi
+  if $review_blocked; then
+    exit 1
+  fi
+  exit 0
 fi
 
 if [ "$unresolved_count" -eq 0 ]; then
+  if $review_indeterminate; then
+    echo "❓ $repo #$pr — 0 unresolved conversations ($total total, all resolved)$head_suffix; could not determine review coverage ($null_commit_review_count submitted review(s) have no resolvable commit — cannot confirm coverage of head $head_short)"
+    exit 5
+  fi
   if $review_blocked; then
     if [ -n "$latest_review_commit" ]; then
       echo "⚠️  $repo #$pr — 0 unresolved conversations ($total total), but no review covers head $head_short (latest review: $latest_review_short)"
@@ -418,6 +498,9 @@ fi
 
 echo "❌ $repo #$pr — $unresolved_count unresolved conversation(s)$head_suffix:"
 printf '%s' "$unresolved_text"
+if $review_indeterminate; then
+  echo "❓  additionally, review coverage of head $head_short could not be determined ($null_commit_review_count submitted review(s) have no resolvable commit)"
+fi
 if $review_blocked; then
   if [ -n "$latest_review_commit" ]; then
     echo "⚠️  additionally, no review covers head $head_short (latest review: $latest_review_short)"
@@ -425,4 +508,7 @@ if $review_blocked; then
     echo "⚠️  additionally, no review covers head $head_short"
   fi
 fi
+# Unresolved threads are a determined bad state on their own — exit 1 stands
+# even when coverage is ALSO indeterminate (5) or blocked; the thread problem
+# is real and actionable regardless of what the coverage check could prove.
 exit 1
