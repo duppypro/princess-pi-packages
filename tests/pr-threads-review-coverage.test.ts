@@ -68,6 +68,17 @@ interface FixtureOpts {
 	totalThreads?: number;
 	/** omit reviews/headRefOid entirely — the pre-#254 fixture shape */
 	legacy?: boolean;
+	/**
+	 * A response that carries `reviews` and `reviewThreads` normally but is
+	 * missing `headRefOid` from the payload entirely (#258 macroscopeapp
+	 * follow-up, rated High) — an incomplete/malformed GraphQL response, not
+	 * the `legacy` all-fields-omitted shape above. Distinguishes "the whole
+	 * head-coverage feature never shipped in this fixture" (legacy) from "the
+	 * feature shipped, and THIS ONE response is missing the field it needs".
+	 */
+	noHeadRefOid?: boolean;
+	/** Same defect, but `headRefOid` is present as explicit JSON `null` rather than omitted. */
+	headRefOidNull?: boolean;
 }
 
 function page(opts: FixtureOpts = {}): string {
@@ -101,7 +112,13 @@ function page(opts: FixtureOpts = {}): string {
 		},
 	};
 	if (!opts.legacy) {
-		pullRequest.headRefOid = opts.headRefOid ?? "head0000";
+		if (opts.noHeadRefOid) {
+			// key omitted entirely
+		} else if (opts.headRefOidNull) {
+			pullRequest.headRefOid = null;
+		} else {
+			pullRequest.headRefOid = opts.headRefOid ?? "head0000";
+		}
 		pullRequest.reviews = {
 			nodes: [
 				...(opts.reviewCommits ?? []).map((oid, i) => ({
@@ -295,18 +312,71 @@ console.log("\n--json: reviewedHead and the existing contract:");
 	check(doc?.latestReviewCommit === "bbb2222", "multiple reviews → latestReviewCommit is the most recent", JSON.stringify(doc));
 }
 
-// 6. Legacy fixture shape (no headRefOid/reviews at all, as the pre-#254
-//    suites still exercise): falls back to thread-only behaviour rather than
-//    guessing — proves the coverage feature cannot regress the older suites.
-console.log("\nlegacy fixture with no head/review data at all:");
+// 6. Legacy fixture shape (no headRefOid/reviews at all — the pre-#254
+//    shape). The #258 macroscopeapp follow-up DELETED the old "fall back to
+//    thread-only behaviour" fallback: a response with no resolvable head can
+//    no longer exit 0 claiming coverage, legacy shape or not. This fixture
+//    shape is kept only to prove the deletion — production and tests now
+//    share the one code path, there is no longer a "tests take a different
+//    branch than production" gap.
+console.log("\nlegacy fixture with no head/review data at all (now indeterminate, not exit 0):");
 {
 	const p = page({ legacy: true, unresolvedThreads: 0 });
 	const { code, out } = runPrThreads([p]);
-	check(code === 0, "legacy shape, 0 unresolved → exit 0", `got ${code}, output:\n${out}`);
-	check(out.includes("✅"), "legacy shape → still prints ✅ (head unknown, not 'known uncovered')", out);
+	check(code === 5, "legacy shape, 0 unresolved → exit 5 (no fallback left)", `got ${code}, output:\n${out}`);
+	check(!out.includes("✅"), "legacy shape → does NOT print the authorizing ✅", out);
+	check(/could not determine review coverage/i.test(out), "legacy shape → names the actual problem", out);
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
 	check(doc?.head === null, "legacy shape --json → head: null", JSON.stringify(doc));
 	check(doc?.reviewedHead === false, "legacy shape --json → reviewedHead: false (not true, not unknown)", JSON.stringify(doc));
+}
+
+// 6b. The macroscopeapp finding, reproduced precisely: reviews and review
+//     threads are present and well-formed (this is NOT the legacy shape —
+//     the feature's other fields all showed up), but `headRefOid` itself is
+//     missing from the payload. Before this fix, `head_known=false` here
+//     disabled coverage gating entirely and this exited 0 — a review DID
+//     happen, but which head it covers could never be checked.
+console.log("\nreview threads present, headRefOid MISSING (the reported gap):");
+{
+	const p = page({ noHeadRefOid: true, reviewCommits: ["deadbeef"], unresolvedThreads: 0, totalThreads: 1 });
+	const { code, out } = runPrThreads([p]);
+	check(code === 5, "threads present, no headRefOid → exit 5 exactly (indeterminate, not 0)", `got ${code}, output:\n${out}`);
+	check(!out.includes("✅"), "no headRefOid → does NOT print the authorizing ✅", out);
+	check(/could not determine review coverage/i.test(out), "no headRefOid → names the actual problem", out);
+	check(/headRefOid/.test(out), "no headRefOid → message names the missing field", out);
+
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.head === null, "no headRefOid --json → head: null", JSON.stringify(doc));
+	check(doc?.reviewedHead === false, "no headRefOid --json → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.latestReviewCommit === "deadbeef", "no headRefOid --json → latestReviewCommit still reported (a review DID happen)", JSON.stringify(doc));
+}
+
+// 6c. Same defect, but `headRefOid` present as explicit JSON null rather
+//     than omitted — GraphQL can serialize a nullable scalar either way.
+console.log("\nreview threads present, headRefOid explicit null:");
+{
+	const p = page({ headRefOidNull: true, reviewCommits: ["deadbeef"], unresolvedThreads: 0, totalThreads: 1 });
+	const { code, out } = runPrThreads([p]);
+	check(code === 5, "headRefOid: null → exit 5 exactly", `got ${code}, output:\n${out}`);
+	check(!out.includes("✅"), "headRefOid: null → does NOT print the authorizing ✅", out);
+}
+
+// 6d. Unresolved threads AND missing headRefOid together: the determined bad
+//     state (unresolved threads) still wins the exit code (1), same
+//     precedence already proven for unresolved+indeterminate in case 8e —
+//     but the coverage warning is still surfaced, not silently dropped.
+console.log("\nunresolved threads AND headRefOid missing together:");
+{
+	const p = page({ noHeadRefOid: true, reviewCommits: ["deadbeef"], unresolvedThreads: 1, totalThreads: 1 });
+	const { code, out } = runPrThreads([p]);
+	check(code === 1, "unresolved threads dominate even when head is also missing → exit 1 exactly", `got ${code}, output:\n${out}`);
+	check(/\b1 unresolved conversation\(s\)/.test(out), "unresolved + no headRefOid → still reports thread count", out);
+	check(/could not determine|headRefOid/i.test(out), "unresolved + no headRefOid → still surfaces the coverage warning", out);
+
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.unresolvedCount === 1, "unresolved + no headRefOid --json → unresolvedCount: 1", JSON.stringify(doc));
+	check(doc?.head === null, "unresolved + no headRefOid --json → head: null", JSON.stringify(doc));
 }
 
 // 7. >100 reviews on a PR (#267 finding, rated High): `reviews` is fetched

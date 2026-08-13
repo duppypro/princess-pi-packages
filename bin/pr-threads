@@ -64,6 +64,20 @@
 #      including the one case where a null-commit review does NOT block: some
 #      OTHER submitted review with a usable commit already proves coverage of
 #      the current head.
+#      Also covers a response with NO `headRefOid` at all (macroscopeapp
+#      finding on PR #267 follow-up, rated High): `headRefOid` is a required
+#      field of a well-formed pullRequest response — the real GitHub API
+#      always returns it for a PR that exists — so a page missing or nulling
+#      it is the same class of signal as `total` failing to parse as a number
+#      a few lines up: an incomplete/malformed response, not a legitimate
+#      "nothing to gate on". A response that carries review threads but no
+#      resolvable head must not exit 0 claiming coverage, so a missing head
+#      folds into the SAME indeterminate bucket as a null-commit review
+#      (exit 5), checked first since without a head not even "no reviews
+#      exist" can be trusted. There used to be a legacy fallback here for
+#      pre-#254 test fixtures that never stubbed `headRefOid` — deleted
+#      (#258 macroscopeapp follow-up): those fixtures now stub it like every
+#      other fixture, so production and tests share the one code path.
 #   3, 6  not used by this script — reserved by the #224 table for other pr-*
 #      scripts (precondition-not-met, safety-gate-refused).
 # ---
@@ -375,9 +389,13 @@ if [ "$seen" -ne "$total" ]; then
 fi
 
 # --- #254: review coverage of the current head ------------------------------
-# head_known is false only for pre-#254 test fixtures that don't stub
-# headRefOid at all — the real GraphQL API always returns it. In that legacy
-# case we fall back to the old thread-only behaviour rather than guessing.
+# head_known is false when `headRefOid` came back missing or null. There is
+# deliberately NO legacy fallback here anymore (#258 macroscopeapp
+# follow-up): `headRefOid` is a required field of a well-formed pullRequest
+# response, so its absence is folded into review_indeterminate below — the
+# SAME exit-5 bucket as a null-commit review, not a silent "nothing to gate
+# on". Every fixture, including the ones that predate #254, now stubs
+# `headRefOid` — production and tests share this one code path.
 head_known=false
 [ -n "$head_sha" ] && head_known=true
 
@@ -408,10 +426,26 @@ latest_review_commit=$(jq -r '.[-1] // empty' <<<"$reviews_json")
 # This is #210's undetermined-state rule — exit 5, never exit 0 — applied to
 # review coverage specifically, distinct from both review_advisory (provably
 # zero reviews) and review_blocked (provably stale reviews only).
+#
+# head_missing (#258 macroscopeapp follow-up, rated High): `headRefOid` came
+# back missing/null. Checked BEFORE the null-commit-review case, and without
+# even consulting `reviewed_head` — a response that cannot name its own head
+# cannot prove `reviewed_head` false, let alone true, so neither
+# review_blocked ("reviews exist, none match head") nor review_advisory ("no
+# reviews, nothing to gate on") is a claim this response is entitled to make.
+# Same exit-5 bucket as a null-commit review: both mean "coverage could not
+# be checked", never folded into the exit-0 advisory path. Unresolved
+# threads still win the exit code outright regardless (see the precedence
+# comments below and at the #258 exit-code table above) — a missing head
+# does not make an already-unresolved conversation any less unresolved.
 review_blocked=false
 review_advisory=false
 review_indeterminate=false
-if $head_known && [ "$reviewed_head" != "true" ]; then
+head_missing=false
+if ! $head_known; then
+  head_missing=true
+  review_indeterminate=true
+elif [ "$reviewed_head" != "true" ]; then
   if [ "$null_commit_review_count" -gt 0 ]; then
     review_indeterminate=true
   elif [ "$no_reviews" = "true" ]; then
@@ -477,7 +511,11 @@ fi
 
 if [ "$unresolved_count" -eq 0 ]; then
   if $review_indeterminate; then
-    echo "❓ $repo #$pr — 0 unresolved conversations ($total total, all resolved)$head_suffix; could not determine review coverage ($null_commit_review_count submitted review(s) have no resolvable commit — cannot confirm coverage of head $head_short)"
+    if $head_missing; then
+      echo "❓ $repo #$pr — 0 unresolved conversations ($total total, all resolved); could not determine review coverage (API response had no headRefOid — cannot confirm coverage of any commit)"
+    else
+      echo "❓ $repo #$pr — 0 unresolved conversations ($total total, all resolved)$head_suffix; could not determine review coverage ($null_commit_review_count submitted review(s) have no resolvable commit — cannot confirm coverage of head $head_short)"
+    fi
     exit 5
   fi
   if $review_blocked; then
@@ -499,7 +537,11 @@ fi
 echo "❌ $repo #$pr — $unresolved_count unresolved conversation(s)$head_suffix:"
 printf '%s' "$unresolved_text"
 if $review_indeterminate; then
-  echo "❓  additionally, review coverage of head $head_short could not be determined ($null_commit_review_count submitted review(s) have no resolvable commit)"
+  if $head_missing; then
+    echo "❓  additionally, review coverage could not be determined (API response had no headRefOid)"
+  else
+    echo "❓  additionally, review coverage of head $head_short could not be determined ($null_commit_review_count submitted review(s) have no resolvable commit)"
+  fi
 fi
 if $review_blocked; then
   if [ -n "$latest_review_commit" ]; then

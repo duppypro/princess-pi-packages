@@ -392,9 +392,15 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
 - Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`, and as
   of #254: `head`, `reviewedHead`, `latestReviewCommit`.
 - **`head`, `reviewedHead`, `latestReviewCommit` (#254).** `head` is the PR's current head
-  sha (`null` only for the pre-#254 fixture shape that never stubs `headRefOid` — the real
-  GitHub API always returns it). `reviewedHead` is `true` only when some review's commit
-  sha equals `head`. `latestReviewCommit` is the most recent review's commit sha, or
+  sha, `null` when the API response is missing `headRefOid` — the real GitHub API always
+  returns it for a PR that exists, so a response without it is treated as
+  incomplete/malformed, not a legitimate "nothing to gate on" (#258 macroscopeapp
+  follow-up, rated High: a response carrying review threads but no `headRefOid` used to
+  disable coverage gating entirely and exit `0`; there is no fallback left — missing
+  `headRefOid` now exits `5` in production and in every test fixture alike, folded into
+  the same indeterminate bucket as a null-commit review below). `reviewedHead` is `true`
+  only when some review's commit sha equals `head`. `latestReviewCommit` is the most
+  recent review's commit sha, or
   `null` if the PR has never been reviewed at all. These close a real gap: zero unresolved
   threads used to mean either "reviewer looked at this head and had nothing to say" or
   "reviewer has never seen this head" — same output, opposite meanings. A bot that reviews

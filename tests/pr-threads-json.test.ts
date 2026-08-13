@@ -69,12 +69,25 @@ function thread(over: Partial<Thread> = {}): Thread {
 	};
 }
 
-/** One GraphQL page as bin/pr-threads expects to receive it. */
+/**
+ * One GraphQL page as bin/pr-threads expects to receive it.
+ *
+ * `headRefOid` and an empty `reviews` connection are stubbed on every page
+ * (#258 macroscopeapp follow-up): pr-threads now treats a missing
+ * `headRefOid` as an indeterminate coverage result (exit 5), not a legacy
+ * "nothing to gate on" fallback — so a fixture that omitted it would no
+ * longer exercise this suite's --json contract cleanly. An empty
+ * `reviews.nodes` keeps review coverage in the advisory state (no reviews
+ * ever → exit 0 when threads are clean), matching this suite's existing
+ * exit-code assertions.
+ */
 function page(threads: Thread[], totalCount: number, endCursor: string | null): string {
 	return JSON.stringify({
 		data: {
 			repository: {
 				pullRequest: {
+					headRefOid: "aaaaaaa",
+					reviews: { nodes: [] },
 					reviewThreads: {
 						totalCount,
 						pageInfo: { hasNextPage: endCursor !== null, endCursor },
