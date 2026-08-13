@@ -45,13 +45,19 @@ console.log("docs/dev-workflow-spec.md consistency (#234)");
 // ---
 {
 	const installerSrc = fs.readFileSync(INSTALLER, "utf8");
-	const arrayMatch = installerSrc.match(/SCRIPTS=\(([\s\S]*?)\)/);
+	// Closing paren must be on its own line (`\n)`), not merely the first `)`
+	// anywhere after `SCRIPTS=(` — a non-greedy match on a bare `\)` used to
+	// stop early at the FIRST parenthetical it met, including one inside an
+	// in-array comment (#263 added `# Itself (#263): ...` ahead of the real
+	// closing paren). Comment lines are then dropped explicitly, so a script
+	// name never picks up a stray `#...` line as a fake "script".
+	const arrayMatch = installerSrc.match(/SCRIPTS=\(([\s\S]*?)\n\)/);
 	check(arrayMatch !== null, "SCRIPTS array found in install-workflow-tools", installerSrc);
 	const scripts = arrayMatch
 		? arrayMatch[1]
 				.split("\n")
 				.map((l) => l.trim())
-				.filter(Boolean)
+				.filter((l) => l.length > 0 && !l.startsWith("#"))
 		: [];
 	check(scripts.length > 0, "SCRIPTS array is non-empty", scripts.join(","));
 

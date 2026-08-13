@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install-workflow-tools — make this host match the repo: workflow scripts from
-# p-p-p/bin/ → ~/bin/, Claude Code PreToolUse hooks from p-p-p/hooks/ →
-# ~/.claude/hooks/.
+# p-p-p/bin/ → ~/bin/ (itself included, #263), Claude Code PreToolUse hooks
+# from p-p-p/hooks/ → ~/.claude/hooks/.
 #
 # Usage:
 #   install-workflow-tools           install/refresh both sets
@@ -20,9 +20,90 @@
 # command now covers both halves, and `--check` makes the gap loud.
 set -euo pipefail
 
-REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
+# REPO_DIR resolution has to survive two invocation shapes (#263):
+#   1. run from the repo — bin/install-workflow-tools, or the full repo path —
+#      where $0's parent directory IS the repo's bin/.
+#   2. run by bare name AFTER this script has deployed itself to ~/bin — bash
+#      sets $0 to the resolved PATH hit (~/bin/install-workflow-tools), whose
+#      parent's parent is just $HOME, not the repo. Falling back to the
+#      canonical clone location is what makes "self-install" actually usable
+#      by bare name instead of merely present on PATH.
+# INSTALL_WORKFLOW_TOOLS_REPO_DIR is an explicit override for both: tests use
+# it to point at a fixture repo without faking a real git-projects layout.
+#
+# is_this_repo() proves IDENTITY, not just shape (bug found by macroscopeapp
+# on PR #267, rated Low-but-real): the bare-name self-install path resolves
+# $0 to ~/bin/install-workflow-tools, so `dirname "$0"/..` is exactly $HOME —
+# and `[ -d "$candidate/bin" ] && [ -d "$candidate/hooks" ]` accepts $HOME
+# outright the moment an unrelated `~/hooks` directory exists (a dotfiles
+# checkout, a scratch dir, anything). `[ "$candidate" != "$HOME" ]` would only
+# special-case that one wrong directory rather than establishing that the
+# candidate really IS this repo — checking package.json's "name" field is a
+# marker any OTHER directory (including $HOME) is vanishingly unlikely to
+# share by accident, and rejecting $HOME falls out of that as a side effect
+# rather than being the rule itself.
+#
+# grep, not jq (second macroscopeapp finding on the same PR, rated High):
+# this is the BOOTSTRAP tool — the first thing run on a fresh host, and the
+# thing that puts every other script (including the ones that genuinely do
+# need jq) onto PATH. Requiring jq just to recognize a valid checkout is a
+# chicken-and-egg a fresh host may not have crossed yet. The old `jq -r
+# '.name // empty' ... 2>/dev/null` also silently swallowed jq's absence: a
+# missing jq quietly became name="" here, which then reported as "can't find
+# the princess-pi-packages repo" — a misdiagnosis of a VALID checkout, same
+# anti-pattern as #262's phantom-dirty-files message. A plain anchored grep
+# on the "name" line needs nothing beyond POSIX text tools, already a hard
+# dependency of this script, and preserves the exact rejection this check
+# exists for (a bare bin/+hooks/ pair, e.g. $HOME with an unrelated ~/hooks).
+is_this_repo() {
+  local candidate="$1"
+  [ -d "$candidate/bin" ] || return 1
+  [ -d "$candidate/hooks" ] || return 1
+  [ -f "$candidate/package.json" ] || return 1
+  grep -Eq '"name"[[:space:]]*:[[:space:]]*"princess-pi-packages"' "$candidate/package.json" 2>/dev/null
+}
+resolve_repo_dir() {
+  if [ -n "${INSTALL_WORKFLOW_TOOLS_REPO_DIR:-}" ]; then
+    echo "$INSTALL_WORKFLOW_TOOLS_REPO_DIR"
+    return
+  fi
+  local candidate
+  candidate=$(cd "$(dirname "$0")/.." && pwd)
+  if is_this_repo "$candidate"; then
+    echo "$candidate"
+    return
+  fi
+  candidate="$HOME/git-projects/princess-pi-packages"
+  if is_this_repo "$candidate"; then
+    echo "$candidate"
+    return
+  fi
+  echo ""
+}
+
+REPO_DIR=$(resolve_repo_dir)
+if [ -z "$REPO_DIR" ]; then
+  echo "install-workflow-tools: can't find the princess-pi-packages repo (checked next to \$0 and ~/git-projects/princess-pi-packages)" >&2
+  echo "  run it from inside the repo instead: bin/install-workflow-tools" >&2
+  exit 1
+fi
 INSTALL_DIR="$HOME/bin"
 HOOKS_DIR="$HOME/.claude/hooks"
+
+# This installer no longer needs jq itself (see is_this_repo() above), but
+# most of what it DEPLOYS does: pr-threads, pr-merge, and pr-cleanup all lean
+# on it heavily to parse `gh`'s GraphQL/JSON output. A host that reaches this
+# point without jq will get every script placed on PATH successfully and then
+# hit a confusing failure the first time one of them runs — check it here,
+# explicitly and by name, rather than let that surface as an unrelated error
+# three tools downstream. Warn, don't block: installing the scripts is still
+# useful even before jq is installed, and this is the bootstrap tool — failing
+# it over a dependency it doesn't itself need would recreate the same
+# chicken-and-egg this fix removed from the identity check.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "⚠ jq not found on PATH — pr-threads, pr-merge, and pr-cleanup require it at runtime." >&2
+  echo "  Install it (e.g. 'apt install jq' / 'brew install jq') before using those tools." >&2
+fi
 
 MODE=install
 case "${1:-}" in
@@ -41,12 +122,20 @@ SCRIPTS=(
   pr-reject
   pr-cleanup
   pr-threads
+  # Itself (#263): the one script whose job is putting the others on PATH was
+  # the only one you couldn't run by bare name — you had to know its repo
+  # path. deploy() below always writes via temp-file-then-rename, which is
+  # what makes it safe for this entry to overwrite the very file bash may be
+  # executing right now when re-run from ~/bin.
+  install-workflow-tools
 )
 
 # Claude Code reads these from ~/.claude/hooks — settings.json wires them by
 # path, so the file on the host IS the enforcement. Source of truth is hooks/.
 HOOKS=(
   block-dangerous-git.sh
+  block-edit-on-main.sh
+  preedit-reread-check.py
 )
 
 # Tools this installer used to delete from ~/bin on every run (#235 — an
@@ -98,8 +187,20 @@ deploy() {
     fi
     return
   fi
-  cp "$src" "$dest"
-  chmod +x "$dest"
+  # Write-to-temp-then-rename, not `cp` in place (#263). `install-workflow-tools`
+  # now deploys itself, so this may be overwriting the very file bash is
+  # currently reading (e.g. running ~/bin/install-workflow-tools by bare
+  # name). `cp` truncates and rewrites dest's existing inode in place — unsafe
+  # mid-read. `mktemp` in the SAME directory as dest keeps the rename on one
+  # filesystem, so `mv` is an atomic rename: readers holding the old file
+  # descriptor keep reading the old (complete) inode until they close it: no
+  # reader ever observes a half-written file. Applied to every deploy, not
+  # just the installer, since it costs nothing and the guarantee is free.
+  local tmp
+  tmp=$(mktemp "$dest.XXXXXX")
+  cp "$src" "$tmp"
+  chmod +x "$tmp"
+  mv -f "$tmp" "$dest"
   echo "   ✅ $label"
 }
 

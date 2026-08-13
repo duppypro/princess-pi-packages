@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # git-checkpoint — add all changes, commit, and push in one command.
 # Usage: git-checkpoint "your commit message"
+#
+# --- Exit codes ---
+#   0  success — committed and pushed
+#   1  usage error — no message given
+#   3  precondition not met — on main/master (#225 gap 1)
+# ---
 set -euo pipefail
 
 MSG="${1:-}"
@@ -8,6 +14,14 @@ if [ -z "$MSG" ]; then
   echo "git-checkpoint: message required"
   echo "  git-checkpoint \"feat: add widget (#42)\""
   exit 1
+fi
+
+BRANCH=$(git branch --show-current)
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ] || [ -z "$BRANCH" ]; then
+  echo "git-checkpoint: on '${BRANCH:-detached HEAD}' — this command commits AND pushes in one" >&2
+  echo "  step; refusing on the primary branch. Start feature work first:" >&2
+  echo "  git checkout -b <issue#>-<slug>" >&2
+  exit 3
 fi
 
 git add -A

@@ -1,6 +1,70 @@
 #!/usr/bin/env bash
 # pr-merge [<branch>] — squash-merge the PR for a feature branch.
 # Defaults to the current branch. Human-only command.
+#
+# --- #258: gated on pr-threads before the network call -----------------
+# `pr-threads` has been the documented scriptable merge gate since #232, and
+# nothing called it — pr-merge went straight to `gh pr merge --squash` and let
+# the server's required_review_thread_resolution ruleset be the one to say no.
+# The server is still the enforcement (current_user_can_bypass: never); this
+# gate exists so the human finds out WHAT is blocking and WHERE the unresolved
+# threads are, before a raw "rule violation" API error sends them hunting.
+#
+# No override flag: the server refuses regardless, so a flag here would only
+# buy a slower failure. `pr-open` does not get this check — opening a PR with
+# unresolved threads from an earlier review is normal.
+#
+# Fails CLOSED (#210's governing rule, applied via pr-threads' own exit
+# contract — see bin/pr-threads header): pr-threads exit 1 means "checked, and
+# it says no" — print the details and refuse to merge. Any OTHER non-zero exit
+# (2/4/5 — usage error, PR not found, gh/API failure) means the check itself
+# could not run, and pr-merge aborts just as hard, but says so differently: it
+# could not verify, not that it found a problem.
+#
+# --- TOCTOU between the gate and the merge (macroscopeapp finding on PR #267,
+# rated High) --------------------------------------------------------------
+# pr-threads approving a head sha and `gh pr merge --squash` actually merging
+# one is two separate API calls with a gap between them — a push landing in
+# that gap would merge a commit nobody reviewed, with the gate having said
+# yes to a DIFFERENT commit. The reviewer's suggested fix was `gh pr merge
+# --match-head-commit`, refusing atomically server-side if the head moved.
+#
+# NOT implemented that way here. Independent verification (source at
+# github.com/cli/cli tag v2.50.0, and `strings` on this host's actual gh
+# binary) both show `--match-head-commit` registered on `gh pr merge` — it
+# was added in cli/cli#5692 (merged 2022-06-20), long before this host's gh
+# 2.50.0 (2024-05-29). The premise that the flag is unavailable here does not
+# hold. It was still left out of THIS fix: `gh pr merge` is human-only and
+# blocked by this repo's own git-guardrails hook for every agent session
+# (including this one), so the exact flag syntax/behavior could never be
+# exercised against the real binary before shipping — only read from source.
+# Adopting it is a good next step for a human to verify with `gh pr merge
+# --help` and switch to directly; until then this closes the same race
+# without depending on it:
+#
+# Capture the head sha immediately BEFORE the pr-threads gate runs, then
+# re-resolve it again immediately BEFORE the merge call. If they differ, the
+# branch moved during verification — abort (exit 6) rather than merge a
+# commit the gate never actually saw. Narrows the window to "between the
+# second gh pr view and gh pr merge" instead of closing it atomically, but
+# needs no new gh capability and is fully covered by the existing stub-gh
+# test harness.
+# ---
+#
+# --- Exit codes (#224 table) ---
+#   0  success — merged
+#   2  usage error (not used today — kept for the shared table)
+#   3  precondition not met — on main/master
+#   4  not found — no open PR for this branch
+#   5  remote/API failure — `gh pr list`/`gh pr view` (or pr-threads itself)
+#      could not determine state
+#   6  safety gate refused — pr-threads found unresolved threads and/or an
+#      uncovered review head (the merge is refused before the network call);
+#      PR selection was ambiguous (more than one open PR shares the branch's
+#      head, refusing to guess which one to merge); or the branch's head
+#      moved between the pr-threads gate and the merge call (TOCTOU guard —
+#      re-run pr-merge to re-verify the new head)
+# ---
 set -euo pipefail
 
 # The advertised `pr-merge <branch>` form used to be a lie: BRANCH was hardcoded
@@ -11,7 +75,7 @@ BRANCH="${1:-$(git branch --show-current)}"
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-merge: on main — pass a branch name or switch to a feature worktree." >&2
   echo "  pr-merge <branch>" >&2
-  exit 1
+  exit 3
 fi
 
 # --- select the PR ---------------------------------------------------------
@@ -19,7 +83,10 @@ fi
 # with the same branch name is an equal candidate and `.[0]` could squash-merge
 # a stranger's PR (#209). Constrain to head branches in OUR OWN repo, and refuse
 # rather than guess when more than one survives.
-OWNER=$(gh repo view --json owner --jq '.owner.login')
+if ! OWNER=$(gh repo view --json owner --jq '.owner.login'); then
+  echo "pr-merge: 'gh repo view' failed — cannot determine the repo owner." >&2
+  exit 5
+fi
 # No `2>/dev/null || true` here: it would make a network outage, expired auth or
 # API error indistinguishable from "no PR found", and send the user hunting for
 # a missing PR instead of showing them the actual error. Fail loudly instead.
@@ -27,7 +94,7 @@ if ! CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
   --json number,headRepositoryOwner \
   --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv"); then
   echo "pr-merge: 'gh pr list' failed — cannot determine the PR for '$BRANCH'." >&2
-  exit 1
+  exit 5
 fi
 
 # shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
@@ -35,15 +102,69 @@ PRS=($CANDIDATES)
 
 if [ "${#PRS[@]}" -eq 0 ]; then
   echo "pr-merge: no open PR found for branch '$BRANCH' in $OWNER's repo." >&2
-  exit 1
+  exit 4
 fi
 if [ "${#PRS[@]}" -gt 1 ]; then
   echo "pr-merge: ambiguous — ${#PRS[@]} open PRs share head branch '$BRANCH':" >&2
   for p in "${PRS[@]}"; do echo "  #$p" >&2; done
   echo "  Refusing to guess. Merge the intended one via 'gh pr merge <N> --squash'." >&2
-  exit 1
+  exit 6
 fi
 PR="${PRS[0]}"
+
+# resolve_head <PR> — current headRefOid for the PR, or exit 5 (state could
+# not be determined; same treatment as any other gh/API failure in this
+# script). Used twice: once before the gate, once immediately before the
+# merge (the TOCTOU guard below).
+resolve_head() {
+  local pr="$1" oid
+  if ! oid=$(gh pr view "$pr" --json headRefOid --jq .headRefOid 2>&1); then
+    echo "pr-merge: 'gh pr view' failed — cannot determine the current head for PR #$pr:" >&2
+    echo "$oid" >&2
+    exit 5
+  fi
+  printf '%s' "$oid"
+}
+
+HEAD_BEFORE_GATE=$(resolve_head "$PR")
+
+# --- #258: pr-threads gate, reusing the PR number resolved above -----------
+# pr-threads' exit codes are documented in its own header: 0 = clean, 1 =
+# checked-and-found-a-problem (unresolved threads and/or an uncovered review
+# head), anything else = the check itself could not run. Only 1 gets the
+# "here is what to fix" framing; everything else gets "could not verify".
+set +e
+THREAD_OUTPUT=$(pr-threads "$PR" 2>&1)
+THREAD_STATUS=$?
+set -e
+
+if [ "$THREAD_STATUS" -eq 1 ]; then
+  echo "❌ pr-merge: PR #$PR is not clear to merge — pr-threads found unresolved" >&2
+  echo "   threads and/or a review that doesn't cover the current head:" >&2
+  echo "$THREAD_OUTPUT" | sed 's/^/   /' >&2
+  echo "   The server ruleset (required_review_thread_resolution) will refuse this" >&2
+  echo "   merge too — there is no override flag here." >&2
+  exit 6
+elif [ "$THREAD_STATUS" -ne 0 ]; then
+  echo "⚠️  pr-merge: could not verify review state for PR #$PR — pr-threads exited" >&2
+  echo "   $THREAD_STATUS (not 'found a problem', the check itself failed). Aborting" >&2
+  echo "   rather than merging blind:" >&2
+  echo "$THREAD_OUTPUT" | sed 's/^/   /' >&2
+  exit 5
+fi
+
+# --- TOCTOU guard (see header): re-resolve the head immediately before the
+# merge call. pr-threads approved HEAD_BEFORE_GATE — if a push landed in the
+# gap between that check and here, the sha about to be merged is one the gate
+# never actually saw. Abort rather than merge it; re-running pr-merge
+# re-verifies whatever landed.
+HEAD_BEFORE_MERGE=$(resolve_head "$PR")
+if [ "$HEAD_BEFORE_MERGE" != "$HEAD_BEFORE_GATE" ]; then
+  echo "❌ pr-merge: PR #$PR's branch moved during verification — refusing to merge." >&2
+  echo "   pr-threads approved head ${HEAD_BEFORE_GATE:0:7}, but the branch is now at" >&2
+  echo "   ${HEAD_BEFORE_MERGE:0:7}. Re-run pr-merge to verify the new head." >&2
+  exit 6
+fi
 
 echo "🔀 Squash-merging PR #$PR (branch: $BRANCH)..."
 gh pr merge "$PR" --squash

@@ -193,24 +193,69 @@ here.
 
 ## Git guardrails
 
-A `PreToolUse` hook (`~/.claude/hooks/block-dangerous-git.sh`, plus a Pi equivalent)
-intercepts dangerous git commands. It is **destination-aware, not a flat block list** —
-measured against the hook (2026-08-11):
+Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hooks/`):
+
+- **`block-dangerous-git.sh`** — blocks dangerous git/gh commands. Destination-aware, not
+  a flat block list (measured below). Pi twin: `extensions/git-guardrails.ts`, sharing its
+  actual guard logic with `extensions/lib/git-guardrails-core.ts` — one file deeper than
+  the issue number alone suggests; `hooks/block-dangerous-git.sh` carries the same checks
+  written as inline bash.
+- **`block-edit-on-main.sh`** (#237) — blocks `Edit`/`Write`/`MultiEdit` when the target
+  file's repo is on `main`/`master` or detached HEAD, enforcing this repo's CLAUDE.md HARD
+  GATE technically instead of only by convention. Matcher **must** be
+  `Edit|Write|MultiEdit`, never `Bash` — a `Bash` matcher would also catch
+  `git checkout -b <branch>`, the very command used to escape main, and deadlock the gate
+  it exists to enforce. Claude-Code-only; no Pi twin yet.
+- **`preedit-reread-check.py`** (#237) — turns a doomed exact-match `Edit`/`MultiEdit`
+  (stale `old_string`, or one that matches more than once without `replace_all`) into an
+  actionable retry message ahead of the native tool's terse failure. Matcher must be
+  `Edit|MultiEdit`, never `Write` — a new file has no `old_string` to check. Claude-Code-
+  only; no Pi twin yet.
+
+`block-dangerous-git.sh` is **destination-aware, not a flat block list** — measured
+against the hook (2026-08-11, worktree-remove line added 2026-08-13, #225 gap 2):
 
 ```
-git push --force-with-lease origin 42-my-feature   → exit 0  allowed
-git rebase --onto origin/main origin/218-base …    → exit 0  allowed
-git push --force-with-lease                        → exit 2  blocked (from a repo on main)
-git push origin main                               → exit 2  blocked
+git push --force-with-lease origin 42-my-feature       → exit 0  allowed
+git rebase --onto origin/main origin/218-base …        → exit 0  allowed
+git push --force-with-lease                            → exit 2  blocked (from a repo on main)
+git push origin main                                   → exit 2  blocked
+git worktree remove --force .claude/worktrees/42-foo   → exit 2  blocked
+git worktree remove .claude/worktrees/42-foo           → exit 0  allowed (git's own dirty-tree refusal is the safeguard)
 ```
 
 It blocks by *destination*: a force-push to a named feature branch is allowed, and this
 workflow depends on it (`git-checkpoint`, `pr-open`, the rebase recipes below). **Always
 name the refspec explicitly** — `git push --force-with-lease origin <branch>`, never the
 bare form, since the bare form's safety depends on which branch you happen to be
-standing on. (Wording coordinated with #225, which owns the guardrail's canonical
-description; if that issue changes the hook's behavior, this section may need a
-re-measure.)
+standing on.
+
+**`git worktree remove --force`/`-f` is blocked unconditionally**, same class as
+`clean -f` (#225 gap 2) — teardown is meant to be confirm-first, per the [Worktree
+Teardown](#why-this-reverses-the-out-of-tree-rule-257) sequence above. Plain
+`git worktree remove` (no force) stays allowed: git's own refusal on a dirty tree is the
+existing safeguard there, unchanged.
+
+**The hook's coverage has a real edge, and #225 gap 3 leaves it open on purpose — it is
+not fixed, and it is not a bug to fix:** the hook inspects the Bash tool's **command
+string** only. Any operation hidden behind an opaque script invocation — a bare
+workflow-script name like `git-checkpoint` or `pr-open`, or `bash some-script.sh` — is
+invisible to it, because neither tokenizes as `git`/`gh` and the guard never resolves a
+branch for that sub-command at all. This is load-bearing: `git-checkpoint` and `pr-open`
+depend on being opaque script names in order to run under the hook in the first place.
+Pinned as fixture case `allow-opaque-script-invocation-hides-git-push` in
+`tests/fixtures/git-guardrails-cases.json`. **If anything states this bypass is closed,
+that statement is false** — it is a known, permanent gap, not a solved one.
+
+**`git-checkpoint` also guards itself, independent of this hook (#225 gap 1).** It refuses
+(exit 3) on `main`, `master`, or a detached HEAD, *before* running `git add -A` — see the
+[Scripts](#scripts) table. This is a check inside the script itself, not a consequence of
+the hook above: the hook cannot see inside `git-checkpoint` at all, for exactly the reason
+in the previous paragraph. **Still open, deliberately not decided here:**
+`git-checkpoint`'s `git add -A` still sweeps up anything untracked in one atomic
+commit-and-push step — a repo without `.env`/`node_modules` gitignored can put a secret on
+origin before anyone looks. Left as a real fork (require confirmation before staging, vs.
+narrowing the default to `add -u`) rather than resolved unilaterally in a docs pass.
 
 **`gh pr merge` in any form is human-only**, regardless of flags — and since #249 that
 is a technical block, not only a convention. Measured against the deployed hook
@@ -225,29 +270,38 @@ gh pr create --base main                           → exit 0  allowed
 
 An agent runs `pr-open` and stops; a human runs `pr-merge`/`pr-reject`.
 
-### Getting the hook onto the host
+### Getting the hooks onto the host
 
-The file in `~/.claude/hooks/` *is* the enforcement — `settings.json` wires it by path,
-so whatever sits there is what runs, merged or not. `bin/install-workflow-tools` deploys
-it; `install-workflow-tools --check` reports drift without writing and exits 1, and
-`tests/hooks-deploy-drift.test.ts` fails the suite when the hook this host actually runs
-differs from `hooks/`.
+The files in `~/.claude/hooks/` *are* the enforcement — `settings.json` wires each by
+path, so whatever sits there is what runs, merged or not. `bin/install-workflow-tools`
+deploys all three tracked hooks; `install-workflow-tools --check` reports drift without
+writing and exits 1, and `tests/hooks-deploy-drift.test.ts` fails the suite when any hook
+this host actually runs differs from `hooks/`.
 
-`--check` asks three questions, not one: is the file **there**, is it **executable**, and
-does it **match**. Identical bytes with the executable bit cleared is still a disarmed
-guardrail — Claude Code execs the path from `settings.json`, so a hook it cannot run gates
-nothing. A file missing from `hooks/` itself fails both modes rather than warning: the
-manifest is stale, and only a human can say whether it was renamed or should be dropped.
+`--check` asks three questions per hook, not one: is the file **there**, is it
+**executable**, and does it **match**. Identical bytes with the executable bit cleared is
+still a disarmed guardrail — Claude Code execs the path from `settings.json`, so a hook it
+cannot run gates nothing. A file missing from `hooks/` itself fails both modes rather than
+warning: the manifest is stale, and only a human can say whether it was renamed or should
+be dropped.
 
-That gate exists because the alternative was measured (#249/#217): the deployed copy
-spent weeks 56 lines behind source, missing the whole `check_gh_command` function, so
-`gh pr merge 5 --squash` exited 0 on the very machine the gate was written for. Nothing
-copied `hooks/` anywhere — the install target was documented as a fact and implemented
-as a habit. The parity test passed throughout, because it runs the repo copy.
+That gate exists because the alternative was measured (#249/#217): the deployed copy of
+`block-dangerous-git.sh` spent weeks 56 lines behind source, missing the whole
+`check_gh_command` function, so `gh pr merge 5 --squash` exited 0 on the very machine the
+gate was written for. Nothing copied `hooks/` anywhere — the install target was documented
+as a fact and implemented as a habit. The parity test passed throughout, because it runs
+the repo copy. `tests/git-guardrails-parity.test.ts` still exercises `block-dangerous-git.sh`
+only; `tests/hooks-deploy-drift.test.ts` covers deploy-and-drift for all three tracked
+hooks as of #237.
 
-The Pi twin (`extensions/git-guardrails.ts`) needs no deploy step: Pi loads it from the
-globally linked package, which is a symlink to the clone, so it cannot lag the way a
-copied file can. Copying is what drifts; linking is what doesn't.
+The Pi twin for `block-dangerous-git.sh` (`extensions/git-guardrails.ts`, sharing its
+guard logic with `extensions/lib/git-guardrails-core.ts`) needs no deploy step: Pi loads
+it from the globally linked package, which is a symlink to the clone, so it cannot lag the
+way a copied file can. Copying is what drifts; linking is what doesn't. This also means
+the `worktree remove --force` guard reaches the Pi side automatically, with no separate
+deploy. `block-edit-on-main.sh` and `preedit-reread-check.py` have no Pi twin yet — they
+are Claude-Code-only, deployed and drift-checked the same copy-based way as
+`block-dangerous-git.sh`.
 
 ## Trigger words
 
@@ -260,18 +314,48 @@ copied file can. Copying is what drifts; linking is what doesn't.
 | Script | What it does |
 |---|---|
 | `pr-open` | Discovers branch from cwd → ensures pushed → pre-checks → `gh pr create` |
-| `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → `gh pr merge --squash` (human command) |
+| `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
 | `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
-| `pr-threads <pr#> [owner/repo] [--json]` | Unresolved review-conversation count. Exit 0 = none; exit 1 lists each thread's file and URL. Scriptable merge gate — `gh pr view` has no unresolved-conversation field, that state exists only in GraphQL. `--json` emits the thread bodies and ids an agent needs to *act* on the review. |
-| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
+| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any review covers the current head (#254). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) below. `--json` emits thread bodies/ids, a `trusted` flag, and `head`/`reviewedHead`/`latestReviewCommit`. |
+| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). |
 | `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
-| `install-workflow-tools [--check]` | Makes this host match the repo: every script above from `bin/` → `~/bin/`, plus the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249). Not itself installed by itself — run from a clone. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
+| `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, plus the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
 
 This table is the installer's contract: every script it copies must have a row here, and
 every row that's an installable script must be in `install-workflow-tools`' `SCRIPTS`
-array. A row here with nothing to install (like this one) is the exception, not a
-pattern to repeat.
+array — `install-workflow-tools` now included in its own array (#263).
+
+### `install-workflow-tools`: self-deploy and `REPO_DIR` resolution (#263)
+
+After one run from a clone, `install-workflow-tools` is runnable by bare name from
+`~/bin`, same as every other row above. Two implementation facts are worth knowing
+because they're surprising, not guessable from the name:
+
+- **Deploys are atomic.** `deploy()` writes into a `mktemp`-created sibling of the
+  destination (same directory, so the later `mv` stays on one filesystem) and `mv -f`s it
+  into place, instead of `cp`-ing over the existing file. This is what makes self-deploy
+  safe: `cp` rewrites the destination's existing inode in place — unsafe when the running
+  `bash` process may be reading that exact file — while `mv` (rename) is atomic, so a
+  reader holding the old file descriptor keeps reading the complete old content until it
+  closes it. Applies to every deploy this script does, not only its own.
+- **`$0` stops resolving the repo once deployed.** Invoked by bare name, bash sets `$0` to
+  the resolved `~/bin/install-workflow-tools` path, not a path inside a clone — the old
+  `dirname "$0"/..` resolution would land on `$HOME`. `resolve_repo_dir()` falls back
+  through, in order: `$INSTALL_WORKFLOW_TOOLS_REPO_DIR` env override (test/escape hatch,
+  not part of the day-to-day contract) → `$0`-relative, if that directory has both `bin/`
+  and `hooks/` (the normal case — running via a relative or absolute path from inside a
+  clone or worktree) → the canonical clone at `$HOME/git-projects/princess-pi-packages`.
+  Exits 1, naming both paths it checked, if neither has `bin/` and `hooks/`.
+
+**The practical surprise:** running the deployed `~/bin/install-workflow-tools` by *bare
+name* from inside a feature worktree still deploys from the **canonical clone**, not the
+worktree you're standing in — bare-name invocation means `$0` is the `~/bin` path
+regardless of cwd, so the third fallback wins, not the second. To deploy from a worktree's
+own copy, run it by its repo-relative or absolute path (e.g. `bin/install-workflow-tools`)
+from inside that worktree, not by bare name. If the canonical clone is ever moved or
+renamed, bare-name re-sync breaks until you rerun it from the new clone path or set
+`INSTALL_WORKFLOW_TOOLS_REPO_DIR` by hand.
 
 **Why the branch is positional on `pr-merge` but a flag on `pr-reject`:** `pr-merge`
 takes no other argument, so a bare word can only be a branch. `pr-reject` also takes a
@@ -298,10 +382,38 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
 
 - One JSON document on stdout. No emoji, no prose, no partial lines.
 - `schema: "pr-threads/list@1"` — versioned, following the `serve/list@1` precedent.
-- **Human output and exit codes are unchanged.** `--json` is additive: exit `0` when no
-  thread is unresolved, `1` otherwise, in both modes. The gate keeps working untouched.
-  An unrecognised flag exits `2` rather than being taken as the repo argument.
-- Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`.
+  Unchanged by #254: the new fields are additive to the same schema, not a `@2`.
+- **`--json`'s document and exit code stay in lockstep with the human output, in both
+  directions.** Exit `0` when clean, `1` when not — in both modes, same as before #254.
+  What counts as "clean" changed for *both* modes at once: thread count alone is no
+  longer sufficient (full rule in the [exit-code
+  contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) below). An
+  unrecognised flag exits `2` rather than being taken as the repo argument.
+- Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`, and as
+  of #254: `head`, `reviewedHead`, `latestReviewCommit`.
+- **`head`, `reviewedHead`, `latestReviewCommit` (#254).** `head` is the PR's current head
+  sha, `null` when the API response is missing `headRefOid` — the real GitHub API always
+  returns it for a PR that exists, so a response without it is treated as
+  incomplete/malformed, not a legitimate "nothing to gate on" (#258 macroscopeapp
+  follow-up, rated High: a response carrying review threads but no `headRefOid` used to
+  disable coverage gating entirely and exit `0`; there is no fallback left — missing
+  `headRefOid` now exits `5` in production and in every test fixture alike, folded into
+  the same indeterminate bucket as a null-commit review below). `reviewedHead` is `true`
+  only when some review's commit sha equals `head`. `latestReviewCommit` is the most
+  recent review's commit sha, or
+  `null` if the PR has never been reviewed at all. These close a real gap: zero unresolved
+  threads used to mean either "reviewer looked at this head and had nothing to say" or
+  "reviewer has never seen this head" — same output, opposite meanings. A bot that reviews
+  once per PR rather than once per push means the commits most likely to need a second
+  look — the ones written in response to a finding — were exactly the ones escaping the
+  gate.
+- **Advisory vs. blocking, decided.** Zero reviews *ever* on the PR is advisory — printed
+  with `ℹ️`, still exit `0` if `unresolvedCount` is `0`. Blocking it would wedge every PR
+  in a repo with no review bot installed, permanently. At least one review that simply
+  doesn't cover the current head is blocking — printed with `⚠️`, exit `1` — and the `✅`
+  is withheld either way. The distinguishing signal is whether a reviewer demonstrably
+  exists (has reviewed this PR at all, just not this head) versus demonstrably doesn't
+  (never reviewed it once).
 - **Every thread is emitted, resolved ones included.** `isResolved` only means something
   to a caller that can see both, and an agent re-reading a PR mid-review needs to know
   which conversations it has already answered. `unresolvedCount` stays the gate.
@@ -332,6 +444,47 @@ review comments to an agent that will then change code, which is precisely where
 verb that closes the loop, and `diffHunk` for surrounding context. `path` + `line` is enough
 to locate a comment; the hunk is a convenience, and this slice is the one that unblocks the
 review loop.
+
+### Exit-code contract: pr-threads and pr-merge (#224, #258, #254)
+
+Both scripts adopt the shared #224 exit-code table:
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 2 | usage error (bad flag, missing argument) |
+| 3 | precondition not met (e.g. `pr-merge` run on main/master) |
+| 4 | not found (no such PR, or no open PR for the branch) |
+| 5 | remote/API failure — state could not be determined |
+| 6 | safety gate refused (ambiguous PR selection; `pr-merge`'s pr-threads gate) |
+
+**`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
+#232's `--json` already shipped depending on it: `1` means "the check SUCCEEDED and found
+a problem" (unresolved threads and/or a review that doesn't cover the current head), never
+"broken". This is the one code #258's `pr-merge` gate has to tell apart from every other
+failure, so the reservation is deliberate. Everything that used to collide with that `1` —
+a `gh api graphql` failure propagating gh's own exit status under `set -e`, which is
+usually `1` — is now wrapped explicitly and mapped to `5`. That collision is *why* the
+#258 gate could not have been built correctly before this branch: `pr-merge` could not
+have told "unresolved threads" apart from "gh had a hiccup" by exit code alone.
+
+**`pr-merge` calls `pr-threads` before `gh pr merge`** (#258), reusing the PR number it
+already resolved via its own fork-safe `gh pr list --head` selection — it does not
+re-derive the PR. Three outcomes:
+
+- `pr-threads` exits `0` → proceed, merge as before.
+- `pr-threads` exits `1` → refuse (`pr-merge` exits `6`), print the unresolved threads
+  and/or the review-coverage warning with their URLs, and say the server ruleset
+  (`required_review_thread_resolution`) will refuse it too. **There is no override flag**
+  — the server refuses regardless, so a flag here would only buy a slower failure. Don't
+  go looking for one.
+- `pr-threads` exits anything else, **or isn't found on `PATH` at all** (a missing command
+  surfaces as a non-zero, non-`1` exit too) → `pr-merge` aborts (exit `5`) with wording
+  that says "could not verify", never "found a problem". This is the #210 fail-closed rule
+  applied at this boundary: a broken gate must never read as a passing one.
+
+`pr-open` does **not** get this check — opening a PR with unresolved threads from an
+earlier review is normal and expected.
 
 ### `pr-cleanup` fails closed, by design
 
@@ -569,7 +722,11 @@ content; clean application is not proof the result still works.
 
 ### PR merge blocked by ruleset ("protected ref")
 
-The repository ruleset requires review threads to be resolved before merging.
+The repository ruleset requires review threads to be resolved before merging. As of #258,
+`pr-merge` catches this itself before ever calling `gh pr merge` — see the [exit-code
+contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) — so this scenario now
+mostly shows up when `gh pr merge` is invoked directly (bypassing `pr-merge`) rather than
+as the ruleset's own rejection.
 
 1. Resolve all review conversation threads (click "Resolve conversation" on each)
 2. **This is a human step.** `gh pr merge` is human-only in every form — see

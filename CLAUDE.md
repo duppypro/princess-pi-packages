@@ -39,7 +39,7 @@ Full spec: `docs/dev-workflow-spec.md`.
 | `pr-merge [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**) |
 | `pr-reject [-b <branch>] [reason]` | Closes that branch's PR without merging; defaults to the current branch (**human-only**) |
 | `pr-cleanup` | Deletes branch + remote + worktree after the PR is merged |
-| `pr-threads <pr#> [--json]` | Unresolved review-conversation count (exit 0 = none; scriptable merge gate). `--json` adds thread ids, every comment body, and a `trusted` flag |
+| `pr-threads <pr#> [--json]` | Review state for a PR — unresolved conversations AND whether a review covers the current head (exit 0 = clean; scriptable merge gate; full exit-code table in the spec). `--json` adds thread ids, every comment body, a `trusted` flag, and head/reviewedHead/latestReviewCommit |
 
 Retired-tool history (what replaced what, and why) lives in `docs/dev-workflow-spec.md`.
 `install-workflow-tools` reports any stale copy it finds on `PATH` at install time — that's
