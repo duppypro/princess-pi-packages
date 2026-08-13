@@ -163,6 +163,12 @@ it; `install-workflow-tools --check` reports drift without writing and exits 1, 
 `tests/hooks-deploy-drift.test.ts` fails the suite when the hook this host actually runs
 differs from `hooks/`.
 
+`--check` asks three questions, not one: is the file **there**, is it **executable**, and
+does it **match**. Identical bytes with the executable bit cleared is still a disarmed
+guardrail — Claude Code execs the path from `settings.json`, so a hook it cannot run gates
+nothing. A file missing from `hooks/` itself fails both modes rather than warning: the
+manifest is stale, and only a human can say whether it was renamed or should be dropped.
+
 That gate exists because the alternative was measured (#249/#217): the deployed copy
 spent weeks 56 lines behind source, missing the whole `check_gh_command` function, so
 `gh pr merge 5 --squash` exited 0 on the very machine the gate was written for. Nothing

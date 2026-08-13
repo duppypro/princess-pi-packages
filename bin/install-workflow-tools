@@ -8,8 +8,9 @@
 #   install-workflow-tools --check   report drift, write nothing (doctor mode)
 #
 # Exit codes:
-#   0  installed, or --check found everything in sync
-#   1  --check found something missing or drifted from source
+#   0  installed everything, or --check found this host in sync
+#   1  --check found something missing, drifted, or not executable;
+#      or install could not complete because a managed file is gone from source
 #  64  bad usage
 #
 # Why hooks live here too (#249): the deployed copy of block-dangerous-git.sh
@@ -26,7 +27,8 @@ HOOKS_DIR="$HOME/.claude/hooks"
 MODE=install
 case "${1:-}" in
   --check) MODE=check ;;
-  -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  # Header IS the help text — keep the range covering Usage + Exit codes.
+  -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "") ;;
   *) echo "install-workflow-tools: unknown argument '$1' (try --help)" >&2; exit 64 ;;
 esac
@@ -68,14 +70,26 @@ drift_found=0
 # ---
 deploy() {
   local src="$1" dest="$2" label="$3"
+  # A managed file that is gone from SOURCE is drift, not a footnote. This used
+  # to warn and return with drift_found untouched, so `--check` printed
+  # "In sync" for a hook that no longer existed and install still exited 0 —
+  # the drift check signing off on its own blind spot. Fails in BOTH modes:
+  # the manifest above is wrong either way, and only a human can say whether
+  # the file was renamed or should be dropped from the list.
   if [ ! -f "$src" ]; then
-    echo "   ⚠️  $label not found in source — skipping"
+    drift_found=1
+    echo "   ❌ $label MISSING FROM SOURCE at $src — manifest is stale, deployed copy left as-is"
     return
   fi
   if [ "$MODE" = check ]; then
     if [ ! -f "$dest" ]; then
       drift_found=1
       echo "   ❌ $label MISSING at $dest"
+    elif [ ! -x "$dest" ]; then
+      # settings.json wires hooks by path and Claude Code execs them. A hook it
+      # cannot exec gates nothing, so identical bytes are not enough.
+      drift_found=1
+      echo "   ❌ $label NOT EXECUTABLE at $dest — wired but unrunnable"
     elif ! cmp -s "$src" "$dest"; then
       drift_found=1
       echo "   ❌ $label DRIFTED at $dest (differs from $src)"
@@ -117,6 +131,12 @@ if [ "$MODE" = check ]; then
   fi
   echo "✅ In sync with $REPO_DIR."
   exit 0
+fi
+
+if [ "$drift_found" -eq 1 ]; then
+  echo "❌ One or more managed files are missing from source — this host was NOT fully synced." >&2
+  echo "   Fix the SCRIPTS/HOOKS manifest in $0, or restore the file, then re-run." >&2
+  exit 1
 fi
 
 echo "✅ Done. Run 'hash -r' or open a new shell to refresh PATH."

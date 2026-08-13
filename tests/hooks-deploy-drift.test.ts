@@ -128,6 +128,63 @@ console.log("hooks deploy + drift gate (#249)");
 	);
 }
 
+// 4b. Content matches, but the deployed hook is no longer executable (PR #255
+//     review). settings.json wires the hook by path and Claude Code execs it;
+//     a hook it cannot exec gates nothing, so `cmp` alone is the wrong question.
+{
+	const home = freshHome();
+	run(home);
+	const dest = path.join(home, ".claude", "hooks", "block-dangerous-git.sh");
+	fs.chmodSync(dest, 0o644);
+
+	const { code, out } = run(home, ["--check"]);
+	check(code === 1, "--check with a non-executable deployed hook → exit 1", `got ${code}, out:\n${out}`);
+	check(out.includes("block-dangerous-git.sh"), "--check names the non-executable hook", out);
+	check((fs.statSync(dest).mode & 0o111) === 0, "--check did not silently chmod it back (report, not repair)");
+
+	const repair = run(home);
+	check(repair.code === 0, "install run after chmod → exit 0", repair.out);
+	check((fs.statSync(dest).mode & 0o111) !== 0, "install run restored the executable bit");
+}
+
+// 4c. A managed file missing FROM SOURCE (renamed/deleted in the repo, still
+//     listed here). Previously this printed a warning and exited 0 in both
+//     modes, so `--check` would report "in sync" for a hook that no longer
+//     exists — the drift check signing off on its own blind spot (PR #255
+//     review). Driven against a synthetic repo whose hooks/ is empty.
+{
+	const home = freshHome();
+	const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-deploy-repo-"));
+	fs.mkdirSync(path.join(fakeRepo, "bin"), { recursive: true });
+	fs.mkdirSync(path.join(fakeRepo, "hooks"), { recursive: true }); // present but EMPTY
+	fs.copyFileSync(INSTALLER, path.join(fakeRepo, "bin", "install-workflow-tools"));
+	for (const s of ["git-checkpoint", "git-overview", "pr-open", "pr-merge", "pr-reject", "pr-cleanup", "pr-threads"]) {
+		fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fakeRepo, "bin", s));
+	}
+	const fakeInstaller = path.join(fakeRepo, "bin", "install-workflow-tools");
+
+	const runFake = (args: string[] = []) => {
+		try {
+			const out = execFileSync("bash", [fakeInstaller, ...args], {
+				encoding: "utf8",
+				env: { ...process.env, HOME: home },
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			return { code: 0, out };
+		} catch (err: any) {
+			return { code: err?.status ?? -1, out: `${err?.stdout || ""}${err?.stderr || ""}` };
+		}
+	};
+
+	const install = runFake();
+	check(install.code !== 0, "install with a hook missing from source → nonzero exit", `got ${install.code}, out:\n${install.out}`);
+	check(install.out.includes("block-dangerous-git.sh"), "install names the hook missing from source", install.out);
+
+	const checked = runFake(["--check"]);
+	check(checked.code === 1, "--check with a hook missing from source → exit 1, not 'in sync'", `got ${checked.code}, out:\n${checked.out}`);
+	check(!/in sync with/i.test(checked.out), "--check does not claim 'In sync' when a source file is gone", checked.out);
+}
+
 // 5. The gate itself: the tracked hook must block `gh pr merge`. This is the
 //    property the 56-line drift silently removed, asserted directly so it
 //    cannot be edited out of the source either (#183/#189/#208 keep the
