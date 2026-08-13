@@ -1,10 +1,35 @@
 #!/usr/bin/env bash
-# install-workflow-tools — copy all workflow scripts from p-p-p/bin/ to ~/bin/.
-# Run from the princess-pi-packages repo root.
+# install-workflow-tools — make this host match the repo: workflow scripts from
+# p-p-p/bin/ → ~/bin/, Claude Code PreToolUse hooks from p-p-p/hooks/ →
+# ~/.claude/hooks/.
+#
+# Usage:
+#   install-workflow-tools           install/refresh both sets
+#   install-workflow-tools --check   report drift, write nothing (doctor mode)
+#
+# Exit codes:
+#   0  installed, or --check found everything in sync
+#   1  --check found something missing or drifted from source
+#  64  bad usage
+#
+# Why hooks live here too (#249): the deployed copy of block-dangerous-git.sh
+# sat 56 lines behind source — missing the whole `check_gh_command` function —
+# so `gh pr merge` ran ungated on the very host that hook was written for.
+# Nothing deployed hooks/, because deployment was somebody's memory. One
+# command now covers both halves, and `--check` makes the gap loud.
 set -euo pipefail
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 INSTALL_DIR="$HOME/bin"
+HOOKS_DIR="$HOME/.claude/hooks"
+
+MODE=install
+case "${1:-}" in
+  --check) MODE=check ;;
+  -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  "") ;;
+  *) echo "install-workflow-tools: unknown argument '$1' (try --help)" >&2; exit 64 ;;
+esac
 
 SCRIPTS=(
   git-checkpoint
@@ -14,6 +39,12 @@ SCRIPTS=(
   pr-reject
   pr-cleanup
   pr-threads
+)
+
+# Claude Code reads these from ~/.claude/hooks — settings.json wires them by
+# path, so the file on the host IS the enforcement. Source of truth is hooks/.
+HOOKS=(
+  block-dangerous-git.sh
 )
 
 # Tools this installer used to delete from ~/bin on every run (#235 — an
@@ -28,21 +59,68 @@ STALE=(
   "post-merge-cleanup:removed in #207, replaced by pr-cleanup"
 )
 
-echo "📦 Installing workflow tools to $INSTALL_DIR..."
+drift_found=0
 
-mkdir -p "$INSTALL_DIR"
+# ---
+# Deploy one file, or (check mode) report how the deployed copy differs.
+# Check mode never writes: a check that repairs is a check that hides the drift
+# it found, which is exactly how #249 stayed invisible.
+# ---
+deploy() {
+  local src="$1" dest="$2" label="$3"
+  if [ ! -f "$src" ]; then
+    echo "   ⚠️  $label not found in source — skipping"
+    return
+  fi
+  if [ "$MODE" = check ]; then
+    if [ ! -f "$dest" ]; then
+      drift_found=1
+      echo "   ❌ $label MISSING at $dest"
+    elif ! cmp -s "$src" "$dest"; then
+      drift_found=1
+      echo "   ❌ $label DRIFTED at $dest (differs from $src)"
+    else
+      echo "   ✅ $label in sync"
+    fi
+    return
+  fi
+  cp "$src" "$dest"
+  chmod +x "$dest"
+  echo "   ✅ $label"
+}
+
+if [ "$MODE" = check ]; then
+  echo "🔎 Checking this host against $REPO_DIR..."
+else
+  echo "📦 Installing workflow tools to $INSTALL_DIR..."
+  mkdir -p "$INSTALL_DIR" "$HOOKS_DIR"
+fi
 
 for script in "${SCRIPTS[@]}"; do
-  if [ -f "$REPO_DIR/bin/$script" ]; then
-    cp "$REPO_DIR/bin/$script" "$INSTALL_DIR/$script"
-    chmod +x "$INSTALL_DIR/$script"
-    echo "   ✅ $script"
-  else
-    echo "   ⚠️  $script not found in bin/ — skipping"
-  fi
+  deploy "$REPO_DIR/bin/$script" "$INSTALL_DIR/$script" "$script"
 done
 
+if [ "$MODE" = check ]; then
+  echo "🔎 Checking hooks against $HOOKS_DIR..."
+else
+  echo "🪝 Installing Claude Code hooks to $HOOKS_DIR..."
+fi
+
+for hook in "${HOOKS[@]}"; do
+  deploy "$REPO_DIR/hooks/$hook" "$HOOKS_DIR/$hook" "$hook"
+done
+
+if [ "$MODE" = check ]; then
+  if [ "$drift_found" -eq 1 ]; then
+    echo "❌ Drift found — this host is not running the tracked versions. Fix: $0"
+    exit 1
+  fi
+  echo "✅ In sync with $REPO_DIR."
+  exit 0
+fi
+
 echo "✅ Done. Run 'hash -r' or open a new shell to refresh PATH."
+echo "   Hooks take effect on the next Claude Code session (settings.json wires them by path)."
 
 stale_found=0
 for entry in "${STALE[@]}"; do

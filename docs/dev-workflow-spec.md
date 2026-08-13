@@ -142,11 +142,36 @@ standing on. (Wording coordinated with #225, which owns the guardrail's canonica
 description; if that issue changes the hook's behavior, this section may need a
 re-measure.)
 
-**`gh pr merge` in any form is human-only**, regardless of flags. Measured: both
-`gh pr merge <N> --squash` and `gh pr merge <N> --squash --admin` are currently allowed
-for an agent to run directly — enforcement for this specific command arrives only once
-#217 deploys. Until then, the rule holds by convention, not by a technical block: an
-agent runs `pr-open` and stops; a human runs `pr-merge`/`pr-reject`.
+**`gh pr merge` in any form is human-only**, regardless of flags — and since #249 that
+is a technical block, not only a convention. Measured against the deployed hook
+(2026-08-12):
+
+```
+gh pr merge 5 --squash                             → exit 2  blocked
+sudo gh pr merge --squash                          → exit 2  blocked
+GH_HOST=github.com gh pr merge                     → exit 2  blocked
+gh pr create --base main                           → exit 0  allowed
+```
+
+An agent runs `pr-open` and stops; a human runs `pr-merge`/`pr-reject`.
+
+### Getting the hook onto the host
+
+The file in `~/.claude/hooks/` *is* the enforcement — `settings.json` wires it by path,
+so whatever sits there is what runs, merged or not. `bin/install-workflow-tools` deploys
+it; `install-workflow-tools --check` reports drift without writing and exits 1, and
+`tests/hooks-deploy-drift.test.ts` fails the suite when the hook this host actually runs
+differs from `hooks/`.
+
+That gate exists because the alternative was measured (#249/#217): the deployed copy
+spent weeks 56 lines behind source, missing the whole `check_gh_command` function, so
+`gh pr merge 5 --squash` exited 0 on the very machine the gate was written for. Nothing
+copied `hooks/` anywhere — the install target was documented as a fact and implemented
+as a habit. The parity test passed throughout, because it runs the repo copy.
+
+The Pi twin (`extensions/git-guardrails.ts`) needs no deploy step: Pi loads it from the
+globally linked package, which is a symlink to the clone, so it cannot lag the way a
+copied file can. Copying is what drifts; linking is what doesn't.
 
 ## Trigger words
 
@@ -165,7 +190,7 @@ agent runs `pr-open` and stops; a human runs `pr-merge`/`pr-reject`.
 | `pr-threads <pr#> [owner/repo] [--json]` | Unresolved review-conversation count. Exit 0 = none; exit 1 lists each thread's file and URL. Scriptable merge gate — `gh pr view` has no unresolved-conversation field, that state exists only in GraphQL. `--json` emits the thread bodies and ids an agent needs to *act* on the review. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` |
 | `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
-| `install-workflow-tools` | Copies every script above from this repo's `bin/` to `~/bin/`. Not itself installed by itself — run from a clone. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). |
+| `install-workflow-tools [--check]` | Makes this host match the repo: every script above from `bin/` → `~/bin/`, plus the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249). Not itself installed by itself — run from a clone. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
 
 This table is the installer's contract: every script it copies must have a row here, and
 every row that's an installable script must be in `install-workflow-tools`' `SCRIPTS`
