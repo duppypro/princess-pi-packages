@@ -395,6 +395,56 @@ deploy. `block-edit-on-main.sh` and `preedit-reread-check.py` have no Pi twin ye
 are Claude-Code-only, deployed and drift-checked the same copy-based way as
 `block-dangerous-git.sh`.
 
+### Getting the statusline scripts onto the host
+
+`statusline/` holds the two scripts `settings.json` wires as `statusLine` and
+`subagentStatusLine`, and `install-workflow-tools` deploys them to `~/.claude/` —
+**not** `~/.claude/hooks/`. The literal path in `settings.json` (`bash
+~/.claude/<name>.sh`) is the contract, so that directory is not a choice.
+
+| Script | Renders |
+|---|---|
+| `statusline-command.sh` | model, cwd, branch, session tokens, `$` cost, context bar, session tag — and appends one JSONL audit record per *change* to `~/.claude/statusline-logs/<session>.jsonl`, which is the only on-disk copy of Claude Code's own `cost.total_cost_usd` and the thing `wtft`'s transcript-derived cost is reconciled against (#149) |
+| `subagent-statusline.sh` | one row per running subagent: model (`OPUS!` / `FABLE!` rendered loudly, since silent inheritance of the flagship model is the routing rule's failure mode), context share, elapsed, and an `idle` flag when the token series stops moving |
+
+They are here rather than in `dotfiles-doctor` because ADR 0001 splits on
+**executable tooling vs. configuration and prose**, and a statusline script is a
+harness enhancement. `subagent-statusline.sh` reached 2026-08-14 tracked by *no*
+repo while `settings.json` invoked it by path, so a fresh host got a statusline
+command pointing at a file that did not exist (dotfiles-doctor#17, answered here
+instead of there). `tests/statusline-deploy-drift.test.ts` gates deploy, drift,
+and the payload each script actually renders from.
+
+Deploying into `~/.claude/` itself — the directory holding `settings.json`, which
+carries a live credential (princess-pi-brain#12) — is only acceptable because the
+installer writes per-file from the `STATUSLINES` manifest and never syncs a
+directory. `tests/installer-path-ownership.test.ts` asserts that empirically: a
+full install into a seeded temp `$HOME` writes exactly the manifest and leaves
+`settings.json`, `settings.local.json`, `~/.claude/CLAUDE.md` and
+`~/git-projects/CLAUDE.md` byte-for-byte untouched.
+
+### One owner per path (ADR 0001)
+
+Two repos write to `$HOME`. [ADR 0001](adr/0001-princess-pi-packages-owns-harness-tooling.md)
+gives each artifact exactly one owning repo — this one owns executable tooling
+(`~/bin/*`, `~/.claude/hooks/*`, `~/.claude/skills/*`, the statusline scripts);
+`dotfiles-doctor` owns host configuration and prose.
+
+That trade trades away dotfiles-doctor's single-writer invariant, so the narrower
+one replacing it has to be machine-checked — the failure it prevents is invisible
+by construction. `install-workflow-tools --check` reports "in sync" *truthfully*
+while knowing nothing about the other repo's copy, and dotfiles-doctor's snapshot
+pass is equally blind. Measured cost of that blindness (dotfiles-doctor#18):
+`block-edit-on-main.sh` existed in three places with the two repo copies drifted
+in **opposite** directions, so whichever installer ran last silently reverted the
+other, and dotfiles-doctor's own shipped fix was running on no machine at all.
+
+`tests/installer-path-ownership.test.ts` is the gate. It skips cleanly on a host
+with no `dotfiles-doctor` clone (one installer, no overlap possible), and carries
+a **waiver list** for the overlaps the campaign has not reached yet — each naming
+its issue, and each asserted *still needed*, so a waiver whose overlap is gone
+fails and the list drains itself instead of becoming decoration.
+
 ## Trigger words
 
 - **"ready to merge?"** → run `pr-open` to create the PR.
@@ -416,7 +466,7 @@ are Claude-Code-only, deployed and drift-checked the same copy-based way as
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). |
 | `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
-| `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, plus the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
+| `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249), and the statusline scripts from `statusline/` → `~/.claude/` (#227). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Never writes configuration or prose — `settings.json`, `~/.claude/CLAUDE.md`, `~/git-projects/CLAUDE.md` are dotfiles-doctor's under ADR 0001. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
 
 This table is the installer's contract: every script it copies must have a row here, and
 every row that's an installable script must be in `install-workflow-tools`' `SCRIPTS`

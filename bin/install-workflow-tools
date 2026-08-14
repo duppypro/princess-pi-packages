@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # install-workflow-tools — make this host match the repo: workflow scripts from
 # p-p-p/bin/ → ~/bin/ (itself included, #263), Claude Code PreToolUse hooks
-# from p-p-p/hooks/ → ~/.claude/hooks/.
+# from p-p-p/hooks/ → ~/.claude/hooks/, statusline scripts from
+# p-p-p/statusline/ → ~/.claude/ (#227).
 #
 # Usage:
-#   install-workflow-tools           install/refresh both sets
+#   install-workflow-tools           install/refresh all three sets
 #   install-workflow-tools --check   report drift, write nothing (doctor mode)
 #
 # Exit codes:
@@ -18,6 +19,17 @@
 # so `gh pr merge` ran ungated on the very host that hook was written for.
 # Nothing deployed hooks/, because deployment was somebody's memory. One
 # command now covers both halves, and `--check` makes the gap loud.
+#
+# Why statusline scripts too (#227 / ADR 0001 / dotfiles-doctor#17): they are
+# harness enhancements — executable tooling, not config — so ADR 0001 puts them
+# in this repo. `subagent-statusline.sh` reached this point tracked by NO repo
+# at all while `settings.json` invoked it by path, so a fresh host got a
+# statusline command pointing at a file that did not exist.
+#
+# What this installer must NEVER write: ~/.claude/settings.json (it holds a
+# live credential — princess-pi-brain#12), ~/.claude/CLAUDE.md, and
+# ~/git-projects/CLAUDE.md. Those are configuration and prose, which ADR 0001
+# leaves with dotfiles-doctor. Asserted by tests/installer-path-ownership.test.ts.
 set -euo pipefail
 
 # REPO_DIR resolution has to survive two invocation shapes (#263):
@@ -89,6 +101,12 @@ if [ -z "$REPO_DIR" ]; then
 fi
 INSTALL_DIR="$HOME/bin"
 HOOKS_DIR="$HOME/.claude/hooks"
+# Statusline scripts sit directly in ~/.claude, NOT in a subdirectory —
+# settings.json wires them as `bash ~/.claude/<name>.sh`, so that literal path
+# is the contract. This is the same directory that holds settings.json, which
+# this installer must never touch; deploys are per-file from the STATUSLINES
+# manifest, never a directory sync, and that is what keeps the two apart.
+STATUSLINE_DIR="$HOME/.claude"
 
 # This installer no longer needs jq itself (see is_this_repo() above), but
 # most of what it DEPLOYS does: pr-threads, pr-merge, and pr-cleanup all lean
@@ -109,7 +127,7 @@ MODE=install
 case "${1:-}" in
   --check) MODE=check ;;
   # Header IS the help text — keep the range covering Usage + Exit codes.
-  -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "") ;;
   *) echo "install-workflow-tools: unknown argument '$1' (try --help)" >&2; exit 64 ;;
 esac
@@ -137,6 +155,14 @@ HOOKS=(
   block-dangerous-git.sh
   block-edit-on-main.sh
   preedit-reread-check.py
+)
+
+# Claude Code invokes these from settings.json's `statusLine` /
+# `subagentStatusLine` as `bash ~/.claude/<name>.sh`. Source of truth is
+# statusline/ (#227, ADR 0001 — harness enhancement, therefore this repo).
+STATUSLINES=(
+  statusline-command.sh
+  subagent-statusline.sh
 )
 
 # Tools this installer used to delete from ~/bin on every run (#235 — an
@@ -209,7 +235,7 @@ if [ "$MODE" = check ]; then
   echo "🔎 Checking this host against $REPO_DIR..."
 else
   echo "📦 Installing workflow tools to $INSTALL_DIR..."
-  mkdir -p "$INSTALL_DIR" "$HOOKS_DIR"
+  mkdir -p "$INSTALL_DIR" "$HOOKS_DIR" "$STATUSLINE_DIR"
 fi
 
 for script in "${SCRIPTS[@]}"; do
@@ -227,6 +253,16 @@ for hook in "${HOOKS[@]}"; do
 done
 
 if [ "$MODE" = check ]; then
+  echo "🔎 Checking statusline scripts against $STATUSLINE_DIR..."
+else
+  echo "📊 Installing statusline scripts to $STATUSLINE_DIR..."
+fi
+
+for sl in "${STATUSLINES[@]}"; do
+  deploy "$REPO_DIR/statusline/$sl" "$STATUSLINE_DIR/$sl" "$sl"
+done
+
+if [ "$MODE" = check ]; then
   if [ "$drift_found" -eq 1 ]; then
     echo "❌ Drift found — this host is not running the tracked versions. Fix: $0"
     exit 1
@@ -237,12 +273,12 @@ fi
 
 if [ "$drift_found" -eq 1 ]; then
   echo "❌ One or more managed files are missing from source — this host was NOT fully synced." >&2
-  echo "   Fix the SCRIPTS/HOOKS manifest in $0, or restore the file, then re-run." >&2
+  echo "   Fix the SCRIPTS/HOOKS/STATUSLINES manifest in $0, or restore the file, then re-run." >&2
   exit 1
 fi
 
 echo "✅ Done. Run 'hash -r' or open a new shell to refresh PATH."
-echo "   Hooks take effect on the next Claude Code session (settings.json wires them by path)."
+echo "   Hooks and statusline scripts take effect on the next Claude Code session (settings.json wires them by path)."
 
 stale_found=0
 for entry in "${STALE[@]}"; do

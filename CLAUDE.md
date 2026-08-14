@@ -28,7 +28,10 @@ exits 0. `bun run test` runs each suite in its own process. See
 ## Shipped scripts
 
 Run `bin/install-workflow-tools` to sync this host: scripts → `~/bin/`, guardrail hooks
-(`hooks/`) → `~/.claude/hooks/`. `--check` reports drift and writes nothing.
+(`hooks/`) → `~/.claude/hooks/`, statusline scripts (`statusline/`) → `~/.claude/`.
+`--check` reports drift and writes nothing. It never writes configuration or prose —
+`settings.json` and the `CLAUDE.md` files belong to `dotfiles-doctor` under
+[ADR 0001](docs/adr/0001-princess-pi-packages-owns-harness-tooling.md).
 Full spec: `docs/dev-workflow-spec.md`.
 
 | Script | Does |
