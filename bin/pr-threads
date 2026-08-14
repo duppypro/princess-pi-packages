@@ -190,6 +190,8 @@ head_sha=""
 head_extracted=0
 reviews_json="[]"
 null_commit_review_count=0
+unknown_author_review_count=0
+pr_author=""
 page_num=0
 
 while true; do
@@ -201,10 +203,12 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
       headRefOid
+      author { login }
       reviews(last: 100) {
         nodes {
           commit { oid }
           submittedAt
+          author { login }
         }
       }
       reviewThreads(first: 100, after: $after) {
@@ -268,10 +272,65 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
     # submittedAt: null — visible only to their own author, but a bot polling
     # its own drafts would otherwise cover a head it never actually submitted
     # a review against. Filter to submitted reviews only.
-    jq_or_die reviews_json -c '[.data.repository.pullRequest.reviews.nodes[]?
+    # The PR's own author (#269). Needed to tell an INDEPENDENT review from the
+    # author answering their own review threads — see the reviews_json filter
+    # directly below for why that distinction is the whole gate.
+    jq_or_die pr_author -r '.data.repository.pullRequest.author.login // empty'
+
+    # reviews_json holds the commit oids of INDEPENDENT submitted reviews only:
+    # submitted, commit resolvable, and authored by someone other than the PR's
+    # own author. Everything downstream (reviewed_head, no_reviews,
+    # latest_review_commit) reads this one array, so filtering here is what
+    # makes "reviewed" mean "someone else looked", with no further changes.
+    #
+    # #269: GitHub records a reply to a review thread as a submitted
+    # PullRequestReview (state COMMENTED) against the CURRENT head. So the act
+    # of answering a review marked the PR reviewed-at-head — by the same agent
+    # that pushed the commit under review. That is the #254 defect with a second
+    # route in, and it failed OPEN against the #258 merge gate: push a fix,
+    # answer the thread, gate goes green. Observed on PR #267 and again on #268,
+    # where it happened to be right for the wrong reason because macroscopeapp
+    # independently reviewed the same sha.
+    #
+    # Exact login equality, never a substring: `princess-pi-bot-2` is a
+    # different account from `princess-pi-bot` and its review IS independent.
+    # This is the same element-wise rule the `trusted` field already applies to
+    # comment authors, and getting it wrong here fails CLOSED — it would discard
+    # a real review and block a legitimately reviewed PR.
+    #
+    # Road not taken (#269's other direction): requiring APPROVED /
+    # CHANGES_REQUESTED and rejecting bare COMMENTED. It closes the same case
+    # structurally, but macroscopeapp's genuine review passes are COMMENTED, so
+    # it would report every real review as no-coverage and block every merge.
+    # Authorship is the distinction that matches intent; verdict state does not.
+    #
+    # Residual, accepted deliberately: a THIRD PARTY's reply to a thread is also
+    # a COMMENTED review at head and still counts as coverage. That is weaker
+    # evidence than a fresh review pass, but it requires someone other than the
+    # author to act, which is a materially different thing from an agent
+    # clearing its own gate. Narrowing it further needs the verdict-state filter
+    # ruled out above.
+    jq_or_die reviews_json -c --arg pr_author "$pr_author" \
+      '[.data.repository.pullRequest.reviews.nodes[]?
       | select(.submittedAt != null)
-      | .commit.oid // empty
-      | select(. != "")]'
+      | select((.commit.oid // "") != "")
+      | select($pr_author != "" and (.author.login // "") != "")
+      | select(.author.login != $pr_author)
+      | .commit.oid]'
+
+    # Reviews whose INDEPENDENCE cannot be decided (#269): a submitted review
+    # with a usable commit, but either the review's author or the PR's author
+    # came back null — a deleted/ghost account, which GitHub really does return.
+    # Such a review cannot be shown to be independent, so it must not prove
+    # coverage; but it is real review activity, so it must not be silently
+    # dropped into the exit-0 "nobody ever reviewed this" advisory path either.
+    # Same three-way partition as null_commit_review_count below, and consulted
+    # at the same point: only once reviews_json has failed to prove coverage.
+    jq_or_die unknown_author_review_count --arg pr_author "$pr_author" \
+      '[.data.repository.pullRequest.reviews.nodes[]?
+      | select(.submittedAt != null)
+      | select((.commit.oid // "") != "")
+      | select($pr_author == "" or (.author.login // "") == "")] | length'
     # macroscopeapp finding on PR #267 (rated High): a SUBMITTED review whose
     # `commit` is null — real but uncommon; typically a review whose commit no
     # longer resolves (force-push, GC'd object) — was silently dropped by the
@@ -446,7 +505,13 @@ if ! $head_known; then
   head_missing=true
   review_indeterminate=true
 elif [ "$reviewed_head" != "true" ]; then
-  if [ "$null_commit_review_count" -gt 0 ]; then
+  # unknown_author_review_count (#269) joins null_commit_review_count in the
+  # indeterminate bucket, for the same reason and at the same precedence: both
+  # mean "review activity happened that this run could not evaluate", which is
+  # neither provably-stale (blocked) nor provably-absent (advisory). Checked
+  # only here — after reviews_json has already failed to prove coverage — so an
+  # undecidable review never downgrades a PR that an independent review clears.
+  if [ "$null_commit_review_count" -gt 0 ] || [ "$unknown_author_review_count" -gt 0 ]; then
     review_indeterminate=true
   elif [ "$no_reviews" = "true" ]; then
     review_advisory=true
@@ -481,6 +546,8 @@ if [ "$json_mode" -eq 1 ]; then
     --argjson reviewedHead "$reviewed_head" \
     --arg latestReviewCommit "$latest_review_commit" \
     --argjson nullCommitReviewCount "$null_commit_review_count" \
+    --argjson unknownAuthorReviewCount "$unknown_author_review_count" \
+    --arg prAuthor "$pr_author" \
     '{
       schema: "pr-threads/list@1",
       repo: $repo,
@@ -491,6 +558,8 @@ if [ "$json_mode" -eq 1 ]; then
       reviewedHead: $reviewedHead,
       latestReviewCommit: ($latestReviewCommit | if . == "" then null else . end),
       nullCommitReviewCount: $nullCommitReviewCount,
+      unknownAuthorReviewCount: $unknownAuthorReviewCount,
+      prAuthor: ($prAuthor | if . == "" then null else . end),
       threads: .
     }'
   # Unresolved threads are a determined bad state regardless of review

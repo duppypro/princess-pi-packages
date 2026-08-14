@@ -19,7 +19,6 @@ import * as path from "node:path";
 // ---
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
-const TSC = path.join(REPO_ROOT, "node_modules", ".bin", "tsc");
 
 /**
  * A deliberately ill-typed file, dropped inside `include: ["bin/**\/*.ts"]` so it is checked by
@@ -43,14 +42,31 @@ function fail(msg: string): void {
 // Helpers
 // ---
 
-/** Run the declared `bun run typecheck` script — the exact command V1 is stated in terms of. */
-function runTypecheck(): { status: number; output: string } {
-	const r = spawnSync("bun", ["run", "typecheck"], {
+/**
+ * Run the declared `bun run typecheck` script — the exact command V1 is stated in terms of.
+ *
+ * Every tsc invocation in this suite goes through here (#264). V5 used to spawn a hardcoded
+ * `<REPO_ROOT>/node_modules/.bin/tsc` instead, and the two resolutions disagree in exactly the
+ * place all the work happens: a fresh worktree has no `node_modules/` of its own (git does not
+ * copy an ignored directory), and `tsc` is not on PATH either. `bun run` still succeeds there,
+ * because binary resolution walks UP the ancestor directories and worktrees have lived inside
+ * the clone since #257 — so it finds the main clone's `node_modules/.bin/tsc`. The hardcoded
+ * path could not, so V1 passed and V5 failed on a byte-identical tree.
+ *
+ * Extra args are appended to the declared script, so this cannot drift from what the repo
+ * actually ships the way a second, parallel tsc invocation silently did.
+ */
+function runTypecheck(extraArgs: string[] = []): { status: number; output: string; stdout: string } {
+	const r = spawnSync("bun", ["run", "typecheck", ...extraArgs], {
 		cwd: REPO_ROOT,
 		encoding: "utf8",
 		timeout: 120_000,
 	});
-	return { status: r.status ?? -1, output: `${r.stdout || ""}${r.stderr || ""}` };
+	return {
+		status: r.status ?? -1,
+		output: `${r.stdout || ""}${r.stderr || ""}`,
+		stdout: r.stdout || "",
+	};
 }
 
 // ---
@@ -69,14 +85,21 @@ if (clean.status !== 0) {
 // the flag is not reaching it; if OTHER .js files from the repo appear, allowJs widened the
 // program past what the spec claims and the blast radius needs re-examining.
 
-const listed = spawnSync(TSC, ["--noEmit", "--listFiles"], {
-	cwd: REPO_ROOT,
-	encoding: "utf8",
-	timeout: 120_000,
-});
-const files = (listed.stdout || "").split("\n").map(l => l.trim()).filter(Boolean);
+const listed = runTypecheck(["--listFiles"]);
+const files = listed.stdout.split("\n").map(l => l.trim()).filter(Boolean);
 
-if (!files.some(f => f.endsWith("extensions/lib/serve/cloudflare.js"))) {
+// A compiler that never ran produces an empty file list, and an empty file list satisfies every
+// "is X absent from the program" test in this section. Reporting that as an allowJs finding is
+// what #264 is: the gate named the one thing that was NOT wrong, in a worktree where the real
+// fault was that it could not invoke tsc at all. Separate the two states before asserting on
+// program contents, so a broken toolchain can never again be reported as a config regression.
+if (files.length === 0) {
+	fail(
+		`V5: tsc produced no file list, so allowJs could not be checked at all — this is a broken ` +
+		`toolchain, NOT an allowJs failure. \`bun run typecheck --listFiles\` exited ${listed.status}. ` +
+		`Run \`bun install\` and re-run.\nCompiler said:\n${listed.output}`,
+	);
+} else if (!files.some(f => f.endsWith("extensions/lib/serve/cloudflare.js"))) {
 	fail("V5: extensions/lib/serve/cloudflare.js is not in the checked program — allowJs is not reaching it.");
 }
 

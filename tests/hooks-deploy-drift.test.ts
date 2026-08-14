@@ -239,6 +239,157 @@ console.log("hooks deploy + drift gate (#249)");
 		"block-edit-on-main.sh blocks a symlink in a feature worktree whose target is inside a repo on 'main' (exit 2)",
 	);
 	check(verdict(path.join(nonRepo, "f.txt"), nonRepo) === 0, "block-edit-on-main.sh allows an edit outside any git work tree (exit 0)");
+
+	// --- #272: detached HEAD is two states, not one -------------------------
+	//
+	// The guard fails closed on an empty branch name, which is right for a
+	// plain `git checkout <sha>` (edit, walk away, work is unreferenced) and
+	// wrong for a rebase — where HEAD is detached by git itself and the files
+	// needing edits are the conflict markers git just wrote. The advice it
+	// printed ("git checkout -b") is unfollowable mid-rebase, so the hook's
+	// practical effect was to push the edit into an opaque shell heredoc: the
+	// #225 gap-3 bypass, with no record that a guarded file was touched.
+	//
+	// git already distinguishes the two states via state files in the git dir.
+	// The cases below exercise both, and both INSIDE A LINKED WORKTREE — the
+	// layout the workflow actually uses since #257, where the git dir is
+	// `<main>/.git/worktrees/<name>` and a fix that assumes `<toplevel>/.git`
+	// is a directory passes every other case and fails here.
+	const git = (cwd: string, ...args: string[]): void => {
+		execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdio: "ignore" });
+	};
+
+	/** A repo whose feature branch conflicts with main, left mid-rebase (detached, conflicted). */
+	const conflictedRebase = (label: string): { repo: string; file: string } => {
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), `hooks-mainguard-${label}-`));
+		git(repo, "init", "-q", "-b", "main");
+		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
+		git(repo, "add", "-A");
+		git(repo, "commit", "-qm", "base");
+		git(repo, "checkout", "-q", "-b", "42-slug");
+		fs.writeFileSync(path.join(repo, "f.txt"), "feature\n");
+		git(repo, "commit", "-qam", "feature");
+		git(repo, "checkout", "-q", "main");
+		fs.writeFileSync(path.join(repo, "f.txt"), "mainline\n");
+		git(repo, "commit", "-qam", "mainline");
+		git(repo, "checkout", "-q", "42-slug");
+		// Expected to exit non-zero: that IS the conflict this case is about.
+		try {
+			git(repo, "rebase", "main");
+		} catch {
+			/* conflict — the state under test */
+		}
+		return { repo, file: path.join(repo, "f.txt") };
+	};
+
+	{
+		const { repo, file } = conflictedRebase("rebase");
+		check(
+			fs.existsSync(path.join(repo, ".git", "rebase-merge")) ||
+				fs.existsSync(path.join(repo, ".git", "rebase-apply")),
+			"fixture sanity: the rebase really is in progress",
+		);
+		check(
+			execFileSync("git", ["branch", "--show-current"], { cwd: repo, encoding: "utf8" }).trim() === "",
+			"fixture sanity: mid-rebase HEAD really is detached",
+		);
+		check(
+			verdict(file, repo) === 0,
+			"block-edit-on-main.sh ALLOWS editing a conflicted file mid-rebase (#272, exit 0)",
+		);
+	}
+
+	{
+		// The case the guard was actually written for: detached with no
+		// operation in progress. Must still block.
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-detached-"));
+		git(repo, "init", "-q", "-b", "main");
+		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
+		git(repo, "add", "-A");
+		git(repo, "commit", "-qm", "base");
+		const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+		git(repo, "checkout", "-q", sha);
+		check(
+			verdict(path.join(repo, "f.txt"), repo) === 2,
+			"block-edit-on-main.sh still BLOCKS a plain detached checkout (#272 regression guard, exit 2)",
+		);
+	}
+
+	{
+		// Same two states, inside a LINKED WORKTREE (#257 layout). Here
+		// `<toplevel>/.git` is a FILE pointing at `<main>/.git/worktrees/<name>`,
+		// and the rebase state lives in that per-worktree dir — so only a fix
+		// that asks git for the git dir sees it.
+		const { repo } = conflictedRebase("wt-host");
+		git(repo, "rebase", "--abort");
+		const wt = path.join(repo, ".claude", "worktrees", "99-wt");
+		git(repo, "worktree", "add", "-q", "-b", "99-wt", wt, "42-slug");
+
+		check(
+			fs.statSync(path.join(wt, ".git")).isFile(),
+			"fixture sanity: a linked worktree's .git is a file, not a directory",
+		);
+		check(verdict(path.join(wt, "f.txt"), wt) === 0, "block-edit-on-main.sh allows an edit in a worktree on a feature branch (exit 0)");
+
+		fs.writeFileSync(path.join(wt, "f.txt"), "worktree-side\n");
+		git(wt, "commit", "-qam", "worktree-side");
+		try {
+			git(wt, "rebase", "main");
+		} catch {
+			/* conflict — the state under test */
+		}
+		check(
+			execFileSync("git", ["branch", "--show-current"], { cwd: wt, encoding: "utf8" }).trim() === "",
+			"fixture sanity: mid-rebase HEAD is detached inside the worktree too",
+		);
+		check(
+			verdict(path.join(wt, "f.txt"), wt) === 0,
+			"block-edit-on-main.sh ALLOWS editing a conflicted file mid-rebase INSIDE A LINKED WORKTREE (#272, exit 0)",
+		);
+
+		// And the plain-detached case inside the worktree still blocks, so the
+		// exemption is scoped to an operation in progress rather than to
+		// "worktrees are exempt".
+		git(wt, "rebase", "--abort");
+		const wtSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: wt, encoding: "utf8" }).trim();
+		git(wt, "checkout", "-q", wtSha);
+		check(
+			verdict(path.join(wt, "f.txt"), wt) === 2,
+			"block-edit-on-main.sh still BLOCKS a plain detached checkout inside a linked worktree (exit 2)",
+		);
+	}
+
+	{
+		// A merge conflict raised ON main is NOT exempted. The exemption is for
+		// detached HEAD specifically; on main the branch name is known, the
+		// HARD GATE applies, and "never merge locally" makes this a state the
+		// workflow does not produce. Widening the exemption to any in-progress
+		// operation would punch a hole straight through the main gate.
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-mergemain-"));
+		git(repo, "init", "-q", "-b", "main");
+		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
+		git(repo, "add", "-A");
+		git(repo, "commit", "-qm", "base");
+		git(repo, "checkout", "-q", "-b", "42-slug");
+		fs.writeFileSync(path.join(repo, "f.txt"), "feature\n");
+		git(repo, "commit", "-qam", "feature");
+		git(repo, "checkout", "-q", "main");
+		fs.writeFileSync(path.join(repo, "f.txt"), "mainline\n");
+		git(repo, "commit", "-qam", "mainline");
+		try {
+			git(repo, "merge", "42-slug");
+		} catch {
+			/* conflict — the state under test */
+		}
+		check(
+			fs.existsSync(path.join(repo, ".git", "MERGE_HEAD")),
+			"fixture sanity: the merge really is in progress on main",
+		);
+		check(
+			verdict(path.join(repo, "f.txt"), repo) === 2,
+			"block-edit-on-main.sh still BLOCKS a conflicted merge raised ON main (exemption is detached-only, exit 2)",
+		);
+	}
 }
 
 // 5c. preedit-reread-check.py (#237) — converts a doomed exact-match edit
