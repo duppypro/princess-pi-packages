@@ -496,7 +496,11 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
   only when some **independent** review's commit sha equals `head` — see
   *Independent reviews only* below. `latestReviewCommit` is the most
   recent independent review's commit sha, or
-  `null` if the PR has never been reviewed at all. These close a real gap: zero unresolved
+  `null` when there is **no independent review** — which since #269 covers two different
+  situations: the PR has never been reviewed by anyone, *and* the PR has been reviewed only
+  by its own author. Both are advisory (exit `0` on clean threads) for the same reason, so
+  the exit code does not separate them either; a caller that needs to tell them apart wants
+  `unknownAuthorReviewCount` and `prAuthor`, not this field. These close a real gap: zero unresolved
   threads used to mean either "reviewer looked at this head and had nothing to say" or
   "reviewer has never seen this head" — same output, opposite meanings. A bot that reviews
   once per PR rather than once per push means the commits most likely to need a second
