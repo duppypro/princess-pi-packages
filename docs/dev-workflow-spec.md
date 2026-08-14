@@ -688,6 +688,22 @@ re-derive the PR. Three outcomes:
 `pr-open` does **not** get this check — opening a PR with unresolved threads from an
 earlier review is normal and expected.
 
+All three outcomes, plus the TOCTOU guard, are covered in `tests/pr-scripts-args.test.ts`
+as of #279. They had no coverage before that, for a reason worth keeping: `pr-merge` execs
+`pr-threads` by **bare name**, so it resolves from `PATH` — and the suite's sandbox stubbed
+`gh` only. Every `pr-merge` case therefore reached the *host's* `~/bin/pr-threads`, which
+queried the real API for a fixture PR that never existed, exited `4`, and tripped the
+"could not verify" branch above. The scripts behaved perfectly; the suite silently stopped
+testing branch selection and started making a live network call on every run.
+
+The general lesson, and the reason a check now enforces it: **a stub environment is part of
+the contract under test.** `tests/pr-scripts-args.test.ts` scans `pr-merge` and `pr-reject`
+for command-position invocations of anything in `bin/` and asserts each one is stubbed in
+the sandbox, so the next helper call added to a `pr-*` script fails loudly by name instead
+of quietly escaping to `~/bin`. Command position specifically — `pr-merge` names
+`pr-threads` six times in its own error prose, and matching the bare string would flag all
+of them.
+
 ### `pr-cleanup` fails closed, by design
 
 Every gate aborts when it cannot **prove** its precondition. It never treats a failed
