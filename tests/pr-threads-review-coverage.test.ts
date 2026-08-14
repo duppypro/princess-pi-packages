@@ -79,7 +79,27 @@ interface FixtureOpts {
 	noHeadRefOid?: boolean;
 	/** Same defect, but `headRefOid` is present as explicit JSON `null` rather than omitted. */
 	headRefOidNull?: boolean;
+	/**
+	 * Login of the PR's own author (#269). Defaults to a login that is NOT the
+	 * default reviewer below, so every fixture written before #269 keeps
+	 * describing an independently-reviewed PR and keeps its original verdict.
+	 * `null` models a deleted/ghost account — GitHub really does return a null
+	 * `author` for one, and self-authorship then cannot be decided at all.
+	 */
+	prAuthor?: string | null;
+	/**
+	 * Review authors, positionally parallel to `reviewCommits` (#269). A short
+	 * list is padded with the default reviewer, so a case only has to name the
+	 * authors it actually cares about. `null` at a position models a review by
+	 * a deleted account.
+	 */
+	reviewAuthors?: (string | null)[];
 }
+
+/** The default reviewer — a third party, distinct from DEFAULT_PR_AUTHOR. */
+const DEFAULT_REVIEWER = "macroscopeapp";
+/** The default PR author — matches the bot that actually raises PRs here. */
+const DEFAULT_PR_AUTHOR = "princess-pi-bot";
 
 function page(opts: FixtureOpts = {}): string {
 	const unresolved = opts.unresolvedThreads ?? 0;
@@ -119,19 +139,32 @@ function page(opts: FixtureOpts = {}): string {
 		} else {
 			pullRequest.headRefOid = opts.headRefOid ?? "head0000";
 		}
+		// The PR's own author (#269). `null` is a real API shape (deleted
+		// account), and is spelled as an explicit null node rather than an
+		// omitted key because that is what GitHub returns.
+		const prAuthor = opts.prAuthor === undefined ? DEFAULT_PR_AUTHOR : opts.prAuthor;
+		pullRequest.author = prAuthor === null ? null : { login: prAuthor };
+		const reviewAuthor = (i: number): { login: string } | null => {
+			const a = opts.reviewAuthors?.[i];
+			if (a === null) return null;
+			return { login: a ?? DEFAULT_REVIEWER };
+		};
 		pullRequest.reviews = {
 			nodes: [
 				...(opts.reviewCommits ?? []).map((oid, i) => ({
 					commit: { oid },
 					submittedAt: `2026-08-1${i}T00:00:00Z`,
+					author: reviewAuthor(i),
 				})),
 				...(opts.pendingReviewCommits ?? []).map((oid) => ({
 					commit: { oid },
 					submittedAt: null,
+					author: { login: DEFAULT_REVIEWER },
 				})),
 				...Array.from({ length: opts.nullCommitReviews ?? 0 }, (_, i) => ({
 					commit: null,
 					submittedAt: `2026-08-2${i}T00:00:00Z`,
+					author: { login: DEFAULT_REVIEWER },
 				})),
 			],
 		};
@@ -582,6 +615,191 @@ console.log("\n#267 null-commit review coverage (exact exit codes):");
 		"unresolved + indeterminate --json → nullCommitReviewCount still reported",
 		JSON.stringify(doc),
 	);
+}
+
+// ---
+// 9. #269 — the PR author's own thread REPLY is recorded by GitHub as a
+//    submitted `PullRequestReview` (state COMMENTED) against the current head.
+//    So the act of answering a review marked the PR reviewed-at-head, by the
+//    very agent that pushed the commit under review. That is the original #254
+//    defect with a second route in, and it fails OPEN against the #258 merge
+//    gate.
+//
+//    The rule under test: a review proves coverage only if it is submitted, its
+//    commit is head, AND its author is not the PR's own author. Self-authorship
+//    is decided by exact login match — the same element-wise comparison the
+//    `trusted` field already uses, not a substring test.
+//
+//    The trap this section exists to pin (named in the #268 handoff): rejecting
+//    author-authored reviews WITHOUT covering the mixed case trades a fail-open
+//    for a fail-closed that blocks every real merge, because the author always
+//    replies. Case 9b is that mixed case and it must stay exit 0.
+// ---
+
+// 9a. The recorded PR #267 shape: a real review at an OLD commit, then two
+//     self-authored replies at head. Coverage must NOT be claimed.
+console.log("\n#269 — author's own thread replies do not cover head:");
+{
+	const p = page({
+		headRefOid: "64ac251",
+		reviewCommits: ["cc3bc30", "64ac251", "64ac251"],
+		reviewAuthors: ["macroscopeapp", "princess-pi-bot", "princess-pi-bot"],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 0,
+		totalThreads: 4,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 1, "author's replies at head → blocking, not clean (exit 1)", `got ${code}, output:\n${out}`);
+	check(!/✅/.test(out), "author's replies at head → no ✅ authorizing a merge", out);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.reviewedHead === false, "author's replies at head → --json reviewedHead: false", JSON.stringify(doc));
+	check(
+		doc?.unresolvedCount === 0,
+		"author's replies at head → unresolvedCount still 0 (threads and coverage stay independent)",
+		JSON.stringify(doc),
+	);
+}
+
+// 9b. THE MIXED CASE — the fail-closed trap. Same as 9a plus a genuine review
+//     by a third party at head (what actually happened on #268). The author's
+//     replies are still present and still ignored; the independent review
+//     alone decides. This must stay exit 0 or every real merge is blocked.
+console.log("\n#269 — an independent review at head still counts (mixed case):");
+{
+	const p = page({
+		headRefOid: "64ac251",
+		reviewCommits: ["cc3bc30", "64ac251", "64ac251", "64ac251"],
+		reviewAuthors: ["macroscopeapp", "princess-pi-bot", "princess-pi-bot", "macroscopeapp"],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 0,
+		totalThreads: 4,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 0, "independent review at head alongside author replies → exit 0", `got ${code}, output:\n${out}`);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.reviewedHead === true, "mixed case → --json reviewedHead: true", JSON.stringify(doc));
+	check(
+		doc?.latestReviewCommit === "64ac251",
+		"mixed case → latestReviewCommit is the independent review's commit",
+		JSON.stringify(doc),
+	);
+}
+
+// 9c. A COMMENTED review by a third party is still coverage. Requiring
+//     APPROVED/CHANGES_REQUESTED was the other direction in #269 and is
+//     deliberately NOT taken: macroscopeapp's genuine first pass is COMMENTED,
+//     so a verdict-state filter would report every real review as no coverage.
+console.log("\n#269 — a third party's COMMENTED review is still coverage:");
+{
+	const p = page({
+		headRefOid: "head0000",
+		reviewCommits: ["head0000"],
+		reviewAuthors: ["macroscopeapp"],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 0,
+	});
+	const { code } = runPrThreads([p]);
+	check(code === 0, "third-party COMMENTED review at head → exit 0 (no verdict-state requirement)", `got ${code}`);
+}
+
+// 9d. Only the author has ever reviewed. After exclusion there is no
+//     third-party review at all, which is the SAME state as an unreviewed PR:
+//     advisory, exit 0. Blocking here would resurrect the "repo with no review
+//     bot has every PR stuck non-zero forever" alarm #254 ruled out — and the
+//     author cannot make it green by reviewing harder.
+console.log("\n#269 — only the author has ever reviewed → advisory, not blocking:");
+{
+	const p = page({
+		headRefOid: "head0000",
+		reviewCommits: ["head0000", "head0000"],
+		reviewAuthors: ["princess-pi-bot", "princess-pi-bot"],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 0,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 0, "only self-reviews → advisory exit 0, no permanent false alarm", `got ${code}, output:\n${out}`);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	check(doc?.reviewedHead === false, "only self-reviews → --json reviewedHead: false (not claimed as covered)", JSON.stringify(doc));
+}
+
+// 9e. Self-authorship undecidable — the PR's `author` is null (deleted
+//     account). A review at head cannot be shown independent, so coverage is
+//     INDETERMINATE (exit 5), never the exit-0 clean path. #210's rule: an
+//     undetermined state is not a pass.
+console.log("\n#269 — undecidable authorship is indeterminate, not clean:");
+{
+	const p = page({
+		headRefOid: "head0000",
+		reviewCommits: ["head0000"],
+		reviewAuthors: ["macroscopeapp"],
+		prAuthor: null,
+		unresolvedThreads: 0,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 5, "null PR author + review at head → exit 5 indeterminate", `got ${code}, output:\n${out}`);
+	check(code !== 0, "null PR author → never the clean exit-0 path", `got ${code}`);
+}
+
+// 9f. Same rule from the other side: the REVIEW's author is null. It cannot be
+//     shown to be someone other than the PR author, so on its own it is
+//     indeterminate — but a second, usable review by a known third party
+//     proves coverage outright and wins, exactly as a usable review already
+//     beats a null-COMMIT review (#267 partition).
+console.log("\n#269 — a null-author review is indeterminate alone, moot when another review proves coverage:");
+{
+	const alone = page({
+		headRefOid: "head0000",
+		reviewCommits: ["head0000"],
+		reviewAuthors: [null],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 0,
+	});
+	check(runPrThreads([alone]).code === 5, "null-author review at head, alone → exit 5 indeterminate", `got ${runPrThreads([alone]).code}`);
+
+	const withProof = page({
+		headRefOid: "head0000",
+		reviewCommits: ["head0000", "head0000"],
+		reviewAuthors: [null, "macroscopeapp"],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 0,
+	});
+	check(runPrThreads([withProof]).code === 0, "null-author review + independent review at head → exit 0", `got ${runPrThreads([withProof]).code}`);
+}
+
+// 9g. Exact-match authorship, not substring. A login that merely CONTAINS the
+//     author's login is a different account and its review is independent —
+//     the same element-wise rule the `trusted` field uses. A naive
+//     `case $author in *$pr_author*)` would wrongly discard this review and
+//     block a legitimately reviewed PR.
+console.log("\n#269 — self-authorship is an exact login match, not a substring:");
+{
+	const p = page({
+		headRefOid: "head0000",
+		reviewCommits: ["head0000"],
+		reviewAuthors: ["princess-pi-bot-2"],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 0,
+	});
+	const { code } = runPrThreads([p]);
+	check(code === 0, "'princess-pi-bot-2' reviewing a 'princess-pi-bot' PR → independent, exit 0", `got ${code}`);
+}
+
+// 9h. Precedence unchanged: unresolved threads dominate the exit code, and an
+//     uncovered head does not make an unresolved conversation any less
+//     unresolved.
+console.log("\n#269 — unresolved threads still dominate:");
+{
+	const p = page({
+		headRefOid: "64ac251",
+		reviewCommits: ["64ac251"],
+		reviewAuthors: ["princess-pi-bot"],
+		prAuthor: "princess-pi-bot",
+		unresolvedThreads: 2,
+		totalThreads: 3,
+	});
+	const { code, out } = runPrThreads([p]);
+	check(code === 1, "unresolved threads + self-only coverage → exit 1", `got ${code}, output:\n${out}`);
+	check(/\b2 unresolved conversation\(s\)/.test(out), "unresolved count still reported", out);
 }
 
 // ---
