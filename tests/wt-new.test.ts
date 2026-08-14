@@ -385,6 +385,51 @@ console.log("\nno herdr session, no tmux — still creates the worktree and exit
 	check(!/error/i.test(out), "the friendly note is not phrased as an error", out);
 }
 
+// --- initial push REJECTED by the remote (#224: a determined "no" → 6, not
+// the undetermined-state code 5 the header used to claim unconditionally
+// for every push failure). The worktree and branch are already created by
+// this point — only the push itself is refused, by a pre-receive hook
+// (stand-in for a protected-branch ruleset). ---
+console.log("\ninitial push rejected by the remote (protected-branch hook) — exit 6, not 5:");
+{
+	const sb = makeSandbox();
+	fs.mkdirSync(path.join(sb.remote, "hooks"), { recursive: true });
+	fs.writeFileSync(
+		path.join(sb.remote, "hooks", "pre-receive"),
+		"#!/bin/sh\necho 'remote: protected branch — rejecting all pushes' >&2\nexit 1\n",
+	);
+	fs.chmodSync(path.join(sb.remote, "hooks", "pre-receive"), 0o755);
+
+	const { code, out } = runWtNew(sb.clone, ["262-hook-rejected"]);
+	const wt = wtPathFor(sb.clone, "262-hook-rejected");
+	check(code === 6, "exits with the safety-gate-refused code (6), not git's raw exit 1 or the old blanket 5", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(wt), "worktree WAS created — only the push was refused", out);
+	check(out.includes("wt-new:"), "message is wt-new's own", out);
+	check(out.includes("rejected"), "message says the push was rejected", out);
+	check(
+		!git(sb.remote, ["branch", "--list", "262-hook-rejected"]).length,
+		"the branch never landed on origin — the hook's rejection held",
+		"",
+	);
+}
+
+// --- initial push destination unreachable — undetermined, not a rejection.
+// Fetch still succeeds (separate fetch URL, untouched); only the push
+// destination is broken, so git exits 128 ("fatal: ..."), never 1, and
+// wt-new must map that to 5, not 6 — nothing was determined here. ---
+console.log("\ninitial push destination unreachable (undetermined) — exit 5, not 6:");
+{
+	const sb = makeSandbox();
+	git(sb.clone, ["remote", "set-url", "--push", "origin", path.join(sb.root, "does-not-exist.git")]);
+
+	const { code, out } = runWtNew(sb.clone, ["263-unreachable"]);
+	const wt = wtPathFor(sb.clone, "263-unreachable");
+	check(code === 5, "exits with the remote/API-failure code (5), not 6", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(wt), "worktree WAS created — only the push failed", out);
+	check(out.includes("wt-new:"), "message is wt-new's own", out);
+	check(!/rejected/i.test(out), "message does not claim the remote rejected it — it never got that far", out);
+}
+
 // --- usage errors ---
 console.log("\nusage errors:");
 {

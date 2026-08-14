@@ -450,7 +450,7 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
   directions.** Exit `0` when clean, `1` when not — in both modes, same as before #254.
   What counts as "clean" changed for *both* modes at once: thread count alone is no
   longer sufficient (full rule in the [exit-code
-  contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) below). An
+  contract](#exit-codes--the-shared-pr--contract-224) below). An
   unrecognised flag exits `2` rather than being taken as the repo argument.
 - Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`, and as
   of #254: `head`, `reviewedHead`, `latestReviewCommit`.
@@ -527,6 +527,35 @@ license to add a seventh number.
 | 6 | safety gate refused — state **was** determined, and it says no (unmerged work, a diverged or moved remote, a dirty or locked worktree refusing removal, a rejected push, a ref that won't delete, a target path or branch that already exists, ambiguous PR selection, `pr-merge`'s pr-threads gate) |
 
 `pr-reject` still exits `0`/`1` only; adopting the table for it is tracked by #224.
+
+**`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
+#232's `--json` already shipped depending on it: `1` means "the check succeeded and
+found a problem" (unresolved threads and/or a review that doesn't cover the current
+head), never "broken". This is the one code #258's `pr-merge` gate has to tell apart
+from every other failure, so the reservation is deliberate. Everything that used to
+collide with that `1` — a `gh api graphql` failure propagating gh's own exit status
+under `set -e`, which is usually `1` — is now wrapped explicitly and mapped to `5`.
+That collision is *why* the #258 gate could not have been built correctly before: with
+`pr-threads` alone, `pr-merge` could not have told "unresolved threads" apart from "gh
+had a hiccup" by exit code alone.
+
+**`pr-merge` calls `pr-threads` before `gh pr merge`** (#258), reusing the PR number it
+already resolved via its own fork-safe `gh pr list --head` selection — it does not
+re-derive the PR. Three outcomes:
+
+- `pr-threads` exits `0` → proceed, merge as before.
+- `pr-threads` exits `1` → refuse (`pr-merge` exits `6`), print the unresolved threads
+  and/or the review-coverage warning with their URLs, and say the server ruleset
+  (`required_review_thread_resolution`) will refuse it too. **There is no override flag**
+  — the server refuses regardless, so a flag here would only buy a slower failure. Don't
+  go looking for one.
+- `pr-threads` exits anything else, **or isn't found on `PATH` at all** (a missing command
+  surfaces as a non-zero, non-`1` exit too) → `pr-merge` aborts (exit `5`) with wording
+  that says "could not verify", never "found a problem". This is the #210 fail-closed rule
+  applied at this boundary: a broken gate must never read as a passing one.
+
+`pr-open` does **not** get this check — opening a PR with unresolved threads from an
+earlier review is normal and expected.
 
 ### `pr-cleanup` fails closed, by design
 
@@ -729,7 +758,7 @@ content; clean application is not proof the result still works.
 
 The repository ruleset requires review threads to be resolved before merging. As of #258,
 `pr-merge` catches this itself before ever calling `gh pr merge` — see the [exit-code
-contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) — so this scenario now
+contract](#exit-codes--the-shared-pr--contract-224) — so this scenario now
 mostly shows up when `gh pr merge` is invoked directly (bypassing `pr-merge`) rather than
 as the ruleset's own rejection.
 

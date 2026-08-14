@@ -266,6 +266,58 @@ console.log("\ndiverged (amended after pushing):");
 	check(remoteTip(sb) === originalRemoteTip, "remote tip untouched — no destructive push attempted", out);
 }
 
+// 7. Push REJECTED by the remote at the actual `git push` call (step 3, not
+// caught by the pre-check above — this is an ordinary fast-forward-able
+// "ahead" push that the divergence check waves through, but a server-side
+// hook then declines). Distinct from case 6: that one never reaches
+// `git push` at all. This one does, and git itself exits 1 — the #224
+// contract's determined "no", so pr-open must map it to 6, never leak git's
+// raw exit status.
+console.log("\npush rejected by the remote at the actual push call (protected-branch hook):");
+{
+	const sb = makeSandbox("56-hook-rejected");
+	git(sb.clone, ["push", "-q", "-u", "origin", sb.branch]);
+	const originalRemoteTip = remoteTip(sb);
+	commit(sb.clone, "d.txt", "d\n", "more work, ahead — an ordinary push");
+
+	fs.mkdirSync(path.join(sb.remote, "hooks"), { recursive: true });
+	fs.writeFileSync(
+		path.join(sb.remote, "hooks", "pre-receive"),
+		"#!/bin/sh\necho 'remote: protected branch — rejecting all pushes' >&2\nexit 1\n",
+	);
+	fs.chmodSync(path.join(sb.remote, "hooks", "pre-receive"), 0o755);
+
+	const { code, out, createdPr } = runPrOpen(sb);
+	check(code === 6, "exits with the safety-gate-refused code (6), not git's raw exit 1", `got ${code}, output:\n${out}`);
+	check(!createdPr, "gh pr create did NOT run", out);
+	check(out.includes("pr-open:"), "message is pr-open's own, not a bare crash", out);
+	check(out.includes("rejected"), "message says the push was rejected", out);
+	check(remoteTip(sb) === originalRemoteTip, "remote tip untouched — the hook's rejection held", out);
+}
+
+// 8. Push destination unreachable — undetermined, not a rejection. Fetch
+// still succeeds (separate fetch URL, untouched), so this isolates the push
+// call itself failing for a reason other than the remote refusing it: git
+// exits 128 ("fatal: ..."), never 1, and pr-open must map that to 5, not 6 —
+// this is not a "safety gate", nothing was determined.
+console.log("\npush destination unreachable (undetermined — not a rejection):");
+{
+	const sb = makeSandbox("57-unreachable");
+	git(sb.clone, ["push", "-q", "-u", "origin", sb.branch]);
+	commit(sb.clone, "e.txt", "e\n", "more work, ahead — an ordinary push");
+
+	// Split fetch/push URLs: fetch still reaches the real bare remote (so
+	// step 2 succeeds and the divergence pre-check has real data), only the
+	// PUSH destination is broken.
+	git(sb.clone, ["remote", "set-url", "--push", "origin", path.join(sb.root, "does-not-exist.git")]);
+
+	const { code, out, createdPr } = runPrOpen(sb);
+	check(code === 5, "exits with the remote/API-failure code (5), not 6", `got ${code}, output:\n${out}`);
+	check(!createdPr, "gh pr create did NOT run", out);
+	check(out.includes("pr-open:"), "message is pr-open's own", out);
+	check(!/rejected/i.test(out), "message does not claim the remote rejected it — it never got that far", out);
+}
+
 // ---
 
 console.log(

@@ -80,11 +80,13 @@
 #      the main clone)
 #   4  not found — no `origin` remote configured
 #   5  remote/API failure — state could NOT be determined (fetch failed,
-#      primary branch undetermined, the first push failed, or the upstream
-#      self-check below didn't come back as origin/<branch>)
+#      primary branch undetermined, the first push failed for a reason other
+#      than the remote rejecting it — network/auth/DNS, git exit != 1 — or
+#      the upstream self-check below didn't come back as origin/<branch>)
 #   6  safety gate refused — state WAS determined, and it says no (the target
 #      path already exists, the branch already exists locally or on origin,
-#      or `git worktree add` itself refused)
+#      `git worktree add` itself refused, or the first push was rejected by
+#      the remote, git exit 1)
 # ---
 set -euo pipefail
 
@@ -192,11 +194,29 @@ fi
 
 # --- push with the correct upstream: the second half of the trap fix --------
 echo "📡 Pushing empty branch '$BRANCH' with upstream origin/$BRANCH..." >&2
-if ! git -C "$WT_PATH" push -u origin "$BRANCH" --quiet; then
+# git push exits 1 when the remote REJECTS (protected branch, a server-side
+# hook declining — a determined "no", #224 code 6); anything else (128 on an
+# unreachable host, auth failure, DNS) is undetermined (#224 code 5). Same
+# convention pr-open's own push relies on — see its header for the empirical
+# note. A brand-new branch can still be rejected (org rulesets can block
+# branch creation itself), so this is a real branch, not a hypothetical.
+if git -C "$WT_PATH" push -u origin "$BRANCH" --quiet; then
+  :
+else
+  push_status=$?
   echo "wt-new: worktree created at $WT_PATH, but the first push failed." >&2
   echo "   Its upstream is NOT set — do not rely on a bare 'git push' yet." >&2
-  echo "   Retry by hand: git -C \"$WT_PATH\" push -u origin $BRANCH" >&2
-  exit 5
+  if [ "$push_status" -eq 1 ]; then
+    echo "   Rejected by the remote (git exit 1) — a protected-branch or" >&2
+    echo "   server-side hook declined it. Retry by hand:" >&2
+    echo "     git -C \"$WT_PATH\" push -u origin $BRANCH" >&2
+    exit 6
+  else
+    echo "   Remote could not be reached, or the request could not complete" >&2
+    echo "   (git exit $push_status). Retry by hand:" >&2
+    echo "     git -C \"$WT_PATH\" push -u origin $BRANCH" >&2
+    exit 5
+  fi
 fi
 
 # Self-check: the entire point of this script is that a bare `git push` from
