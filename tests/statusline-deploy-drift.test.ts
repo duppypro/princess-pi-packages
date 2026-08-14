@@ -55,6 +55,43 @@ function freshHome(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "statusline-deploy-home-"));
 }
 
+/**
+ * A PATH identical to this host's except that `name` resolves nowhere on it.
+ *
+ * Dropping the directory outright would take bash/awk/jq with it (they live
+ * alongside), so this shadows the one binary: a fresh dir symlinking every
+ * OTHER entry from each directory that provides it, spliced in ahead of those
+ * directories, which are then dropped. Same shape as pathWithoutJq() in
+ * tests/install-workflow-tools-self-deploy.test.ts, generalised — and dropping
+ * EVERY provider matters here for the same reason it did there: /bin is a
+ * symlink to /usr/bin on this host, so one binary appears under two PATH
+ * entries and shadowing only the first leaves the alias reachable.
+ */
+function pathWithout(name: string): string {
+	const parts = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+	const provides = (dir: string) => {
+		try {
+			return fs.existsSync(path.join(dir, name));
+		} catch {
+			return false;
+		}
+	};
+	const dirs = parts.filter(provides);
+	if (dirs.length === 0) return process.env.PATH ?? "";
+	const shadow = fs.mkdtempSync(path.join(os.tmpdir(), `statusline-no-${name}-`));
+	for (const dir of dirs) {
+		for (const entry of fs.readdirSync(dir)) {
+			if (entry === name) continue;
+			try {
+				fs.symlinkSync(path.join(dir, entry), path.join(shadow, entry));
+			} catch {
+				// already linked from an earlier provider, or a broken target
+			}
+		}
+	}
+	return [shadow, ...parts.filter((p) => !dirs.includes(p))].join(path.delimiter);
+}
+
 function run(home: string, args: string[] = []): { code: number; out: string } {
 	const r = spawnSync("bash", [INSTALLER, ...args], {
 		encoding: "utf8",
@@ -174,11 +211,11 @@ check(TRACKED.length > 0, "statusline/ is non-empty", `read ${STATUSLINE_SRC}`);
 {
 	const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-behaviour-home-"));
 
-	const render = (script: string, payload: unknown): { code: number; out: string } => {
+	const render = (script: string, payload: unknown, env: Record<string, string> = {}): { code: number; out: string } => {
 		const r = spawnSync("bash", [path.join(STATUSLINE_SRC, script)], {
 			input: JSON.stringify(payload),
 			encoding: "utf8",
-			env: { ...process.env, HOME: tmpHome },
+			env: { ...process.env, HOME: tmpHome, ...env },
 		});
 		return { code: r.status ?? -1, out: `${r.stdout || ""}` };
 	};
@@ -201,6 +238,36 @@ check(TRACKED.length > 0, "statusline/ is non-empty", `read ${STATUSLINE_SRC}`);
 		// terse — it renders as noise on every redraw.
 		const empty = render("statusline-command.sh", {});
 		check(empty.code === 0, "statusline-command.sh exits 0 on an empty payload (fails soft)", empty.out);
+
+		// `bc` absent (PR #278 review, reproduced before fixing). Not a
+		// hypothetical host: Debian/Ubuntu do not install bc by default, and
+		// this repo's own installer only warns about jq. The old `bc -l` path
+		// failed in the worst available way — an empty command substitution
+		// that `printf "%.1fk"` rendered as a confident **0.0k**, with the
+		// only hint on a stderr stream nothing displays.
+		//
+		// Asserted on the >=1000 branch specifically: that is the ONLY branch
+		// that ever called bc, so a payload under 1k would pass against the
+		// broken version too and prove nothing.
+		const noBc = render(
+			"statusline-command.sh",
+			{
+				model: { display_name: "Opus 5" },
+				context_window: { total_input_tokens: 1200, total_output_tokens: 300 },
+			},
+			{ PATH: pathWithout("bc") },
+		);
+		check(noBc.code === 0, "statusline-command.sh exits 0 with bc absent from PATH", noBc.out);
+		check(noBc.out.includes("1.5k tok"), "statusline-command.sh renders real tokens with bc absent (not 0.0k)", noBc.out);
+		check(!noBc.out.includes("0.0k"), "statusline-command.sh does not silently report 0.0k with bc absent", noBc.out);
+
+		// And the dependency is gone from the source, not merely worked
+		// around on the >=1000 path — bc was this file's one single-use
+		// dependency, so a reintroduction anywhere should fail here.
+		check(
+			!/\bbc\b/.test(fs.readFileSync(path.join(STATUSLINE_SRC, "statusline-command.sh"), "utf8").replace(/^\s*#.*$/gm, "")),
+			"statusline-command.sh calls bc nowhere (awk covers both float sites)",
+		);
 	}
 
 	if (TRACKED.includes("subagent-statusline.sh")) {

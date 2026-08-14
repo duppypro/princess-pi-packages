@@ -32,10 +32,22 @@ out_tok=$(echo "$input" | jq -r '.context_window.total_output_tokens // 0')
 total_tok=$((in_tok + out_tok))
 
 # Format token count compactly (e.g. 1.2k, 45k)
+#
+# awk, not `bc` (PR #278 review, reproduced): `bc` is not installed by default
+# on Debian/Ubuntu, and its absence failed in the worst available way — the
+# command substitution came back empty, `printf "%.1fk" ""` rendered a
+# confident **0.0k**, and the only hint was a `bc: command not found` on stderr
+# that nothing displays. A status line reporting zero tokens for a session
+# spending them is worse than one reporting nothing at all.
+#
+# awk costs nothing to adopt: this script already uses it 20 lines down for the
+# context-bar percentage, so `bc` was the file's one single-use dependency and
+# is now gone entirely. jq remains the only hard dependency, and it is the one
+# `install-workflow-tools` already warns about by name.
 fmt_tokens() {
   local n=$1
   if [ "$n" -ge 1000 ]; then
-    printf "%.1fk" "$(echo "$n / 1000" | bc -l)"
+    awk "BEGIN {printf \"%.1fk\", $n / 1000}"
   else
     printf "%d" "$n"
   fi
