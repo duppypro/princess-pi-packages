@@ -87,6 +87,43 @@ machine-level prose.
 Left open on purpose: it does not block the tooling decision above, and getting it wrong
 in either direction is cheap to reverse while the guidelines still have no installer at all.
 
+## Amendment 1 (2026-08-14) — dotfiles-doctor demotes rather than deletes
+
+Consequence 1 above said dotfiles-doctor "drops" the hook and statusline paths. Duppy
+challenged that, correctly: **deletion is not required, and the copy has value.**
+
+The reasoning that changed it. dotfiles-doctor is snapshot-only in practice — its stow phase
+has never run on this host (`~/.claude/hooks/block-edit-on-main.sh` is a regular file, not a
+symlink; dotfiles-doctor#4 records the same), so its copy cannot currently overwrite
+anything. And a captured copy is *useful*: it is how a fresh machine gets these files, and
+it is exactly the pattern dotfiles-doctor's own ADR 0001 already established — "a downstream
+projection only, never a source."
+
+So the distinction that matters is **source vs. mirror, not exists vs. deleted**:
+
+- **Mirror — keep.** dotfiles-doctor continues capturing these paths. A snapshot taken after
+  `install-workflow-tools` runs records the correct, current bytes. Even a future merge
+  feature would prompt rather than auto-merge, so a captured copy cannot silently win.
+- **Source — remove.** The copy must stop being *stowable*. Today the mirror and the stow
+  source are the same bytes in the same directory, so one `install/bootstrap.sh` run
+  (`stow --restow`, line 129) would replace the host's real file with a symlink into
+  dotfiles-doctor and revert whatever this repo deployed. A `.stow-local-ignore` entry in
+  the `claude` package breaks that coupling while leaving capture intact.
+- **Affordance — remove.** The observed failure was not an installer misbehaving: dd#15 was
+  *authored* in dotfiles-doctor because its copy looked like the owner, and so never reached
+  a host. A "derived — edit upstream in princess-pi-packages" header addresses that directly.
+
+Revised consequence 1: *dotfiles-doctor keeps capturing these paths as a downstream mirror,
+excludes them from stow, and marks them derived.* Step 5 of the campaign changes from
+"drop" to "demote". The ordering invariant is unchanged and still binds — this repo absorbs
+dd#15 first (done, see below) — but the stakes are lower than first written: the fix was
+never at risk of being lost, only of never being restored.
+
+Also corrected: the original framing called dd#15 "unrecoverable" if dropped first. It is
+not — it lives in dotfiles-doctor history at `751d110`.
+
+The decision to settle in dotfiles-doctor#18 is now "how to demote", not "whether to delete".
+
 ## Roads not taken
 
 - **Keep both copies, add a cross-repo parity test.** Cheapest to reach, and it makes drift

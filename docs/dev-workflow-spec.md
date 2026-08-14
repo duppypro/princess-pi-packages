@@ -271,6 +271,17 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   `Edit|Write|MultiEdit`, never `Bash` — a `Bash` matcher would also catch
   `git checkout -b <branch>`, the very command used to escape main, and deadlock the gate
   it exists to enforce. Claude-Code-only; no Pi twin yet.
+  - **Paths inside the git dir are not gated (dotfiles-doctor#15, ported under ADR 0001).**
+    `.git/config`, `.git/info/exclude`, `.git/hooks/*`, `.git/worktrees/*` are allowed even
+    on `main`. Nothing under `.git/` lives in a branch, so the stash/checkout hazard cannot
+    reach it, and blocking it was unfollowable advice — branching does not move
+    `.git/config` into a branch, it only changes what `git branch --show-current` reports.
+    Asked as a **path question via git** (`rev-parse --is-inside-git-dir`), never a filename
+    match: a `*/.git*` test would also exempt `.gitignore`, `.gitattributes`, `.gitmodules`
+    and `.github/`, which are tracked work-tree files that must stay gated. Those four are
+    pinned as lookalike cases in the suite. Relatedly, `--is-inside-work-tree` is tested on
+    its **output**, not its exit status: inside `.git/` it succeeds and prints `false`, so an
+    `|| exit 0` guard never fires there.
   - **Detached HEAD is two states, and only one is gated (#272).** A plain
     `git checkout <sha>` stays **blocked** — that is the hazard the guard was written for
     (edit, walk away, work is unreferenced). A detached HEAD with an operation in progress
