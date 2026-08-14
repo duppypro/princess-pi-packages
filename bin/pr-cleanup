@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
-# pr-cleanup [<branch>] — delete a merged branch, its remote, and its worktree.
+# pr-cleanup <branch> — delete a merged branch, its remote, and its worktree.
 #
-# Two invocations:
-#   pr-cleanup            Discover the branch from cwd (today's default
-#                          mechanism). Only reaches a successful cleanup when
-#                          cwd is NOT inside the worktree that run would
-#                          remove — see the containment gate below (#221).
-#   pr-cleanup <branch>   Operate on <branch> without requiring cwd to be a
-#                          feature worktree. THE PRIMARY PATH (#262): a
-#                          session that entered the worktree via EnterWorktree
-#                          cannot complete cleanup from inside it (the
-#                          worktree is locked) or from a plain `cd` back to
-#                          main (nothing to discover from cwd). The supported
-#                          sequence is `ExitWorktree { action: "remove" }`,
-#                          then `pr-cleanup <branch>` from the main clone.
-#                          This also handles "branch exists, worktree already
-#                          removed" (#262 fix 3) — it deletes the local +
-#                          remote branch even when there is no worktree left
-#                          to tear down.
+# <branch> is REQUIRED. Run from the main clone (#262): a session that
+# entered the target worktree via EnterWorktree cannot complete cleanup from
+# inside it (the worktree is locked) or from a plain `cd` back to main
+# (nothing to discover from cwd). The supported sequence is
+# `ExitWorktree { action: "remove" }`, then `pr-cleanup <branch>` from the
+# main clone. This also handles "branch exists, worktree already removed"
+# (#262 fix 3) — it deletes the local + remote branch even when there is no
+# worktree left to tear down.
+#
+# --- no-argument mode removed (#221 finding 2) ------------------------------
+# A bare `pr-cleanup` used to fall back to discovering the branch from cwd via
+# `git branch --show-current`. Traced and tested empirically: that path is
+# UNREACHABLE for a successful cleanup. Whatever branch cwd has checked out
+# is, by construction, checked out in the SAME worktree cwd is standing in —
+# so the branch it would discover is always the very branch the containment
+# gate below refuses to remove cwd out from under (exit 3). If cwd shows
+# main/master instead, the "nothing to discover" refusal fires (also exit 3).
+# If cwd is the main clone with some OTHER branch checked out there directly
+# (so no worktree anywhere has main/master checked out), the main-clone
+# lookup below fails first (exit 4). No sequence of events reached exit 0 in
+# testing. Removed rather than left documented as a dead path — the house
+# preference is removing what cannot work over documenting it. The
+# containment gate itself stays: it still matters when `<branch>` is given
+# explicitly while cwd happens to be standing inside that branch's worktree.
 #
 # Governing rule (#210): every gate fails CLOSED. A check that cannot PROVE its
 # precondition aborts — it never assumes the safe-to-delete case. Each of the
@@ -27,11 +34,11 @@
 # Exit codes (shared pr-* contract, #224 — full table in
 # docs/dev-workflow-spec.md):
 #   0  success
-#   2  usage error — bad flags/arguments, a protected branch named explicitly,
-#      or not run inside a git repository at all
-#   3  precondition not met — on a protected branch with nothing to discover,
-#      detached HEAD with no branch given, or cwd is inside the worktree this
-#      run would remove (#221)
+#   2  usage error — missing or extra arguments (<branch> is required), a
+#      protected branch named explicitly, or not run inside a git repository
+#      at all
+#   3  precondition not met — cwd is inside the worktree this run would
+#      remove (#221)
 #   4  not found — no main/master worktree registered, or no local branch
 #      '$BRANCH' in the main clone (typo'd name, or deleted by hand — #264)
 #   5  remote/API failure — state could NOT be determined (network down, gh
@@ -47,33 +54,23 @@
 set -euo pipefail
 
 # --- argument parsing --------------------------------------------------------
-if [ $# -gt 1 ]; then
-  echo "usage: pr-cleanup [<branch>]" >&2
+# <branch> is required — see the "no-argument mode removed (#221 finding 2)"
+# header note above for why the old cwd-discovery fallback is gone.
+if [ $# -ne 1 ]; then
+  echo "usage: pr-cleanup <branch>" >&2
+  echo "   <branch> is required. Run from the main clone: pr-cleanup <branch>" >&2
   exit 2
 fi
-BRANCH_ARG="${1:-}"
+BRANCH="$1"
 
-if [ -n "$BRANCH_ARG" ]; then
-  if [ "$BRANCH_ARG" = "main" ] || [ "$BRANCH_ARG" = "master" ]; then
-    echo "pr-cleanup: refusing to target the protected branch '$BRANCH_ARG'." >&2
-    exit 2
-  fi
-  BRANCH="$BRANCH_ARG"
-else
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "pr-cleanup: not inside a git repository — pass a branch name explicitly: pr-cleanup <branch>" >&2
-    exit 2
-  fi
-  BRANCH=$(git branch --show-current)
-  if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
-    echo "pr-cleanup: on '$BRANCH' with no branch given — nothing to discover from here." >&2
-    echo "   Pass a branch explicitly: pr-cleanup <branch>" >&2
-    exit 3
-  fi
-  if [ -z "$BRANCH" ]; then
-    echo "pr-cleanup: cwd is not on any branch (detached HEAD) — pass a branch name explicitly." >&2
-    exit 3
-  fi
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "pr-cleanup: refusing to target the protected branch '$BRANCH'." >&2
+  exit 2
+fi
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "pr-cleanup: not inside a git repository — run from the main clone: pr-cleanup <branch>" >&2
+  exit 2
 fi
 
 echo "🧹 pr-cleanup for branch '$BRANCH'"

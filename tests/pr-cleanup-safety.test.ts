@@ -198,11 +198,11 @@ exec ${JSON.stringify(realGit)} "$@"
 	return { root, remote, mainClone, worktree, binDir, branch };
 }
 
-// Default invocation is now the primary path (#262): from the main clone,
-// branch given explicitly. Pass `branchArg: null` to omit the argument and
-// exercise cwd-discovery instead — that's what the containment-gate cases
-// below need, since discovery-from-cwd only makes sense while standing
-// inside the worktree.
+// `<branch>` is required (#221 finding 2: the old no-argument cwd-discovery
+// fallback was proven unreachable for a successful cleanup — traced and
+// tested empirically, then removed rather than left as a dead documented
+// path). Pass `branchArg: null` to omit the argument on purpose, for the
+// usage-error cases below.
 function runCleanup(
 	sb: Sandbox,
 	cwd: string = sb.mainClone,
@@ -291,12 +291,14 @@ console.log("\nrun from a nested subdirectory of the main clone:");
 }
 
 // --- containment gate (#221): refusing to remove the worktree the caller is
-// standing in. Discovery-from-cwd (no branch argument) is what puts the
-// caller inside the worktree in the first place, so these use branchArg: null.
+// standing in. This fires on the EXPLICIT-branch path — <branch> is required
+// (#221 finding 2 removed the old no-argument cwd-discovery fallback), so
+// these name the branch while cwd happens to already be standing inside its
+// worktree (e.g. an agent forgot to ExitWorktree first).
 console.log("\ncontainment: refuses from inside the worktree being removed:");
 {
 	const sb = makeSandbox("42-feature");
-	const { code, out } = runCleanup(sb, sb.worktree, null);
+	const { code, out } = runCleanup(sb, sb.worktree, sb.branch);
 	check(code === 3, "cwd inside the worktree → exits with the precondition code (3)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "cwd inside the worktree → worktree survives", out);
 	check(localBranchExists(sb), "cwd inside the worktree → local branch survives", out);
@@ -309,7 +311,7 @@ console.log("\ncontainment: refuses from a nested subdirectory of the worktree t
 	const sb = makeSandbox("42-feature");
 	const sub = path.join(sb.worktree, "nested", "deeper");
 	fs.mkdirSync(sub, { recursive: true });
-	const { code, out } = runCleanup(sb, sub, null);
+	const { code, out } = runCleanup(sb, sub, sb.branch);
 	check(code === 3, "nested subdir of the worktree → exits with the precondition code (3)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "nested subdir of the worktree → worktree survives", out);
 	check(localBranchExists(sb), "nested subdir of the worktree → local branch survives", out);
@@ -323,7 +325,7 @@ console.log("\ngate order: containment refusal fires even with `gh` absent from 
 	let code = -1;
 	let out = "";
 	try {
-		out = execFileSync("bash", [PR_CLEANUP], {
+		out = execFileSync("bash", [PR_CLEANUP, sb.branch], {
 			cwd: sb.worktree,
 			encoding: "utf8",
 			env: { ...process.env, ...GIT_ENV, PATH: pathWithoutGh() },
@@ -339,6 +341,31 @@ console.log("\ngate order: containment refusal fires even with `gh` absent from 
 	check(!/gh repo view|gh pr list|gh: command not found|gh: not found/i.test(out),
 		"no gh on PATH → no gh invocation was attempted", out);
 	check(fs.existsSync(sb.worktree), "no gh on PATH → worktree survives", out);
+}
+
+// --- #221 finding 2: no-argument invocation is now a usage error -----------
+//
+// Traced and tested empirically (see bin/pr-cleanup's header comment): every
+// path a bare `pr-cleanup` could reach either hit the containment gate above
+// (exit 3) or the missing-main-clone gate below (exit 4) — never exit 0.
+// <branch> is now required; a missing argument is a usage error naming the
+// main-clone invocation, and the dead discovery path is gone from the script.
+console.log("\nno argument: usage error, not cwd-discovery:");
+{
+	const sb = makeSandbox("42-feature");
+	const { code, out } = runCleanup(sb, sb.mainClone, null);
+	check(code === 2, "no argument → usage-error code (2)", `got ${code}, output:\n${out}`);
+	check(/usage:.*pr-cleanup <branch>/.test(out), "no argument → usage message names <branch>", out);
+	check(fs.existsSync(sb.worktree), "no argument → worktree survives", out);
+	check(localBranchExists(sb), "no argument → local branch survives", out);
+}
+
+console.log("\nno argument, run from inside the feature worktree: still a usage error, not a discovery success:");
+{
+	const sb = makeSandbox("42-feature");
+	const { code, out } = runCleanup(sb, sb.worktree, null);
+	check(code === 2, "no argument from inside the worktree → usage-error code (2), not a silent discovery", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "no argument from inside the worktree → worktree survives", out);
 }
 
 // --- #262 fix 1: a LOCKED worktree (EnterWorktree) must not be misdiagnosed

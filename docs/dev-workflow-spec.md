@@ -371,7 +371,7 @@ are Claude-Code-only, deployed and drift-checked the same copy-based way as
 | `pr-open` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create` |
 | `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
-| `pr-cleanup [<branch>]` | With `<branch>`, run from the main clone — the primary path (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). With no argument, discovers the branch from cwd, which only reaches cleanup outside the target worktree. Either way: deletes branch, remote, worktree. |
+| `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any review covers the current head (#254). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, and `head`/`reviewedHead`/`latestReviewCommit`. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). |
 | `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
@@ -777,6 +777,7 @@ as the ruleset's own rejection.
 | `merge-checklist` skill | Post-hoc checklist. The same checks now live in `pr-open` itself. |
 | `pre-merge-checklist` skill | Redundant with `merge-checklist`. |
 | `bin/merge` CLI (#201) | Replaced by `pr-open`. The Pi `/merge` slash command (`extensions/merge.ts`) is a separate thing and still exists. |
-| `bin/post-merge-cleanup` (#207) | Replaced by `pr-cleanup [<branch>]`. |
+| `bin/post-merge-cleanup` (#207) | Replaced by `pr-cleanup <branch>`. |
+| `pr-cleanup`'s no-argument (cwd-discovery) mode (#221 finding 2) | Traced and tested empirically: every no-argument path either hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup, by construction (whatever branch cwd has checked out is always the branch checked out in cwd's own worktree, which the containment gate then refuses). `<branch>` is now a required argument. |
 | Local merge to main (`merge --cleanup`) | Replaced by PR merge. LLM runs `pr-open`, human runs `pr-merge`. |
 | Human gate between Spec Approved and Code Draft | Spec iterates alongside code. Gate moved to PR review. |
