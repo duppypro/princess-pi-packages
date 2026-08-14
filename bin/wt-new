@@ -34,12 +34,25 @@
 # guessing and works from any linked worktree, not just this repo's own.
 #
 # --- how the primary branch is detected -------------------------------------
-# Never hard-coded to `main`. After `git fetch origin --prune`,
-# `refs/remotes/origin/HEAD` is read first (the authoritative symref, when
-# `git remote set-head origin -a` has been run); if that's absent, fall back
-# to whichever of `refs/remotes/origin/main` / `refs/remotes/origin/master`
-# exists. A repo with neither is treated as undetermined (exit 5), not a
-# silent guess.
+# Never hard-coded to `main`. `git ls-remote --symref origin HEAD` asks the
+# SERVER directly, once, after the `git fetch origin --prune` above — not the
+# local `refs/remotes/origin/HEAD` symref. `git fetch` does NOT refresh that
+# symref when the remote's default branch changes after clone (verified in a
+# sandbox, princess-pi-packages#221 finding 1: rename the remote's default
+# branch, `git fetch` in an existing clone, and `refs/remotes/origin/HEAD`
+# still points at the OLD name even though the fetch succeeded) — trusting it
+# would branch and push against a stale primary. `git remote set-head origin
+# -a` would refresh that local symref, but only by mutating repo state as a
+# side effect of a helper whose job is creating a worktree, and it still
+# needs the same second network round trip; asking the server directly with
+# `ls-remote` gets the answer with no local mutation and, as a side effect,
+# no longer cares whether `refs/remotes/origin/HEAD` exists locally at all —
+# it answers identically whether that symref is fresh, stale, or absent (the
+# `git remote set-head origin -d` case, otherwise unreachable since `git
+# clone` always writes it). If the `ls-remote` call fails (or returns nothing
+# parseable), fall back to whichever of `refs/remotes/origin/main` /
+# `refs/remotes/origin/master` exists locally. A repo with neither is treated
+# as undetermined (exit 5), not a silent guess.
 #
 # --- herdr/tmux tab: convenience, never a gate -------------------------------
 # Duppy's direction (2026-08-13): plain `git worktree add` only for the
@@ -146,9 +159,13 @@ if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
 fi
 
 # --- detect main vs master, never hard-coded --------------------------------
+# Ask the server, not the local (possibly stale) origin/HEAD symref — see the
+# header comment above for why. `set -o pipefail` (top of file) makes this
+# `if` see ls-remote's own exit status even though it's the first of two
+# piped commands.
 PRIMARY=""
-if ref=$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null); then
-  PRIMARY="${ref#origin/}"
+if symref_line=$(git ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/ { print $2; exit }'); then
+  PRIMARY="${symref_line#refs/heads/}"
 fi
 if [ -z "$PRIMARY" ]; then
   if git show-ref --verify --quiet refs/remotes/origin/main; then
@@ -158,8 +175,9 @@ if [ -z "$PRIMARY" ]; then
   fi
 fi
 if [ -z "$PRIMARY" ]; then
-  echo "wt-new: could not determine the primary branch — neither" \
-    "refs/remotes/origin/HEAD, origin/main, nor origin/master resolved." >&2
+  echo "wt-new: could not determine the primary branch — 'git ls-remote" \
+    "--symref origin HEAD' failed or returned nothing parseable, and" \
+    "neither origin/main nor origin/master resolved locally." >&2
   exit 5
 fi
 

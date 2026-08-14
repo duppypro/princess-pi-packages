@@ -6,8 +6,10 @@
 // wt-new's whole job is creating that worktree. What's under test is git's
 // actual behavior — `git worktree add`'s upstream-from-start-point default
 // (the trap), `--git-dir` vs `--git-common-dir` divergence inside a linked
-// worktree, and origin's HEAD symref detection — none of which a mock can
-// stand in for without encoding the very assumption the trap disproves.
+// worktree, and primary-branch detection via `git ls-remote --symref origin
+// HEAD` (not the local, fetch-doesn't-refresh-it `refs/remotes/origin/HEAD`
+// symref — princess-pi-packages#221 finding 1) — none of which a mock can
+// stand in for without encoding the very assumption each of these disproves.
 //
 // The load-bearing case is the upstream trap: #250 found LIVE that
 // `git worktree add -b <branch> origin/main` leaves a bare `git push`
@@ -81,6 +83,36 @@ function makeSandbox(opts: { primary?: string } = {}): Sandbox {
 	git(clone, ["add", "-A"]);
 	git(clone, ["commit", "-q", "-m", "base"]);
 	git(clone, ["push", "-q", "origin", primary]);
+
+	return { root, remote, clone, primary };
+}
+
+// `makeSandbox` above clones an EMPTY bare remote and pushes content only
+// AFTER cloning — deliberately, so its own tests aren't coupled to symref
+// behavior. That means it never actually exercises a local
+// `refs/remotes/origin/HEAD` symref: `git clone` only writes that symref
+// when the remote's HEAD already resolves to a branch that exists at clone
+// time, and an empty bare repo's HEAD is unborn. The #221-finding-1 tests
+// below are specifically about that symref going stale, so they need one
+// that's real to begin with — seed the remote via a throwaway push-capable
+// clone BEFORE the clone under test.
+function makeSandboxWithRealOriginHead(opts: { primary?: string } = {}): Sandbox {
+	const primary = opts.primary ?? "main";
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-"));
+	const remote = path.join(root, "remote.git");
+	fs.mkdirSync(remote);
+	git(remote, ["init", "-q", "--bare", "-b", primary]);
+
+	const seed = path.join(root, "seed");
+	git(root, ["init", "-q", "-b", primary, seed]);
+	fs.writeFileSync(path.join(seed, "README.md"), "base\n");
+	git(seed, ["add", "-A"]);
+	git(seed, ["commit", "-q", "-m", "base"]);
+	git(seed, ["remote", "add", "origin", remote]);
+	git(seed, ["push", "-q", "origin", `${primary}:${primary}`]);
+
+	const clone = path.join(root, "clone");
+	git(root, ["clone", "-q", remote, clone]);
 
 	return { root, remote, clone, primary };
 }
@@ -258,6 +290,87 @@ console.log("\nmaster-primary repo:");
 		startedFromMaster = false;
 	}
 	check(startedFromMaster, "branch point descends from origin/master", "");
+}
+
+// --- stale local origin/HEAD symref after the remote's default branch
+// changes (#221 finding 1): `git fetch` does NOT refresh
+// `refs/remotes/origin/HEAD` — verified directly below — so wt-new must ask
+// the server (`git ls-remote --symref origin HEAD`) rather than trust that
+// local symref, or a default-branch rename/flip silently branches (and
+// pushes) from the WRONG, stale primary. ---
+console.log("\nstale local origin/HEAD after the remote's default branch changes (#221 finding 1):");
+{
+	const sb = makeSandboxWithRealOriginHead(); // primary "main", REAL origin/HEAD symref
+
+	// Create a second branch with a commit NOT on main, push it, then flip
+	// the remote's default HEAD to it WITHOUT touching main — the realistic
+	// case (a GitHub default-branch flip, or a rename that leaves the old
+	// branch around). The extra file is what lets the assertions below tell
+	// "branched from the stale primary" apart from "branched from the
+	// current one": same-SHA branches would prove nothing.
+	git(sb.clone, ["checkout", "-q", "-b", "newmain"]);
+	fs.writeFileSync(path.join(sb.clone, "newmain-only.txt"), "newmain\n");
+	git(sb.clone, ["add", "-A"]);
+	git(sb.clone, ["commit", "-q", "-m", "newmain-only commit"]);
+	git(sb.clone, ["push", "-q", "origin", "newmain"]);
+	git(sb.clone, ["checkout", "-q", sb.primary]);
+	git(sb.remote, ["symbolic-ref", "HEAD", "refs/heads/newmain"]);
+
+	const { code, out } = runWtNew(sb.clone, ["260-stale-head"]);
+	const wt = wtPathFor(sb.clone, "260-stale-head");
+	check(code === 0, "exits 0 despite the remote's default branch having changed", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(wt), "worktree created", out);
+
+	// Sanity: confirm wt-new's own `git fetch` really did leave the local
+	// symref stale — otherwise this test would not be exercising the bug at
+	// all.
+	const staleLocalSymref = git(sb.clone, ["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]);
+	check(
+		staleLocalSymref === `origin/${sb.primary}`,
+		"sanity: local origin/HEAD symref is confirmed STALE after wt-new's fetch (the bug this test guards)",
+		`got '${staleLocalSymref}'`,
+	);
+
+	const upstream = git(wt, ["rev-parse", "--abbrev-ref", "@{upstream}"]);
+	check(upstream === "origin/260-stale-head", "upstream is origin/<branch>", `got '${upstream}'`);
+	check(
+		fs.existsSync(path.join(wt, "newmain-only.txt")),
+		"branched from the NEW primary (newmain) — has newmain-only.txt",
+		out,
+	);
+}
+
+// --- absent origin/HEAD symref: the main/master fallback, previously
+// untested because `git clone` always writes the symref. `git remote
+// set-head origin -d` is the only way to reach this state. Also proves
+// server-side detection (`git ls-remote --symref`) needs no local symref at
+// all — it works identically whether that symref is fresh, stale, or gone.
+console.log("\nabsent origin/HEAD symref — server-side detection still works (#221 finding 1 fallback):");
+{
+	const sb = makeSandbox();
+	git(sb.clone, ["remote", "set-head", "origin", "-d"]);
+	let symrefGone = false;
+	try {
+		git(sb.clone, ["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]);
+	} catch {
+		symrefGone = true;
+	}
+	check(symrefGone, "sanity: local origin/HEAD symref is confirmed ABSENT before the run", "");
+
+	const { code, out } = runWtNew(sb.clone, ["261-no-symref"]);
+	const wt = wtPathFor(sb.clone, "261-no-symref");
+	check(code === 0, "exits 0 even with no local origin/HEAD symref", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(wt), "worktree created", out);
+	const upstream = git(wt, ["rev-parse", "--abbrev-ref", "@{upstream}"]);
+	check(upstream === "origin/261-no-symref", "upstream is origin/<branch>", `got '${upstream}'`);
+	let branchedFromPrimary = false;
+	try {
+		git(sb.clone, ["merge-base", "--is-ancestor", `origin/${sb.primary}`, "261-no-symref"]);
+		branchedFromPrimary = true;
+	} catch {
+		branchedFromPrimary = false;
+	}
+	check(branchedFromPrimary, "branch point descends from origin/main even with no local symref", "");
 }
 
 // --- neither herdr nor tmux: worktree still created, still exits 0 ---

@@ -120,10 +120,12 @@ inherits.
 ### `wt-new` — the one-command form (#250)
 
 `wt-new <issue#>-<slug>`, run from the main clone, does the sequence above in one
-step: fetches origin, detects `main` vs `master` (never hard-coded — reads
-`origin/HEAD`'s symref, falling back to whichever of `origin/main` / `origin/master`
-exists), creates the worktree at the in-tree location above via
-`git worktree add --no-track -b <branch> origin/<primary>`, and pushes with
+step: fetches origin, detects `main` vs `master` (never hard-coded — asks the server
+directly via `git ls-remote --symref origin HEAD`, not the local `origin/HEAD` symref,
+which `git fetch` does not refresh when the remote's default branch changes after
+clone (#221); falls back to whichever of `origin/main` / `origin/master` exists
+locally if that call fails), creates the worktree at the in-tree location above via
+`git worktree add --no-track -b <branch> <path> origin/<primary>`, and pushes with
 `git push -u origin <branch>` so the upstream is correct from the FIRST push.
 
 **Closes the upstream trap, not just the mechanics.** `git worktree add -b <branch>
@@ -365,7 +367,7 @@ are Claude-Code-only, deployed and drift-checked the same copy-based way as
 
 | Script | What it does |
 |---|---|
-| `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
+| `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> <path> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
 | `pr-open` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create` |
 | `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
