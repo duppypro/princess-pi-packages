@@ -117,6 +117,7 @@ esac
 SCRIPTS=(
   git-checkpoint
   git-overview
+  wt-new
   pr-open
   pr-merge
   pr-reject

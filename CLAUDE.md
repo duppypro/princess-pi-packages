@@ -35,10 +35,11 @@ Full spec: `docs/dev-workflow-spec.md`.
 |---|---|
 | `git-checkpoint "msg"` | Add, commit, and push in one step (exact command in the spec) |
 | `git-overview` | Branch + status + diff stat + recent commits in one call |
-| `pr-open` | Ensures pushed → pre-checks → `gh pr create` (the one command to ship) |
+| `wt-new <issue#>-<slug>` | Fetches, detects main/master, creates the in-tree worktree, and pushes with the correct upstream in one step (#250) |
+| `pr-open` | Pushes only if needed, refusing a diverged branch → pre-checks → `gh pr create` (the one command to ship) |
 | `pr-merge [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**) |
 | `pr-reject [-b <branch>] [reason]` | Closes that branch's PR without merging; defaults to the current branch (**human-only**) |
-| `pr-cleanup` | Deletes branch + remote + worktree after the PR is merged |
+| `pr-cleanup <branch>` | Deletes branch + remote + worktree after the PR is merged; `<branch>` is required, run from the main clone |
 | `pr-threads <pr#> [--json]` | Review state for a PR — unresolved conversations AND whether a review covers the current head (exit 0 = clean; scriptable merge gate; full exit-code table in the spec). `--json` adds thread ids, every comment body, a `trusted` flag, and head/reviewedHead/latestReviewCommit |
 
 Retired-tool history (what replaced what, and why) lives in `docs/dev-workflow-spec.md`.

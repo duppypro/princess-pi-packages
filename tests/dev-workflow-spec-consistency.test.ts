@@ -43,24 +43,29 @@ console.log("docs/dev-workflow-spec.md consistency (#234)");
 // ---
 // 1. Scripts table matches install-workflow-tools' SCRIPTS array
 // ---
-{
-	const installerSrc = fs.readFileSync(INSTALLER, "utf8");
-	// Closing paren must be on its own line (`\n)`), not merely the first `)`
-	// anywhere after `SCRIPTS=(` — a non-greedy match on a bare `\)` used to
-	// stop early at the FIRST parenthetical it met, including one inside an
-	// in-array comment (#263 added `# Itself (#263): ...` ahead of the real
-	// closing paren). Comment lines are then dropped explicitly, so a script
-	// name never picks up a stray `#...` line as a fake "script".
-	const arrayMatch = installerSrc.match(/SCRIPTS=\(([\s\S]*?)\n\)/);
-	check(arrayMatch !== null, "SCRIPTS array found in install-workflow-tools", installerSrc);
-	const scripts = arrayMatch
-		? arrayMatch[1]
-				.split("\n")
-				.map((l) => l.trim())
-				.filter((l) => l.length > 0 && !l.startsWith("#"))
-		: [];
-	check(scripts.length > 0, "SCRIPTS array is non-empty", scripts.join(","));
+const installerSrc = fs.readFileSync(INSTALLER, "utf8");
+// Closing paren must be on its own line (`\n)`), not merely the first `)`
+// anywhere after `SCRIPTS=(` — a non-greedy match on a bare `\)` used to stop
+// early at the FIRST parenthetical it met, including one inside an in-array
+// comment (#263 added `# Itself (#263): ...` ahead of the real closing paren).
+// Comment lines are then dropped explicitly, so a script name never picks up
+// a stray `#...` line as a fake "script". Same fix as
+// tests/install-path-no-ax-surrealdb.test.ts (#263) — kept in sync by hand,
+// since the two files don't share a helper.
+const arrayMatch = installerSrc.match(/SCRIPTS=\(([\s\S]*?)\n\)/);
+check(arrayMatch !== null, "SCRIPTS array found in install-workflow-tools", installerSrc);
+const scripts = arrayMatch
+	? arrayMatch[1]
+			.split("\n")
+			.map((l) => l.trim())
+			.filter((l) => l.length > 0 && !l.startsWith("#"))
+	: [];
+check(scripts.length > 0, "SCRIPTS array is non-empty", scripts.join(","));
 
+// ---
+// 1. Scripts table matches install-workflow-tools' SCRIPTS array
+// ---
+{
 	const specSrc = fs.readFileSync(SPEC, "utf8");
 	for (const script of scripts) {
 		// Matches `script`, `script arg`, `script "msg"` — a bare name in backticks,
@@ -70,6 +75,26 @@ console.log("docs/dev-workflow-spec.md consistency (#234)");
 			namedInSpec,
 			`spec's Scripts table names '${script}' (from install-workflow-tools' SCRIPTS array)`,
 			`looked for a backtick-wrapped '${script}' in ${SPEC}`,
+		);
+	}
+}
+
+// ---
+// 1b. CLAUDE.md's "Shipped scripts" table matches the same SCRIPTS array
+// (#264 — this edge was untested, which is how wt-new drifted out of
+// CLAUDE.md silently: the installer and the spec agreed, and nothing checked
+// the third corner of the triangle. CLAUDE.md is loaded into every session's
+// context, so a tool missing from its table is invisible where agents
+// actually look, even when the spec documents it correctly.)
+// ---
+{
+	const claudeMdSrc = fs.readFileSync(CLAUDE_MD, "utf8");
+	for (const script of scripts) {
+		const namedInClaudeMd = new RegExp(`\`${script}[\` ]`).test(claudeMdSrc);
+		check(
+			namedInClaudeMd,
+			`CLAUDE.md's Shipped scripts table names '${script}' (from install-workflow-tools' SCRIPTS array)`,
+			`looked for a backtick-wrapped '${script}' in ${CLAUDE_MD}`,
 		);
 	}
 }

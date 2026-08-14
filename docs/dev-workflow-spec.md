@@ -57,6 +57,20 @@ A spec is clear enough to start TDD only when there is a defined test, evaluatio
 function, set of log outputs, or expected system state to check it against. "I think
 this is right" is not a spec gate; "this test goes green" is.
 
+## Spec drift and scope creep
+
+**Spec drift has no human gate.** Realizing mid-implementation that the spec was wrong
+or incomplete, or that a RED test's API feels wrong once it's written, is expected —
+**do not stop.** Update the spec to the corrected design, continue (or rewrite the RED
+test and) coding to it, note the drift in an issue comment, and let spec-reconcile at
+Code and Spec Approved catch anything left over. Force-pushing the amended commits is
+fine — a feature branch's history is disposable (see [Git guardrails](#git-guardrails)).
+
+**Scope creep gets a follow-up issue, never a wider branch.** Discovering mid-branch
+that the issue is bigger than scoped: comment on the issue, file a follow-up
+("#43: add --output-format"), link it from this issue's body, and keep the current PR
+scoped to what it already committed to.
+
 ## Branch naming & worktrees
 
 Branch naming (`<issue#>-<slug>`) and the never-edit-on-`main` rule are Hard Gates —
@@ -102,6 +116,56 @@ sits inside the clone, and `git-checkpoint` runs `git add -A`. `.gitignore` carr
 gates it — including the part that is easy to get wrong, that the ignore must live in the
 **tracked** `.gitignore` and not in a per-clone `.git/info/exclude` that no other machine
 inherits.
+
+### `wt-new` — the one-command form (#250)
+
+`wt-new <issue#>-<slug>`, run from the main clone, does the sequence above in one
+step: fetches origin, detects `main` vs `master` (never hard-coded — asks the server
+directly via `git ls-remote --symref origin HEAD`, not the local `origin/HEAD` symref,
+which `git fetch` does not refresh when the remote's default branch changes after
+clone (#221); falls back to whichever of `origin/main` / `origin/master` exists
+locally if that call fails), creates the worktree at the in-tree location above via
+`git worktree add --no-track -b <branch> <path> origin/<primary>`, and pushes with
+`git push -u origin <branch>` so the upstream is correct from the FIRST push.
+
+**Closes the upstream trap, not just the mechanics.** `git worktree add -b <branch>
+<start-point>` alone sets the new branch's upstream to the START POINT — found live,
+#250 — so a bare `git push` from that worktree would otherwise target
+`origin/<primary>`, not `origin/<branch>`. `--no-track` at creation stops git
+inferring a tracking branch from the start point; `-u` on the first push is what then
+sets `origin/<branch>` as upstream instead. `wt-new` also self-checks the result —
+`git rev-parse --abbrev-ref @{upstream}` in the new worktree must read back as
+`origin/<branch>` — and refuses to report success if it doesn't.
+
+Fails closed: refuses if run from inside any worktree (detected via `--git-dir` and
+`--git-common-dir` diverging — the same test regardless of which worktree it's run
+from, no branch-name guessing involved), or if the target path or branch already
+exists locally or on origin. Prints the created path as its only stdout line — every
+progress and warning line goes to stderr instead — for `EnterWorktree { path: ... }`.
+
+**It also refuses a clone whose `remote.origin.fetch` doesn't track all of origin's
+branches** (`--single-branch`, `--depth`, a hand-narrowed or negative refspec) — exit 3,
+before anything is created or pushed. Every "already on origin?" gate here answers from a
+local `refs/remotes/origin/*` ref, and a narrowed refspec makes `git fetch` silently stop
+populating those while still exiting 0, so "no local ref" stops meaning "not on origin".
+Measured both ways (#268 review): `origin/<primary>` never resolved and `git worktree add`
+died with `fatal: invalid reference`, reported as exit **6** — the code that asserts origin
+was consulted — for a ref never asked about; and, worse, the origin-branch gate passed for a
+branch that *does* exist on origin, after which the first push **fast-forwarded that existing
+remote branch onto the primary's tip**. The road not taken was making each gate
+server-authoritative with `git ls-remote`, which costs a network round trip and a fresh TOCTOU
+window on every run to keep working in a clone shape this workflow never produces. A separate
+guard maps "origin named a primary branch this clone has no local ref for" to **5**, not 6.
+
+**`herdr`/tmux tab creation on top is convenience, never a dependency.** Plain
+`git worktree add` creates the worktree itself; `herdr worktree` subcommands are not
+used at all. Once the worktree exists, `wt-new` opens a tab named after the branch —
+`herdr tab create` when run inside a herdr session (`$HERDR_WORKSPACE_ID` set), a
+`tmux new-window` equivalent when inside tmux (`$TMUX` set) — and if neither is
+present, prints a friendly note to stderr and stops there. None of that affects the
+exit code: the worktree having been created (and pushed, with the correct upstream)
+is the only thing that gates success. Exit codes otherwise follow the shared pr-*
+contract below.
 
 ### Why this reverses the out-of-tree rule (#257)
 
@@ -187,9 +251,10 @@ in-tree slug is the *motivating* case for session discovery — `tests/wtft-issu
 form and discovering a session filed under it. The one stranded transcript this repo has
 actually produced was under the out-of-tree layout.
 
-`pr-cleanup` currently has a known gap here (#221) — it can remove the worktree its own
-session is inside, stranding the transcript the same way. Fixed there, not duplicated
-here.
+`pr-cleanup` closes this gap itself (#221): it refuses (exit code 3 — see the exit-code
+table below) when cwd is inside the worktree that run would remove, and prints the
+`ExitWorktree`-first recovery sequence. Not duplicated here — see `pr-cleanup`'s own
+refusal table.
 
 ## Git guardrails
 
@@ -306,18 +371,22 @@ are Claude-Code-only, deployed and drift-checked the same copy-based way as
 ## Trigger words
 
 - **"ready to merge?"** → run `pr-open` to create the PR.
-- **After the human says "done" / "merged"** → verify PR state, then run `pr-cleanup`
-  from the feature worktree.
+- **After the human says "done" / "merged"** → verify PR state, then
+  `ExitWorktree { action: "remove" }`, then `pr-cleanup <branch>` from the main clone.
+  A session that entered via `EnterWorktree` cannot complete cleanup from inside the
+  worktree (`git worktree remove` refuses a locked worktree) — see [`pr-cleanup` fails
+  closed, by design](#pr-cleanup-fails-closed-by-design).
 
 ## Scripts
 
 | Script | What it does |
 |---|---|
-| `pr-open` | Discovers branch from cwd → ensures pushed → pre-checks → `gh pr create` |
+| `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> <path> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
+| `pr-open` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create` |
 | `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
-| `pr-cleanup` | Discovers branch + worktree from cwd → deletes branch, remote, worktree |
-| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any review covers the current head (#254). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) below. `--json` emits thread bodies/ids, a `trusted` flag, and `head`/`reviewedHead`/`latestReviewCommit`. |
+| `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
+| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any review covers the current head (#254). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, and `head`/`reviewedHead`/`latestReviewCommit`. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). |
 | `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
 | `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, plus the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
@@ -357,6 +426,14 @@ from inside that worktree, not by bare name. If the canonical clone is ever move
 renamed, bare-name re-sync breaks until you rerun it from the new clone path or set
 `INSTALL_WORKFLOW_TOOLS_REPO_DIR` by hand.
 
+**Origin:** these scripts collapse the git command clusters agents repeat mechanically —
+ax data showed `git status` called 229 times in 30 days, one session running 199 git
+calls. Each raw command is a full bash turn (type, read output, type the next); one
+script call replaces 2-5 of those turns. (Full research:
+[btw/docs/research/finding-token-waste-with-ax.md](https://github.com/duppypro/btw/blob/main/docs/research/finding-token-waste-with-ax.md).)
+`git-checkpoint`/`git-overview` are the current form; earlier two-script split
+(`git-snap` + `git-ship`) is retired — see below.
+
 **Why the branch is positional on `pr-merge` but a flag on `pr-reject`:** `pr-merge`
 takes no other argument, so a bare word can only be a branch. `pr-reject` also takes a
 free-text reason, and the two cannot be told apart positionally — `pr-reject fix-thing`
@@ -387,7 +464,7 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
   directions.** Exit `0` when clean, `1` when not — in both modes, same as before #254.
   What counts as "clean" changed for *both* modes at once: thread count alone is no
   longer sufficient (full rule in the [exit-code
-  contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) below). An
+  contract](#exit-codes--the-shared-pr--contract-224) below). An
   unrecognised flag exits `2` rather than being taken as the repo argument.
 - Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`, and as
   of #254: `head`, `reviewedHead`, `latestReviewCommit`.
@@ -445,28 +522,36 @@ verb that closes the loop, and `diffHunk` for surrounding context. `path` + `lin
 to locate a comment; the hunk is a convenience, and this slice is the one that unblocks the
 review loop.
 
-### Exit-code contract: pr-threads and pr-merge (#224, #258, #254)
+### Exit codes — the shared pr-* contract (#224)
 
-Both scripts adopt the shared #224 exit-code table:
+`pr-cleanup`, `pr-open`, `wt-new`, `pr-merge`, and `pr-threads` map every failure to one
+of six codes instead of a bare `exit 1`. The distinction that carries weight is **5 vs
+6**: "I could not check" versus "I checked and it says no." The rows below are
+deliberately general — each script's own header spells out exactly which of its checks
+lands on which code; a header disagreeing with this table is a bug in the header, not
+license to add a seventh number.
 
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 2 | usage error (bad flag, missing argument) |
-| 3 | precondition not met (e.g. `pr-merge` run on main/master) |
-| 4 | not found (no such PR, or no open PR for the branch) |
-| 5 | remote/API failure — state could not be determined |
-| 6 | safety gate refused (ambiguous PR selection; `pr-merge`'s pr-threads gate) |
+| 2 | usage error — bad flags/arguments, a protected branch (`main`/`master`) named explicitly, or not run inside a git repository at all |
+| 3 | precondition not met — nothing to discover from cwd (on a protected branch, or detached HEAD, with no branch given), cwd is inside a worktree the operation needs to leave or would remove, the worktree isn't clean, or the clone's `remote.origin.fetch` doesn't track all of origin's branches so its `origin/*` refs can't answer the gates |
+| 4 | not found — a required piece of local git state or a PR is missing (no main/master worktree registered, no local branch by that name, no `origin` remote configured, no such PR, no open PR for the branch) |
+| 5 | remote/API failure — state could **not** be determined (network down, `gh` outage, an incomplete API response, a local check like `merge-base` that could not even run, or a ref the remote named that was never fetched locally) |
+| 6 | safety gate refused — state **was** determined, and it says no (unmerged work, a diverged or moved remote, a dirty or locked worktree refusing removal, a rejected push, a ref that won't delete, a target path or branch that already exists, ambiguous PR selection, `pr-merge`'s pr-threads gate) |
+
+`pr-reject` still exits `0`/`1` only; adopting the table for it is tracked by #224.
 
 **`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
-#232's `--json` already shipped depending on it: `1` means "the check SUCCEEDED and found
-a problem" (unresolved threads and/or a review that doesn't cover the current head), never
-"broken". This is the one code #258's `pr-merge` gate has to tell apart from every other
-failure, so the reservation is deliberate. Everything that used to collide with that `1` —
-a `gh api graphql` failure propagating gh's own exit status under `set -e`, which is
-usually `1` — is now wrapped explicitly and mapped to `5`. That collision is *why* the
-#258 gate could not have been built correctly before this branch: `pr-merge` could not
-have told "unresolved threads" apart from "gh had a hiccup" by exit code alone.
+#232's `--json` already shipped depending on it: `1` means "the check succeeded and
+found a problem" (unresolved threads and/or a review that doesn't cover the current
+head), never "broken". This is the one code #258's `pr-merge` gate has to tell apart
+from every other failure, so the reservation is deliberate. Everything that used to
+collide with that `1` — a `gh api graphql` failure propagating gh's own exit status
+under `set -e`, which is usually `1` — is now wrapped explicitly and mapped to `5`.
+That collision is *why* the #258 gate could not have been built correctly before: with
+`pr-threads` alone, `pr-merge` could not have told "unresolved threads" apart from "gh
+had a hiccup" by exit code alone.
 
 **`pr-merge` calls `pr-threads` before `gh pr merge`** (#258), reusing the PR number it
 already resolved via its own fork-safe `gh pr list --head` selection — it does not
@@ -494,6 +579,8 @@ refuse, and tell you why, when:
 
 | Situation | Why it refuses |
 |---|---|
+| cwd is inside the worktree this run would remove | Removing it out from under the caller strands that session's own transcript — `git worktree remove` doesn't move it back, only `ExitWorktree` does. Checked first, before any gate that costs a network/API call (#221). Recovery: `ExitWorktree { action: "keep" }` (or `"remove"`), then re-run `pr-cleanup <branch>` from the main clone. |
+| The target worktree is **locked** (typically by `EnterWorktree` holding it open for a live session) | Previously misdiagnosed as "likely has uncommitted or untracked changes" (#262), which sent an agent hunting for phantom dirty files. Detected via `git worktree list --porcelain -z`'s `locked` attribute and reported as locked, naming `EnterWorktree` as the likely holder. |
 | The worktree has uncommitted or untracked changes | `git worktree remove` refusing IS the safeguard. There is no `--force` retry — a merged PR says nothing about local-only edits. Commit, stash, or force it by hand once you are sure. |
 | Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. |
 | `git fetch`, `git ls-remote` or `gh pr list` fails | An unreachable or unauthenticated remote is not proof of anything. |
@@ -501,6 +588,11 @@ refuse, and tell you why, when:
 | `origin/<branch>` has moved since the PR merged | Someone pushed after the merge. Your local tip still matches the PR, so nothing local hints at it — those commits live only on the remote. The delete also carries a `--force-with-lease` pinned to the merged sha, so a commit landing mid-run is rejected rather than swept up. |
 | `git push --delete` fails and the ref is still on origin | Includes protected-ref rejections. It exits non-zero instead of printing `✅ Cleanup complete`. |
 | `git branch -D` fails while the branch still exists | A ref lock or a permissions problem — reported as a failure, never as "already gone". |
+
+**Not a refusal:** a branch whose worktree is already gone (e.g. after
+`ExitWorktree { action: "remove" }`) isn't an error — `pr-cleanup` skips straight to
+verifying the merge and deleting the branch, instead of dead-ending on "nothing to clean
+up from here" (#262).
 
 Two things that look like bugs and are not:
 
@@ -598,8 +690,13 @@ https://github.com/duppypro/princess-pi-packages/pull/43
 
 Duppy: reviews → runs pr-merge → tells agent "done"
 
-Agent: pr-cleanup          # run from the feature worktree
+Agent: ExitWorktree { action: "remove" }   # harness removes the worktree
+Agent: pr-cleanup 42-verbose-flag          # from the main clone
 ```
+
+**Changes requested, PR still open:** push more commits to the same branch — GitHub
+updates the PR automatically — and re-run spec-reconcile if docs changed before telling
+Duppy it's ready for re-review.
 
 **`pr-cleanup` is the merge path only.** Deleting a branch is how work gets lost, so it
 deletes nothing until it can prove the commits survive elsewhere — a merged PR whose
@@ -615,52 +712,11 @@ still the only copy of that work. Either:
 
 ## When things go wrong
 
-### Spec changes during coding
-
-You write code and realise the spec was wrong or incomplete. **Do not stop.**
-
-1. Update the spec doc to match what the code *should* do
-2. Continue coding to the corrected spec
-3. Note the drift in an issue comment: "Spec §3: --verbose defaults to 'short', not 'full' — found during impl"
-4. Spec-reconcile at the end catches any remaining drift
-
-**No human gate needed.** The spec evolves alongside the code. The Code and Spec
-Approved commit is where everything gets reconciled — not before.
-
-### Tests reveal a design flaw
-
-The RED test you wrote passes but the API feels wrong. **Pivot.**
-
-1. Update the spec with the better design
-2. Rewrite the RED test to match
-3. Force-push the amended commits (feature branch — rewriting is fine)
-4. Continue
-
-### Scope creep — discovered the issue is bigger
-
-Mid-implementation, you realise this needs 3 more features to be useful.
-
-1. Comment on the issue: "Discovered --verbose needs --output-format to be useful"
-2. File a **follow-up issue**: "#43: add --output-format flag"
-3. Keep **this** PR scoped to --verbose only
-4. Link the follow-up in the issue body
-
-**Never expand scope on a branch once code is committed.** File a follow-up.
-
-### Merge conflict with main
-
-```
-$ pr-open
-MERGE_BLOCKED: gh pr create failed.
-detail: Pull request has conflicts.
-```
-
-Fix:
-1. `git fetch origin && git rebase origin/main`
-2. Resolve conflicts
-3. `git push --force-with-lease origin <branch>` — name the refspec; see
-   [Git guardrails](#git-guardrails) for why the bare form is the wrong habit to build
-4. Re-run `pr-open`
+Spec drift and scope creep are policy, not failure — see [Spec drift and scope
+creep](#spec-drift-and-scope-creep) above. A plain merge conflict with `main` and a PR
+rejected with changes requested are both textbook git/GitHub flows the error text
+already explains; they aren't repeated here. What's left is the one recipe whose fix is
+*not* derivable from the symptom.
 
 ### A stacked PR conflicts after its parent merges
 
@@ -712,19 +768,11 @@ overlap exactly once.
 **Re-run the tests after any rebase.** A rebase replays patches against different
 content; clean application is not proof the result still works.
 
-### Human rejects PR with changes requested
-
-1. Read the feedback on the PR
-2. Make changes on the same branch
-3. Commit + push (PR auto-updates)
-4. Re-run spec-reconcile if docs changed
-5. Tell Duppy "ready for re-review"
-
 ### PR merge blocked by ruleset ("protected ref")
 
 The repository ruleset requires review threads to be resolved before merging. As of #258,
 `pr-merge` catches this itself before ever calling `gh pr merge` — see the [exit-code
-contract](#exit-code-contract-pr-threads-and-pr-merge-224-258-254) — so this scenario now
+contract](#exit-codes--the-shared-pr--contract-224) — so this scenario now
 mostly shows up when `gh pr merge` is invoked directly (bypassing `pr-merge`) rather than
 as the ruleset's own rejection.
 
@@ -743,6 +791,7 @@ as the ruleset's own rejection.
 | `merge-checklist` skill | Post-hoc checklist. The same checks now live in `pr-open` itself. |
 | `pre-merge-checklist` skill | Redundant with `merge-checklist`. |
 | `bin/merge` CLI (#201) | Replaced by `pr-open`. The Pi `/merge` slash command (`extensions/merge.ts`) is a separate thing and still exists. |
-| `bin/post-merge-cleanup` (#207) | Replaced by `pr-cleanup`, which discovers branch and worktree from cwd instead of taking them as arguments. |
+| `bin/post-merge-cleanup` (#207) | Replaced by `pr-cleanup <branch>`. |
+| `pr-cleanup`'s no-argument (cwd-discovery) mode (#221 finding 2) | Traced and tested empirically: every no-argument path either hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup, by construction (whatever branch cwd has checked out is always the branch checked out in cwd's own worktree, which the containment gate then refuses). `<branch>` is now a required argument. |
 | Local merge to main (`merge --cleanup`) | Replaced by PR merge. LLM runs `pr-open`, human runs `pr-merge`. |
 | Human gate between Spec Approved and Code Draft | Spec iterates alongside code. Gate moved to PR review. |

@@ -30,6 +30,25 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
 const INSTALLER_SRC = fs.readFileSync(INSTALLER, "utf8");
 
+// Derive the fixture's script set from the installer's own SCRIPTS array rather
+// than restating it. Two hardcoded copies of the list lived here and drifted the
+// moment a branch added an entry: the fixture repo never created the new script,
+// so the installer correctly reported it MISSING FROM SOURCE and the suite failed
+// for a reason that had nothing to do with what it tests. That failure is
+// invisible on either branch alone and only appears once they merge, which is the
+// worst time to meet it. Comment lines are dropped — a bash array may carry them,
+// and #263's `# Itself (#263)` is exactly the shape that broke the naive parsers
+// in tests/dev-workflow-spec-consistency.test.ts and
+// tests/install-path-no-ax-surrealdb.test.ts.
+const FIXTURE_SCRIPTS = (() => {
+	const m = INSTALLER_SRC.match(/SCRIPTS=\(([\s\S]*?)\n\)/);
+	if (!m) throw new Error("SCRIPTS array not found in bin/install-workflow-tools");
+	return m[1]
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0 && !l.startsWith("#"));
+})();
+
 function freshHome(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "iwt-self-home-"));
 }
@@ -174,7 +193,7 @@ describe("install-workflow-tools deploys itself (#263)", () => {
 		// enough to prove this candidate really is the repo (that gap is what let
 		// $HOME itself pass when an unrelated ~/hooks happened to exist).
 		fs.writeFileSync(path.join(fixtureRepo, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
-		for (const s of ["git-checkpoint", "git-overview", "pr-open", "pr-merge", "pr-reject", "pr-cleanup", "pr-threads", "install-workflow-tools"]) {
+		for (const s of FIXTURE_SCRIPTS) {
 			fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fixtureRepo, "bin", s));
 		}
 		for (const h of fs.readdirSync(path.join(REPO_ROOT, "hooks")).filter((f) => f.endsWith(".sh") || f.endsWith(".py"))) {
@@ -207,7 +226,7 @@ describe("install-workflow-tools deploys itself (#263)", () => {
 		fs.mkdirSync(path.join(fixtureRepo, "bin"), { recursive: true });
 		fs.mkdirSync(path.join(fixtureRepo, "hooks"), { recursive: true });
 		fs.writeFileSync(path.join(fixtureRepo, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
-		for (const s of ["git-checkpoint", "git-overview", "pr-open", "pr-merge", "pr-reject", "pr-cleanup", "pr-threads", "install-workflow-tools"]) {
+		for (const s of FIXTURE_SCRIPTS) {
 			fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fixtureRepo, "bin", s));
 		}
 		for (const h of fs.readdirSync(path.join(REPO_ROOT, "hooks")).filter((f) => f.endsWith(".sh") || f.endsWith(".py"))) {

@@ -198,10 +198,20 @@ exec ${JSON.stringify(realGit)} "$@"
 	return { root, remote, mainClone, worktree, binDir, branch };
 }
 
-function runCleanup(sb: Sandbox, cwd?: string): { code: number; out: string } {
+// `<branch>` is required (#221 finding 2: the old no-argument cwd-discovery
+// fallback was proven unreachable for a successful cleanup — traced and
+// tested empirically, then removed rather than left as a dead documented
+// path). Pass `branchArg: null` to omit the argument on purpose, for the
+// usage-error cases below.
+function runCleanup(
+	sb: Sandbox,
+	cwd: string = sb.mainClone,
+	branchArg: string | null = sb.branch,
+): { code: number; out: string } {
+	const args = branchArg === null ? [] : [branchArg];
 	try {
-		const out = execFileSync("bash", [PR_CLEANUP], {
-			cwd: cwd ?? sb.worktree,
+		const out = execFileSync("bash", [PR_CLEANUP, ...args], {
+			cwd,
 			encoding: "utf8",
 			env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}` },
 			stdio: ["ignore", "pipe", "pipe"],
@@ -210,6 +220,24 @@ function runCleanup(sb: Sandbox, cwd?: string): { code: number; out: string } {
 	} catch (err: any) {
 		return { code: err?.status ?? -1, out: `${err?.stdout || ""}${err?.stderr || ""}` };
 	}
+}
+
+// Strips `gh`'s own directory out of PATH, leaving git/bash/coreutils intact,
+// so a script that shells out to `gh` fails as "command not found" rather than
+// running the stub. Used by the gate-order case: the containment refusal must
+// fire before pr-cleanup ever tries to invoke gh.
+function pathWithoutGh(): string {
+	let ghDir = "";
+	try {
+		const ghPath = execFileSync("which", ["gh"], { encoding: "utf8" }).trim();
+		if (ghPath) ghDir = path.dirname(ghPath);
+	} catch {
+		// gh not found on this host at all — nothing to strip.
+	}
+	return (process.env.PATH ?? "")
+		.split(path.delimiter)
+		.filter((p) => p && p !== ghDir)
+		.join(path.delimiter);
 }
 
 function localBranchExists(sb: Sandbox): boolean {
@@ -236,25 +264,164 @@ function remoteBranchExists(sb: Sandbox): boolean {
 console.log("pr-cleanup: destructive paths must fail closed (#210)");
 
 // --- happy path first: the fix must not break the thing that works ---
-console.log("\nhappy path:");
+// This is now THE primary path (#262): main clone, branch given explicitly.
+// `runCleanup(sb)` already defaults to (sb.mainClone, sb.branch).
+console.log("\nhappy path — main clone, explicit branch argument:");
 {
 	const sb = makeSandbox("42-feature");
-	const { code, out } = runCleanup(sb);
+	const { code, out } = runCleanup(sb, sb.mainClone, sb.branch);
 	check(code === 0, "merged PR → exits 0", `got ${code}, output:\n${out}`);
 	check(!fs.existsSync(sb.worktree), "merged PR → worktree removed", out);
 	check(!localBranchExists(sb), "merged PR → local branch deleted", out);
 	check(!remoteBranchExists(sb), "merged PR → remote branch deleted", out);
+	check(!/Now in/.test(out), "does not claim to have moved the caller's shell (#220)", out);
 }
 
-// --- finding: CWD=$(pwd) instead of the worktree top level ---
-console.log("\nrun from a subdirectory (pwd vs --show-toplevel):");
+// --- finding: CWD=$(pwd) instead of the worktree top level, now exercised via
+// a nested subdirectory of the MAIN CLONE (a nested dir of the worktree is
+// covered by the containment cases below, where it must REFUSE instead) ---
+console.log("\nrun from a nested subdirectory of the main clone:");
+{
+	const sb = makeSandbox("42-feature");
+	const sub = path.join(sb.mainClone, "nested", "deeper");
+	fs.mkdirSync(sub, { recursive: true });
+	const { code, out } = runCleanup(sb, sub, sb.branch);
+	check(code === 0, "run from a subdirectory of the main clone → exits 0", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(sb.worktree), "run from a subdirectory of the main clone → worktree still removed", out);
+}
+
+// --- containment gate (#221): refusing to remove the worktree the caller is
+// standing in. This fires on the EXPLICIT-branch path — <branch> is required
+// (#221 finding 2 removed the old no-argument cwd-discovery fallback), so
+// these name the branch while cwd happens to already be standing inside its
+// worktree (e.g. an agent forgot to ExitWorktree first).
+console.log("\ncontainment: refuses from inside the worktree being removed:");
+{
+	const sb = makeSandbox("42-feature");
+	const { code, out } = runCleanup(sb, sb.worktree, sb.branch);
+	check(code === 3, "cwd inside the worktree → exits with the precondition code (3)", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "cwd inside the worktree → worktree survives", out);
+	check(localBranchExists(sb), "cwd inside the worktree → local branch survives", out);
+	check(remoteBranchExists(sb), "cwd inside the worktree → remote branch survives", out);
+	check(/ExitWorktree/.test(out), "cwd inside the worktree → names ExitWorktree", out);
+}
+
+console.log("\ncontainment: refuses from a nested subdirectory of the worktree too:");
 {
 	const sb = makeSandbox("42-feature");
 	const sub = path.join(sb.worktree, "nested", "deeper");
 	fs.mkdirSync(sub, { recursive: true });
-	const { code, out } = runCleanup(sb, sub);
-	check(code === 0, "run from a subdirectory → exits 0", `got ${code}, output:\n${out}`);
-	check(!fs.existsSync(sb.worktree), "run from a subdirectory → worktree still removed", out);
+	const { code, out } = runCleanup(sb, sub, sb.branch);
+	check(code === 3, "nested subdir of the worktree → exits with the precondition code (3)", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "nested subdir of the worktree → worktree survives", out);
+	check(localBranchExists(sb), "nested subdir of the worktree → local branch survives", out);
+	check(remoteBranchExists(sb), "nested subdir of the worktree → remote branch survives", out);
+	check(/ExitWorktree/.test(out), "nested subdir of the worktree → names ExitWorktree", out);
+}
+
+console.log("\ngate order: containment refusal fires even with `gh` absent from PATH:");
+{
+	const sb = makeSandbox("42-feature");
+	let code = -1;
+	let out = "";
+	try {
+		out = execFileSync("bash", [PR_CLEANUP, sb.branch], {
+			cwd: sb.worktree,
+			encoding: "utf8",
+			env: { ...process.env, ...GIT_ENV, PATH: pathWithoutGh() },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		code = 0;
+	} catch (err: any) {
+		code = err?.status ?? -1;
+		out = `${err?.stdout || ""}${err?.stderr || ""}`;
+	}
+	check(code === 3, "no gh on PATH → containment refusal still fires (3)", `got ${code}, output:\n${out}`);
+	check(/ExitWorktree/.test(out), "no gh on PATH → still names ExitWorktree", out);
+	check(!/gh repo view|gh pr list|gh: command not found|gh: not found/i.test(out),
+		"no gh on PATH → no gh invocation was attempted", out);
+	check(fs.existsSync(sb.worktree), "no gh on PATH → worktree survives", out);
+}
+
+// --- #221 finding 2: no-argument invocation is now a usage error -----------
+//
+// Traced and tested empirically (see bin/pr-cleanup's header comment): every
+// path a bare `pr-cleanup` could reach either hit the containment gate above
+// (exit 3) or the missing-main-clone gate below (exit 4) — never exit 0.
+// <branch> is now required; a missing argument is a usage error naming the
+// main-clone invocation, and the dead discovery path is gone from the script.
+console.log("\nno argument: usage error, not cwd-discovery:");
+{
+	const sb = makeSandbox("42-feature");
+	const { code, out } = runCleanup(sb, sb.mainClone, null);
+	check(code === 2, "no argument → usage-error code (2)", `got ${code}, output:\n${out}`);
+	check(/usage:.*pr-cleanup <branch>/.test(out), "no argument → usage message names <branch>", out);
+	check(fs.existsSync(sb.worktree), "no argument → worktree survives", out);
+	check(localBranchExists(sb), "no argument → local branch survives", out);
+}
+
+console.log("\nno argument, run from inside the feature worktree: still a usage error, not a discovery success:");
+{
+	const sb = makeSandbox("42-feature");
+	const { code, out } = runCleanup(sb, sb.worktree, null);
+	check(code === 2, "no argument from inside the worktree → usage-error code (2), not a silent discovery", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "no argument from inside the worktree → worktree survives", out);
+}
+
+// --- #262 fix 1: a LOCKED worktree (EnterWorktree) must not be misdiagnosed
+// as dirty — an agent acting on "uncommitted changes" would go looking for
+// phantom files that do not exist. ---
+console.log("\nlocked worktree (EnterWorktree) → locked diagnosis, not dirty:");
+{
+	const sb = makeSandbox("42-feature");
+	git(sb.mainClone, ["worktree", "lock", sb.worktree]);
+	const { code, out } = runCleanup(sb, sb.mainClone, sb.branch);
+	check(code === 6, "locked worktree → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "locked worktree → worktree survives", out);
+	check(localBranchExists(sb), "locked worktree → local branch survives", out);
+	check(remoteBranchExists(sb), "locked worktree → remote branch survives", out);
+	check(/locked/i.test(out), "locked worktree → says LOCKED", out);
+	check(!/uncommitted or untracked/i.test(out), "locked worktree → does NOT claim uncommitted/untracked changes", out);
+}
+
+// --- #262 fix 3: "branch exists, worktree already removed" — the state left
+// behind by `ExitWorktree { action: "remove" }`. This used to dead-end at
+// "on main — nothing to clean up from here"; it must now finish the job. ---
+console.log("\nbranch exists, worktree already removed (post ExitWorktree{action:\"remove\"}):");
+{
+	const sb = makeSandbox("42-feature");
+	git(sb.mainClone, ["worktree", "remove", sb.worktree]);
+	const { code, out } = runCleanup(sb, sb.mainClone, sb.branch);
+	check(code === 0, "worktree already gone → still exits 0", `got ${code}, output:\n${out}`);
+	check(!localBranchExists(sb), "worktree already gone → local branch deleted", out);
+	check(!remoteBranchExists(sb), "worktree already gone → remote branch deleted", out);
+	check(!/nothing to clean up/i.test(out), "worktree already gone → does not dead-end", out);
+}
+
+// --- adversarial review of #221 (finding A): a missing local branch used to
+// crash with git's raw exit 128 instead of a table code, because the
+// cwd-first `git rev-parse` fallback's own stderr leaked and its failure
+// wasn't caught under `set -e`. Two triggering states, both must now exit 4
+// with an actionable message instead of a bare git error. ---
+console.log("\nmissing local branch — typo'd name, never existed:");
+{
+	const sb = makeSandbox("42-feature", { prMerged: false });
+	const { code, out } = runCleanup(sb, sb.mainClone, "99-never-existed");
+	check(code === 4, "typo'd branch name → not-found code (4), not git's raw 128", `got ${code}, output:\n${out}`);
+	check(/no local branch/i.test(out), "typo'd branch name → names the missing local branch", out);
+	check(!/fatal:|unknown revision/i.test(out), "typo'd branch name → not git's raw rev-parse error text", out);
+}
+
+console.log("\nmissing local branch — PR merged, worktree gone, branch deleted by hand, remote ref still there:");
+{
+	const sb = makeSandbox("42-feature");
+	git(sb.mainClone, ["worktree", "remove", sb.worktree]);
+	git(sb.mainClone, ["branch", "-D", sb.branch]);
+	const { code, out } = runCleanup(sb, sb.mainClone, sb.branch);
+	check(code === 4, "local branch already deleted → not-found code (4), not git's raw 128", `got ${code}, output:\n${out}`);
+	check(/no local branch/i.test(out), "local branch already deleted → names the missing local branch", out);
+	check(!/fatal:|unknown revision/i.test(out), "local branch already deleted → not git's raw rev-parse error text", out);
+	check(remoteBranchExists(sb), "local branch already deleted → remote ref untouched (never reached teardown)", out);
 }
 
 // --- CRITICAL: --force retry destroys uncommitted work ---
@@ -264,7 +431,7 @@ console.log("\ndirty worktree (the --force retry):");
 	const scratch = path.join(sb.worktree, "UNCOMMITTED.txt");
 	fs.writeFileSync(scratch, "work that only exists here\n");
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "dirty worktree → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "dirty worktree → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(scratch), "dirty worktree → uncommitted file SURVIVES", out);
 	check(fs.existsSync(sb.worktree), "dirty worktree → worktree not removed", out);
 	check(!/Cleanup complete/.test(out), "dirty worktree → does not claim success", out);
@@ -275,7 +442,7 @@ console.log("\nunreachable remote (ls-remote failure vs branch absent):");
 {
 	const sb = makeSandbox("42-feature", { prMerged: false, breakRemote: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "ls-remote fails → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "ls-remote fails → remote/API-failure code (5) — fetch itself fails first", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "ls-remote fails → worktree not removed", out);
 	check(localBranchExists(sb), "ls-remote fails → local branch survives", out);
 }
@@ -289,7 +456,7 @@ console.log("\nbranch tip ahead of the merged PR (reused name / later commits):"
 	git(sb.worktree, ["add", "-A"]);
 	git(sb.worktree, ["commit", "-q", "-m", "work done after the merge"]);
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "tip ahead of headRefOid → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "tip ahead of headRefOid → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "tip ahead of headRefOid → worktree survives", out);
 	check(localBranchExists(sb), "tip ahead of headRefOid → local branch survives", out);
 	check(/unmerged|not.*merged|ahead|does not match/i.test(out),
@@ -301,7 +468,7 @@ console.log("\nremote rejects the delete:");
 {
 	const sb = makeSandbox("42-feature", { denyDeletes: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "remote delete rejected → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "remote delete rejected → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(remoteBranchExists(sb), "remote delete rejected → remote branch still there (precondition)", out);
 	check(!/Cleanup complete/.test(out), "remote delete rejected → does not claim success", out);
 }
@@ -316,7 +483,7 @@ console.log("\ngh pr list fails, branch already gone from origin:");
 {
 	const sb = makeSandbox("42-feature", { failGhList: true, remoteBranchGone: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "gh pr list fails → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "gh pr list fails → remote/API-failure code (5)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "gh pr list fails → worktree survives", out);
 	check(localBranchExists(sb), "gh pr list fails → local branch survives", out);
 	check(!/Cleanup complete/.test(out), "gh pr list fails → does not claim success", out);
@@ -333,7 +500,7 @@ console.log("\nno merged PR, branch absent from origin:");
 	// unique local commits, nowhere else
 	const sb = makeSandbox("42-feature", { prMerged: false, remoteBranchGone: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "unique local commits → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "unique local commits → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "unique local commits → worktree survives", out);
 	check(localBranchExists(sb), "unique local commits → local branch survives", out);
 	check(/not in origin\/main|nowhere else/i.test(out), "unique local commits → says why", out);
@@ -357,7 +524,7 @@ console.log("\nremote branch advanced after the merge:");
 {
 	const sb = makeSandbox("42-feature", { remoteAdvanced: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "remote advanced → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "remote advanced → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(remoteBranchExists(sb), "remote advanced → remote branch SURVIVES", out);
 	check(fs.existsSync(sb.worktree), "remote advanced → worktree survives (gate is before teardown)", out);
 	check(localBranchExists(sb), "remote advanced → local branch survives", out);
@@ -373,7 +540,7 @@ console.log("\nls-remote fails while verifying the remote tip:");
 {
 	const sb = makeSandbox("42-feature", { failLsRemote: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "ls-remote fails in the merged arm → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 5, "ls-remote fails in the merged arm → remote/API-failure code (5)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "ls-remote fails → worktree survives", out);
 	check(remoteBranchExists(sb), "ls-remote fails → remote branch survives", out);
 	check(localBranchExists(sb), "ls-remote fails → local branch survives", out);
@@ -385,7 +552,7 @@ console.log("\nlocal branch delete blocked by a stale ref lock:");
 {
 	const sb = makeSandbox("42-feature", { staleRefLock: true });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "branch -D fails → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "branch -D fails → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(localBranchExists(sb), "branch -D fails → branch still exists (precondition)", out);
 	check(!/Cleanup complete/.test(out), "branch -D fails → does not claim success", out);
 }
@@ -430,7 +597,7 @@ console.log("\nno merged PR, branch still on origin:");
 {
 	const sb = makeSandbox("42-feature", { prMerged: false });
 	const { code, out } = runCleanup(sb);
-	check(code !== 0, "no merged PR → non-zero", `got ${code}, output:\n${out}`);
+	check(code === 6, "no merged PR → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "no merged PR → worktree survives", out);
 	check(localBranchExists(sb), "no merged PR → local branch survives", out);
 }
