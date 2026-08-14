@@ -318,6 +318,71 @@ console.log("\npush destination unreachable (undetermined — not a rejection):"
 	check(!/rejected/i.test(out), "message does not claim the remote rejected it — it never got that far", out);
 }
 
+// 9. `git merge-base --is-ancestor` for the divergence pre-check fails with
+// exit 128 (a bad/absent commit object — "could not check"), not exit 1
+// ("checked, not an ancestor"). A `git` shim on PATH intercepts only that
+// specific call and forces 128, delegating everything else (fetch, push,
+// rev-parse) to the real git — isolating the merge-base check under test the
+// same way tests/pr-cleanup-safety.test.ts's `failLsRemote` isolates
+// `ls-remote` from the rest of `pr-cleanup`. Real corruption (a truncated
+// loose object) was tried first and rejected: `git fetch` itself detects it
+// during its own connectivity check and fails at exit 128 before pr-open
+// ever reaches the merge-base call, so it can't isolate this path — verified
+// empirically in a scratch sandbox, not assumed. Finding 1 (#268, ~line 91):
+// a failed check must not be read as a confirmed divergence.
+console.log("\nmerge-base check itself fails (128) — undetermined, not a confirmed divergence:");
+{
+	const sb = makeSandbox("58-mergebase-undetermined");
+	git(sb.clone, ["push", "-q", "-u", "origin", sb.branch]);
+	const originalRemoteTip = remoteTip(sb);
+	// Any local change is enough to make LOCAL_SHA != REMOTE_SHA and reach the
+	// merge-base pre-check — divergence direction doesn't matter here, the
+	// shim intercepts the call before real ancestry is ever evaluated.
+	commit(sb.clone, "f.txt", "f\n", "more work — reaches the pre-check");
+
+	const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+	const shim = `#!/usr/bin/env bash
+if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then
+  echo "fatal: Not a valid commit name (simulated corrupt/missing object)" >&2
+  exit 128
+fi
+exec ${JSON.stringify(realGit)} "$@"
+`;
+	fs.writeFileSync(path.join(sb.binDir, "git"), shim);
+	fs.chmodSync(path.join(sb.binDir, "git"), 0o755);
+
+	const { code, out, createdPr } = runPrOpen(sb);
+	check(code === 5, "exits with the remote/API-failure code (5), not 6", `got ${code}, output:\n${out}`);
+	check(!createdPr, "gh pr create did NOT run", out);
+	check(out.includes("pr-open:"), "message is pr-open's own", out);
+	check(out.includes("could not check"), "message says the check could not run", out);
+	check(
+		!out.includes("history do not agree") && !out.includes("force-with-lease"),
+		"message does NOT claim a confirmed divergence — the check never determined that",
+		out,
+	);
+	check(remoteTip(sb) === originalRemoteTip, "remote tip untouched — no push was attempted on an undetermined state", out);
+}
+
+// 10. No `origin` remote configured at all. A determinate fact about local
+// git config — #224 code 4 ("not found"), not code 5 ("could not determine
+// remote state"). Must be caught BEFORE `git fetch origin` is even attempted
+// (which would also fail, but at exit 128 either way — indistinguishable
+// from an unreachable host without this separate, purely local check).
+// Finding 2 (#268, ~lines 75-76).
+console.log("\nno 'origin' remote configured — not-found, not undetermined:");
+{
+	const sb = makeSandbox("59-no-origin");
+	git(sb.clone, ["remote", "remove", "origin"]);
+
+	const { code, out, createdPr } = runPrOpen(sb);
+	check(code === 4, "exits with the not-found code (4), not 5", `got ${code}, output:\n${out}`);
+	check(!createdPr, "gh pr create did NOT run", out);
+	check(out.includes("pr-open:"), "message is pr-open's own", out);
+	check(/origin/i.test(out), "message names the missing 'origin' remote", out);
+	check(!/Fetching/.test(out), "never attempted to fetch — the check runs before step 2's fetch", out);
+}
+
 // ---
 
 console.log(

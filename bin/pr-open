@@ -27,17 +27,33 @@
 # remote branch at its last-known sha, and the push decision above is made
 # against a ref that no longer exists upstream.
 #
+# Step 2 checks `origin` exists (`git remote get-url origin`, purely local, no
+# network) BEFORE fetching. A missing remote and an unreachable one both make
+# `git fetch` fail the same way, but they are not the same fact: a missing
+# `origin` is determinate local git config (#224 code 4), not undeterminable
+# remote state (code 5). Matches bin/wt-new's identical check (#250).
+#
+# The divergence pre-check at step 3 (`git merge-base --is-ancestor
+# "$REMOTE_SHA" "$LOCAL_SHA"`) captures the command's exit status rather than
+# trusting a bare `!`: exit 1 is a real, checked "not an ancestor" (code 6),
+# but exit 128 means the check itself could not run (a bad/absent commit
+# object) and must not be read as a confirmed divergence (code 5). Matches
+# bin/pr-cleanup's identical idiom for its own merge-base gates.
+#
 # Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md):
 #   0  success
 #   2  usage error — not run inside a git repository
 #   3  precondition not met — on a protected branch (main/master), detached
 #      HEAD with no branch to open a PR from, or the worktree isn't clean
-#   4  (not used by pr-open — nothing here is a "not found" case)
-#   5  remote/API failure — state could not be determined (fetch failed,
-#      `gh pr create` itself failed, or the push failed for a reason other
-#      than the remote rejecting it — network/auth/DNS, git exit != 1)
-#   6  safety gate refused (diverged branch — declined to auto force-push —
-#      OR the push itself was rejected by the remote, git exit 1)
+#   4  not found — no `origin` remote configured
+#   5  remote/API failure — state could not be determined (fetch failed, a
+#      merge-base divergence check that could not even run — exit 128, a
+#      bad/absent object — `gh pr create` itself failed, or the push failed
+#      for a reason other than the remote rejecting it — network/auth/DNS,
+#      git exit != 1)
+#   6  safety gate refused (diverged branch — a merge-base check that DID run
+#      and found HEAD does not build on origin/$BRANCH — declined to auto
+#      force-push — OR the push itself was rejected by the remote, git exit 1)
 # 5 vs 6 is the load-bearing distinction: "I could not check" (5) vs "I
 # checked and it says no" (6). pr-open never leaks git's raw exit status —
 # every push failure is mapped to one of these two.
@@ -70,8 +86,19 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 3
 fi
 
-# 2. Fetch to get latest remote state. --prune: see header — a deleted
-# upstream branch must stop reading as a live one.
+# 2. Fetch to get latest remote state. `origin` must exist first — a missing
+# remote is a determinate fact about local git config (#224 code 4, "not
+# found"), not an undeterminable remote failure (code 5). `git fetch` itself
+# fails the same way (128) whether `origin` is absent or merely unreachable
+# (bad host, DNS, auth), so the two cases are told apart with a purely local,
+# no-network check BEFORE the fetch is attempted — matching bin/wt-new, which
+# has carried this same check since #250.
+# --prune: see header — a deleted upstream branch must stop reading as a live one.
+if ! git remote get-url origin >/dev/null 2>&1; then
+  echo "pr-open: no 'origin' remote configured." >&2
+  exit 4
+fi
+
 echo "📡 Fetching origin..."
 if ! git fetch origin --prune; then
   echo "pr-open: could not fetch origin — remote state undetermined." >&2
@@ -88,14 +115,28 @@ LOCAL_SHA=$(git rev-parse HEAD)
 REMOTE_SHA=$(git rev-parse --verify -q "origin/$BRANCH" 2>/dev/null || echo "")
 
 if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
-  if [ -n "$REMOTE_SHA" ] && ! git merge-base --is-ancestor "$REMOTE_SHA" "$LOCAL_SHA" 2>/dev/null; then
-    # origin/$BRANCH exists and HEAD does not build on it — a plain push
-    # would be a non-fast-forward. Refuse with pr-open's own message instead
-    # of letting `set -e` surface git's raw rejection mid-flow.
-    echo "pr-open: '$BRANCH' has diverged from origin/$BRANCH — local and remote" >&2
-    echo "  history do not agree (rebase, amend, or another session pushed here)." >&2
-    echo "  Re-run after: git push --force-with-lease origin $BRANCH" >&2
-    exit 6
+  if [ -n "$REMOTE_SHA" ]; then
+    # `merge-base --is-ancestor` exits 1 for "not an ancestor" (a real, checked
+    # "no") but 128 for a bad/absent object (could not even run the check).
+    # Collapsing both into exit 6 asserted the negative on a check that never
+    # happened. Capture the status explicitly rather than trusting `!` alone —
+    # 128 maps to 5 ("could not check"), 1 stays 6 ("checked, and it says no").
+    # Matches bin/pr-cleanup's identical idiom for its own merge-base gates.
+    mb_status=0
+    git merge-base --is-ancestor "$REMOTE_SHA" "$LOCAL_SHA" 2>/dev/null || mb_status=$?
+    if [ "$mb_status" -eq 128 ]; then
+      echo "pr-open: could not check whether '$BRANCH' has diverged from origin/$BRANCH (merge-base failed)." >&2
+      exit 5
+    fi
+    if [ "$mb_status" -ne 0 ]; then
+      # origin/$BRANCH exists and HEAD does not build on it — a plain push
+      # would be a non-fast-forward. Refuse with pr-open's own message instead
+      # of letting `set -e` surface git's raw rejection mid-flow.
+      echo "pr-open: '$BRANCH' has diverged from origin/$BRANCH — local and remote" >&2
+      echo "  history do not agree (rebase, amend, or another session pushed here)." >&2
+      echo "  Re-run after: git push --force-with-lease origin $BRANCH" >&2
+      exit 6
+    fi
   fi
   echo "📡 Pushing $BRANCH to origin..."
   # Captured, not left to `set -e`: git push exits 1 when the remote REJECTS
