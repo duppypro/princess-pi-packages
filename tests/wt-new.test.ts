@@ -117,6 +117,64 @@ function makeSandboxWithRealOriginHead(opts: { primary?: string } = {}): Sandbox
 	return { root, remote, clone, primary };
 }
 
+// Neither sandbox above can produce a RESTRICTED clone, and both for the same
+// reason: `git clone --single-branch -b other` needs `other` to exist at clone
+// time, and a hand-narrowed `remote.origin.fetch` is only meaningful when
+// there is more than one branch to narrow away. So seed the remote with its
+// full branch set BEFORE any clone under test.
+//
+// `staleBranch` is the load-bearing detail: a branch that already exists on
+// origin AND is an ANCESTOR of the primary. That shape is what makes wt-new's
+// first push a FAST-FORWARD rather than a rejection — i.e. the pre-existing
+// remote branch moves, silently, instead of erroring. A diverged branch would
+// have been rejected by the remote and proven nothing.
+interface SeededRemote {
+	root: string;
+	remote: string;
+	primary: string;
+	staleBranch: string;
+	staleTip: string;
+	primaryTip: string;
+}
+
+function makeSeededRemote(): SeededRemote {
+	const primary = "main";
+	const staleBranch = "270-stale-on-origin";
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-"));
+	const remote = path.join(root, "remote.git");
+	fs.mkdirSync(remote);
+	git(remote, ["init", "-q", "--bare", "-b", primary]);
+
+	const seed = path.join(root, "seed");
+	git(root, ["init", "-q", "-b", primary, seed]);
+	fs.writeFileSync(path.join(seed, "README.md"), "v1\n");
+	git(seed, ["add", "-A"]);
+	git(seed, ["commit", "-q", "-m", "c1"]);
+	git(seed, ["remote", "add", "origin", remote]);
+	git(seed, ["push", "-q", "origin", `${primary}:${primary}`]);
+
+	const staleTip = git(seed, ["rev-parse", "HEAD"]);
+	git(seed, ["push", "-q", "origin", `${staleTip}:refs/heads/${staleBranch}`]);
+	// A second branch purely so `clone --single-branch -b other` has a
+	// non-primary branch to pick.
+	git(seed, ["push", "-q", "origin", `${staleTip}:refs/heads/other`]);
+
+	fs.writeFileSync(path.join(seed, "README.md"), "v1\nv2\n");
+	git(seed, ["add", "-A"]);
+	git(seed, ["commit", "-q", "-m", "c2"]);
+	git(seed, ["push", "-q", "origin", `${primary}:${primary}`]);
+	const primaryTip = git(seed, ["rev-parse", "HEAD"]);
+
+	return { root, remote, primary, staleBranch, staleTip, primaryTip };
+}
+
+// `git show-ref --verify` as a boolean — the exact check wt-new's own gates
+// use, so a sanity assertion written with it proves what the script would have
+// seen rather than something merely adjacent to it.
+function refExists(cwd: string, ref: string): boolean {
+	return spawnSync("git", ["show-ref", "--verify", "--quiet", ref], { cwd }).status === 0;
+}
+
 // Strips HERDR_WORKSPACE_ID and TMUX (see header) — this is the ONLY way
 // these tests run wt-new. `envOverride` lets a case add other overrides
 // (e.g. a broken origin) without reintroducing either.
@@ -371,6 +429,163 @@ console.log("\nabsent origin/HEAD symref — server-side detection still works (
 		branchedFromPrimary = false;
 	}
 	check(branchedFromPrimary, "branch point descends from origin/main even with no local symref", "");
+}
+
+// --- restricted clones (#268 review). Every "already on origin?" gate in
+// wt-new answers from a local refs/remotes/origin/* ref, which is only sound
+// under the refspec `git clone` writes. Measured in a sandbox against the
+// pre-fix script: a `--single-branch -b other` clone died at `git worktree
+// add` ("fatal: invalid reference: origin/main") and reported exit 6 — the
+// code that asserts origin was consulted — for a ref never fetched. ---
+console.log("\nrestricted clone (`git clone --single-branch -b <other>`) — refuses (3), not a misleading 6:");
+{
+	const sr = makeSeededRemote();
+	const clone = path.join(sr.root, "single-branch-clone");
+	git(sr.root, ["clone", "-q", "--single-branch", "-b", "other", sr.remote, clone]);
+
+	// Sanity, both halves: these two facts are what make this case reach the
+	// new gate rather than any pre-existing one.
+	const refspec = git(clone, ["config", "--get", "remote.origin.fetch"]);
+	check(
+		refspec === "+refs/heads/other:refs/remotes/origin/other",
+		"sanity: the clone carries a NARROW fetch refspec",
+		`got '${refspec}'`,
+	);
+	check(
+		!refExists(clone, `refs/remotes/origin/${sr.primary}`),
+		"sanity: origin/main is ABSENT — the start point the old code branched from",
+		"",
+	);
+
+	const { code, out } = runWtNew(clone, ["271-restricted"]);
+	check(code === 3, "exits with the precondition code (3), not the 'I checked origin' code 6", `got ${code}, output:\n${out}`);
+	check(/remote\.origin\.fetch/.test(out), "names remote.origin.fetch as the problem", out);
+	check(/\+refs\/heads\/\*:refs\/remotes\/origin\/\*/.test(out), "prints the one-line fix", out);
+	check(!/git worktree add/.test(out), "never blames `git worktree add` — it is refused before that point", out);
+	check(!fs.existsSync(wtPathFor(clone, "271-restricted")), "no worktree created", out);
+	check(!git(clone, ["branch", "--list", "271-restricted"]).length, "no local branch created", "");
+}
+
+console.log("\nhand-narrowed and negative fetch refspecs — same refusal (3):");
+{
+	const sr = makeSeededRemote();
+
+	const narrow = path.join(sr.root, "narrowed-clone");
+	git(sr.root, ["clone", "-q", sr.remote, narrow]);
+	git(narrow, ["config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other"]);
+	const r1 = runWtNew(narrow, ["275-narrowed"]);
+	check(r1.code === 3, "custom narrow refspec → 3", `got ${r1.code}, output:\n${r1.out}`);
+
+	// A negative refspec keeps the `+refs/heads/*:refs/remotes/origin/*` line
+	// intact, so a check that only looked for the wildcard would pass it while
+	// git still skipped the excluded branches.
+	const negative = path.join(sr.root, "negative-clone");
+	git(sr.root, ["clone", "-q", sr.remote, negative]);
+	git(negative, ["config", "--add", "remote.origin.fetch", `^refs/heads/${sr.staleBranch}`]);
+	check(
+		git(negative, ["config", "--get-all", "remote.origin.fetch"]).includes("+refs/heads/*:refs/remotes/origin/*"),
+		"sanity: the complete wildcard refspec is STILL configured alongside the negative one",
+		"",
+	);
+	const r2 = runWtNew(negative, ["276-negative"]);
+	check(r2.code === 3, "negative refspec → 3, despite the wildcard line being present", `got ${r2.code}, output:\n${r2.out}`);
+}
+
+// --- THE BRANCH-HIJACK REGRESSION. Against the pre-fix script this exact
+// sandbox created the worktree and then FAST-FORWARDED an existing remote
+// branch onto the primary's tip (observed: remote 400-stale moved from the old
+// main tip to the new one, exit 5, message blaming the upstream trap). The
+// safety-gate refusal never fired because the ref it reads was never fetched. ---
+console.log("\nrestricted clone where the branch ALREADY exists on origin — the branch-hijack regression:");
+{
+	const sr = makeSeededRemote();
+	const clone = path.join(sr.root, "hijack-clone");
+	git(sr.root, ["clone", "-q", sr.remote, clone]);
+	// Narrow AFTER cloning, then drop the tracking ref: origin/main still
+	// resolves — so the run gets all the way past primary detection — while
+	// origin/<staleBranch> never will again.
+	git(clone, ["config", "remote.origin.fetch", `+refs/heads/${sr.primary}:refs/remotes/origin/${sr.primary}`]);
+	git(clone, ["update-ref", "-d", `refs/remotes/origin/${sr.staleBranch}`]);
+
+	check(
+		refExists(clone, `refs/remotes/origin/${sr.primary}`),
+		"sanity: origin/main DOES resolve — primary detection is not what stops this run",
+		"",
+	);
+	check(
+		!refExists(clone, `refs/remotes/origin/${sr.staleBranch}`),
+		"sanity: origin/<branch> is absent locally — wt-new's origin-branch gate CANNOT fire on its own evidence",
+		"",
+	);
+	check(
+		git(clone, ["ls-remote", "origin", `refs/heads/${sr.staleBranch}`]).length > 0,
+		"sanity: the branch really does exist on origin",
+		"",
+	);
+
+	const { code, out } = runWtNew(clone, [sr.staleBranch]);
+	check(code === 3, "refuses (3) before creating or pushing anything", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(wtPathFor(clone, sr.staleBranch)), "no worktree created", out);
+	const tipAfter = git(sr.remote, ["rev-parse", sr.staleBranch]);
+	check(
+		tipAfter === sr.staleTip,
+		"THE REGRESSION: the pre-existing remote branch was NOT fast-forwarded onto the primary",
+		`before ${sr.staleTip}, after ${tipAfter}, primary ${sr.primaryTip}`,
+	);
+}
+
+// --- differential control: same seeded remote, same branch names, ONLY the
+// refspec differs from the three cases above. Without this, those 3s could
+// come from anything about the seeded remote rather than from the restriction. ---
+console.log("\nfull clone of the same remote — the gate does not fire (differential control):");
+{
+	const sr = makeSeededRemote();
+	const clone = path.join(sr.root, "full-clone");
+	git(sr.root, ["clone", "-q", sr.remote, clone]);
+	const refspec = git(clone, ["config", "--get", "remote.origin.fetch"]);
+	check(refspec === "+refs/heads/*:refs/remotes/origin/*", "sanity: a plain clone writes the complete refspec", `got '${refspec}'`);
+
+	const r1 = runWtNew(clone, ["272-full-clone"]);
+	check(r1.code === 0, "exits 0", `got ${r1.code}, output:\n${r1.out}`);
+
+	// The same branch that got hijacked above: with a complete refspec the
+	// ordinary safety gate has real evidence and refuses on it.
+	const r2 = runWtNew(clone, [sr.staleBranch]);
+	check(r2.code === 6, "branch already on origin still refuses with the safety-gate code (6)", `got ${r2.code}, output:\n${r2.out}`);
+
+	// An extra, unrelated refspec line (a PR-refs mapping, common in the wild)
+	// narrows nothing and must not be read as a restriction.
+	git(clone, ["config", "--add", "remote.origin.fetch", "+refs/pull/*/head:refs/remotes/origin/pr/*"]);
+	const r3 = runWtNew(clone, ["273-extra-refspec"]);
+	check(r3.code === 0, "an extra non-branch refspec line is not a restriction", `got ${r3.code}, output:\n${r3.out}`);
+}
+
+// --- second layer, in a clone the refspec gate lets through: knowing origin's
+// primary branch NAME is not the same as having fetched it. Reproduced in a
+// plain full clone by pointing origin's HEAD outside refs/heads/ — the
+// `${symref#refs/heads/}` strip is then a no-op and $PRIMARY becomes a whole
+// ref path. Pre-fix this reached `git worktree add` and returned 6. ---
+console.log("\norigin names a primary this clone has no ref for — undetermined (5), not 6:");
+{
+	const sr = makeSeededRemote();
+	const clone = path.join(sr.root, "unfetched-primary-clone");
+	git(sr.root, ["clone", "-q", sr.remote, clone]);
+	git(sr.remote, ["update-ref", "refs/mybranches/weird", sr.primaryTip]);
+	git(sr.remote, ["symbolic-ref", "HEAD", "refs/mybranches/weird"]);
+
+	const symref = git(clone, ["ls-remote", "--symref", "origin", "HEAD"]);
+	check(symref.includes("refs/mybranches/weird"), "sanity: the server really does report a HEAD outside refs/heads/", symref);
+	check(
+		git(clone, ["config", "--get", "remote.origin.fetch"]) === "+refs/heads/*:refs/remotes/origin/*",
+		"sanity: refspec is COMPLETE — the restricted-clone gate is not what fires here",
+		"",
+	);
+
+	const { code, out } = runWtNew(clone, ["274-unfetched-primary"]);
+	check(code === 5, "exits with the undetermined code (5), not the 'I checked' code 6", `got ${code}, output:\n${out}`);
+	check(/does not exist locally/.test(out), "says the primary ref was never fetched", out);
+	check(!/git worktree add/.test(out), "does not blame `git worktree add` for a ref that was never asked about", out);
+	check(!fs.existsSync(wtPathFor(clone, "274-unfetched-primary")), "no worktree created", out);
 }
 
 // --- neither herdr nor tmux: worktree still created, still exits 0 ---

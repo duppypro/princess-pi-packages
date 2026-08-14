@@ -143,6 +143,20 @@ from, no branch-name guessing involved), or if the target path or branch already
 exists locally or on origin. Prints the created path as its only stdout line — every
 progress and warning line goes to stderr instead — for `EnterWorktree { path: ... }`.
 
+**It also refuses a clone whose `remote.origin.fetch` doesn't track all of origin's
+branches** (`--single-branch`, `--depth`, a hand-narrowed or negative refspec) — exit 3,
+before anything is created or pushed. Every "already on origin?" gate here answers from a
+local `refs/remotes/origin/*` ref, and a narrowed refspec makes `git fetch` silently stop
+populating those while still exiting 0, so "no local ref" stops meaning "not on origin".
+Measured both ways (#268 review): `origin/<primary>` never resolved and `git worktree add`
+died with `fatal: invalid reference`, reported as exit **6** — the code that asserts origin
+was consulted — for a ref never asked about; and, worse, the origin-branch gate passed for a
+branch that *does* exist on origin, after which the first push **fast-forwarded that existing
+remote branch onto the primary's tip**. The road not taken was making each gate
+server-authoritative with `git ls-remote`, which costs a network round trip and a fresh TOCTOU
+window on every run to keep working in a clone shape this workflow never produces. A separate
+guard maps "origin named a primary branch this clone has no local ref for" to **5**, not 6.
+
 **`herdr`/tmux tab creation on top is convenience, never a dependency.** Plain
 `git worktree add` creates the worktree itself; `herdr worktree` subcommands are not
 used at all. Once the worktree exists, `wt-new` opens a tab named after the branch —
@@ -521,9 +535,9 @@ license to add a seventh number.
 |---|---|
 | 0 | success |
 | 2 | usage error — bad flags/arguments, a protected branch (`main`/`master`) named explicitly, or not run inside a git repository at all |
-| 3 | precondition not met — nothing to discover from cwd (on a protected branch, or detached HEAD, with no branch given), cwd is inside a worktree the operation needs to leave or would remove, or the worktree isn't clean |
+| 3 | precondition not met — nothing to discover from cwd (on a protected branch, or detached HEAD, with no branch given), cwd is inside a worktree the operation needs to leave or would remove, the worktree isn't clean, or the clone's `remote.origin.fetch` doesn't track all of origin's branches so its `origin/*` refs can't answer the gates |
 | 4 | not found — a required piece of local git state or a PR is missing (no main/master worktree registered, no local branch by that name, no `origin` remote configured, no such PR, no open PR for the branch) |
-| 5 | remote/API failure — state could **not** be determined (network down, `gh` outage, an incomplete API response, a local check like `merge-base` that could not even run) |
+| 5 | remote/API failure — state could **not** be determined (network down, `gh` outage, an incomplete API response, a local check like `merge-base` that could not even run, or a ref the remote named that was never fetched locally) |
 | 6 | safety gate refused — state **was** determined, and it says no (unmerged work, a diverged or moved remote, a dirty or locked worktree refusing removal, a rejected push, a ref that won't delete, a target path or branch that already exists, ambiguous PR selection, `pr-merge`'s pr-threads gate) |
 
 `pr-reject` still exits `0`/`1` only; adopting the table for it is tracked by #224.

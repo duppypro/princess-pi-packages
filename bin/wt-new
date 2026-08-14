@@ -54,6 +54,17 @@
 # `refs/remotes/origin/master` exists locally. A repo with neither is treated
 # as undetermined (exit 5), not a silent guess.
 #
+# --- why a restricted clone is refused outright ------------------------------
+# Every "does X already exist on origin?" gate here answers from a local
+# `refs/remotes/origin/*` ref. That is sound only in a clone carrying the
+# refspec `git clone` writes, `+refs/heads/*:refs/remotes/origin/*`. Narrow it
+# (`--single-branch`, `--depth`, a hand-edited or negative refspec) and `git
+# fetch` quietly stops populating anything outside it while still exiting 0 —
+# so "no local ref" stops meaning "not on origin". wt-new checks that refspec
+# up front and exits 3 rather than run its gates on evidence that cannot
+# answer them. The long version, including the measured branch-hijack this
+# prevents, sits inline at the check itself.
+#
 # --- herdr/tmux tab: convenience, never a gate -------------------------------
 # Duppy's direction (2026-08-13): plain `git worktree add` only for the
 # worktree itself — `herdr worktree` subcommands are NOT used, and herdr is
@@ -77,12 +88,14 @@
 #   2  usage error — bad arguments, missing branch, malformed <issue#>-<slug>,
 #      main/master named explicitly, or not run inside a git repository at all
 #   3  precondition not met — cwd is inside a linked worktree (must run from
-#      the main clone)
+#      the main clone), or this clone's `remote.origin.fetch` does not track
+#      all of origin's branches (see "why a restricted clone is refused")
 #   4  not found — no `origin` remote configured
 #   5  remote/API failure — state could NOT be determined (fetch failed,
-#      primary branch undetermined, the first push failed for a reason other
-#      than the remote rejecting it — network/auth/DNS, git exit != 1 — or
-#      the upstream self-check below didn't come back as origin/<branch>)
+#      primary branch undetermined, origin named a primary branch this clone
+#      has no local ref for, the first push failed for a reason other than the
+#      remote rejecting it — network/auth/DNS, git exit != 1 — or the upstream
+#      self-check below didn't come back as origin/<branch>)
 #   6  safety gate refused — state WAS determined, and it says no (the target
 #      path already exists, the branch already exists locally or on origin,
 #      `git worktree add` itself refused, or the first push was rejected by
@@ -147,6 +160,65 @@ if ! git remote get-url origin >/dev/null 2>&1; then
   exit 4
 fi
 
+# --- the clone's view of origin's branches must be COMPLETE ------------------
+# Every gate below reads a local `refs/remotes/origin/*` ref and reads a
+# MISSING one as "not on origin". That inference is only sound under the fetch
+# refspec `git clone` writes — `+refs/heads/*:refs/remotes/origin/*`. In a
+# restricted clone (`git clone --single-branch -b <other>`, `--depth`, a
+# hand-narrowed refspec, or a negative `^refs/...` one) the `git fetch origin
+# --prune` below populates NOTHING outside the configured refspec and still
+# exits 0, so a missing local ref means "never fetched", not "absent on
+# origin". Both consequences were measured in sandboxes (#268 review):
+#   * `origin/$PRIMARY` never resolved, `git worktree add` died with "fatal:
+#     invalid reference", and this script reported exit 6 — the "I checked and
+#     the answer is no" code — for a ref it had never asked about.
+#   * worse, the origin-branch gate below silently PASSED for a branch that
+#     does exist on origin. Observed end state: the worktree was created and
+#     the first push FAST-FORWARDED that existing remote branch (an ancestor
+#     of the primary) onto the primary's tip. Someone else's branch moved, no
+#     confirmation asked, and the only thing that stopped a success report was
+#     the unrelated upstream self-check at the bottom of this file.
+# So refuse here, before anything is created, fetched, or pushed. This is a
+# precondition on the CLONE, not a determination about the branch, so it is
+# exit 3 alongside "you're inside a linked worktree" — same remedy shape: fix
+# the environment, re-run. The road not taken was making every gate
+# server-authoritative with `git ls-remote`: that buys a network round trip and
+# a fresh TOCTOU window on every single run, in exchange for working inside a
+# clone shape this workflow never produces (`pr-open`, `pr-cleanup` and the
+# branch-per-issue flow all assume the full picture too). A loud, one-line-fix
+# refusal is the better trade — but only because the exit code now tells the
+# truth about which of the two failures happened.
+refspec_complete=0
+refspec_negative=0
+refspec_seen=""
+while IFS= read -r refspec; do
+  [ -n "$refspec" ] || continue
+  refspec_seen="${refspec_seen:+$refspec_seen, }$refspec"
+  # Plain `=` string equality, never `case`: inside a `case` pattern the `*`
+  # in the refspec is a GLOB, and `+refs/heads/other:refs/remotes/origin/other`
+  # would match the very pattern meant to identify the wildcard form.
+  if [ "$refspec" = "+refs/heads/*:refs/remotes/origin/*" ] ||
+    [ "$refspec" = "refs/heads/*:refs/remotes/origin/*" ]; then
+    refspec_complete=1
+  fi
+  case "$refspec" in
+  '^'*) refspec_negative=1 ;;
+  esac
+done < <(git config --get-all remote.origin.fetch 2>/dev/null || true)
+
+if [ "$refspec_complete" -ne 1 ] || [ "$refspec_negative" -eq 1 ]; then
+  echo "wt-new: this clone does not track all of origin's branches, so its" >&2
+  echo "   local origin/* refs cannot answer 'does this branch already exist" >&2
+  echo "   on origin?' — and a wrong answer there silently moves someone" >&2
+  echo "   else's remote branch. Refusing before anything is created." >&2
+  echo "   remote.origin.fetch = ${refspec_seen:-<unset>}" >&2
+  echo "   Expected the refspec 'git clone' writes: +refs/heads/*:refs/remotes/origin/*" >&2
+  echo "   Fix this clone (single-branch/shallow clones are unfrozen by the same command):" >&2
+  echo "     git config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'" >&2
+  echo "     git fetch origin --prune" >&2
+  exit 3
+fi
+
 # --- freshen refs before deciding anything ----------------------------------
 echo "📡 Fetching origin..." >&2
 if ! git fetch origin --prune --quiet; then
@@ -180,6 +252,26 @@ if [ -z "$PRIMARY" ]; then
   echo "wt-new: could not determine the primary branch — 'git ls-remote" \
     "--symref origin HEAD' failed or returned nothing parseable, and" \
     "neither origin/main nor origin/master resolved locally." >&2
+  exit 5
+fi
+
+# Belt and braces on the answer the SERVER just gave us. Branching needs the
+# LOCAL `refs/remotes/origin/$PRIMARY`, and knowing origin's primary branch
+# name is not the same as having fetched it. Two ways they come apart even in
+# a full clone, both reproduced (#268 review): origin's HEAD symref points
+# somewhere outside `refs/heads/` (the `${symref_line#refs/heads/}` strip above
+# is then a no-op and $PRIMARY is a whole ref path), or the default branch was
+# created/flipped on origin inside the window between the fetch above and the
+# ls-remote. Either way the state is UNDETERMINED — code 5. Letting `git
+# worktree add` discover it instead produced exit 6, which asserts we checked
+# origin and origin said no; we never asked.
+if ! git show-ref --verify --quiet "refs/remotes/origin/$PRIMARY"; then
+  echo "wt-new: origin reports '$PRIMARY' as its primary branch, but" \
+    "'refs/remotes/origin/$PRIMARY' does not exist locally after the fetch" \
+    "above — there is nothing to branch from, and this script never" \
+    "determined whether there should be. Re-run to pick up a branch created" \
+    "on origin moments ago; if it persists, origin's HEAD may point outside" \
+    "refs/heads/ (check 'git ls-remote --symref origin HEAD')." >&2
   exit 5
 fi
 
