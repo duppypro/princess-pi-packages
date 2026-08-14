@@ -390,6 +390,85 @@ console.log("hooks deploy + drift gate (#249)");
 			"block-edit-on-main.sh still BLOCKS a conflicted merge raised ON main (exemption is detached-only, exit 2)",
 		);
 	}
+
+	// --- Ported from dotfiles-doctor#15: paths inside the git dir ------------
+	//
+	// Nothing under `.git/` lives in a branch, so the stash/checkout hazard this
+	// hook exists for cannot reach it — and blocking it was unfollowable advice,
+	// since branching does not move `.git/config` into a branch, it only changes
+	// what `git branch --show-current` reports. The gate could be cleared without
+	// addressing anything it guards.
+	//
+	// This fix existed ONLY in the dotfiles-doctor copy of this hook and was
+	// never running on any host (princess-pi-packages#227, dotfiles-doctor#18).
+	// Ported here under ADR 0001, which makes this repo the single source.
+	//
+	// Two things make this subtler than it looks, and both have cases below:
+	//
+	//  1. It must be a PATH question asked of git, not a string match. A filename
+	//     test like `*/.git*` would also exempt .gitignore, .gitattributes,
+	//     .gitmodules and .github/ — tracked WORK-TREE files that must stay gated.
+	//  2. `rev-parse --is-inside-work-tree` must be tested on its OUTPUT, not its
+	//     exit status. Run inside `.git/` it SUCCEEDS and prints `false`, so an
+	//     `|| exit 0` guard never fires there and every .git/ path falls through
+	//     to the branch check — which is exactly how this stayed broken.
+	{
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-gitdir-"));
+		git(repo, "init", "-q", "-b", "main");
+		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
+		git(repo, "add", "-A");
+		git(repo, "commit", "-qm", "base");
+
+		// Sanity: this repo really is on main, so every ALLOW below is the git-dir
+		// exemption doing the work and not a branch check quietly passing.
+		check(
+			verdict(path.join(repo, "f.txt"), repo) === 2,
+			"fixture sanity: the git-dir fixture repo is on main and gates work-tree files",
+		);
+
+		for (const rel of [".git/config", ".git/info/exclude", ".git/hooks/pre-commit"]) {
+			check(
+				verdict(path.join(repo, rel), repo) === 0,
+				`block-edit-on-main.sh ALLOWS ${rel} in a repo on main (dd#15, exit 0)`,
+			);
+		}
+
+		// The lookalikes — tracked work-tree files whose names merely start with
+		// ".git". A prefix-matching implementation passes every case above and
+		// silently un-gates these.
+		for (const rel of [".gitignore", ".gitattributes", ".gitmodules", ".github/workflows/ci.yml"]) {
+			check(
+				verdict(path.join(repo, rel), repo) === 2,
+				`block-edit-on-main.sh still BLOCKS ${rel} on main (lookalike, not a git-dir path, exit 2)`,
+			);
+		}
+
+		// Outside any repo must stay allowed — the same output-vs-exit-status
+		// change that fixes .git/ could break this if it read the wrong signal.
+		const nonRepo2 = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-nonrepo2-"));
+		check(
+			verdict(path.join(nonRepo2, "f.txt"), nonRepo2) === 0,
+			"block-edit-on-main.sh still allows an edit outside any git work tree (exit 0)",
+		);
+	}
+
+	{
+		// The per-worktree git dir: `<main>/.git/worktrees/<name>/`. The #257
+		// layout again — a linked worktree's own `.git` is a file, and its real
+		// git dir hangs off the main clone.
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-wtgitdir-"));
+		git(repo, "init", "-q", "-b", "main");
+		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
+		git(repo, "add", "-A");
+		git(repo, "commit", "-qm", "base");
+		const wt = path.join(repo, ".claude", "worktrees", "77-wt");
+		git(repo, "worktree", "add", "-q", "-b", "77-wt", wt);
+
+		check(
+			verdict(path.join(repo, ".git", "worktrees", "77-wt", "config.worktree"), repo) === 0,
+			"block-edit-on-main.sh ALLOWS a path under .git/worktrees/<name>/ from a repo on main (dd#15, exit 0)",
+		);
+	}
 }
 
 // 5c. preedit-reread-check.py (#237) — converts a doomed exact-match edit

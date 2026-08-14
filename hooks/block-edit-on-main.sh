@@ -8,10 +8,13 @@
 # branch. Editing on main leads to lossy stash/checkout-b recovery (ax #3fdda0e7).
 #
 # Allow when: file is outside any git work tree (e.g. ~/.claude configs); the
-# repo is on a feature branch; or HEAD is detached with a rebase/merge/
-# cherry-pick/revert in progress (#272 — resolving conflict markers is the only
-# way forward, and a plain detached checkout stays blocked).
-# Blocks only edits to files inside a repo on main.
+# path is inside the git dir itself (.git/config, .git/info/exclude,
+# .git/hooks/*, .git/worktrees/* — dotfiles-doctor#15), which is not
+# branch-scoped content and so carries none of the hazard above; the repo is on
+# a feature branch; or HEAD is detached with a rebase/merge/cherry-pick/revert
+# in progress (#272 — resolving conflict markers is the only way forward, and a
+# plain detached checkout stays blocked).
+# Blocks only edits to WORK-TREE files inside a repo on main.
 # Disable switch: remove the Edit|Write|MultiEdit matcher from settings.json.
 # ---
 INPUT=$(cat)
@@ -50,8 +53,32 @@ while [ ! -d "$DIR" ] && [ "$DIR" != "/" ] && [ -n "$DIR" ]; do
   DIR=$(dirname "$DIR")
 done
 
+# Inside the git dir itself (.git/config, .git/info/exclude, .git/hooks/*,
+# .git/worktrees/*) → allow. Ported from dotfiles-doctor#15 under ADR 0001,
+# which makes this repo the single source for this hook; the fix existed only
+# in that repo's copy and was running on no host (#227, dotfiles-doctor#18).
+#
+# Nothing under .git/ lives in a branch, so the stash/checkout hazard this hook
+# exists for cannot reach it. Blocking it was also unfollowable advice:
+# branching does not move .git/config into a branch, it only changes what
+# `git branch --show-current` reports — so the gate could be cleared without
+# addressing anything it guards.
+#
+# Asked as a PATH question via git, not a string match on the filename. A match
+# like `*/.git*` would also exempt .gitignore, .gitattributes, .gitmodules and
+# .github/ — tracked WORK-TREE files that MUST stay gated (pinned as the
+# lookalike cases in tests/hooks-deploy-drift.test.ts §5b).
+[ "$(git -C "$DIR" rev-parse --is-inside-git-dir 2>/dev/null)" = true ] && exit 0
+
 # Not inside a git work tree → not gated (e.g. ~/.claude/*.md). Allow.
-git -C "$DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+#
+# Tests the OUTPUT, not the exit status (dotfiles-doctor#15): run inside .git/
+# this command SUCCEEDS and prints `false`, so the old `|| exit 0` never fired
+# there and every .git/ path fell through to the branch check below — which is
+# how the exemption above stayed necessary. Outside a repo the command fails and
+# prints nothing, which is `!= true` either way, so this stays correct for the
+# not-a-repo case too.
+[ "$(git -C "$DIR" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || exit 0
 
 BRANCH=$(git -C "$DIR" branch --show-current 2>/dev/null)
 
