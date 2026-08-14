@@ -271,6 +271,22 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   `Edit|Write|MultiEdit`, never `Bash` — a `Bash` matcher would also catch
   `git checkout -b <branch>`, the very command used to escape main, and deadlock the gate
   it exists to enforce. Claude-Code-only; no Pi twin yet.
+  - **Detached HEAD is two states, and only one is gated (#272).** A plain
+    `git checkout <sha>` stays **blocked** — that is the hazard the guard was written for
+    (edit, walk away, work is unreferenced). A detached HEAD with an operation in progress
+    — `rebase-merge/`, `rebase-apply/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` —
+    is **allowed**, because git detached HEAD itself and the files needing edits are the
+    conflict markers git just wrote. Blocking those made the tool unusable for an entire
+    rebase and printed unfollowable advice (`git checkout -b` cannot run mid-rebase); its
+    real effect was to push the edit into a shell heredoc — the #225 gap-3 opaque-script
+    bypass — with no record that a guarded file was touched.
+  - The exemption is scoped to **detached HEAD only**. A conflicted merge raised *on main*
+    keeps its branch name and stays blocked, so this cannot widen into a hole through the
+    main gate — and "never merge locally" means the workflow does not produce that state.
+  - The git dir is resolved with `git rev-parse --absolute-git-dir`, never assumed to be
+    `<toplevel>/.git`. In the in-tree worktree layout (#257) `.git` is a *file* and this
+    state lives in `<main>/.git/worktrees/<name>/`; a check that hardcodes the toplevel
+    passes every other case and fails in the only layout the workflow actually uses.
 - **`preedit-reread-check.py`** (#237) — turns a doomed exact-match `Edit`/`MultiEdit`
   (stale `old_string`, or one that matches more than once without `replace_all`) into an
   actionable retry message ahead of the native tool's terse failure. Matcher must be
@@ -386,7 +402,7 @@ are Claude-Code-only, deployed and drift-checked the same copy-based way as
 | `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
-| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any review covers the current head (#254). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, and `head`/`reviewedHead`/`latestReviewCommit`. |
+| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). |
 | `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
 | `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, plus the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
@@ -466,8 +482,9 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
   longer sufficient (full rule in the [exit-code
   contract](#exit-codes--the-shared-pr--contract-224) below). An
   unrecognised flag exits `2` rather than being taken as the repo argument.
-- Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`, and as
-  of #254: `head`, `reviewedHead`, `latestReviewCommit`.
+- Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`; as
+  of #254: `head`, `reviewedHead`, `latestReviewCommit`; and as of #269:
+  `unknownAuthorReviewCount`, `prAuthor`.
 - **`head`, `reviewedHead`, `latestReviewCommit` (#254).** `head` is the PR's current head
   sha, `null` when the API response is missing `headRefOid` — the real GitHub API always
   returns it for a PR that exists, so a response without it is treated as
@@ -476,14 +493,49 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
   disable coverage gating entirely and exit `0`; there is no fallback left — missing
   `headRefOid` now exits `5` in production and in every test fixture alike, folded into
   the same indeterminate bucket as a null-commit review below). `reviewedHead` is `true`
-  only when some review's commit sha equals `head`. `latestReviewCommit` is the most
-  recent review's commit sha, or
+  only when some **independent** review's commit sha equals `head` — see
+  *Independent reviews only* below. `latestReviewCommit` is the most
+  recent independent review's commit sha, or
   `null` if the PR has never been reviewed at all. These close a real gap: zero unresolved
   threads used to mean either "reviewer looked at this head and had nothing to say" or
   "reviewer has never seen this head" — same output, opposite meanings. A bot that reviews
   once per PR rather than once per push means the commits most likely to need a second
   look — the ones written in response to a finding — were exactly the ones escaping the
   gate.
+- **Independent reviews only (#269).** A review proves coverage only if it is submitted,
+  its commit resolves, **and its author is not the PR's own author**. GitHub records a
+  reply to a review thread as a submitted `PullRequestReview` (state `COMMENTED`) against
+  the *current head* — so before #269, the act of answering a review marked the PR
+  reviewed-at-head, by the very agent that had just pushed the commit under review. Push a
+  fix, reply to the thread, and the gate went green. That is the #254 defect with a second
+  route in, and it failed **open** against the `pr-merge` gate. Seen on PR #267 and again
+  on #268, where it was right for the wrong reason because `macroscopeapp` happened to
+  review the same sha independently.
+  - Authorship is an **exact login match**, never a substring — the same element-wise rule
+    the `trusted` flag applies to comment authors. `princess-pi-bot-2` is a different
+    account from `princess-pi-bot`, and getting this wrong fails *closed*: it would discard
+    a real review and block a legitimately reviewed PR.
+  - **Road not taken:** requiring `APPROVED`/`CHANGES_REQUESTED` and rejecting bare
+    `COMMENTED`. It closes the same case structurally, but `macroscopeapp`'s genuine review
+    passes are `COMMENTED` — so it would report every real review as no-coverage and block
+    every merge. Authorship matches intent; verdict state does not.
+  - **Residual, accepted deliberately:** a *third party's* reply to a thread is also a
+    `COMMENTED` review at head and still counts. That is weaker evidence than a fresh
+    review pass, but it requires someone other than the author to act — materially
+    different from an agent clearing its own gate. Narrowing it further needs the
+    verdict-state filter ruled out above.
+  - **`unknownAuthorReviewCount`** counts submitted reviews with a usable commit whose
+    independence cannot be decided, because either the review's author or the PR's author
+    came back `null` (a deleted/ghost account, which the API really does return). Such a
+    review cannot prove coverage, but it is real review activity, so it must not fall into
+    the advisory "nobody ever reviewed this" path either. It joins `nullCommitReviewCount`
+    in the indeterminate bucket — exit `5`, never exit `0` — and is consulted only *after*
+    an independent review has failed to prove coverage, so it never downgrades a PR that a
+    real review already clears.
+  - **A PR reviewed only by its own author is advisory, not blocking.** After exclusion
+    there is no third-party review at all, which is the same state as an unreviewed PR.
+    Blocking would resurrect the "repo with no review bot has every PR stuck non-zero
+    forever" alarm ruled out below — and the author cannot clear it by reviewing harder.
 - **Advisory vs. blocking, decided.** Zero reviews *ever* on the PR is advisory — printed
   with `ℹ️`, still exit `0` if `unresolvedCount` is `0`. Blocking it would wedge every PR
   in a repo with no review bot installed, permanently. At least one review that simply
