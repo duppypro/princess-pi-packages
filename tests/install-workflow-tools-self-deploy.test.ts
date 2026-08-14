@@ -53,6 +53,37 @@ function freshHome(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "iwt-self-home-"));
 }
 
+/**
+ * Build a fixture checkout the installer will accept as this repo, carrying
+ * every managed source directory it reads from.
+ *
+ * One helper rather than a copy per test for the same reason FIXTURE_SCRIPTS is
+ * derived rather than restated: a branch that adds a THIRD managed set (#227
+ * added `statusline/` to `bin/` and `hooks/`) otherwise leaves each fixture one
+ * directory short, and the installer correctly reports MISSING FROM SOURCE for a
+ * reason that has nothing to do with what these tests assert.
+ */
+function seedFixtureRepo(dir: string): string {
+	for (const sub of ["bin", "hooks", "statusline"]) {
+		fs.mkdirSync(path.join(dir, sub), { recursive: true });
+	}
+	// resolve_repo_dir's identity check (#267 finding) requires package.json's
+	// "name" field, not just bin/+hooks/ shape — a bare bin+hooks pair is not
+	// enough to prove this candidate really is the repo (that gap is what let
+	// $HOME itself pass when an unrelated ~/hooks happened to exist).
+	fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
+	for (const s of FIXTURE_SCRIPTS) {
+		fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(dir, "bin", s));
+	}
+	for (const h of fs.readdirSync(path.join(REPO_ROOT, "hooks")).filter((f) => f.endsWith(".sh") || f.endsWith(".py"))) {
+		fs.copyFileSync(path.join(REPO_ROOT, "hooks", h), path.join(dir, "hooks", h));
+	}
+	for (const s of fs.readdirSync(path.join(REPO_ROOT, "statusline")).filter((f) => f.endsWith(".sh"))) {
+		fs.copyFileSync(path.join(REPO_ROOT, "statusline", s), path.join(dir, "statusline", s));
+	}
+	return dir;
+}
+
 // A PATH with every directory intact EXCEPT that jq is unreachable anywhere
 // on it (#267 finding: is_this_repo() used to shell out to jq to read
 // package.json's "name" field, so a host without jq rejected a VALID
@@ -185,20 +216,7 @@ describe("install-workflow-tools deploys itself (#263)", () => {
 		// Fixture clone at the canonical fallback location, so resolve_repo_dir
 		// finds a repo without any env override and without touching the real
 		// host's ~/git-projects/princess-pi-packages.
-		const fixtureRepo = path.join(home, "git-projects", "princess-pi-packages");
-		fs.mkdirSync(path.join(fixtureRepo, "bin"), { recursive: true });
-		fs.mkdirSync(path.join(fixtureRepo, "hooks"), { recursive: true });
-		// resolve_repo_dir's identity check (#267 finding) requires package.json's
-		// "name" field, not just bin/+hooks/ shape — a bare bin+hooks pair is not
-		// enough to prove this candidate really is the repo (that gap is what let
-		// $HOME itself pass when an unrelated ~/hooks happened to exist).
-		fs.writeFileSync(path.join(fixtureRepo, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
-		for (const s of FIXTURE_SCRIPTS) {
-			fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fixtureRepo, "bin", s));
-		}
-		for (const h of fs.readdirSync(path.join(REPO_ROOT, "hooks")).filter((f) => f.endsWith(".sh") || f.endsWith(".py"))) {
-			fs.copyFileSync(path.join(REPO_ROOT, "hooks", h), path.join(fixtureRepo, "hooks", h));
-		}
+		const fixtureRepo = seedFixtureRepo(path.join(home, "git-projects", "princess-pi-packages"));
 
 		// Simulate "already deployed": drop just the installer binary at the
 		// ~/bin path and invoke it directly by that path — the same $0 shape
@@ -222,16 +240,7 @@ describe("install-workflow-tools deploys itself (#263)", () => {
 		// treat "unknown" as "not this repo" and the installer died claiming it
 		// couldn't find a repo that was right there.
 		const home = freshHome();
-		const fixtureRepo = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-repo-"));
-		fs.mkdirSync(path.join(fixtureRepo, "bin"), { recursive: true });
-		fs.mkdirSync(path.join(fixtureRepo, "hooks"), { recursive: true });
-		fs.writeFileSync(path.join(fixtureRepo, "package.json"), JSON.stringify({ name: "princess-pi-packages" }));
-		for (const s of FIXTURE_SCRIPTS) {
-			fs.copyFileSync(path.join(REPO_ROOT, "bin", s), path.join(fixtureRepo, "bin", s));
-		}
-		for (const h of fs.readdirSync(path.join(REPO_ROOT, "hooks")).filter((f) => f.endsWith(".sh") || f.endsWith(".py"))) {
-			fs.copyFileSync(path.join(REPO_ROOT, "hooks", h), path.join(fixtureRepo, "hooks", h));
-		}
+		const fixtureRepo = seedFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-repo-")));
 
 		const { code, out } = run(
 			path.join(fixtureRepo, "bin", "install-workflow-tools"),
