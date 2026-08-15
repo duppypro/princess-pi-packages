@@ -62,7 +62,7 @@ The dividing line is **what a rule is bound to**, never which host it currently 
 | standard | contents | bound to | owner |
 |---|---|---|---|
 | **serve** | §1, §2, §3, §6, §7, §8 + the policy half of §5 | the `serve` tool | the tools repo, beside `serve` |
-| **scheduled work** | §9, §10 + all of `agent-job-standard.md` | a singleton long-lived host | its own standard, liftable intact |
+| **scheduled work** | §9, §10 + all of `agent-job-standard.md` | a singleton long-lived host | the tools repo — written to stay liftable |
 | **unit authoring** | §4 + the mechanism half of §5 | the init system | shared appendix, cited by both |
 | **glossary** | all ~25 terms | the two standards above | follows them |
 
@@ -81,6 +81,22 @@ directions, so it belongs to neither.
 credentials) and 5.3 (per-brand namespacing) are policy and hold on any platform — they go with
 serve. 5.1 and 5.4 name `EnvironmentFile=` and forbid `Environment=` literals; they are systemd
 mechanism and go with unit authoring.
+
+**Exactly one scheduled-work manager is active at a time, portfolio-wide.** This is a **MUST** in
+the scheduled-work standard, not a deployment preference. *Why:* Jobs have side effects that are
+not idempotent — a second manager means two backups racing the same destination, two records for
+one cadence with no way to tell which ran, and, for an **Agent Job**, a doubled LLM bill for work
+whose output is non-deterministic. For this class of work, **at-most-once beats at-least-once**:
+a missed run is visible and recoverable, a duplicated run may not be either.
+
+The constraint binds hardest during the migration it exists to permit. Moving the manager to a
+cloud service creates a window where the old and the new both hold the schedule, and that window
+is precisely the failure mode — so the cutover is a **handoff, never an overlap**.
+
+Declaring it is not enough. Per the rule that unenforced guidance is a wish, the standard **MUST**
+name how a violation is *detected*, not only forbidden — a manager identity plus a heartbeat or
+lease that a second manager cannot take while the first holds it. The specific mechanism is left
+to the standard; the requirement that one exist is decided here.
 
 ---
 
@@ -152,6 +168,13 @@ are simply not what the standard's normative rules are.
 specs that precede implementation, and a spec is clear only when there is a defined test. Waiting
 for subjects inverts the order.
 
+**Run more than one scheduled-work manager**, coordinated by leader election or a distributed lock.
+Set aside as over-engineering for one operator: it buys availability — a dead manager no longer
+stops the schedule — at the cost of a consensus mechanism to operate, debug, and reason about
+during exactly the migration it would be introduced to smooth. The singleton's price is accepted
+and named: while the manager is down, nothing runs. That failure is **visible**, where a
+split-brain duplicate run is not.
+
 ---
 
 ## Verification
@@ -180,3 +203,9 @@ Specific predictions, recorded so they can be checked rather than remembered:
   something in the runtime changed.
 - **§1 Placement** does not currently say whether it governs non-served things. `~/.local/state/`
   already holds `big-thoughts-discord`, which uses the state-root convention but is not a tenant.
+- **The singleton constraint has no enforcement today** — nothing would prevent a second manager,
+  and there is no manager to be second to. The first Job is what forces a lease or heartbeat to
+  exist rather than stay declared. Until then it is a wish, by this repo's own standard.
+- **The backup Job's success criterion is a restore rehearsal**, not a backup completion, and its
+  destination MUST leave the source's failure domain — an on-box lane writing an off-box target.
+  Neither is in §9/§10 today; both are expected additions the first implementation forces.
