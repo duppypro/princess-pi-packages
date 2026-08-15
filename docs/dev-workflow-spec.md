@@ -916,6 +916,53 @@ as the ruleset's own rejection.
 3. The `--admin` flag is temporary — the ruleset is doing its job; fix the root
    cause (unresolved threads) rather than relying on bypass
 
+### CI — the check that makes "tests GREEN" a fact (#228)
+
+`.github/workflows/test.yml` runs `bun install --frozen-lockfile`, `bun run typecheck`, and
+`bun run test` on every pull request and every push to `main`. It is a **required status
+check** on ruleset `18684693`, so the merge button is unavailable until it passes.
+
+*Why it exists:* the flow ends in "Code Approved — tests GREEN" followed by a merge. Before
+this, that was a claim the authoring agent made about itself and the merge acted on with
+nothing verifying it. Full reasoning and the roads not taken:
+[ADR 0002](adr/0002-ci-is-the-merge-gate.md).
+
+Two properties of the requirement, both asserted against the live ruleset by
+`tests/ruleset-claims.test.ts`:
+
+- the context is pinned to the **GitHub Actions** app (`integration_id` 15368), so no other
+  installed app can report a green `test` and satisfy the gate;
+- **branches must be up to date before merging** (`strict_required_status_checks_policy`),
+  so the run that gates a merge ran against the content actually being merged rather than a
+  stale base. The cost is an occasional "update branch" before the button unlocks.
+
+**Read the skip line, not just the badge.** A runner has no `~/.claude`, no
+dotfiles-doctor clone, and no status-line logs, so every host-gated check skips there. The
+run prints them:
+
+```
+73 suites — 73 passed, 0 failed
+
+11 checks skipped in 8 suites — host state absent, not verified
+  hooks-deploy-drift: no ~/.claude/settings.json — not a Claude Code host, …
+```
+
+Green means *everything that can run without a host passed* — never *everything passed*.
+The deploy-drift, ruleset-claim, and statusline suites are all in the skipped set on CI and
+are verified only when the suite runs on this VPS. See
+[build & toolchain](agents/build-and-toolchain.md#running-tests--bun-run-test) for the
+`##SKIP##` contract.
+
+**`tests/ruleset-claims.test.ts` is the drift alarm.** Every documented control is paired
+with the live ruleset value it asserts, checked both ways: the setting must match the
+claim, and the file must still make the claim. This is what would have caught the state
+#228 opened on — two documents describing `required_review_thread_resolution` while it was
+`false`. If you add a sentence claiming the server enforces something, add its row there.
+
+**Rehearse CI locally before trusting it:** `HOME=$(mktemp -d) bun run test`. That is the
+cheapest approximation of a clean runner, and it is what found the two host-coupled defects
+ADR 0002 records.
+
 ## What was removed
 
 | Removed | Why |

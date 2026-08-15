@@ -55,6 +55,30 @@ the failure this runner exists to prevent.
   `bun:test` and can only run this way.
 - **`.test.sh` suites are not driven.** They need sudo or a live nginx; run them by hand.
   `tests/run.ts` prints their names at the end of every run so the gap stays visible.
+- **A check that cannot run must say so — `##SKIP## <reason>` (#256).** Twelve suites read
+  `~/.claude`, `~/git-projects/dotfiles-doctor`, or the status-line logs. On a machine
+  without that state — every CI runner, by construction — they pass having verified
+  nothing, and the friendly note they print scrolls away with the rest of the output.
+  Import `skip` from `tests/lib/skips.ts` and call it on the gate:
+
+  ```ts
+  import { skip } from "./lib/skips.ts";
+
+  if (!fs.existsSync(settingsPath)) {
+      skip("no ~/.claude/settings.json — not a Claude Code host, so the live drift check did not run");
+      return;
+  }
+  ```
+
+  `tests/run.ts` counts the markers per suite (`PASS  name  1.0s  (1 skipped)`) and lists
+  every reason last, under *"N checks skipped — host state absent, not verified"*. Skips do
+  **not** fail the run: a developer laptop legitimately lacks some of this state. They just
+  stop `72 passed, 0 failed` from being the whole story.
+
+  Name the missing state, not the check — a reader on CI should learn what to install to
+  get the coverage back. `tests/skip-reporting.test.ts` enforces adoption: a suite that
+  touches `homedir()`/`$HOME` either speaks the contract or carries a waiver saying why it
+  needs no gate, and each waiver is asserted still necessary, so the list drains itself.
 
 ## `@earendil-works/pi-tui` — tracked, not pinned
 

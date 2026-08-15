@@ -5,7 +5,8 @@
 # --- Exit codes ---
 #   0  success — committed and pushed
 #   1  usage error — no message given
-#   3  precondition not met — on main/master (#225 gap 1)
+#   3  precondition not met — on main/master (#225 gap 1), or the branch has no
+#      upstream to push to (#228)
 # ---
 set -euo pipefail
 
@@ -21,6 +22,23 @@ if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ] || [ -z "$BRANCH" ]; then
   echo "git-checkpoint: on '${BRANCH:-detached HEAD}' — this command commits AND pushes in one" >&2
   echo "  step; refusing on the primary branch. Start feature work first:" >&2
   echo "  git checkout -b <issue#>-<slug>" >&2
+  exit 3
+fi
+
+# A bare `git push` needs an upstream, and this script does NOT create one:
+# `wt-new` already pushes every branch with its upstream set, so a branch without
+# one is off the sanctioned path. Silently creating the remote branch here would
+# hide that rather than teach it (#228). Checked BEFORE committing — checked after,
+# a re-run once the config is fixed would hit "nothing to commit" and fail again.
+#
+# Found by running the suite under an empty $HOME while wiring CI: the old bare
+# push worked only because of this developer's global `push.autoSetupRemote=true`,
+# making the script's behaviour a property of the host rather than of the script.
+if ! git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+  echo "git-checkpoint: '$BRANCH' has no upstream, so there is nothing to push to." >&2
+  echo "  Fix for this host:   git config --global push.autoSetupRemote true" >&2
+  echo "  Or just this branch: git push --set-upstream origin $BRANCH" >&2
+  echo "  wt-new normally does this for you when it creates the branch." >&2
   exit 3
 fi
 
