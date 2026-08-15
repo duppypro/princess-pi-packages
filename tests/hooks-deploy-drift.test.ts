@@ -19,6 +19,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { skip } from "./lib/skips.ts";
+
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
 const HOOKS_SRC = path.join(REPO_ROOT, "hooks");
@@ -514,7 +516,7 @@ console.log("hooks deploy + drift gate (#249)");
 {
 	const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
 	if (!fs.existsSync(settingsPath)) {
-		console.log("  ⏭️  no ~/.claude/settings.json — not a Claude Code host, skipping live drift check");
+		skip("no ~/.claude/settings.json — not a Claude Code host, so the live drift check did not run");
 	} else {
 		const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 		const commands: string[] = (settings?.hooks?.PreToolUse ?? []).flatMap((entry: any) =>

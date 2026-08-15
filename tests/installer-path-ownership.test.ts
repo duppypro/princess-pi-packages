@@ -31,6 +31,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { skip } from "./lib/skips.ts";
+
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
 const INSTALLER_SRC = fs.readFileSync(INSTALLER, "utf8");
@@ -192,7 +194,7 @@ const WAIVED: Record<string, string> = {
 };
 
 if (!fs.existsSync(DOTFILES_DOCTOR)) {
-	console.log(`  ⏭️  no ${DOTFILES_DOCTOR} clone — only one installer on this host, skipping overlap check`);
+	skip(`no ${DOTFILES_DOCTOR} clone — the two-installer path-overlap check did not run`);
 } else {
 	/**
 	 * dotfiles-doctor's stow packages. Union of the two lists that exist,
