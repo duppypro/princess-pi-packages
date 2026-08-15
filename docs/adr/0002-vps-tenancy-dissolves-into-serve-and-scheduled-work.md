@@ -139,6 +139,44 @@ will answer it.
 hand-written. If the tools repo later grows a unit generator, §4 collapses into that tool's
 implementation and the appendix disappears. Cheap to reverse in either direction.
 
+---
+
+## Amendment 1 (2026-08-15) — one contract; publishing is optional; `dev` is always gated
+
+The first Open boundary above is **closed**, and the answer removes a conditional rather than adding
+one.
+
+**`serve` is the same contract on every machine.** A tenant is either **loopback-only** or
+**published-with-a-gate**, and that choice is about **intent, not host**. There is no macOS variant
+of the serve rules. The optionality lands in the manifest, not in a per-platform fork:
+
+- `gate`, `zone` and `subdomain` are **optional** manifest fields. Absent means loopback-only.
+- A **published** tenant **MUST** declare a `gate`. `gate = "public"` is itself a gate value meaning
+  *open, and owns its own auth*, so no published tenant lacks an access policy. Calling such a tenant
+  "ungated" is a category error — what it lacks is an **Access application**, which is the
+  Gate-vs-Access-application distinction the glossary already draws.
+- The health-check contract therefore applies **per mode**: gate-derived for a published tenant, a
+  plain loopback `200` otherwise.
+
+**A `dev` Env MUST be `gate = "access"`, even when its `prod` counterpart is `gate = "public"`.**
+*Why:* a public prod tenant is a deliberate decision; a publicly reachable half-built dev instance
+running against dev credentials is not. The promotion chain makes them the same codebase, so nothing
+else stops dev inheriting prod's openness by default.
+
+**`gate = "public"` verifies reachability, not authorization.** The platform can only see that the
+tenant answers. If the app's own member auth breaks open and begins serving member-only routes to
+guests, every edge check stays green. The tenant owns its auth and therefore owns testing it — stated
+in the standard so a green deploy is never read as "auth works."
+
+**Initial platform limit.** On macOS, `serve` supports `kind = "static"` only. This is not a second
+contract but a **gap in supervision**: every rule for handing a long-running process to an init
+system is systemd-specific, and macOS uses launchd. Lifting it is a launchd half of the
+unit-authoring standard, not a change to serve's contract — tracked as **#287**.
+
+*Consequence for the split:* this strengthens the placement decided above. A serve standard that
+holds identically on a laptop and a server is genuinely portable, which is the property that made
+the tools repo the right owner.
+
 **The `princess-pi-packages` → `princess-pi-tools` rename and visibility flip.** This ADR names
 destinations by **role** ("the tools repo"), not by repo name, so it survives the rename without
 amendment. The rename is a separate decision and should be sequenced separately, so a bad outcome
