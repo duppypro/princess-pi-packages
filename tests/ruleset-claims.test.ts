@@ -55,6 +55,9 @@ interface Claim {
 
 const prRule = (rs: any) => rs.rules?.find((r: any) => r.type === "pull_request")?.parameters ?? {};
 const hasRule = (rs: any, type: string) => (rs.rules ?? []).some((r: any) => r.type === type);
+const statusRule = (rs: any) => rs.rules?.find((r: any) => r.type === "required_status_checks")?.parameters ?? {};
+const requiredCheck = (rs: any, context: string) =>
+	(statusRule(rs).required_status_checks ?? []).find((c: any) => c.context === context);
 
 const CLAIMS: Claim[] = [
 	{
@@ -97,6 +100,41 @@ const CLAIMS: Claim[] = [
 		file: "docs/dev-workflow-spec.md",
 		citation: "ruleset",
 		actual: rs => hasRule(rs, "non_fast_forward"),
+		expected: true,
+	},
+
+	// --- CI as a merge gate (#228). Added once the rule was live, so that the
+	// requirement is itself checked. A required check nobody verifies is the same
+	// shape as the unenforced ruleset bit this whole issue was opened about.
+	{
+		claim: "CI is REQUIRED, not merely reported — the merge button waits on it",
+		file: "docs/dev-workflow-spec.md",
+		citation: "check** on ruleset `18684693`, so the merge button is unavailable until it passes",
+		actual: rs => hasRule(rs, "required_status_checks"),
+		expected: true,
+	},
+	{
+		claim: "the required check is the workflow this repo actually ships",
+		// Cited against the WORKFLOW, not prose: renaming `name:` in test.yml
+		// silently orphans the ruleset's context and the gate goes permanently
+		// pending. This is the row that catches that rename.
+		file: ".github/workflows/test.yml",
+		citation: "name: test",
+		actual: rs => Boolean(requiredCheck(rs, "test")),
+		expected: true,
+	},
+	{
+		claim: "only GitHub Actions can satisfy the gate — no other app can report a green `test`",
+		file: "docs/dev-workflow-spec.md",
+		citation: "pinned to the **GitHub Actions** app (`integration_id` 15368)",
+		actual: rs => requiredCheck(rs, "test")?.integration_id,
+		expected: 15368,
+	},
+	{
+		claim: "branches must be up to date before merging, so CI ran against the merged content",
+		file: "docs/dev-workflow-spec.md",
+		citation: "strict_required_status_checks_policy",
+		actual: rs => statusRule(rs).strict_required_status_checks_policy,
 		expected: true,
 	},
 ];

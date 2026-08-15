@@ -927,6 +927,15 @@ this, that was a claim the authoring agent made about itself and the merge acted
 nothing verifying it. Full reasoning and the roads not taken:
 [ADR 0002](adr/0002-ci-is-the-merge-gate.md).
 
+Two properties of the requirement, both asserted against the live ruleset by
+`tests/ruleset-claims.test.ts`:
+
+- the context is pinned to the **GitHub Actions** app (`integration_id` 15368), so no other
+  installed app can report a green `test` and satisfy the gate;
+- **branches must be up to date before merging** (`strict_required_status_checks_policy`),
+  so the run that gates a merge ran against the content actually being merged rather than a
+  stale base. The cost is an occasional "update branch" before the button unlocks.
+
 **Read the skip line, not just the badge.** A runner has no `~/.claude`, no
 dotfiles-doctor clone, and no status-line logs, so every host-gated check skips there. The
 run prints them:
