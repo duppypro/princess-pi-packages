@@ -1,0 +1,130 @@
+{
+  "schema": "repo-policy@1",
+  "issue": 288,
+  "owner": "duppypro",
+  "ruleset_name": "protect-default-branch-owner-only",
+
+  "enforcement_disclosure": {
+    "summary": "These rulesets are a SIGNAL, not a block. Red means look at this; it does not mean you cannot proceed.",
+    "why": [
+      "Every in-scope repo sets bypass_actors = [{RepositoryRole: 5 (admin), bypass_mode: always}], kept deliberately so the owner retains the override (#288).",
+      "The owner is admin on every one of these repos, so no rule here binds the owner. A PR can show BLOCKED and still be merged.",
+      "An agent that reads 'protected default branch' and infers that a red check stops a merge has inferred something false, and will make decisions on it.",
+      "This text is printed by repo-gate on every run because an undocumented signal is worthless, and because the disclosure is easy to lose if it lives only in a doc nobody opens."
+    ],
+    "what_is_actually_enforced": "Nothing, against the owner. Against a hypothetical non-admin collaborator: no branch deletion, no force-push, and changes must arrive via a pull request.",
+    "bypass_actors": [
+      { "actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always" }
+    ]
+  },
+
+  "scope": {
+    "rule": "Public non-fork repos owned by duppypro, plus private repos created in 2026.",
+    "target": "~DEFAULT_BRANCH",
+    "target_why": "6 in-scope repos default to `master`, not `main`. Targeting the literal name would silently govern 23 of 29 and report the other 6 as compliant-by-absence.",
+    "excluded": {
+      "pi": "fork",
+      "SublimeText2-BGScript-Syntax": "fork",
+      "TIMESQUARE-Watch": "fork",
+      "SparkFun-Eagle-Libraries": "fork",
+      "CoCo-ThingApp-DVT": "private, created before 2026",
+      "ConnectedD_ThingApp": "private, created before 2026",
+      "dupp-afe-model": "private, created before 2026",
+      "ElectricDice_WebApp_Demo": "private, created before 2026",
+      "gDice": "private, created before 2026",
+      "HerdDoggAGM1": "private, created before 2026",
+      "ibeacon-sequence": "private, created before 2026",
+      "meta-interview-puzzles": "private, created before 2026",
+      "onion-skin": "private, created before 2026",
+      "Salus-Rules": "private, created before 2026",
+      "SmartRoom": "private, created before 2026"
+    },
+    "excluded_why": "Named one by one rather than left to a filter, so that dropping a repo out of governance is a visible edit to this file instead of a silent consequence of a predicate."
+  },
+
+  "pull_request_parameters_not_pinned": {
+    "allowed_merge_methods": "repo-local preference; princess-pi-packages squash-merges via pr-merge, others may not",
+    "dismiss_stale_reviews_on_push": "inert while required_approving_review_count is 0",
+    "require_last_push_approval": "inert while required_approving_review_count is 0",
+    "require_code_owner_review": "inert; no CODEOWNERS in any in-scope repo",
+    "required_reviewers": "inert; solo account",
+    "why": "A baseline that pins fields it does not mean turns every cosmetic difference into a red row, and a report that cries wolf stops being read. Only fields carrying intent are asserted."
+  },
+
+  "tiers": {
+    "gated": {
+      "description": "Baseline plus a required CI check. Only for repos that actually ship a test suite — requiring a check no workflow produces leaves the branch permanently pending.",
+      "enforcement": "active",
+      "rules": {
+        "deletion": null,
+        "non_fast_forward": null,
+        "pull_request": {
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true
+        },
+        "required_status_checks": {
+          "strict_required_status_checks_policy": true,
+          "required_status_checks": [
+            { "context": "test", "integration_id": 15368 }
+          ]
+        }
+      }
+    },
+    "protected": {
+      "description": "Baseline only: no deletion, no force-push, changes via pull request. The resting state for a repo with no test suite to gate on.",
+      "enforcement": "active",
+      "rules": {
+        "deletion": null,
+        "non_fast_forward": null,
+        "pull_request": {
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true
+        }
+      }
+    },
+    "plan-blocked": {
+      "description": "Private repo on an account plan that does not offer rulesets. Expected state is ZERO rulesets. This is not drift and must never be reported as a failure.",
+      "expect_no_ruleset": true,
+      "waiver_expires_when": "account_plan_offers_private_rulesets",
+      "waiver_why": "Asserted as still-necessary rather than merely tolerated: repo-gate re-checks the account plan on every run, and the moment private rulesets become available these 12 repos go red on their own. A waiver that cannot expire is indistinguishable from a blind spot."
+    }
+  },
+
+  "tier_history": {
+    "update_rule_dropped": "Until 2026-08-15 the 16 `protected` repos carried `update` (only bypass actors may update matching refs) instead of `pull_request`. `pull_request` subsumes the one property `update` held — a non-bypass actor cannot update the ref — while `deletion` and `non_fast_forward` cover the rest independently. Collapsing to one baseline removed a two-dimensional difference between tiers that nobody had chosen (#288)."
+  },
+
+  "repos": {
+    "princess-pi-packages": "gated",
+
+    "aoc2023": "protected",
+    "aoc2024": "protected",
+    "claudemd-doctor": "protected",
+    "Crispy-Tools-BLE-Scanner": "protected",
+    "crispyhardware": "protected",
+    "does-it-glider": "protected",
+    "duppy-shell-config": "protected",
+    "DylanShapes": "protected",
+    "ElectricDice_ThingApp": "protected",
+    "ElectricDice-ThingApp-Proxy-Processing": "protected",
+    "FicsIt-Networks-is-it-full-yet": "protected",
+    "my-mood-mandala": "protected",
+    "roll-this": "protected",
+    "scriptrHelloWorld": "protected",
+    "watu": "protected",
+    "wordle-league": "protected",
+
+    "agentic-arts-ai": "plan-blocked",
+    "big-thoughts": "plan-blocked",
+    "btw": "plan-blocked",
+    "circuitpython": "plan-blocked",
+    "crispyhardware-com": "plan-blocked",
+    "dotfiles-doctor": "plan-blocked",
+    "duppy-com": "plan-blocked",
+    "interfacearts-com": "plan-blocked",
+    "portfolio-api": "plan-blocked",
+    "princess-pi-agent-workspace": "plan-blocked",
+    "princess-pi-brain": "plan-blocked",
+    "rogue-savvy": "plan-blocked"
+  }
+}

@@ -1,0 +1,500 @@
+#!/usr/bin/env bash
+# ---
+# repo-gate [<repo>...] [--json] [--policy <path>] [--remedy <repo>] — compare every
+# repo's live branch-protection ruleset against the declared policy in
+# docs/repo-policy.json, and report the difference. REPORT ONLY: this script never
+# writes to GitHub (#288).
+#
+# Why it exists: "is this repo governed?" was answerable only by opening the GitHub
+# UI one repo at a time, 29 times. Nothing recorded what the answer was *supposed*
+# to be, so a repo that drifted looked exactly like a repo that was deliberately
+# different. The policy file supplies the intent; this script supplies the diff.
+#
+# Why report-only: the fix is a PUT that rewrites branch protection on a repo. That
+# is worth a human reading the payload the first few times. Every drift record
+# carries a `remedy` naming the exact command, so an agent can act without
+# re-deriving it — and so a future applier executes strings that already shipped
+# and are already under test.
+#
+# --- Exit codes (the shared pr-* contract, docs/dev-workflow-spec.md#exit-codes) ---
+#   0  every in-scope repo matches the declared policy
+#   2  usage error — bad flag, or a repo named that the policy does not govern
+#   3  precondition not met — policy file found but unreadable/invalid JSON
+#   4  not found — no policy file at any searched path
+#   5  remote/API failure — state could NOT be determined for at least one repo
+#   6  drift found — state WAS determined, and it differs from the policy
+#
+# 5 vs 6 is the distinction that carries weight here, same as everywhere else in
+# this family: "I could not check" is not "I checked and it says no."
+# ---
+set -uo pipefail
+
+SELF="$(basename "$0")"
+
+# ---
+# ARGUMENT PARSING
+# ---
+
+JSON=0
+POLICY=""
+REMEDY=""
+declare -a ONLY=()
+
+usage() {
+	cat <<'EOF'
+repo-gate — report how each repo's live branch protection differs from the declared policy.
+
+USAGE
+  repo-gate                            report every repo the policy governs
+  repo-gate watu does-it-glider        report only these repos
+  repo-gate --json                     one repo-gate/report@1 document on stdout
+  repo-gate --remedy watu              print the exact command that would fix watu
+  repo-gate --policy ./other.json      use a policy file other than the default
+
+FLAGS
+  --json             machine-readable output; the exit code is unchanged
+  --policy <path>    policy file to read (default: search order below)
+  --remedy <repo>    print the fix for one repo and exit; writes nothing
+  --why              why you would run this
+  -h, --help         this text
+
+POLICY SEARCH ORDER
+  1. --policy <path>
+  2. $PWD/docs/repo-policy.json
+  3. ~/git-projects/princess-pi-packages/docs/repo-policy.json
+
+This script never writes to GitHub. See --why for what it does and does not prove.
+EOF
+}
+
+why() {
+	cat <<'EOF'
+repo-gate — why would I run this?
+
+SCENARIO  You are about to trust a repo's branch protection and want to know whether
+          it matches what was decided, without opening 29 GitHub settings pages.
+  repo-gate
+RESULT    One line per repo: ok, drift (with exactly which rules differ), or n/a.
+          Exit 6 if anything drifted, so it works as a check in a script.
+
+SCENARIO  A repo came back red and you want to fix it.
+  repo-gate --remedy watu
+RESULT    The literal `gh api` command, payload included. You run it; repo-gate does
+          not. Re-run `repo-gate watu` afterwards to confirm it took.
+
+SCENARIO  You added a new repo and want to know whether it is governed.
+  repo-gate
+RESULT    A repo that is in scope by the policy's own rule but absent from its repos
+          map is reported as `unlisted` — drift, not silence. Adding a repo to GitHub
+          therefore forces a decision about it here.
+
+SCENARIO  An agent needs to act on the result.
+  repo-gate --json
+RESULT    A repo-gate/report@1 document: flat per-repo records with stable keys, each
+          drift carrying a `remedy` string. No prose parsing.
+
+NOT FOR   Proving that anything is enforced. Every governed repo grants the owner
+          bypass `always` by design, so these rules bind nobody who is an admin — a
+          PR can show BLOCKED and still merge. repo-gate prints that disclosure on
+          every run precisely so this output is not mistaken for an enforcement
+          guarantee. It also does not check CI health, only that the required check
+          is *named* in the ruleset.
+
+Run repo-gate --help for the full flag reference.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--json) JSON=1; shift ;;
+		--policy) POLICY="${2:-}"; [ -n "$POLICY" ] || { echo "$SELF: --policy needs a path" >&2; exit 2; }; shift 2 ;;
+		--remedy) REMEDY="${2:-}"; [ -n "$REMEDY" ] || { echo "$SELF: --remedy needs a repo name" >&2; exit 2; }; shift 2 ;;
+		--why) why; exit 0 ;;
+		-h|--help) usage; exit 0 ;;
+		-*) echo "$SELF: unknown flag '$1' (try --help)" >&2; exit 2 ;;
+		*) ONLY+=("$1"); shift ;;
+	esac
+done
+
+command -v gh >/dev/null 2>&1 || { echo "$SELF: gh is not on PATH" >&2; exit 3; }
+command -v jq >/dev/null 2>&1 || { echo "$SELF: jq is not on PATH" >&2; exit 3; }
+
+# ---
+# POLICY LOCATION
+# ---
+
+# Searched rather than derived from $0: the installed copy lives in ~/bin, detached
+# from any clone, so "next to the script" resolves to nothing useful. Refuses with
+# the search order rather than inventing a default — a report run against a policy
+# the caller did not mean is worse than no report.
+if [ -z "$POLICY" ]; then
+	for candidate in \
+		"$PWD/docs/repo-policy.json" \
+		"$HOME/git-projects/princess-pi-packages/docs/repo-policy.json"
+	do
+		if [ -r "$candidate" ]; then POLICY="$candidate"; break; fi
+	done
+fi
+
+if [ -z "$POLICY" ] || [ ! -r "$POLICY" ]; then
+	echo "$SELF: no policy file found." >&2
+	echo "  Searched: \$PWD/docs/repo-policy.json" >&2
+	echo "            ~/git-projects/princess-pi-packages/docs/repo-policy.json" >&2
+	echo "  Name one: $SELF --policy <path>" >&2
+	exit 4
+fi
+
+if ! jq -e . "$POLICY" >/dev/null 2>&1; then
+	echo "$SELF: '$POLICY' is not valid JSON." >&2
+	exit 3
+fi
+
+OWNER=$(jq -r '.owner' "$POLICY")
+RULESET_NAME=$(jq -r '.ruleset_name' "$POLICY")
+if [ "$OWNER" = "null" ] || [ "$RULESET_NAME" = "null" ]; then
+	echo "$SELF: '$POLICY' is missing .owner or .ruleset_name." >&2
+	exit 3
+fi
+
+# ---
+# REMEDY SYNTHESIS
+# ---
+
+# Built from the tier definition, never stored alongside it: a remedy string kept as
+# its own field would be a second copy of the baseline, free to drift from the one
+# the comparison uses. Derived, the remedy is wrong only when the check is also wrong.
+build_payload() {
+	local tier="$1"
+	jq -c --arg tier "$tier" --arg name "$RULESET_NAME" '
+		. as $p
+		| $p.tiers[$tier] as $t
+		| {
+			name: $name,
+			target: "branch",
+			enforcement: ($t.enforcement // "active"),
+			conditions: { ref_name: { include: [$p.scope.target], exclude: [] } },
+			bypass_actors: $p.enforcement_disclosure.bypass_actors,
+			rules: [
+				$t.rules | to_entries[]
+				| if .value == null then { type: .key } else { type: .key, parameters: .value } end
+			]
+		}
+	' "$POLICY"
+}
+
+remedy_for() {
+	local repo="$1" tier="$2" existing_id="$3"
+	if [ "$tier" = "plan-blocked" ]; then
+		echo "none — private repo, account plan does not offer rulesets"
+		return
+	fi
+	local payload
+	payload=$(build_payload "$tier")
+	if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
+		echo "gh api -X PUT repos/$OWNER/$repo/rulesets/$existing_id --input - <<< '$payload'"
+	else
+		echo "gh api -X POST repos/$OWNER/$repo/rulesets --input - <<< '$payload'"
+	fi
+}
+
+if [ -n "$REMEDY" ]; then
+	tier=$(jq -r --arg r "$REMEDY" '.repos[$r] // "null"' "$POLICY")
+	if [ "$tier" = "null" ]; then
+		echo "$SELF: '$REMEDY' is not governed by $POLICY." >&2
+		exit 2
+	fi
+	rs=$(gh api "repos/$OWNER/$REMEDY/rulesets" 2>/dev/null) || rs="[]"
+	id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rs" 2>/dev/null) || id=""
+	echo "# $REMEDY — tier '$tier'. Review the payload before running it; repo-gate never writes."
+	remedy_for "$REMEDY" "$tier" "$id"
+	exit 0
+fi
+
+# ---
+# ACCOUNT PLAN PROBE
+# ---
+
+# The plan-blocked tier is a waiver, and a waiver that cannot expire is a blind spot.
+# So the plan is re-probed every run: the day private rulesets become available, those
+# repos stop being excused and go red on their own.
+#
+# `/user` only carries `.plan` when the token holds the `user` scope. Without it the
+# field is absent — which is NOT the same fact as "free plan", and is reported as
+# indeterminate rather than quietly satisfying the waiver.
+PLAN_STATUS="indeterminate"
+PLAN_DETAIL="/user exposes no .plan field with this token's scopes — waiver held but unverified"
+if user_json=$(gh api user 2>/dev/null); then
+	plan_name=$(jq -r '.plan.name // ""' <<<"$user_json" 2>/dev/null) || plan_name=""
+	if [ -n "$plan_name" ]; then
+		if [ "$plan_name" = "free" ]; then
+			PLAN_STATUS="blocked"
+			PLAN_DETAIL="plan '$plan_name' does not offer private-repo rulesets — waiver stands"
+		else
+			PLAN_STATUS="expired"
+			PLAN_DETAIL="plan '$plan_name' offers private-repo rulesets — the plan-blocked waiver has expired"
+		fi
+	fi
+fi
+
+# ---
+# LIVE REPO ENUMERATION
+# ---
+
+# Enumerated so a repo can be in scope by the policy's own rule yet absent from its
+# repos map — reported as `unlisted`. Without this, creating a repo on GitHub silently
+# leaves it ungoverned and the report stays green while coverage shrinks.
+if ! live_repos=$(gh api --paginate "user/repos?per_page=100&type=owner" 2>/dev/null); then
+	echo "$SELF: could not list repositories — gh api failed." >&2
+	exit 5
+fi
+
+# --paginate concatenates one JSON array per page; -s + add flattens them into one.
+live_index=$(jq -sc --arg owner "$OWNER" '
+	[ add[] | select(.owner.login == $owner) ]
+	| map({ key: .name, value: { private: .private, fork: .fork, created: .created_at } })
+	| from_entries
+' <<<"$live_repos" 2>/dev/null) || {
+	echo "$SELF: could not parse the repository list." >&2
+	exit 5
+}
+
+# The scope rule, applied to live repos, so `unlisted` means "the policy's own rule
+# says this belongs and the file does not mention it" rather than "any repo at all".
+in_scope_live=$(jq -rc '
+	to_entries
+	| map(select(.value.fork | not))
+	| map(select((.value.private | not) or (.value.created | startswith("2026"))))
+	| map(.key)
+' <<<"$live_index" 2>/dev/null) || in_scope_live='[]'
+
+# ---
+# PER-REPO EVALUATION
+# ---
+
+if [ ${#ONLY[@]} -gt 0 ]; then
+	for r in "${ONLY[@]}"; do
+		t=$(jq -r --arg r "$r" '.repos[$r] // "null"' "$POLICY")
+		if [ "$t" = "null" ]; then
+			echo "$SELF: '$r' is not governed by $POLICY (try: $SELF --json | jq '.repos[].repo')" >&2
+			exit 2
+		fi
+	done
+	mapfile -t TARGETS < <(printf '%s\n' "${ONLY[@]}")
+else
+	mapfile -t TARGETS < <(jq -r '.repos | keys[]' "$POLICY")
+fi
+
+records="[]"
+api_failed=0
+
+for repo in "${TARGETS[@]}"; do
+	tier=$(jq -r --arg r "$repo" '.repos[$r]' "$POLICY")
+
+	if ! jq -e --arg r "$repo" 'has($r)' <<<"$live_index" >/dev/null 2>&1; then
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" '
+			. + [{ repo: $repo, tier: $tier, status: "gone", detail: "declared in the policy but not present on the account", remedy: "remove it from the policy repos map, or restore the repo" }]
+		' <<<"$records")
+		continue
+	fi
+
+	if ! rulesets=$(gh api "repos/$OWNER/$repo/rulesets" 2>/dev/null); then
+		api_failed=1
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" '
+			. + [{ repo: $repo, tier: $tier, status: "error", detail: "gh api repos/rulesets failed — state could not be determined", remedy: "" }]
+		' <<<"$records")
+		continue
+	fi
+
+	# plan-blocked expects NO ruleset. Its own status word, never "ok" and never
+	# "drift": folding it into either would make 12 of 29 repos claim a state
+	# they were never in a position to reach.
+	if [ "$tier" = "plan-blocked" ]; then
+		count=$(jq 'length' <<<"$rulesets" 2>/dev/null) || count=0
+		if [ "$PLAN_STATUS" = "expired" ]; then
+			records=$(jq -c --arg repo "$repo" --arg tier "$tier" --arg d "$PLAN_DETAIL" \
+				--arg rem "$(remedy_for "$repo" protected "")" '
+				. + [{ repo: $repo, tier: $tier, status: "drift", detail: $d, remedy: $rem }]
+			' <<<"$records")
+		elif [ "$count" -gt 0 ]; then
+			records=$(jq -c --arg repo "$repo" --arg tier "$tier" --arg c "$count" '
+				. + [{ repo: $repo, tier: $tier, status: "drift", detail: ("expected no ruleset, found " + $c + " — the plan-blocked assumption is wrong for this repo"), remedy: "re-tier this repo in docs/repo-policy.json" }]
+			' <<<"$records")
+		else
+			records=$(jq -c --arg repo "$repo" --arg tier "$tier" --arg d "$PLAN_DETAIL" '
+				. + [{ repo: $repo, tier: $tier, status: "n/a", detail: $d, remedy: "" }]
+			' <<<"$records")
+		fi
+		continue
+	fi
+
+	# The named ruleset is fetched individually: the list endpoint omits `rules`
+	# and `bypass_actors` entirely, so comparing against the list would have
+	# reported every repo as missing every rule.
+	rs_id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rulesets" 2>/dev/null) || rs_id=""
+
+	if [ -z "$rs_id" ]; then
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" --arg n "$RULESET_NAME" \
+			--arg rem "$(remedy_for "$repo" "$tier" "")" '
+			. + [{ repo: $repo, tier: $tier, status: "drift", detail: ("no ruleset named " + $n), remedy: $rem }]
+		' <<<"$records")
+		continue
+	fi
+
+	if ! live=$(gh api "repos/$OWNER/$repo/rulesets/$rs_id" 2>/dev/null); then
+		api_failed=1
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" '
+			. + [{ repo: $repo, tier: $tier, status: "error", detail: "ruleset listed but could not be read", remedy: "" }]
+		' <<<"$records")
+		continue
+	fi
+
+	diff=$(jq -n --slurpfile p "$POLICY" --argjson live "$live" --arg tier "$tier" '
+		# Arrays are order-insensitive here: GitHub returns required_status_checks in
+		# whatever order it stored them, and a reordered list is not a policy change.
+		# Defined first: a `def` mid-pipeline is a jq syntax error, and the failure
+		# mode was every repo reporting "comparison failed to evaluate" rather than
+		# anything pointing at the filter.
+		def norm($v): if ($v | type) == "array" then ($v | sort_by(tojson)) else $v end;
+		$p[0] as $pol
+		| $pol.tiers[$tier] as $t
+		| ($t.rules | keys) as $want
+		| ([$live.rules[].type] | sort) as $have
+		| {
+			missing: ($want - $have),
+			unexpected: ($have - $want),
+			params: [
+				$t.rules | to_entries[]
+				| select(.value != null)
+				| .key as $type | .value as $pinned
+				| ($live.rules[] | select(.type == $type) | .parameters // {}) as $actual
+				| $pinned | to_entries[]
+				| select(norm(.value) != norm($actual[.key]))
+				| ($type + "." + .key + ": want " + (.value | tojson) + ", got " + (($actual[.key]) | tojson))
+			],
+			enforcement: (if $live.enforcement == ($t.enforcement // "active") then null
+			              else "enforcement: want " + ($t.enforcement // "active") + ", got " + $live.enforcement end),
+			target: (if ($live.conditions.ref_name.include // []) == [$pol.scope.target] then null
+			         else "target: want [" + $pol.scope.target + "], got " + (($live.conditions.ref_name.include // []) | tojson) end),
+			# The claim that makes every other claim interpretable: if bypass ever
+			# stops being admin/always, the meaning of this whole report changes and
+			# nothing else here would notice.
+			bypass: (if ([$live.bypass_actors[]? | {actor_type, actor_id, bypass_mode}] | sort_by(tojson))
+			            == ($pol.enforcement_disclosure.bypass_actors | sort_by(tojson)) then null
+			         else "bypass_actors: want " + ($pol.enforcement_disclosure.bypass_actors | tojson)
+			              + ", got " + ([$live.bypass_actors[]? | {actor_type, actor_id, bypass_mode}] | tojson) end)
+		}
+		| { problems: (
+				(.missing | map("missing rule: " + .))
+				+ (.unexpected | map("unexpected rule: " + .))
+				+ .params
+				+ ([.enforcement, .target, .bypass] | map(select(. != null)))
+			) }
+	' 2>/dev/null) || {
+		api_failed=1
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" '
+			. + [{ repo: $repo, tier: $tier, status: "error", detail: "comparison failed to evaluate", remedy: "" }]
+		' <<<"$records")
+		continue
+	}
+
+	n_problems=$(jq '.problems | length' <<<"$diff")
+	if [ "$n_problems" -eq 0 ]; then
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" '
+			. + [{ repo: $repo, tier: $tier, status: "ok", detail: "matches the declared tier", remedy: "" }]
+		' <<<"$records")
+	else
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" --argjson d "$diff" \
+			--arg rem "$(remedy_for "$repo" "$tier" "$rs_id")" '
+			. + [{ repo: $repo, tier: $tier, status: "drift", detail: ($d.problems | join("; ")), problems: $d.problems, remedy: $rem }]
+		' <<<"$records")
+	fi
+done
+
+# Unlisted repos are appended only on a full run: naming specific repos on the
+# command line is a request about those repos, not an audit of coverage.
+if [ ${#ONLY[@]} -eq 0 ]; then
+	records=$(jq -c --argjson live "$in_scope_live" --slurpfile p "$POLICY" '
+		. as $recs
+		| ($p[0].repos | keys) as $declared
+		| ($p[0].scope.excluded | keys) as $excluded
+		| $recs + (
+			$live - $declared - $excluded
+			| map({ repo: ., tier: "unlisted", status: "unlisted",
+			        detail: "in scope by the policy rule, absent from its repos map",
+			        remedy: "add it to docs/repo-policy.json under repos, or to scope.excluded with a reason" })
+		)
+	' <<<"$records")
+fi
+
+# ---
+# OUTPUT
+# ---
+
+ok=$(jq '[.[] | select(.status == "ok")] | length' <<<"$records")
+drift=$(jq '[.[] | select(.status == "drift")] | length' <<<"$records")
+na=$(jq '[.[] | select(.status == "n/a")] | length' <<<"$records")
+unlisted=$(jq '[.[] | select(.status == "unlisted")] | length' <<<"$records")
+gone=$(jq '[.[] | select(.status == "gone")] | length' <<<"$records")
+errors=$(jq '[.[] | select(.status == "error")] | length' <<<"$records")
+total=$(jq 'length' <<<"$records")
+
+if [ "$JSON" -eq 1 ]; then
+	jq -n --slurpfile p "$POLICY" --argjson recs "$records" \
+		--arg policy "$POLICY" --arg plan_status "$PLAN_STATUS" --arg plan_detail "$PLAN_DETAIL" \
+		--argjson counts "{\"total\":$total,\"ok\":$ok,\"drift\":$drift,\"na\":$na,\"unlisted\":$unlisted,\"gone\":$gone,\"error\":$errors}" '
+		{
+			schema: "repo-gate/report@1",
+			policy_path: $policy,
+			policy_schema: $p[0].schema,
+			enforcement_disclosure: $p[0].enforcement_disclosure,
+			plan: { status: $plan_status, detail: $plan_detail },
+			counts: $counts,
+			repos: $recs
+		}
+	'
+else
+	BOLD=""; DIM=""; RESET=""
+	if [ -t 1 ]; then BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'; fi
+
+	echo "${BOLD}repo-gate${RESET} — policy: $POLICY"
+	echo
+
+	# Printed on every run, by decision (#288): with admin bypassing always, these
+	# rulesets are a signal and nothing else. A reader who takes this output for an
+	# enforcement guarantee has been misled by a report that was technically correct.
+	echo "${BOLD}⚠️  SIGNAL, NOT A BLOCK${RESET}"
+	jq -r '.enforcement_disclosure | "    " + .summary, "    " + .what_is_actually_enforced' "$POLICY" | fmt -w 96 -s | sed 's/^/  /'
+	echo
+	echo "  ${DIM}plan probe: $PLAN_STATUS — $PLAN_DETAIL${RESET}"
+	echo
+
+	jq -r '
+		def icon: if . == "ok" then "✅" elif . == "n/a" then "⏭ " elif . == "error" then "⚠️ " else "❌" end;
+		group_by(.tier)[]
+		| ("  " + (.[0].tier) + " (" + (length | tostring) + ")"),
+		  (.[] | "    " + (.status | icon) + " " + (.repo + "                                      " | .[0:38]) + " " + .status + "  " + .detail)
+	' <<<"$records"
+
+	echo
+	echo "  ${BOLD}$total repo(s)${RESET}  ok=$ok  drift=$drift  n/a=$na  unlisted=$unlisted  gone=$gone  error=$errors"
+	if [ "$errors" -gt 0 ]; then
+		echo "  ⚠️  $errors repo(s) could not be checked — that is not the same as compliant."
+	fi
+	if [ $((drift + unlisted + gone)) -gt 0 ]; then
+		echo "  ❌ $((drift + unlisted + gone)) repo(s) differ from the declared policy."
+		echo "     Fix one:        $SELF --remedy <repo>"
+		echo "     Teach an agent: docs/repo-gate-apply.md"
+	elif [ "$errors" -eq 0 ]; then
+		# Gated on errors too: a run that could not read part of the fleet found no
+		# drift only in the sense that it never looked, and saying "every governed
+		# repo matches" there is the green-because-empty failure in one sentence.
+		echo "  ✅ every governed repo matches the declared policy."
+	fi
+fi
+
+# An unreadable repo is reported as its own state and takes precedence: a run that
+# could not see part of the fleet must not exit 0, and must not claim drift it never
+# measured.
+if [ "$errors" -gt 0 ] || [ "$api_failed" -eq 1 ]; then exit 5; fi
+if [ $((drift + unlisted + gone)) -gt 0 ]; then exit 6; fi
+exit 0

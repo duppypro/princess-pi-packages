@@ -963,6 +963,47 @@ claim, and the file must still make the claim. This is what would have caught th
 cheapest approximation of a clean runner, and it is what found the two host-coupled defects
 ADR 0002 records.
 
+### The fleet baseline — `repo-policy.json` and `repo-gate` (#288)
+
+Everything above governs one repo. `docs/repo-policy.json` declares the same kind of
+baseline for all 29 — **17 public non-fork repos plus 12 private ones created in 2026** —
+and `repo-gate` reports the difference between what it declares and what GitHub actually
+holds. Exit `6` means drift; `--remedy <repo>` prints the fix; the tool never writes.
+`docs/repo-gate-apply.md` is the runbook for applying a remedy, written to be handed to an
+agent.
+
+Three tiers, and the third is the interesting one:
+
+| Tier | Rules | Who |
+|---|---|---|
+| `gated` | baseline + `required_status_checks` | repos that ship a test suite — today only `princess-pi-packages` |
+| `protected` | `deletion`, `non_fast_forward`, `pull_request` | the other 16 public repos |
+| `plan-blocked` | none — **zero rulesets is the correct state** | 12 private repos, on a plan that does not offer them |
+
+`plan-blocked` is a **waiver, not an exemption**: `repo-gate` re-probes the account plan on
+every run, so the day private rulesets become available those repos go red on their own.
+Making it a first-class state also keeps the report readable — 12 of 29 rows permanently
+red for a condition no engineering change can fix is how a report stops being read.
+
+**`update` was retired fleet-wide (2026-08-15).** Sixteen repos carried `update` ("only
+bypass actors may update matching refs") where `princess-pi-packages` carried
+`pull_request`; nobody had chosen that split. `pull_request` subsumes the one property
+`update` held, while `deletion` and `non_fast_forward` cover the rest independently, so the
+tiers now differ in exactly one dimension instead of two. `tests/repo-policy.test.ts`
+asserts `protected` stays a strict subset of `gated` so they cannot drift apart again.
+
+**The ruleset targets `~DEFAULT_BRANCH`, never a literal name.** Six in-scope repos default
+to `master`. A policy hardcoding `main` would have governed 23 of 29 and reported the other
+six as compliant-by-absence.
+
+**These rules are a signal, not a block — and `repo-gate` says so on every run.** Every
+governed repo grants `RepositoryRole 5 (admin)` bypass `always`, deliberately, so no rule
+binds the owner: a PR can show `BLOCKED` and still be merged. That disclosure lives in the
+policy file and is printed on every invocation rather than filed in a doc, because an agent
+that reads "protected default branch" and infers enforcement will act on the inference. The
+bypass configuration is itself an asserted claim — it is the field that determines what
+every other claim in the report *means*.
+
 ## What was removed
 
 | Removed | Why |
