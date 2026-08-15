@@ -35,6 +35,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 
+import { skip } from "./lib/skips.ts";
+
 const REPO = path.resolve(import.meta.dirname, "..");
 const CORPUS_SHA = "9b2a16e";
 
@@ -186,7 +188,7 @@ if (fs.existsSync(deployed)) {
 		"repo copy wins — re-copy skills/spec-reconcile/SKILL.md to ~/.claude/skills/spec-reconcile/",
 	);
 } else {
-	console.log("  SKIP  no ~/.claude deploy copy on this machine");
+	skip("no ~/.claude/skills/spec-reconcile deploy copy on this machine — repo-vs-deployed parity not checked");
 }
 
 // ---

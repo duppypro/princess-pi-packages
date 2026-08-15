@@ -46,8 +46,15 @@
 // concurrently-written stream. Tracked as its own issue.
 // PRACTICAL RULE: treat any non-zero `negativeSteps` as "this session is out of
 // scope for this instrument", never as a finding. `tests/wtft-issue-149-*.test.ts`
-// enforces exactly that — it skips subagent-bearing sessions rather than
-// asserting on them.
+// skips subagent-bearing sessions rather than asserting on them, and since #256
+// does not assert monotonicity on the others either — it SURVEYS them and prints
+// what it found. The property was measured on 7 sessions and asserted over 23;
+// two dip, one of them because Claude Code's cumulative counter RESET mid-session
+// (`d971ae4a`, -$20.906723 landing on exactly the next turn's cost, #282). Every
+// downward step is now recorded in `dips[]` alongside the tally, because
+// `negativeSteps: 1` said a session was out of scope without saying by how much,
+// and a $20.91 artifact sat behind a $0.27 one, unseen, for as long as both
+// existed.
 //
 // DEDUP RULE (do not "fix" this)
 // The transcript writes multiple copies of one assistant message id as streaming
@@ -216,9 +223,14 @@ export function alignRecords(records, interactions) {
 
 /** Residual staircase over aligned records, plus one entry per upward step. */
 export function residualStaircase(aligned, markers, minStep) {
-	if (aligned.length < 2) return { steps: [], finalResidual: 0, claudeSpan: 0, negativeSteps: 0 };
+	if (aligned.length < 2) return { steps: [], dips: [], finalResidual: 0, claudeSpan: 0, negativeSteps: 0 };
 	const a0 = aligned[0];
 	const steps = [];
+	/** Downward steps, recorded rather than merely tallied. `negativeSteps` alone
+	 *  said a session was out of scope without saying where or by how much, which
+	 *  is what let a $20.91 counter reset sit inside the asserted set unexamined
+	 *  (#282). Same shape as `steps`, opposite sign. */
+	const dips = [];
 	let prevR = 0;
 	let prev = a0;
 	let negativeSteps = 0;
@@ -241,6 +253,17 @@ export function residualStaircase(aligned, markers, minStep) {
 			});
 		} else if (d <= -minStep) {
 			negativeSteps++;
+			dips.push({
+				at: a.record._ts,
+				usd: d,
+				residualAfter: R,
+				fromTs: prev.record._ts,
+				interactionsSpanned: a.index - prev.index,
+				claudeCumBefore: prev.record.cost.total_cost_usd,
+				claudeCumAfter: a.record.cost.total_cost_usd,
+				contextTokens: prev.record.context_window?.total_input_tokens ?? 0,
+				markers: [...new Set(markers.filter(m => m.at > prev.record._epoch_ms && m.at <= a.record._epoch_ms).map(m => m.kind))],
+			});
 		}
 		prevR = R;
 		prev = a;
@@ -248,6 +271,7 @@ export function residualStaircase(aligned, markers, minStep) {
 
 	return {
 		steps,
+		dips,
 		finalResidual: prevR,
 		claudeSpan: aligned[aligned.length - 1].record.cost.total_cost_usd - a0.record.cost.total_cost_usd,
 		negativeSteps,
@@ -311,6 +335,7 @@ export function auditSession(logDir, sessionId, minStep = DEFAULT_STEP_USD) {
 		residualPct: stair.claudeSpan ? (stair.finalResidual / stair.claudeSpan) * 100 : 0,
 		negativeSteps: stair.negativeSteps,
 		steps: stair.steps,
+		dips: stair.dips,
 		attribution: {
 			compaction: { count: compactionSteps.length, usd: compactionSteps.reduce((s, x) => s + x.usd, 0) },
 			unattributed: { count: otherSteps.length, usd: otherSteps.reduce((s, x) => s + x.usd, 0) },
