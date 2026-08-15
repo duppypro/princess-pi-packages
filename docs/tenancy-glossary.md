@@ -66,8 +66,8 @@ structurally impossible rather than remembered. The rule was learned the hard wa
 | Term | Means | Notes |
 |---|---|---|
 | **App** | one deployable codebase, named by its repo (`rogue-aix`, `portfolio-api`) | one App, several `Env`s |
-| **Env** | `dev` or `prod` — one deployed instance of an App | each has its own release dir, state root, secrets file, port, sub-domain and unit |
-| **Tenant** | one App+`Env` pair as the VPS sees it: a release dir, a manifest, a port, a published sub-domain | the unit of hosting. **This is the word the Sesame proposal called a "domain"** |
+| **Env** | `dev` or `prod` — one deployed instance of an App | each has its own release dir, state root, secrets file and port. A **sub-domain** only if published; a **unit** only if `kind = "service"` |
+| **Tenant** | one App+`Env` pair as the host sees it: a release dir, a manifest, and a port — plus a sub-domain when published | the unit of hosting. **This is the word the Sesame proposal called a "domain"** |
 | **Manifest** | `.tenant.toml` in the release dir — declares `kind`, and for a service `port` and `unit`. `gate`, `zone` and `subdomain` are **optional** | rsync-**excluded**, exactly as `.serve-acl` is: a build must never be able to change a tenant's gate, port or zone |
 | **Loopback-only** | a tenant with no `gate`/`zone`/`subdomain` — reachable at `127.0.0.1:<port>`, not published | the default. Publishing is an *intent*, not a property of the machine |
 | **Published** | a tenant with all three declared | **MUST** carry a `gate`; there is no such thing as a published tenant with no access policy |
@@ -192,5 +192,5 @@ and they fail in different ways.
 
 ## Repo-specific terms
 
-*(In brain itself: none. In a copy, add this repo's own vocabulary here. Never edit the shared
-section above in a copy — change brain and re-copy, so all five repos stay in step.)*
+*(In this file — the source — none. In a copy, add that repo's own vocabulary here. Never edit the
+shared section above in a copy: change **this file** and re-copy, so all five repos stay in step.)*

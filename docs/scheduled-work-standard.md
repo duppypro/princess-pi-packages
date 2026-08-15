@@ -51,16 +51,18 @@ whose entire input is the network is **off-box**. *Why:* the alternative is ship
 the box to reach local things, which converts a local dependency into a permanent
 secret-distribution problem.
 
-2.2 An **on-box** Job **MUST** be a timer or cron entry owned by the operator, meeting
-`unit-authoring-standard.md` in full — including the absolute-interpreter rule. *Why:* cron's `PATH`
-is thinner than a user unit's; a bare command name fails at 3am in something nobody is watching.
+2.2 An **on-box** Job **MUST** be a systemd user timer, or a cron entry, owned by the operator. A
+timer **MUST** meet `unit-authoring-standard.md` §1 in full; a cron entry **MUST** meet its §1.7,
+which is the subset that has a cron equivalent. *Why:* cron's `PATH` is thinner than a user unit's,
+so the absolute-path rules bind both — but a cron entry has no `StandardOutput=` and no `%h`, so
+"comply in full" would be an instruction nobody could follow.
 
 2.3 An **off-box** Job **MUST** run on an ephemeral GitHub-hosted runner from a **private**
 repository, and **MUST NOT** use a self-hosted runner on this box. *Why:* a self-hosted runner
 reintroduces the entire local blast radius while keeping every inconvenience of Actions.
 
 2.4 A Job's **lane and its destination are independent choices**, and a Job **MAY** run on-box while
-writing off-box. See §3.3.
+writing off-box. See §4.2.
 
 2.5 A Job whose work is performed by an LLM agent rather than a deterministic script is an **Agent
 Job**, and **MUST** additionally meet `agent-job-standard.md`.
@@ -77,7 +79,7 @@ Job's record is its GitHub issue.
 log line is a silent breaking change.
 
 3.3 A Job that reports success **MUST** have verified the thing it claims, not the step it ran. See
-§4.3 for what that means for a backup.
+§4.3–4.4 for how that separates a backup *run* from a protected *subject*.
 
 ---
 
@@ -92,16 +94,23 @@ on-box target **MUST NOT** be called a backup. *Why:* a copy beside the original
 deletion and corruption but not against losing the box, which is the failure the backup exists for.
 The lane is derived from where the *input* lives (§2.1); the destination is a separate decision.
 
-4.3 **A backup Job's success criterion MUST be a restore rehearsal, not a backup completion.** The
-Job **MUST** restore into a scratch location and assert a known invariant — schema present, row count
-not below the last recorded count, and a **canary** record returning byte-identical. *Why:* "the
-backup command exited 0" passes for years and fails exactly once, at the only moment it matters. A
-backup that has never been restored is a file, not a backup.
+4.3 **A backup does not protect a subject; a restore does.** Every backed-up subject **MUST** have a
+**restore rehearsal**: restore into a scratch location and assert a known invariant — schema present,
+row count not below the last recorded count, and a **canary** record returning byte-identical.
+*Why:* "the backup command exited 0" passes for years and fails exactly once, at the only moment it
+matters. A backup that has never been restored is a file, not a backup.
 
-4.4 Backup cadence and rehearsal cadence **MAY** differ — nightly backup, weekly rehearsal is a
-reasonable default. But a subject whose most recent rehearsal is older than the declared rehearsal
-interval **MUST** be reported as **unprotected**. *Why:* otherwise a rehearsal that quietly stopped
-running looks identical to one that is passing.
+4.4 The rehearsal **MAY** run on its own cadence — nightly backup, weekly rehearsal is a reasonable
+default — so the two are scored separately:
+
+- a **backup run** succeeds on its own terms when it produces a verified-openable artifact (§4.7);
+- a **subject** is reported **unprotected** whenever its most recent successful rehearsal is older
+  than the declared rehearsal interval, however many backup runs have succeeded since.
+
+*Why the split:* tying every nightly run's exit status to a weekly rehearsal would fail six runs out
+of seven for no reason. Keeping the strong claim at the **subject** level puts it where it is true —
+protection is a property of the data, not of the last command that ran. *Why 4.4's second half:*
+otherwise a rehearsal that quietly stopped running looks identical to one that is passing.
 
 4.5 A live SQLite database **MUST NOT** be copied with `cp` or `rsync`. Use `VACUUM INTO`, or a
 driver's `backup()`. *Why:* a copy taken mid-write is a corrupt database that **restores cleanly and
@@ -132,7 +141,7 @@ read against the record silently depends on.
 | Rule | Blocked on | Consequence today |
 |---|---|---|
 | §1.2 single-manager lease | no manager exists yet, so there is nothing to hold a lease | the singleton is declared and undetected — a wish by this repo's own standard |
-| §4.3 restore rehearsal | no backup Job exists yet | nothing backs up `~/.local/state` at all |
+| §4.3 restore rehearsal | no backup Job and no rehearsal Job exist yet | nothing backs up `~/.local/state` at all, so every subject is unprotected by §4.4 |
 
 ---
 
@@ -145,7 +154,7 @@ read against the record silently depends on.
 - run an off-box Job on a self-hosted runner (§2.3)
 - run an off-box Job from a public repository (§2.3)
 - call an on-box-destination copy a backup (§4.2)
-- report a backup successful without a restore rehearsal (§4.3)
+- report a subject protected without a successful restore rehearsal (§4.3, §4.4)
 - `cp`/`rsync` a live SQLite file (§4.5)
 - move a `-wal`/`-shm` sidecar away from its database (§4.8)
 

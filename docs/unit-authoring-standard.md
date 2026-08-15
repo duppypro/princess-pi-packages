@@ -20,10 +20,11 @@ rediscover.
 
 ## 1. Units and timers
 
-1.1 A supervised process — a service tenant or an on-box Job — **MUST** run as a systemd **user**
-unit. **MUST NOT** require root or `sudo ln -s` into `/etc/systemd/system`. *Why:* `Linger=yes` is
-set (verified), so user units survive logout, and no root in the deploy path means no root in the
-blast radius.
+1.1 A supervised process — a service tenant, or an on-box Job run as a timer — **MUST** run as a
+systemd **user** unit, and **MUST NOT** require root or `sudo ln -s` into `/etc/systemd/system`.
+*Why:* `Linger=yes` is set (verified), so user units survive logout, and no root in the deploy path
+means no root in the blast radius. (An on-box Job **MAY** instead be a cron entry — see §1.7 for
+which rules bind it.)
 
 1.2 `ExecStart` **MUST** name an **absolute** interpreter path. **MUST NOT** use a bare command name.
 *Why, measured:* a user unit's `PATH` is
@@ -46,6 +47,14 @@ inside `~/.nvm/versions/node/v22.22.3/`, so an `nvm uninstall` would take a serv
 1.6 A unit **SHOULD** set `Restart=on-failure` with a `RestartSec` backoff. *Why:* the deploy
 sequence waits for a unit to become active before health-checking it, so the restart policy is what
 makes "active" mean anything.
+
+1.7 **Cron entries meet §1.2 and §1.3 only.** The rest of §1 is unit-file syntax that cron has no
+equivalent for: there is no `StandardOutput=`, no `Restart=`, no `%h`. A cron entry **MUST** use
+absolute paths throughout — for the interpreter *and* for every path argument, since it cannot use a
+specifier — and **MUST** redirect its own output to the state root, because §1.5's mechanism is not
+available to it. *Why this rule exists at all:* `scheduled-work-standard.md` §2.2 permits an on-box
+Job to be a timer **or** a cron entry, and "comply with this standard in full" would otherwise be
+unsatisfiable for the cron half.
 
 ---
 
@@ -77,13 +86,19 @@ no manifest.
 
 ## 3. Secrets — mechanism
 
-*(The policy — per-`Env` files, per-brand namespacing — lives in `serve-standard.md` §5. These two
-rules are systemd mechanism and stay here.)*
+*(The policy — per-`Env` files, per-brand namespacing — lives in `serve-standard.md` §5. The rules
+below are systemd mechanism and stay here.)*
 
-3.1 Secrets **MUST** be loaded via `EnvironmentFile=`, reading `~/.config/secrets/<app>-<env>.env`,
-mode `0600`, inside a `0700` directory that holds credentials only.
+3.1 Secrets **MUST** be loaded via `EnvironmentFile=`, and the unit **MUST** write the path as
+`%h/.config/secrets/<app>-<env>.env` — never `~/…`. *Why:* §1.3 exists precisely because systemd does
+not expand `~`, and `EnvironmentFile=` is the place that failure is quietest: the unit starts, the
+file is silently not found, and the service runs **without its secrets** rather than refusing to
+start. The file itself lives at `~/.config/secrets/<app>-<env>.env` when you are talking to a human
+or a shell; `%h` is how a unit says the same thing.
 
-3.2 Secrets **MUST NOT** be committed, and **MUST NOT** be passed as `Environment=` literals in a
+3.2 That file **MUST** be mode `0600`, inside a `0700` directory that holds credentials only.
+
+3.3 Secrets **MUST NOT** be committed, and **MUST NOT** be passed as `Environment=` literals in a
 unit file. *Why:* `Environment=` values are world-readable via `systemctl show`.
 
 ---
@@ -95,7 +110,7 @@ unit file. *Why:* `Environment=` values are world-readable via `systemctl show`.
 - require root, or install into `/etc/systemd/system` (§1.1)
 - use a bare command name in `ExecStart` or a cron entry (§1.2)
 - use `~` anywhere in a unit or timer (§1.3)
-- pass a secret as an `Environment=` literal (§3.2)
+- pass a secret as an `Environment=` literal (§3.3)
 
 ---
 
