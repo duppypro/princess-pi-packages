@@ -36,6 +36,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow clone. spec-163-spec-reconcile
+          # pins a corpus SHA (9b2a16e) and reads the files as they were at that
+          # commit — the whole point of a reconcile suite is to compare today
+          # against a fixed past, so depth 1 makes it fail with "corpus SHA is not
+          # reachable from this clone". Deliberately NOT given a skip path: an
+          # unreachable corpus means the checkout is wrong, and turning that into a
+          # quiet skip is the green-because-empty trap (#256) pointed the other way.
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
