@@ -1,0 +1,68 @@
+# The gate the workflow has always claimed and never had (#228).
+#
+# `docs/dev-workflow-spec.md` says a PR is where "tests GREEN" is established, but
+# until now that was a claim the authoring agent made about itself and the merge
+# acted on with nothing verifying it. This runs the same three commands a human
+# would, on a machine that has none of this developer's state.
+#
+# A runner has no ~/.claude, no dotfiles-doctor clone, and no status-line logs, so
+# every host-gated check skips here. That is expected and it is REPORTED, not
+# hidden: `tests/run.ts` prints "N checks skipped — host state absent, not
+# verified" at the end of every run (#256). Read it. A green CI badge on this repo
+# means "everything that can run without a host passed", never "everything passed".
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A force-push mid-run should cancel the stale run rather than race it to the
+# required-check slot.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # The suite is serial by design (daemons, ports, shared /tmp fixtures) and
+    # takes ~2 min locally. 15 leaves room for a slow runner without letting a
+    # hung daemon hold a slot for six hours.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow clone. spec-163-spec-reconcile
+          # pins a corpus SHA (9b2a16e) and reads the files as they were at that
+          # commit — the whole point of a reconcile suite is to compare today
+          # against a fixed past, so depth 1 makes it fail with "corpus SHA is not
+          # reachable from this clone". Deliberately NOT given a skip path: an
+          # unreachable corpus means the checkout is wrong, and turning that into a
+          # quiet skip is the green-because-empty trap (#256) pointed the other way.
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned, not "latest": the toolchain is the thing under test as much as
+          # the code is, and an unpinned runtime turns an upstream release into a
+          # mystery red on an unrelated PR. Bump deliberately.
+          bun-version: 1.3.14
+
+      - name: Install
+        # Postinstall scripts stay blocked (bun's default). --frozen-lockfile makes
+        # a lockfile that disagrees with package.json a failure here rather than a
+        # silent resolution difference between this run and a developer's machine.
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        # NEVER `bun test` over tests/ — suites call process.exit and a shared
+        # runner exits 0 having run three files. bun run test is process-per-suite.
+        run: bun run test

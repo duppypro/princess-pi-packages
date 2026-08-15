@@ -5,6 +5,7 @@
 // Code Approved checks in the spec, not here.
 // Run: bun run tests/serve-117-list.test.ts
 import * as assert from "node:assert";
+import * as os from "node:os";
 import * as path from "node:path";
 import { type ServerInstance } from "../extensions/lib/serve/domain.js";
 import { buildListSummary, buildNoDirHint } from "../extensions/lib/serve/tui.js";
@@ -17,9 +18,13 @@ function ok(name: string, fn: () => void) {
 
 const mk = (port: number, dir: string, url: string): ServerInstance => ({ port, dir, url, title: "T" });
 
-const server1 = mk(8080, "/home/princess-pi/git-projects/princess-pi-packages/dist", "https://foo.princess-pi.dev/");
-const server2 = mk(8081, "/home/princess-pi/git-projects/rogue-savvy/dist", "http://127.0.0.1:8081");
-const server3 = mk(9090, "/home/princess-pi/.local/share/some-served-dir", "https://other.princess-pi.dev/");
+// Built from the RUNNING user's home, not a literal. The behaviour under test is
+// "shorten $HOME to ~", so a hardcoded /home/princess-pi asserted it only for one
+// username and failed for every other — including CI's /home/runner (#228).
+const HOME = os.homedir();
+const server1 = mk(8080, path.join(HOME, "git-projects/princess-pi-packages/dist"), "https://foo.princess-pi.dev/");
+const server2 = mk(8081, path.join(HOME, "git-projects/rogue-savvy/dist"), "http://127.0.0.1:8081");
+const server3 = mk(9090, path.join(HOME, ".local/share/some-served-dir"), "https://other.princess-pi.dev/");
 const all = [server1, server2, server3];
 
 console.log("buildListSummary");
@@ -52,7 +57,7 @@ ok("home directory shortened to ~/ in paths", () => {
 	assert.ok(out.includes("~/git-projects/princess-pi-packages/dist"));
 	assert.ok(out.includes("~/git-projects/rogue-savvy/dist"));
 	assert.ok(out.includes("~/.local/share/some-served-dir"));
-	assert.ok(!out.includes("/home/princess-pi/")); // no raw home paths
+	assert.ok(!out.includes(`${HOME}/`), `raw home path leaked into the listing:\n${out}`);
 });
 
 console.log("buildNoDirHint");
