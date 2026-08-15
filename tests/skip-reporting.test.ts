@@ -49,6 +49,13 @@ describe("collectSkips", () => {
 		);
 	});
 
+	it("ignores the token mid-line — a failing suite echoing it is not a skip", () => {
+		assert.deepStrictEqual(
+			collectSkips(`assert.deepStrictEqual(collectSkips("${SKIP_MARKER} first"), ["first"])`),
+			[],
+		);
+	});
+
 	it("returns nothing for output that never skipped", () => {
 		assert.deepStrictEqual(collectSkips("✅ All tests passed.\n"), []);
 		assert.deepStrictEqual(collectSkips(""), []);
@@ -120,6 +127,10 @@ const WAIVED: Record<string, string> = {
 		"$HOME appears only inside fixture text; the suite installs into a temp root",
 	"install-workflow-tools-self-deploy.test.ts":
 		"$HOME appears only inside fixture text; the suite installs into a temp root",
+	"serve-117-list.test.ts":
+		"uses homedir() to BUILD fixture paths for a pure function (the behaviour under test is 'shorten $HOME to ~'); reads nothing from disk",
+	"git-checkpoint-guard.test.ts":
+		"builds a hermetic git sandbox and pins GIT_CONFIG_GLOBAL=/dev/null; $HOME appears only in a comment explaining why",
 };
 
 describe("every host-gated suite speaks the skip contract", () => {

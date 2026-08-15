@@ -43,6 +43,15 @@ const GIT_ENV = {
 	GIT_AUTHOR_EMAIL: "t@t",
 	GIT_COMMITTER_NAME: "t",
 	GIT_COMMITTER_EMAIL: "t@t",
+	// Cut the developer's git config out of the sandbox (#228). This developer has
+	// `push.autoSetupRemote=true` set globally, which makes a bare `git push`
+	// succeed on a branch with no upstream; a machine without it fails on the same
+	// command. Inheriting that meant the happy path below was measuring the host,
+	// and git-checkpoint's behaviour on a fresh clone went untested until the suite
+	// was run under an empty $HOME. /dev/null reads as an empty config file, so the
+	// sandbox behaves identically here, on a new laptop, and on a CI runner.
+	GIT_CONFIG_GLOBAL: "/dev/null",
+	GIT_CONFIG_SYSTEM: "/dev/null",
 };
 
 function git(cwd: string, args: string[]): string {
@@ -137,11 +146,32 @@ console.log("\ndetached HEAD:");
 	check(/detached/i.test(out), "detached HEAD → says detached", out);
 }
 
+// --- no upstream: refuse before committing, and say what is missing (#228) ---
+// wt-new pushes every branch with its upstream set, so a branch without one is off
+// the sanctioned path. git-checkpoint does not paper over it by creating the remote
+// branch — it names the missing config. Asserted here rather than left to whatever
+// `push.autoSetupRemote` the runner happens to have (see GIT_ENV above).
+console.log("\non a feature branch with NO upstream:");
+{
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	const before = tip(sb.clone);
+	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
+	const { code, out } = runCheckpoint(sb.clone, "feat: add widget (#42)");
+	check(code === 3, "no upstream → exit 3 (precondition)", `got ${code}, output:\n${out}`);
+	check(/no upstream/i.test(out), "no upstream → says the branch has no upstream", out);
+	check(/push\.autoSetupRemote/.test(out), "no upstream → names the config that fixes it", out);
+	check(/--set-upstream origin 42-feature/.test(out), "no upstream → gives the one-branch escape hatch", out);
+	check(tip(sb.clone) === before, "no upstream → refuses BEFORE committing, so a re-run works", out);
+}
+
 // --- happy path: feature branch commit + push must not regress ---
 console.log("\non a feature branch (happy path):");
 {
 	const sb = makeSandbox("main");
 	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	// The upstream wt-new would have created.
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
 	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
 	const { code, out } = runCheckpoint(sb.clone, "feat: add widget (#42)");
 	check(code === 0, "feature branch → exit 0", `got ${code}, output:\n${out}`);
