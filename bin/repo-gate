@@ -207,30 +207,6 @@ remedy_for() {
 	fi
 }
 
-if [ -n "$REMEDY" ]; then
-	tier=$(jq -r --arg r "$REMEDY" '.repos[$r] // "null"' "$POLICY")
-	if [ "$tier" = "null" ]; then
-		echo "$SELF: '$REMEDY' is not governed by $POLICY." >&2
-		exit 2
-	fi
-	# A failed lookup MUST NOT degrade to "no ruleset exists". The two print
-	# differently — absent means POST (create), present means PUT (update) — so a
-	# transient API error would hand you a command that creates a SECOND ruleset on
-	# an already-protected repo. Refusing to guess is the only safe answer, and it
-	# is why this exits 5 (API) rather than printing a best-effort remedy.
-	if ! rs_pages=$(gh api --paginate --slurp "repos/$OWNER/$REMEDY/rulesets?per_page=100" 2>/dev/null); then
-		echo "$SELF: could not list rulesets for '$REMEDY' — no remedy printed." >&2
-		echo "  An unread repo is indistinguishable from an unprotected one, and guessing" >&2
-		echo "  wrong prints a POST that would duplicate a ruleset already in place." >&2
-		exit 5
-	fi
-	rs=$(jq -c 'add // []' <<<"$rs_pages" 2>/dev/null) || rs="[]"
-	id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rs" 2>/dev/null) || id=""
-	echo "# $REMEDY — tier '$tier'. Review the payload before running it; repo-gate never writes."
-	remedy_for "$REMEDY" "$tier" "$id"
-	exit 0
-fi
-
 # ---
 # ACCOUNT PLAN PROBE
 # ---
@@ -255,6 +231,44 @@ if user_json=$(gh api user 2>/dev/null); then
 			PLAN_DETAIL="plan '$plan_name' offers private-repo rulesets — the plan-blocked waiver has expired"
 		fi
 	fi
+fi
+
+if [ -n "$REMEDY" ]; then
+	tier=$(jq -r --arg r "$REMEDY" '.repos[$r] // "null"' "$POLICY")
+	if [ "$tier" = "null" ]; then
+		echo "$SELF: '$REMEDY' is not governed by $POLICY." >&2
+		exit 2
+	fi
+	# A failed lookup MUST NOT degrade to "no ruleset exists". The two print
+	# differently — absent means POST (create), present means PUT (update) — so a
+	# transient API error would hand you a command that creates a SECOND ruleset on
+	# an already-protected repo. Refusing to guess is the only safe answer, and it
+	# is why this exits 5 (API) rather than printing a best-effort remedy.
+	if ! rs_pages=$(gh api --paginate --slurp "repos/$OWNER/$REMEDY/rulesets?per_page=100" 2>/dev/null); then
+		echo "$SELF: could not list rulesets for '$REMEDY' — no remedy printed." >&2
+		echo "  An unread repo is indistinguishable from an unprotected one, and guessing" >&2
+		echo "  wrong prints a POST that would duplicate a ruleset already in place." >&2
+		exit 5
+	fi
+	rs=$(jq -c 'add // []' <<<"$rs_pages" 2>/dev/null) || rs="[]"
+	id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rs" 2>/dev/null) || id=""
+	# The waiver can expire, and --remedy must agree with the report about that.
+	# The report already routes an expired plan-blocked repo through the protected
+	# remedy; if this path kept printing "none", the two surfaces would contradict
+	# each other about the same repo in the same run — and the one people paste from
+	# would be the one saying there is nothing to do. That is why the plan probe now
+	# runs BEFORE this block rather than after it.
+	eff_tier="$tier"
+	if [ "$tier" = "plan-blocked" ] && [ "$PLAN_STATUS" = "expired" ]; then
+		eff_tier="protected"
+	fi
+	echo "# $REMEDY — tier '$tier'. Review the payload before running it; repo-gate never writes."
+	if [ "$eff_tier" != "$tier" ]; then
+		echo "# Waiver expired: $PLAN_DETAIL"
+		echo "# Printing the '$eff_tier' remedy, not 'none' — this matches what the report says."
+	fi
+	remedy_for "$REMEDY" "$eff_tier" "$id"
+	exit 0
 fi
 
 # ---
