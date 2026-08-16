@@ -251,6 +251,17 @@ if [ -n "$REMEDY" ]; then
 		exit 5
 	fi
 	rs=$(jq -c 'add // []' <<<"$rs_pages" 2>/dev/null) || rs="[]"
+	# Same duplicate-name hazard as the report path. A PUT against the first match
+	# would update one ruleset and leave the others in force, so there is no single
+	# command to print. Exits 6 (drift): the state IS known, and it is wrong.
+	n_named=$(jq -r --arg n "$RULESET_NAME" '[.[] | select(.name == $n)] | length' <<<"$rs" 2>/dev/null) || n_named=0
+	if [ "${n_named:-0}" -gt 1 ]; then
+		echo "$SELF: '$REMEDY' has $n_named rulesets named '$RULESET_NAME' — no remedy printed." >&2
+		echo "  A PUT would update one and leave the rest in force. Delete the extras first:" >&2
+		echo "    gh api repos/$OWNER/$REMEDY/rulesets --jq '.[] | select(.name==\"$RULESET_NAME\") | .id'" >&2
+		echo "    gh api -X DELETE repos/$OWNER/$REMEDY/rulesets/<id>" >&2
+		exit 6
+	fi
 	id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rs" 2>/dev/null) || id=""
 	# The waiver can expire, and --remedy must agree with the report about that.
 	# The report already routes an expired plan-blocked repo through the protected
@@ -377,6 +388,20 @@ for repo in "${TARGETS[@]}"; do
 	# The named ruleset is fetched individually: the list endpoint omits `rules`
 	# and `bypass_actors` entirely, so comparing against the list would have
 	# reported every repo as missing every rule.
+	# Ruleset names are NOT unique on GitHub, and this tool can itself create a
+	# duplicate — a stale `--remedy` POST is exactly how. `.[0]` would compare the
+	# first match, report `ok`, and hide a second ruleset that is equally in force.
+	# Counted first, because "ok" here would be a lie about the protected state.
+	rs_count=$(jq -r --arg n "$RULESET_NAME" '[.[] | select(.name == $n)] | length' <<<"$rulesets" 2>/dev/null) || rs_count=0
+	if [ "${rs_count:-0}" -gt 1 ]; then
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" --arg n "$RULESET_NAME" \
+			--arg c "$rs_count" --arg owner "$OWNER" '
+			. + [{ repo: $repo, tier: $tier, status: "drift",
+			       detail: ($c + " rulesets share the name \"" + $n + "\" — all are in force, and which one this report would have described is arbitrary"),
+			       remedy: ("# Ambiguous: no single-ruleset remedy is safe, a PUT would fix one and leave the rest.\n# List them, then delete all but one:\n#   gh api repos/" + $owner + "/" + $repo + "/rulesets --jq \x27.[] | select(.name==\"" + $n + "\") | .id\x27\n#   gh api -X DELETE repos/" + $owner + "/" + $repo + "/rulesets/<id>") }]
+		' <<<"$records")
+		continue
+	fi
 	rs_id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rulesets" 2>/dev/null) || rs_id=""
 
 	if [ -z "$rs_id" ]; then
