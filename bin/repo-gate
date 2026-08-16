@@ -63,6 +63,16 @@ POLICY SEARCH ORDER
   2. $PWD/docs/repo-policy.json
   3. ~/git-projects/princess-pi-packages/docs/repo-policy.json
 
+EXIT CODES
+  0  every governed repo matches its tier (or is a held waiver)
+  2  usage error — unknown flag, missing argument, repo not governed by the policy
+  3  environment or policy is unusable — gh/jq missing, policy not JSON, no .owner
+  4  no policy file found in the search order
+  5  the account could not be fully read — some repo's state is UNKNOWN, not clean.
+     Never conflated with 6: "I could not look" and "I looked and found drift" are
+     different facts, and only one of them is safe to ignore
+  6  drift — at least one repo differs from its declared tier
+
 This script never writes to GitHub. See --why for what it does and does not prove.
 EOF
 }
@@ -203,7 +213,18 @@ if [ -n "$REMEDY" ]; then
 		echo "$SELF: '$REMEDY' is not governed by $POLICY." >&2
 		exit 2
 	fi
-	rs=$(gh api "repos/$OWNER/$REMEDY/rulesets" 2>/dev/null) || rs="[]"
+	# A failed lookup MUST NOT degrade to "no ruleset exists". The two print
+	# differently — absent means POST (create), present means PUT (update) — so a
+	# transient API error would hand you a command that creates a SECOND ruleset on
+	# an already-protected repo. Refusing to guess is the only safe answer, and it
+	# is why this exits 5 (API) rather than printing a best-effort remedy.
+	if ! rs_pages=$(gh api --paginate --slurp "repos/$OWNER/$REMEDY/rulesets?per_page=100" 2>/dev/null); then
+		echo "$SELF: could not list rulesets for '$REMEDY' — no remedy printed." >&2
+		echo "  An unread repo is indistinguishable from an unprotected one, and guessing" >&2
+		echo "  wrong prints a POST that would duplicate a ruleset already in place." >&2
+		exit 5
+	fi
+	rs=$(jq -c 'add // []' <<<"$rs_pages" 2>/dev/null) || rs="[]"
 	id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rs" 2>/dev/null) || id=""
 	echo "# $REMEDY — tier '$tier'. Review the payload before running it; repo-gate never writes."
 	remedy_for "$REMEDY" "$tier" "$id"
@@ -297,10 +318,22 @@ for repo in "${TARGETS[@]}"; do
 		continue
 	fi
 
-	if ! rulesets=$(gh api "repos/$OWNER/$repo/rulesets" 2>/dev/null); then
+	# --paginate: the API defaults to 30 per page, and a ruleset on page 2 read as
+	# absent would be reported as drift with a duplicate-creating POST as its remedy.
+	# Captured to a variable BEFORE the jq combine, never piped into it: a pipeline
+	# reports jq's exit status, which would swallow exactly the gh failure that
+	# `api_failed` exists to catch, and turn an unread repo into a confident "ok".
+	if ! ruleset_pages=$(gh api --paginate --slurp "repos/$OWNER/$repo/rulesets?per_page=100" 2>/dev/null); then
 		api_failed=1
 		records=$(jq -c --arg repo "$repo" --arg tier "$tier" '
 			. + [{ repo: $repo, tier: $tier, status: "error", detail: "gh api repos/rulesets failed — state could not be determined", remedy: "" }]
+		' <<<"$records")
+		continue
+	fi
+	if ! rulesets=$(jq -c 'add // []' <<<"$ruleset_pages" 2>/dev/null); then
+		api_failed=1
+		records=$(jq -c --arg repo "$repo" --arg tier "$tier" '
+			. + [{ repo: $repo, tier: $tier, status: "error", detail: "ruleset pages did not combine into an array — state could not be determined", remedy: "" }]
 		' <<<"$records")
 		continue
 	fi
@@ -373,8 +406,16 @@ for repo in "${TARGETS[@]}"; do
 			],
 			enforcement: (if $live.enforcement == ($t.enforcement // "active") then null
 			              else "enforcement: want " + ($t.enforcement // "active") + ", got " + $live.enforcement end),
-			target: (if ($live.conditions.ref_name.include // []) == [$pol.scope.target] then null
-			         else "target: want [" + $pol.scope.target + "], got " + (($live.conditions.ref_name.include // []) | tojson) end),
+			# `exclude` is compared, not just `include`. A ruleset can include the
+			# default branch and then exclude it again — the report would have said
+			# "ok" about a rule that does not apply to the branch it exists to protect.
+			# An unprotected repo reported as protected is the one failure this whole
+			# tool exists to prevent, so both halves of the condition are checked.
+			target: (if (($live.conditions.ref_name.include // []) == [$pol.scope.target]
+			             and ($live.conditions.ref_name.exclude // []) == []) then null
+			         else "target: want include [" + $pol.scope.target + "] with empty exclude, got "
+			              + ({ include: ($live.conditions.ref_name.include // []),
+			                   exclude: ($live.conditions.ref_name.exclude // []) } | tojson) end),
 			# The claim that makes every other claim interpretable: if bypass ever
 			# stops being admin/always, the meaning of this whole report changes and
 			# nothing else here would notice.
