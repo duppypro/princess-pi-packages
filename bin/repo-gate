@@ -433,11 +433,15 @@ for repo in "${TARGETS[@]}"; do
 	# Counted first, because "ok" here would be a lie about the protected state.
 	rs_count=$(jq -r --arg n "$RULESET_NAME" '[.[] | select(.name == $n)] | length' <<<"$rulesets" 2>/dev/null) || rs_count=0
 	if [ "${rs_count:-0}" -gt 1 ]; then
+		# $sq carries a literal apostrophe: jq has no \x escape (a `\x27` here parsed as
+		# an invalid escape, jq exited non-zero, the record was silently dropped, and the
+		# run exited 0 with the repo missing from the report entirely — caught by
+		# tests/repo-gate-compare.test.ts, which is why that file exists).
 		records=$(jq -c --arg repo "$repo" --arg tier "$tier" --arg n "$RULESET_NAME" \
-			--arg c "$rs_count" --arg owner "$OWNER" '
+			--arg c "$rs_count" --arg owner "$OWNER" --arg sq "'" '
 			. + [{ repo: $repo, tier: $tier, status: "drift",
 			       detail: ($c + " rulesets share the name \"" + $n + "\" — all are in force, and which one this report would have described is arbitrary"),
-			       remedy: ("# Ambiguous: no single-ruleset remedy is safe, a PUT would fix one and leave the rest.\n# List them, then delete all but one:\n#   gh api repos/" + $owner + "/" + $repo + "/rulesets --jq \x27.[] | select(.name==\"" + $n + "\") | .id\x27\n#   gh api -X DELETE repos/" + $owner + "/" + $repo + "/rulesets/<id>") }]
+			       remedy: ("# Ambiguous: no single-ruleset remedy is safe, a PUT would fix one and leave the rest.\n# List them, then delete all but one:\n#   gh api repos/" + $owner + "/" + $repo + "/rulesets --jq " + $sq + ".[] | select(.name==\"" + $n + "\") | .id" + $sq + "\n#   gh api -X DELETE repos/" + $owner + "/" + $repo + "/rulesets/<id>") }]
 		' <<<"$records")
 		continue
 	fi
