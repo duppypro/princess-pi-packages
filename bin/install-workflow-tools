@@ -141,6 +141,11 @@ SCRIPTS=(
   pr-reject
   pr-cleanup
   pr-threads
+  # Reads docs/repo-policy.json, which is NOT deployed — the installed copy searches
+  # $PWD then ~/git-projects/princess-pi-packages/ and refuses with the search order
+  # if it finds neither (#288). Copying the policy to ~/bin would fork it from the
+  # tracked one, and a governance baseline with two copies has no baseline.
+  repo-gate
   # Itself (#263): the one script whose job is putting the others on PATH was
   # the only one you couldn't run by bare name — you had to know its repo
   # path. deploy() below always writes via temp-file-then-rename, which is
