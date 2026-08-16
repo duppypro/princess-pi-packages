@@ -98,8 +98,17 @@ contract is the point; a per-host fork of the serve rules is the shape ADR 0002 
 
 ## 5. Secrets — policy
 
-*(The mechanism — `EnvironmentFile=`, and why `Environment=` literals are forbidden — lives in
-`unit-authoring-standard.md` §3. These two rules are platform-independent policy and stay here.)*
+*(The mechanism — `EnvironmentFile=`, the `%h` path, and why `Environment=` literals are forbidden —
+lives in `unit-authoring-standard.md` §3. The rules below are platform-independent policy and stay
+here.)*
+
+**A note on placement, since it is inherited rather than argued.** §5.3–§5.5 are not about `serve`:
+their subjects are harness config files, shell rcs, and dotfiles under management. They are here
+because ADR 0002 split secrets into *policy* (this section) and *systemd mechanism*
+(`unit-authoring-standard.md` §3), and gave them no third home. If a fourth rule of this shape
+appears, that is the signal to lift all of them into an operator-secrets standard of their own.
+Recorded so the next reader knows this is a holding position, not a claim that leaking a credential
+into `~/.viminfo` is a serving concern. (#295)
 
 5.1 A secrets file **MUST** be per-`Env`. **MUST NOT** be one file shared across envs. *Why:* the
 moment dev and prod need different credentials, a shared file hands the **live** key to the dev unit
@@ -107,6 +116,31 @@ moment dev and prod need different credentials, a shared file hands the **live**
 
 5.2 Where one app serves several brands, variables **MUST** be namespaced per brand. *Why:*
 isolation that is a naming convention is at least visible; isolation that is nothing is not.
+
+5.3 Secrets **MUST** live in a dedicated namespace — `~/.config/secrets/` — rather than being
+protected file by file. *Why a namespace and not a list:* a per-file list silently rots, and the
+seventh credential is the one nobody remembers to add. A directory the operator controls turns every
+downstream control — agent read-denies, backup and dotfile-manager exclusions, shell-read guards —
+into **one anchored rule that already covers files that do not exist yet**. Matching a *name* pattern
+instead is a heuristic, and a measured-poor one: `.env` covers three of the six credential files
+observed on this box and misses **both of the ones that actually leaked**.
+
+5.4 That namespace **MUST NOT** hold non-secret configuration. *Why:* the guarantee *"everything in
+here is a credential"* is exactly what lets one anchored rule replace the per-file list §5.3 rejects.
+A single convenience file weakens every control built on it. The prior layout demonstrated the cost —
+`~/.config/princess-pi/` mixed credentials with `default-acl`, `wtft.json` and
+`authenticated-emails.txt`, all of which tooling has legitimate reason to read.
+
+5.5 A secret **MUST NOT** be written into a file that other tooling has reason to open — a harness
+`settings.json`, a shell rc, a dotfile under management. *Why:* the observed failures were not misuse.
+They were tools faithfully persisting what they were designed to persist. One credential in a harness
+config reached **74 files** through version snapshots, session transcripts and command history, with
+nobody doing anything wrong. Editor state counts too: a yanked value lands in `~/.viminfo` by default,
+which **no filename-based control will ever match**.
+
+5.6 Consumers **MUST** be updated **before** a secret file is relocated. *Why:* moving first breaks
+the consumer silently, and the breakage surfaces at the next run rather than at the change — so the
+failure arrives detached from the edit that caused it.
 
 ---
 
@@ -217,6 +251,9 @@ The standard's intent, blocked on tooling in this repo. Collected so nothing is 
 - bind anything to an external interface (§3.4)
 - declare `kind = "service"` on macOS (§4.1)
 - share one secrets file across envs (§5.1)
+- keep non-secret configuration in the secrets namespace (§5.4)
+- write a secret into a file other tooling has reason to open (§5.5)
+- relocate a secrets file before its consumers are updated (§5.6)
 - publish without a declared `gate` (§2.3)
 - publish an unprotected tenant on `princess-pi.dev` (§8.1)
 - prove a tenant's edge ownership by the presence of its Access application (§8.6)

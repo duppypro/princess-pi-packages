@@ -52,7 +52,7 @@ Every deployed thing has exactly these locations. Nothing lives anywhere else.
 | **Workspace** | `~/git-projects/<repo>` — the git clone where code is written | **Never served, never deployed from.** Source only. Its `research/`, `debug/` and `tmp/` are development scratch and never reach a release |
 | **Release dir** | `~/.local/share/<app>/<env>/` — build output; the rsync target | Replaced wholesale on every deploy (`rsync --delete`). **Nothing may be written here at runtime** — it will be destroyed |
 | **State root** | `~/.local/state/<app>/<env>/` — databases, logs, uploads | **Never touched by deploy.** The only place irreplaceable data may live |
-| **Secrets file** | `~/.config/secrets/<app>-<env>.env`, mode `0600`, inside a `0700` directory | Loaded via systemd `EnvironmentFile=`. Per-`Env`, never one file for all envs — otherwise a dev unit gets live credentials. The directory holds credentials **only**, so one anchored rule can protect it |
+| **Secrets file** | `~/.config/secrets/<app>-<env>.env`, mode `0600`, inside a `0700` directory | Loaded via systemd `EnvironmentFile=`. Per-`Env`, never one file for all envs — otherwise a dev unit gets live credentials. The directory holds credentials **only** (`serve-standard.md` §5.4), so one anchored rule can protect it — never a per-file list |
 
 *Why release and state are separate roots:* `deploy.sh` rsyncs with `--delete`, so anything a service
 writes inside its release dir is destroyed on the next deploy. Splitting the roots makes that loss

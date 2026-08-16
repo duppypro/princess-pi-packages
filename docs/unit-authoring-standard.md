@@ -114,7 +114,9 @@ file is silently not found, and the service runs **without its secrets** rather 
 start. The file itself lives at `~/.config/secrets/<app>-<env>.env` when you are talking to a human
 or a shell; `%h` is how a unit says the same thing.
 
-3.2 That file **MUST** be mode `0600`, inside a `0700` directory that holds credentials only.
+3.2 That file **MUST** be mode `0600`, inside a `0700` directory that holds credentials only. The
+*why* for "credentials only" is policy and lives in `serve-standard.md` §5.4 — it is what lets one
+anchored rule replace a per-file list.
 
 3.3 Secrets **MUST NOT** be committed, and **MUST NOT** be passed as `Environment=` literals in a
 unit file. *Why:* `Environment=` values are world-readable via `systemctl show`.
