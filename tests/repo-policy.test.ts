@@ -171,6 +171,40 @@ describe("bin/repo-gate honours the contract the policy assumes", () => {
 		assert.ok(/Searched:/.test(r.stderr), "the refusal must name the search order it used");
 	});
 
+	// The failure this guards is the only one that points the WRONG way: a policy
+	// that parses but is missing a structure the script reads unguarded used to
+	// produce an empty fleet, three bash "integer expression expected" errors, and
+	// **exit 0** — a caller reading only the exit code would conclude every repo is
+	// compliant. Hermetic: validation runs before any `gh` call, so there is no network.
+	for (const key of [
+		"repos",
+		"tiers",
+		"scope.target",
+		"scope.excluded",
+		"enforcement_disclosure.bypass_actors",
+	]) {
+		it(`a policy missing .${key} is exit 3, never a quiet 0`, () => {
+			const broken = structuredClone(policy);
+			const parts = key.split(".");
+			let node: Record<string, unknown> = broken;
+			for (const p of parts.slice(0, -1)) node = node[p] as Record<string, unknown>;
+			delete node[parts.at(-1)!];
+
+			const tmp = path.join(os.tmpdir(), `repo-gate-nokey-${parts.join("_")}-${process.pid}.json`);
+			fs.writeFileSync(tmp, JSON.stringify(broken));
+			try {
+				const r = spawnSync(GATE_PATH, ["--policy", tmp], { encoding: "utf8", timeout: 15_000 });
+				assert.strictEqual(r.status, 3, `missing .${key} must refuse with exit 3, got ${r.status}`);
+				assert.ok(
+					r.stderr.includes(`.${key}`),
+					`the refusal must name the missing key rather than leaving the reader to bisect the policy. stderr: ${r.stderr}`,
+				);
+			} finally {
+				fs.rmSync(tmp, { force: true });
+			}
+		});
+	}
+
 	it("an invalid policy file is exit 3, distinct from missing", () => {
 		// 3 vs 4 is the same "could not proceed" vs "not there" split the rest of
 		// the family draws. A malformed policy that reported "not found" would send

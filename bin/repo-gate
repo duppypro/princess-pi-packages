@@ -159,12 +159,42 @@ if ! jq -e . "$POLICY" >/dev/null 2>&1; then
 	exit 3
 fi
 
-OWNER=$(jq -r '.owner' "$POLICY")
-RULESET_NAME=$(jq -r '.ruleset_name' "$POLICY")
-if [ "$OWNER" = "null" ] || [ "$RULESET_NAME" = "null" ]; then
-	echo "$SELF: '$POLICY' is missing .owner or .ruleset_name." >&2
+# Every structure this script later reads WITHOUT a guard is checked here, because
+# the failure is silent and points the wrong way: a policy missing `.repos` produced
+# an empty target list, an empty summary, three "integer expression expected" errors
+# — and **exit 0**. A caller reading only the exit code concludes the fleet is
+# compliant. For a compliance tool that is the worst reachable outcome, so an
+# unusable policy must be a loud 3 and never a quiet 0.
+#
+# Listed individually rather than as one boolean so the error names the missing key.
+POLICY_REQUIRED='
+  ["owner",                            "string"],
+  ["ruleset_name",                     "string"],
+  ["repos",                            "object"],
+  ["tiers",                            "object"],
+  ["scope",                            "object"],
+  ["scope.target",                     "string"],
+  ["scope.excluded",                   "object"],
+  ["enforcement_disclosure.bypass_actors", "array"]
+'
+missing=$(jq -r "[ $POLICY_REQUIRED ]"' as $req
+	| . as $pol
+	| [ $req[]
+	    | . as [$path, $want]
+	    | ($path | split(".")) as $parts
+	    | ($pol | getpath($parts)) as $got
+	    | select(($got | type) != $want)
+	    | "  ." + $path + ": want " + $want + ", got " + ($got | type)
+	  ] | join("\n")' "$POLICY" 2>/dev/null) || missing="  (policy could not be inspected)"
+if [ -n "$missing" ]; then
+	echo "$SELF: '$POLICY' is not a usable policy." >&2
+	echo "$missing" >&2
+	echo "  Refusing to audit against it — an incomplete policy would report an empty fleet as compliant." >&2
 	exit 3
 fi
+
+OWNER=$(jq -r '.owner' "$POLICY")
+RULESET_NAME=$(jq -r '.ruleset_name' "$POLICY")
 
 # ---
 # REMEDY SYNTHESIS
