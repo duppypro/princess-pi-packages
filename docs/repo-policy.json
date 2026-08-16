@@ -3,7 +3,6 @@
   "issue": 288,
   "owner": "duppypro",
   "ruleset_name": "protect-default-branch-owner-only",
-
   "enforcement_disclosure": {
     "summary": "These rulesets are a SIGNAL, not a block. Red means look at this; it does not mean you cannot proceed.",
     "why": [
@@ -14,10 +13,13 @@
     ],
     "what_is_actually_enforced": "Nothing, against the owner. Against a hypothetical non-admin collaborator: no branch deletion, no force-push, and changes must arrive via a pull request.",
     "bypass_actors": [
-      { "actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always" }
+      {
+        "actor_type": "RepositoryRole",
+        "actor_id": 5,
+        "bypass_mode": "always"
+      }
     ]
   },
-
   "scope": {
     "rule": "Public non-fork repos owned by duppypro, plus private repos created in 2026.",
     "target": "~DEFAULT_BRANCH",
@@ -41,7 +43,6 @@
     },
     "excluded_why": "Named one by one rather than left to a filter, so that dropping a repo out of governance is a visible edit to this file instead of a silent consequence of a predicate."
   },
-
   "pull_request_parameters_not_pinned": {
     "allowed_merge_methods": "repo-local preference; princess-pi-packages squash-merges via pr-merge, others may not",
     "dismiss_stale_reviews_on_push": "inert while required_approving_review_count is 0",
@@ -50,7 +51,6 @@
     "required_reviewers": "inert; solo account",
     "why": "A baseline that pins fields it does not mean turns every cosmetic difference into a red row, and a report that cries wolf stops being read. Only fields carrying intent are asserted."
   },
-
   "tiers": {
     "gated": {
       "description": "Baseline plus a required CI check. Only for repos that actually ship a test suite — requiring a check no workflow produces leaves the branch permanently pending.",
@@ -65,7 +65,10 @@
         "required_status_checks": {
           "strict_required_status_checks_policy": true,
           "required_status_checks": [
-            { "context": "test", "integration_id": 15368 }
+            {
+              "context": "test",
+              "integration_id": 15368
+            }
           ]
         }
       }
@@ -89,14 +92,12 @@
       "waiver_why": "Asserted as still-necessary rather than merely tolerated: repo-gate re-checks the account plan on every run, and the moment private rulesets become available these 12 repos go red on their own. A waiver that cannot expire is indistinguishable from a blind spot."
     }
   },
-
   "tier_history": {
-    "update_rule_dropped": "Until 2026-08-15 the 16 `protected` repos carried `update` (only bypass actors may update matching refs) instead of `pull_request`. `pull_request` subsumes the one property `update` held — a non-bypass actor cannot update the ref — while `deletion` and `non_fast_forward` cover the rest independently. Collapsing to one baseline removed a two-dimensional difference between tiers that nobody had chosen (#288)."
+    "update_rule_dropped": "Until 2026-08-15 the 16 `protected` repos carried `update` (only bypass actors may update matching refs) instead of `pull_request`. `pull_request` subsumes the one property `update` held — a non-bypass actor cannot update the ref — while `deletion` and `non_fast_forward` cover the rest independently. Collapsing to one baseline removed a two-dimensional difference between tiers that nobody had chosen (#288).",
+    "plan_blocked_waiver_never_applied": "Until 2026-08-16 these 12 private repos were tiered `plan-blocked`, excused from carrying any ruleset: agentic-arts-ai, big-thoughts, btw, circuitpython, crispyhardware-com, dotfiles-doctor, duppy-com, interfacearts-com, portfolio-api, princess-pi-agent-workspace, princess-pi-brain, rogue-savvy. The waiver was FALSE the whole time. GitHub offers private-repo rulesets on paid plans and this account is `pro`; the waiver survived only because `/user` omits `.plan` unless the token holds `user`/`read:user`, which it did not. repo-gate reported the probe as `indeterminate` — held but unverified — on every run, so the tier stood on an assumption nobody could check. Granting `read:user` resolved the probe to `pro` and the waiver expired on its own, exactly as tiers.plan-blocked.waiver_why promised. Re-tiered to `protected`, not `gated`: gated adds required_status_checks, and demanding checks of a repo with no CI blocks every merge. The plan-blocked tier keeps its definition with zero members so the waiver machinery survives a future downgrade (#299)."
   },
-
   "repos": {
     "princess-pi-packages": "gated",
-
     "aoc2023": "protected",
     "aoc2024": "protected",
     "claudemd-doctor": "protected",
@@ -113,18 +114,17 @@
     "scriptrHelloWorld": "protected",
     "watu": "protected",
     "wordle-league": "protected",
-
-    "agentic-arts-ai": "plan-blocked",
-    "big-thoughts": "plan-blocked",
-    "btw": "plan-blocked",
-    "circuitpython": "plan-blocked",
-    "crispyhardware-com": "plan-blocked",
-    "dotfiles-doctor": "plan-blocked",
-    "duppy-com": "plan-blocked",
-    "interfacearts-com": "plan-blocked",
-    "portfolio-api": "plan-blocked",
-    "princess-pi-agent-workspace": "plan-blocked",
-    "princess-pi-brain": "plan-blocked",
-    "rogue-savvy": "plan-blocked"
+    "agentic-arts-ai": "protected",
+    "big-thoughts": "protected",
+    "btw": "protected",
+    "circuitpython": "protected",
+    "crispyhardware-com": "protected",
+    "dotfiles-doctor": "protected",
+    "duppy-com": "protected",
+    "interfacearts-com": "protected",
+    "portfolio-api": "protected",
+    "princess-pi-agent-workspace": "protected",
+    "princess-pi-brain": "protected",
+    "rogue-savvy": "protected"
   }
 }
