@@ -181,6 +181,16 @@ Ergonomics undecided — see *Open* below.
 
 8.5 A publish of a service tenant **MUST NOT** auto-seed a `.serve-acl`. **⚠ NOT YET ENFORCEABLE** (§8).
 
+8.6 A published tenant's edge resources **MUST** be provably `serve`-owned by a marker that does
+**not** depend on its `gate`. **⚠ NOT YET ENFORCEABLE** (§9 — #294). *Why:* today the proof of
+ownership *is* the gate — reap matches a hostname only when a `serve `-prefixed Access application
+fronts it, a test a `gate = "public"` tenant can never pass, because §2.3 gives it no Access
+application by design. The consequence is not a tidy-up problem: the ingress rule outlives its origin
+still pointing at `127.0.0.1:<port>`, and when the allocator later hands that port to a different
+tenant — §3.3 being unenforceable — the dead public hostname routes to the new tenant with no gate in
+front of it. Latent only because §8.3 cannot be executed yet (§9); it becomes reachable on the same
+day multi-zone publish does.
+
 ---
 
 ## 9. Not yet enforceable
@@ -192,7 +202,8 @@ The standard's intent, blocked on tooling in this repo. Collected so nothing is 
 | §3.3 service ports reserved | the allocator has no *reservation* — since #181 it bind-probes each candidate, so it can no longer take a port a service is **currently listening on**. Remaining gap: a reserved port whose service is momentarily down | a casual `serve <dir> --pub foo` can still take a service's port during that window |
 | §8.5 no `.serve-acl` auto-seed for services | publish assumes it spawned the origin | a public tenant would have a gate fabricated on it |
 | reap must not unpublish services | **Largely corrected (#181).** `reapOrphans()` never matched `ps aux` — it has probed the port since `8ae6fde`, so a *listening* service tenant is kept. What remains is timing: narrowed to 3 probes / ~1.5 s | a tenant down across the whole window can still be unpublished |
-| §8.3 multi-zone publish | `loadCfEnv()` reads one `CF_ZONE_ID` | §8.3 cannot be executed at all yet |
+| §8.3 multi-zone publish | `loadCfEnv()` reads one `CF_ZONE_ID`, and `ZONE_SUFFIX` is hardcoded to `princess-pi.dev` | §8.3 cannot be executed at all yet — which is the only reason §8.6 is not already live |
+| §8.6 gate-independent ownership | `reapOrphans()` proves ownership from `serve `-prefixed Access apps, so a `gate = "public"` tenant is invisible to it | a dead public tenant's ingress survives forever and can later route its hostname to whichever tenant inherits the port — **#294**, must close before the first public tenant |
 
 ---
 
@@ -208,6 +219,7 @@ The standard's intent, blocked on tooling in this repo. Collected so nothing is 
 - share one secrets file across envs (§5.1)
 - publish without a declared `gate` (§2.3)
 - publish an unprotected tenant on `princess-pi.dev` (§8.1)
+- prove a tenant's edge ownership by the presence of its Access application (§8.6)
 - publish a `dev` Env without `gate = "access"` (§8.2)
 - reduce any deploy health-check failure to a warning (§6.4)
 
