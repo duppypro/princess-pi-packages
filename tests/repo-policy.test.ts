@@ -205,6 +205,27 @@ describe("bin/repo-gate honours the contract the policy assumes", () => {
 		});
 	}
 
+	it("a policy that exists but is unreadable is exit 3, not 4", () => {
+		// 4 means "not there". A file sitting right in front of you with the wrong mode
+		// is a different problem, and reporting it as missing sends the reader hunting
+		// for a path that already exists. Skipped as root, where 000 is still readable.
+		if (typeof process.getuid === "function" && process.getuid() === 0) return;
+		const tmp = path.join(os.tmpdir(), `repo-gate-unreadable-${process.pid}.json`);
+		fs.copyFileSync(POLICY_PATH, tmp);
+		fs.chmodSync(tmp, 0o000);
+		try {
+			const r = spawnSync(GATE_PATH, ["--policy", tmp], { encoding: "utf8", timeout: 15_000 });
+			assert.strictEqual(r.status, 3, "present-but-unreadable is exit 3");
+			assert.ok(
+				/not a missing-file problem|unreadable/i.test(r.stderr),
+				`the refusal must not read as "not found". stderr: ${r.stderr}`,
+			);
+		} finally {
+			fs.chmodSync(tmp, 0o644);
+			fs.rmSync(tmp, { force: true });
+		}
+	});
+
 	it("an invalid policy file is exit 3, distinct from missing", () => {
 		// 3 vs 4 is the same "could not proceed" vs "not there" split the rest of
 		// the family draws. A malformed policy that reported "not found" would send
