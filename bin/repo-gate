@@ -202,6 +202,27 @@ if [ -n "$missing" ]; then
 	exit 3
 fi
 
+# Type-checking the containers is not enough: a repo pointing at a tier that does not
+# exist produced an EMPTY payload and a POST remedy that would create a ruleset with no
+# rules in it, while the run exited 6 as though it had merely found drift. A policy that
+# cannot describe its own repos is unusable, which is 3.
+bad_tiers=$(jq -r '
+	.tiers as $t
+	| [ .repos | to_entries[]
+    # A tier must exist, and must carry EITHER .rules (it describes a ruleset) or
+    # expect_no_ruleset (it is a waiver). plan-blocked is the second kind and has no
+    # rules by design — demanding .rules of every tier would reject the real policy.
+	    | select(($t[.value] | type) != "object"
+	             or (($t[.value].rules | type) != "object" and $t[.value].expect_no_ruleset != true))
+	    | "  .repos." + .key + ": tier \"" + .value + "\" is undefined, or defines neither .rules nor expect_no_ruleset"
+	  ] | join("\n")' "$POLICY" 2>/dev/null) || bad_tiers=""
+if [ -n "$bad_tiers" ]; then
+	echo "$SELF: '$POLICY' assigns repos to tiers it does not define." >&2
+	echo "$bad_tiers" >&2
+	echo "  Refusing to audit — the remedy for such a repo would be a ruleset with no rules." >&2
+	exit 3
+fi
+
 OWNER=$(jq -r '.owner' "$POLICY")
 RULESET_NAME=$(jq -r '.ruleset_name' "$POLICY")
 
@@ -280,6 +301,13 @@ if user_json=$(gh api user 2>/dev/null); then
 		fi
 	fi
 fi
+
+# An indeterminate probe is not a passing one. The waiver is the ONLY thing excusing
+# these repos from having a ruleset, so if it could not be checked their state is
+# unknown — and a run reporting them n/a and exiting 0 claims an audit it did not do.
+# Recorded here, consumed after the loop so it only fires when such a repo is targeted.
+PLAN_UNVERIFIED=0
+[ "$PLAN_STATUS" = "indeterminate" ] && PLAN_UNVERIFIED=1
 
 if [ -n "$REMEDY" ]; then
 	tier=$(jq -r --arg r "$REMEDY" '.repos[$r] // "null"' "$POLICY")
@@ -417,8 +445,13 @@ for repo in "${TARGETS[@]}"; do
 	if [ "$tier" = "plan-blocked" ]; then
 		count=$(jq 'length' <<<"$rulesets" 2>/dev/null) || count=0
 		if [ "$PLAN_STATUS" = "expired" ]; then
+			# Pass the existing id when there is one. Handing remedy_for an empty id
+			# makes it synthesize a POST, which on a repo that ALREADY has the ruleset
+			# creates a second one — the same duplicate this PR fixed elsewhere, reached
+			# by a different road.
+			pb_id=$(jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | .[0].id // ""' <<<"$rulesets" 2>/dev/null) || pb_id=""
 			records=$(jq -c --arg repo "$repo" --arg tier "$tier" --arg d "$PLAN_DETAIL" \
-				--arg rem "$(remedy_for "$repo" protected "")" '
+				--arg rem "$(remedy_for "$repo" protected "$pb_id")" '
 				. + [{ repo: $repo, tier: $tier, status: "drift", detail: $d, remedy: $rem }]
 			' <<<"$records")
 		elif [ "$count" -gt 0 ]; then
@@ -628,5 +661,8 @@ fi
 # could not see part of the fleet must not exit 0, and must not claim drift it never
 # measured.
 if [ "$errors" -gt 0 ] || [ "$api_failed" -eq 1 ]; then exit 5; fi
+# na>0 with an unverified plan means those repos were excused by a waiver nobody could
+# check. That is "could not look", not "looked and it was fine" — 5, never 0.
+if [ "$PLAN_UNVERIFIED" -eq 1 ] && [ "$na" -gt 0 ]; then exit 5; fi
 if [ $((drift + unlisted + gone)) -gt 0 ]; then exit 6; fi
 exit 0

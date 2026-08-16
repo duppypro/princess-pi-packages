@@ -351,3 +351,45 @@ describe("repo-gate — the plan-blocked waiver expires on its own", () => {
 		assert.strictEqual(r.byRepo("alpha").status, "drift", "the tier's own assumption is wrong for this repo");
 	});
 });
+
+describe("repo-gate — findings that arrived while the earlier ones were being fixed", () => {
+	it("an expired waiver on a repo that ALREADY has the ruleset offers PUT, not POST", () => {
+		// Passing an empty id here made remedy_for synthesize a create, which on a repo
+		// that already has the ruleset produces a second one — the same duplicate this
+		// PR fixed elsewhere, reached by a different road.
+		const r = run({
+			repos: { alpha: "plan-blocked" },
+			lists: { alpha: [[compliant(7)]] },
+			rulesets: { 7: compliant(7) },
+			plan: "pro",
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.match(rec.remedy, /-X PUT/, "an existing ruleset must be updated, never duplicated");
+		assert.ok(!/-X POST/.test(rec.remedy), "a POST here creates a second ruleset");
+	});
+
+	it("an unverifiable plan makes a plan-blocked-only run exit 5, not 0", () => {
+		// The waiver is the only thing excusing these repos from having a ruleset. If it
+		// could not be checked, their state is unknown — and n/a + exit 0 claims an audit
+		// that did not happen.
+		const r = run({ repos: { alpha: "plan-blocked" }, lists: { alpha: [[]] }, plan: null });
+		assert.strictEqual(r.byRepo("alpha").status, "n/a");
+		assert.strictEqual(r.json.plan.status, "indeterminate");
+		assert.strictEqual(r.status, 5, "an unchecked waiver is 'could not look', not 'looked and it was fine'");
+	});
+
+	it("a verified free plan keeps the same run at exit 0", () => {
+		// The control for the case above: when the probe SUCCEEDS, n/a is a real answer
+		// and the run is clean. Without this, the fix above could have been "always 5".
+		const r = run({ repos: { alpha: "plan-blocked" }, lists: { alpha: [[]] }, plan: "free" });
+		assert.strictEqual(r.byRepo("alpha").status, "n/a");
+		assert.strictEqual(r.status, 0);
+	});
+
+	it("a repo assigned to an undefined tier is exit 3, not a ruleset with no rules", () => {
+		const r = run({ repos: { alpha: "no-such-tier" }, lists: { alpha: [[]] }, plan: "free" });
+		assert.strictEqual(r.status, 3, "a policy that cannot describe its own repos is unusable");
+		assert.match(r.stderr, /no-such-tier|does not define/, "the refusal must name the offending assignment");
+	});
+});
