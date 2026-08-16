@@ -295,6 +295,38 @@ describe("the live account still matches the policy's coverage claims", () => {
 		assert.strictEqual(report.schema, "repo-gate/report@1");
 	});
 
+	it("no repo is waived as plan-blocked while the plan offers rulesets", () => {
+		// The bug this file did not catch for the tool's whole life (#299). Twelve
+		// private repos sat unprotected under a waiver that was FALSE the entire time:
+		// the account is `pro`, but the token could not read `.plan`, so the probe said
+		// `indeterminate` on every run and nobody noticed the waiver had never once been
+		// verified. Now that the probe resolves, the contradiction is assertable.
+		if (!report) return;
+		if (report.plan?.status !== "expired") return; // free plan or unverifiable — nothing to assert
+		const waived = Object.entries(policy.repos)
+			.filter(([, tier]) => tier === "plan-blocked")
+			.map(([repo]) => repo);
+		assert.deepStrictEqual(
+			waived, [],
+			`the plan probe says '${report.plan.detail}', so these repos are excused by a condition ` +
+			`that is false: ${waived.join(", ")}`,
+		);
+	});
+
+	it("an indeterminate plan probe is surfaced, never treated as a passing check", () => {
+		// The second half of the same lesson: `indeterminate` was reported honestly and
+		// still went unread. If the probe ever stops resolving, this states plainly that
+		// every plan-blocked waiver is unverified rather than satisfied.
+		if (!report) return;
+		if (report.plan?.status !== "indeterminate") return;
+		const waived = Object.entries(policy.repos).filter(([, t]) => t === "plan-blocked").length;
+		assert.strictEqual(
+			waived, 0,
+			`the plan could not be verified (${report.plan.detail}), so ${waived} plan-blocked ` +
+			`waiver(s) are assumptions, not facts. Grant the gh token read:user scope.`,
+		);
+	});
+
 	it("reports one record per declared repo", () => {
 		if (!report) return;
 		const declared = Object.keys(policy.repos).sort();
