@@ -198,12 +198,21 @@ remedy_for() {
 		echo "none — private repo, account plan does not offer rulesets"
 		return
 	fi
-	local payload
+	local payload quoted
 	payload=$(build_payload "$tier")
+	# %q, not a literal '\''...'\''. The payload is JSON built from the policy file, and a
+	# single apostrophe anywhere in it — a ruleset name like "O'\''Reilly rules" — would
+	# close the quote early and print a command that is silently altered rather than
+	# obviously broken. This output exists to be pasted, so it has to survive pasting.
+	# Escape only apostrophes, keeping the single-quoted form: identical output to
+	# before when the payload has none (the normal case), and correct when it does.
+	# `printf %q` would also be safe but renders the JSON as backslash soup, which
+	# defeats the line above telling you to review the payload before running it.
+	quoted="'${payload//\'/\'\\\'\'}'"
 	if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
-		echo "gh api -X PUT repos/$OWNER/$repo/rulesets/$existing_id --input - <<< '$payload'"
+		echo "gh api -X PUT repos/$OWNER/$repo/rulesets/$existing_id --input - <<< $quoted"
 	else
-		echo "gh api -X POST repos/$OWNER/$repo/rulesets --input - <<< '$payload'"
+		echo "gh api -X POST repos/$OWNER/$repo/rulesets --input - <<< $quoted"
 	fi
 }
 
