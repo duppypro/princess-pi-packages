@@ -104,7 +104,7 @@ on `serve`: declared service ports must be **reserved** against the static alloc
 |---|---|---|
 | **Promotion chain** | `main → dev → prod`, fast-forward only, refusing a dirty tree | releases contain only exact commits from the remote — enforced procedurally by script guardrails, not structurally by permissions. A known limit, not an assumed property |
 | **Deploy** | checkout → build → rsync into the release dir → (service: restart the unit) → health check | the only path by which a release dir changes |
-| **Health check contract** | what a successful deploy probe looks like — **read per-tenant from `gate`, never assumed globally** | `gate = "access"`: a `302` to `cloudflareaccess.com` is success and a bare `200` is a **loud failure**. `gate = "public"`: the reverse. Both directions stay loud |
+| **Health check contract** | what a successful deploy probe looks like — **read per-tenant from `gate`, never assumed globally** | **no `gate`** (loopback-only): a plain `200` on `127.0.0.1:<port>`. `gate = "access"`: a `302` to `cloudflareaccess.com` is success and a bare `200` is a **loud failure**. `gate = "public"`: the reverse, and it verifies *reachability, not authorization* — the tenant owns its own auth. Every direction stays loud. Full table: `serve-standard.md` §7 |
 | **Operator** | Duppy, administering the deployed things — the only principal that spans tenants | not a user with a flag; a separate principal with a separate auth path |
 
 ---

@@ -119,9 +119,19 @@ fails later** — the worst failure shape available.
 4.6 `sqlite3 <db> ".backup <dest>"` **MUST NOT** be used in a Job on this box: the `sqlite3` CLI is
 not installed (verified). Either install it deliberately or use an in-process route.
 
-4.7 A backup **MUST** be verified by opening it — `PRAGMA integrity_check` returning `ok`, and a
-known row present. *Why:* a backup job producing an unopenable file is worse than none, because it
-reports success. (§4.3 is the stronger form of this rule; 4.7 is its floor.)
+4.7 A backup **MUST** be verified by **opening the artifact and asserting a known invariant** — never
+by the exit status of the command that wrote it. The invariant is per format:
+
+| Subject | Verified by |
+|---|---|
+| SQLite database | `PRAGMA integrity_check` returning `ok`, **and** a known row present |
+| File tree (uploads, release-adjacent assets) | archive listing succeeds, file count and total bytes not below the last recorded values, and a **canary** file's checksum matching |
+| Anything else | the format's own integrity check, named in the Job — a backup whose format has no way to be opened and checked **MUST NOT** be declared verified |
+
+*Why:* a backup job producing an unopenable file is worse than none, because it reports success. *Why
+the table rather than one rule:* §4.5–4.6 and §4.8 are SQLite mechanics, and writing 4.7 in their
+vocabulary silently exempted every non-SQLite subject — uploads being the obvious one — from the only
+floor this standard has. (§4.3 is the stronger form of this rule; 4.7 is its floor.)
 
 4.8 WAL `-wal` and `-shm` sidecars **MUST** stay with their database and **MUST NOT** be moved or
 copied independently.

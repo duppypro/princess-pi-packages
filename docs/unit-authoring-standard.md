@@ -42,7 +42,11 @@ symlinked). *Why:* it does not remove a coupling to wherever the binary really l
 centralizes it — one symlink to repoint instead of every unit and timer. Real case: `bun` lives
 inside `~/.nvm/versions/node/v22.22.3/`, so an `nvm uninstall` would take a service's runtime with it.
 
-1.5 Units **MUST** log to the state root via `StandardOutput=append:`/`StandardError=append:`.
+1.5 A unit **in this standard's scope** (§1.1 — a service tenant, or an on-box Job timer) **MUST** log
+to the state root via `StandardOutput=append:`/`StandardError=append:`. *Why:* the state root is the
+per-`Env` location that `scheduled-work-standard.md` §4.1 backs up and that survives `rsync --delete`;
+the journal is neither owned by the app nor retained on the app's terms. A unit outside §1.1's scope
+— the tunnel itself, say — **MAY** log to the journal, because nothing about it is per-app.
 
 1.6 A unit **SHOULD** set `Restart=on-failure` with a `RestartSec` backoff. *Why:* the deploy
 sequence waits for a unit to become active before health-checking it, so the restart policy is what
@@ -60,7 +64,8 @@ unsatisfiable for the cron half.
 
 ## 2. Worked example
 
-The only user unit currently on this box, and it satisfies every rule above:
+The only user unit currently on this box, reproduced **verbatim** — its value is that it is real, not
+that it is exemplary:
 
 ```ini
 # --- cloudflared as princess-pi: no root daemon on the internet ingress path ---
@@ -78,9 +83,22 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-Absolute interpreter path (§1.2), `%h` rather than `~` (§1.3), `Restart=on-failure` with a backoff
-(§1.6). It is not a tenant — it is the tunnel itself — which is why it declares no port and carries
-no manifest.
+It demonstrates the absolute interpreter path (§1.2), `%h` rather than `~` (§1.3), and
+`Restart=on-failure` with a backoff (§1.6). It is **not** a tenant — it is the tunnel itself — which is
+why it declares no port and carries no manifest, and why §1.5 does not bind it: it logs to the journal,
+which §1.5 permits for a unit outside §1.1's scope.
+
+**Do not copy it into a tenant or a Job unit as-is.** Anything inside §1.1's scope needs the two lines
+this unit does not have:
+
+```ini
+StandardOutput=append:%h/.local/state/<app>/<env>/<app>.log
+StandardError=append:%h/.local/state/<app>/<env>/<app>.err
+```
+
+*Why this is called out rather than quietly fixed in the example:* editing the block to satisfy §1.5
+would make the one verified artifact in this document a fiction, and the failure mode this standard
+exists to prevent is exactly a rule that was never checked against the box.
 
 ---
 
