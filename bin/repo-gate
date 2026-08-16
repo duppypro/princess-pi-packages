@@ -246,7 +246,18 @@ build_payload() {
 			bypass_actors: $p.enforcement_disclosure.bypass_actors,
 			rules: [
 				$t.rules | to_entries[]
-				| if .value == null then { type: .key } else { type: .key, parameters: .value } end
+				| if .value == null then { type: .key }
+				  elif .key == "pull_request" then {
+				    type: .key,
+				    parameters: ({
+				      "allowed_merge_methods": ["merge","squash","rebase"],
+				      "dismiss_stale_reviews_on_push": false,
+				      "require_code_owner_review": false,
+				      "require_last_push_approval": false,
+				      "required_reviewers": []
+				    } + .value)
+				  }
+				  else { type: .key, parameters: .value } end
 			]
 		}
 	' "$POLICY"
