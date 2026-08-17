@@ -32,6 +32,9 @@ interface Case {
   cwd_branch?: string;
   c_path_branch?: string;
   c_path_rel?: string;
+  /** Branches that must EXIST in the cwd repo (needs a root commit) — for the
+   *  `checkout -b <existing>` fail-closed cases (PR #305 review). */
+  extra_branches?: string[];
   why: string;
   /** What the frozen pre-#74 ancestor returned. Absent = no historical claim. */
   pre74?: "allow" | "block";
@@ -56,6 +59,10 @@ function materialize(c: Case): { command: string; cwd: string } {
   let command = c.command;
   const cwdBranch = c.cwd_branch !== undefined ? c.cwd_branch : c.branch;
   const cwd = cwdBranch ? repoOnBranch(cwdBranch) : nonRepoDir();
+  if (c.extra_branches?.length) {
+    execSync(`git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init`, { cwd });
+    for (const b of c.extra_branches) execSync(`git branch "${b}"`, { cwd });
+  }
   if (c.c_path_branch !== undefined) {
     if (c.c_path_rel !== undefined) {
       // relative -C target: a repo INSIDE the tool-call cwd, referenced by

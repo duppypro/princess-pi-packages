@@ -9,6 +9,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 // --- Helpers ---
@@ -76,6 +77,60 @@ export interface LineState {
   origCwd: string;
   liftKey: string;
   liftBranch: string;
+  /** `(` pushes the effective cwd, `)` pops it — a cd inside a subshell group
+   *  never reaches the parent shell (PR #305 review). */
+  cwdStack: string[];
+  /** Literal `NAME=value` assignments seen earlier in the line, so `cd "$WT"`
+   *  and `checkout -b "$BRANCH"` can be resolved. Unresolvable = unknown, and
+   *  unknown never moves the cwd or lifts the gate (fail-closed). */
+  vars: Map<string, string>;
+}
+
+function newLineState(cwd: string): LineState {
+  return { cwd, origCwd: cwd, liftKey: "", liftBranch: "", cwdStack: [], vars: new Map() };
+}
+
+/**
+ * Resolve $NAME / ${NAME} in a word from the line's assignments, then this
+ * process's environment (HOME, PWD and other exported names are shared with
+ * the tool's shell). Returns null when anything is left unresolved — command
+ * substitution, an unknown variable — so the caller fails closed instead of
+ * trusting a literal '$WT'.
+ */
+function expandWord(w: string, st: LineState): string | null {
+  if (w.includes("`") || w.includes("$(")) return null;
+  const out = w.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (m, name: string) => {
+    const v = st.vars.get(name) ?? process.env[name];
+    return v === undefined ? "\u0000" : v;
+  });
+  if (out.includes("\u0000") || out.includes("$")) return null;
+  return out;
+}
+
+/** `NAME=value` (or `export NAME=value`) STANDING ALONE as a sub-command. */
+function recordAssignment(T: string[], st: LineState): boolean {
+  let w = T[0];
+  if (w === "export") { if (T.length !== 2) return false; w = T[1]; }
+  else if (T.length !== 1) return false; // `VAR=x git commit` is a command with a prefix
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(w);
+  if (!m) return false;
+  if (!m[2].includes("$") && !m[2].includes("`")) st.vars.set(m[1], m[2]);
+  return true;
+}
+
+/** Does <ref> exist in the repo the sub-command acts on? Same -C/--git-dir resolution as branchOf. */
+function refExists(cPath: string, st: LineState, gitDir: string, ref: string): boolean {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  try {
+    execSync(`git show-ref --verify --quiet ${JSON.stringify(ref)}`, {
+      cwd: dir || ".",
+      stdio: "ignore",
+      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function repoKey(cPath: string, cwd: string, gitDir: string): string {
@@ -94,16 +149,22 @@ function applyCd(T: string[], st: LineState): boolean {
   const w = T[0]?.slice(T[0].lastIndexOf("/") + 1);
   if (w !== "cd" && w !== "pushd" && w !== "popd") return false;
   const home = process.env.HOME || "";
-  const arg = T.slice(1).find((t) => !t.startsWith("-") || t === "-");
-  if (w === "popd" || arg === "-" || (w === "pushd" && arg === undefined)) {
+  const rawArg = T.slice(1).find((t) => !t.startsWith("-") || t === "-");
+  if (w === "popd" || rawArg === "-" || (w === "pushd" && rawArg === undefined)) {
     st.cwd = st.origCwd; // previous directory is unknowable here — never guess
-  } else if (arg === undefined || arg === "~") {
-    st.cwd = home;
-  } else if (arg.startsWith("~/")) {
-    st.cwd = resolve(home, arg.slice(2));
-  } else {
-    st.cwd = resolve(st.cwd || ".", arg);
+    return true;
   }
+  let target: string;
+  if (rawArg === undefined || rawArg === "~") {
+    target = home;
+  } else {
+    const arg = expandWord(rawArg, st);
+    if (arg === null) return true; // unresolvable → unknown → stay put
+    target = arg.startsWith("~/") ? resolve(home, arg.slice(2)) : resolve(st.cwd || ".", arg);
+  }
+  // The cwd only moves to a directory that EXISTS: a failing `cd /nope; git
+  // commit` leaves the real shell where it was, so the model must too.
+  if (existsSync(target) && statSync(target).isDirectory()) st.cwd = target;
   return true;
 }
 
@@ -303,11 +364,15 @@ function splitOutsideQuotes(s: string): string[] {
     } else if (ch === "'" || ch === '"') {
       q = ch;
       cur += ch;
-    } else if (ch === "\n" || ch === ";" || ch === "(" || ch === ")") {
-      // '(' / ')' outside quotes open/close a subshell group — split there so
-      // `(cd wt && git commit)` exposes both the cd and the commit (#301).
-      // `$(…)` bodies were already inspected by checkSubstitutions.
+    } else if (ch === "\n" || ch === ";") {
       subs.push(cur);
+      cur = "";
+    } else if (ch === "(" || ch === ")") {
+      // '(' / ')' outside quotes open/close a subshell group — split there so
+      // `(cd wt && git commit)` exposes both the cd and the commit (#301), and
+      // emit the paren as its own entry so the walk can push/pop cwd scope.
+      // `$(…)` bodies were already inspected by checkSubstitutions.
+      subs.push(cur, ch);
       cur = "";
     } else if (ch === "&" || ch === "|") {
       if (s[i + 1] === ch) i++; // && or ||
@@ -374,7 +439,7 @@ function isGuardedWord(t: string): boolean {
 // regions are literal and skipped; bodies recurse through the whole check
 // (#105 / the command-substitution residual documented at findings 14+15).
 // ---
-function checkSubstitutions(s: string, hookCwd: string): string | null {
+function checkSubstitutions(s: string, st: LineState): string | null {
   // Double-quote state is load-bearing (#208/#105): inside "…" an apostrophe is
   // ORDINARY TEXT, not a quote delimiter, while $( ) and ` ` still expand. The
   // scan used to treat every ' as opening a literal region, so the first
@@ -413,7 +478,7 @@ function checkSubstitutions(s: string, hookCwd: string): string | null {
         }
         j++;
       }
-      const reason = checkGitCommand(s.slice(i + 2, j), hookCwd);
+      const reason = checkChild(s.slice(i + 2, j), st);
       if (reason) return reason;
       i = j;
     } else if (ch === "`") {
@@ -422,7 +487,7 @@ function checkSubstitutions(s: string, hookCwd: string): string | null {
         if (s[j] === "\\") j++;
         j++;
       }
-      const reason = checkGitCommand(s.slice(i + 1, j), hookCwd);
+      const reason = checkChild(s.slice(i + 1, j), st);
       if (reason) return reason;
       i = j;
     }
@@ -453,7 +518,7 @@ type PrefixScan =
  * `GH_HOST=… gh pr merge` — walked straight through the human-only merge gate.
  * One parser, two consumers: a wrapper learned here is understood by both.
  */
-function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
+function skipBenignPrefix(T: string[], st: LineState): PrefixScan {
   let i = 0;
   let wrapperArgOpts: Set<string> | null = null; // arg-consuming options of the wrapper we're inside
   while (i < T.length && !isGuardedWord(T[i])) {
@@ -469,7 +534,7 @@ function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
         const a = T[j];
         if (a === "-c" || /^-[A-Za-z]*c[A-Za-z]*$/.test(a)) {
           const nested = T[j + 1];
-          return { kind: "verdict", reason: nested ? checkGitCommand(nested, hookCwd) : null };
+          return { kind: "verdict", reason: nested ? checkChild(nested, st) : null };
         }
         if (!a.startsWith("-")) break;
       }
@@ -477,7 +542,8 @@ function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
     }
     if (t === "eval") {
       // eval concatenates and re-parses its arguments as a shell command
-      return { kind: "verdict", reason: checkGitCommand(T.slice(i + 1).join(" "), hookCwd) };
+      // eval runs in the SAME shell: its cd and lifts persist — share the state
+      return { kind: "verdict", reason: checkWithState(T.slice(i + 1).join(" "), st) };
     }
     const opts = GIT_WRAPPERS.get(base);
     if (opts) {
@@ -501,6 +567,16 @@ function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
 
 // Sub-commands that create or move commits on the current branch (#301).
 const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "pull"]);
+const UNDOABLE = new Set(["merge", "rebase", "cherry-pick", "am"]);
+// Options whose SEPARATE next word is an argument. Over-skipping is safe (a
+// missed --abort/--ff-only only blocks); under-skipping is the fail-open case.
+const ARG_OPTIONS = new Set([
+  "-m", "-F", "-C", "-c", "-s", "-X", "-S", "-x", "--message", "--file", "--strategy",
+  "--strategy-option", "--onto", "--exec", "--author", "--date", "--template", "--fixup",
+  "--squash", "--reuse-message", "--reedit-message", "--gpg-sign", "--cleanup",
+  "--into-name", "--patch-format", "--whitespace", "--directory", "--exclude", "--include",
+  "--mainline",
+]);
 
 /**
  * Record a branch switch for the rest of the line (#301 line-state).
@@ -523,8 +599,15 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
     return; // positional that is not main: could be a path — no line-state change
   }
   if (!target) return;
+  const resolved = expandWord(target, st);
+  if (resolved === null) return; // '$BRANCH' unresolved → no lift (fail-closed)
+  // `checkout -b` / `switch -c` / `--orphan` FAIL when the branch already
+  // exists, leaving the repo on main — so an existing name must not lift
+  // (PR #305 review). -B / -C / --force-create reset-or-create and always land.
+  const force = rest.some((t) => t === "-B" || t === "-C" || t === "--force-create");
+  if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
   st.liftKey = repoKey(cPath, st.cwd, gitDir);
-  st.liftBranch = target;
+  st.liftBranch = resolved;
 }
 
 /**
@@ -625,8 +708,19 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
   // diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are not in
   // this set — the escape from main can never deadlock.
   if (COMMIT_LIKE.has(cmd)) {
-    if (rest.includes("--abort") || rest.includes("--quit")) return null;
-    if ((cmd === "merge" || cmd === "pull") && rest.includes("--ff-only")) return null;
+    // Option ARGUMENTS are not options: `git commit -m --abort` is a commit
+    // whose message is '--abort' (PR #305 review). Skip the word after any
+    // argument-taking option, stop at `--`, and honour --abort/--quit only
+    // for the sub-commands that have them.
+    let ffOnly = false;
+    for (let k = 0; k < rest.length; k++) {
+      const t = rest[k];
+      if (t === "--") break;
+      if (ARG_OPTIONS.has(t)) { k++; continue; }
+      if ((t === "--abort" || t === "--quit") && UNDOABLE.has(cmd)) return null;
+      if (t === "--ff-only") ffOnly = true;
+    }
+    if (ffOnly && (cmd === "merge" || cmd === "pull")) return null;
     if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
       const hint = cmd === "pull" || cmd === "merge"
         ? "use --ff-only to sync main, or"
@@ -666,24 +760,43 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
  * fixture against this implementation directly.
  */
 export function checkGitCommand(command: string, hookCwd: string): string | null {
-  const st: LineState = { cwd: hookCwd, origCwd: hookCwd, liftKey: "", liftBranch: "" };
+  return checkWithState(command, newLineState(hookCwd));
+}
+
+/**
+ * A child shell (`bash -c`, `$(…)`, backticks) sees the current cwd but its
+ * own cd never comes back — run it on a copy and carry back only the lift
+ * (a branch switch inside it DID happen on disk).
+ */
+function checkChild(command: string, st: LineState): string | null {
+  const child: LineState = { ...st, cwdStack: [], vars: new Map(st.vars) };
+  const reason = checkWithState(command, child);
+  st.liftKey = child.liftKey;
+  st.liftBranch = child.liftBranch;
+  return reason;
+}
+
+function checkWithState(command: string, st: LineState): string | null {
   const stripped = stripHeredocs(command);
 
   // Substitution bodies execute — inspect them before the main token walk
-  const substReason = checkSubstitutions(stripped, hookCwd);
+  const substReason = checkSubstitutions(stripped, st);
   if (substReason) return substReason;
 
   // Split on shell separators; heredoc bodies already stripped.
   // One blocked sub-command blocks the whole command line (fail-safe).
   const subs = splitOutsideQuotes(stripped);
   for (const sub of subs) {
+    if (sub === "(") { st.cwdStack.push(st.cwd); continue; }
+    if (sub === ")") { if (st.cwdStack.length) st.cwd = st.cwdStack.pop()!; continue; }
     const toks = tokenize(sub);
     if (toks.length === 0) continue;
+    if (recordAssignment(toks, st)) continue; // NAME=value alone: remembered, nothing to block
     if (applyCd(toks, st)) continue; // line-state only, nothing to block (#301)
     // Strip the benign prefix ONCE, then dispatch on what is actually being run.
     // Doing it once matters: the walk recurses into `bash -c` / `eval` bodies,
     // and running it per-checker would re-walk every nested string twice.
-    const scan = skipBenignPrefix(toks, st.cwd);
+    const scan = skipBenignPrefix(toks, st);
     if (scan.kind === "verdict") {
       if (scan.reason) return scan.reason;
       continue;

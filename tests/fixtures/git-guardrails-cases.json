@@ -1198,6 +1198,118 @@
       "c_path_rel": "rel-repo",
       "verdict": "allow",
       "why": "#301: cd tracking also fixes the pre-existing bare-push false block from a main-clone cwd"
+    },
+    {
+      "id": "block-subshell-cd-does-not-leak",
+      "command": "(cd rel-repo); git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "PR #305 review: a cd inside '( )' never reaches the parent shell — the commit after the group runs in the main-clone cwd"
+    },
+    {
+      "id": "block-cd-unresolved-var-stays-put",
+      "command": "cd \"$UNSET_TARGET_301\"; git commit -m x",
+      "branch": "main",
+      "verdict": "block",
+      "why": "PR #305 review: an unresolvable cd operand is unknown, and unknown never moves the modelled cwd — judged against the real cwd (main)"
+    },
+    {
+      "id": "allow-cd-line-assigned-var",
+      "command": "WT=rel-repo; cd \"$WT\" && git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "PR #305 review follow-through: a literal NAME=value earlier in the line resolves, so the common 'WT=…; cd \"$WT\"' shape is not a false block"
+    },
+    {
+      "id": "block-var-prefixed-commit-not-swallowed",
+      "command": "GIT_AUTHOR_NAME=x git commit -m x",
+      "branch": "main",
+      "verdict": "block",
+      "why": "assignment PREFIX is a command, not a standalone assignment — must still be checked"
+    },
+    {
+      "id": "block-checkout-b-existing-branch-then-commit",
+      "command": "git checkout -b feat2 && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feat2"
+      ],
+      "verdict": "block",
+      "why": "PR #305 review: `checkout -b <existing>` fails and leaves the repo on main, so an existing name must not lift the gate"
+    },
+    {
+      "id": "allow-checkout-B-existing-branch-then-commit",
+      "command": "git checkout -B feat2 && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feat2"
+      ],
+      "verdict": "allow",
+      "why": "-B reset-or-creates and always lands on the branch — the lift is sound"
+    },
+    {
+      "id": "block-checkout-b-unresolved-var-then-commit",
+      "command": "git checkout -b \"$UNSET_BRANCH_301\" && git commit -m x",
+      "branch": "main",
+      "verdict": "block",
+      "why": "PR #305 review: an unresolvable branch operand never lifts — the literal '$UNSET_BRANCH_301' is not a branch"
+    },
+    {
+      "id": "allow-checkout-b-line-assigned-var-then-commit",
+      "command": "BRANCH=301-x; git checkout -b \"$BRANCH\" && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "a literal assignment earlier in the line resolves the operand, so the lift applies"
+    },
+    {
+      "id": "allow-checkout-b-then-bash-c-commit",
+      "command": "git checkout -b 301-x && bash -c 'git commit -m x'",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "PR #305 review: the lift (a branch switch that happened on disk) is visible inside a nested shell string"
+    },
+    {
+      "id": "block-failed-cd-does-not-move",
+      "command": "cd /nonexistent-dir-301-xyz; git commit -m x",
+      "branch": "main",
+      "verdict": "block",
+      "why": "PR #305 review: a cd that would fail leaves the real shell where it was — the model only moves to a directory that exists"
+    },
+    {
+      "id": "block-commit-message-abort-is-not-an-option",
+      "command": "git commit -m --abort",
+      "branch": "main",
+      "verdict": "block",
+      "why": "PR #305 review: '--abort' here is the ARGUMENT of -m, and commit has no --abort anyway"
+    },
+    {
+      "id": "block-merge-message-ff-only-is-not-an-option",
+      "command": "git merge -m --ff-only feat",
+      "branch": "main",
+      "verdict": "block",
+      "why": "same class: '--ff-only' as the -m argument is a message, not the fast-forward guard"
+    },
+    {
+      "id": "block-substitution-cd-does-not-leak",
+      "command": "echo $(cd rel-repo); git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "PR #305 review: a cd inside $(…) runs in a child shell — the parent's cwd (main) judges the commit"
+    },
+    {
+      "id": "block-bash-c-cd-does-not-leak",
+      "command": "bash -c 'cd rel-repo'; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "same: bash -c is a child shell"
     }
   ]
 }
