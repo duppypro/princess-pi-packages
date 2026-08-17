@@ -912,7 +912,7 @@ refuse, and tell you why, when:
 | cwd is inside the worktree this run would remove | Removing it out from under the caller strands that session's own transcript — `git worktree remove` doesn't move it back, only `ExitWorktree` does. Checked first, before any gate that costs a network/API call (#221). Recovery: `ExitWorktree { action: "keep" }` (or `"remove"`), then re-run `pr-cleanup <branch>` from the main clone. |
 | The target worktree is **locked** (typically by `EnterWorktree` holding it open for a live session) | Previously misdiagnosed as "likely has uncommitted or untracked changes" (#262), which sent an agent hunting for phantom dirty files. Detected via `git worktree list --porcelain -z`'s `locked` attribute and reported as locked, naming `EnterWorktree` as the likely holder. |
 | The worktree has uncommitted or untracked changes | `git worktree remove` refusing IS the safeguard. There is no `--force` retry — a merged PR says nothing about local-only edits. Commit, stash, or force it by hand once you are sure. |
-| Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. |
+| Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. Three distinct relationships get distinguished with `git merge-base --is-ancestor` (#317): **behind** — GitHub's "Update branch" moved the PR's `headRefOid` forward with no local involvement (routine, not unmerged work) — names `git pull --ff-only`; **ahead** — genuine unmerged commits, the original diagnosis; **diverged** — neither is an ancestor of the other. All three still refuse (exit 6); only the prose differs. A `merge-base` that can't even run (exit 128) is exit 5, not 6 — same care as the squash-commit-vs-`origin/main` check below. |
 | `git fetch`, `git ls-remote` or `gh pr list` fails | An unreachable or unauthenticated remote is not proof of anything. |
 | There is no merged PR, the branch is absent from origin, **and** its tip isn't in the primary branch | Absence from origin is not authorization. That is exactly the state of a branch never pushed, or one whose remote ref was deleted *without* merging — its commits exist nowhere else. |
 | `origin/<branch>` has moved since the PR merged | Someone pushed after the merge. Your local tip still matches the PR, so nothing local hints at it — those commits live only on the remote. The delete also carries a `--force-with-lease` pinned to the merged sha, so a commit landing mid-run is rejected rather than swept up. |
@@ -926,9 +926,12 @@ up from here" (#262).
 
 Two things that look like bugs and are not:
 
-- **The merge check is the PR's `headRefOid`, not `git merge-base --is-ancestor`.**
-  We squash-merge, so a branch tip is *never* an ancestor of its own squash commit.
-  An ancestry test would refuse every legitimate cleanup.
+- **The merge-into-`origin/main` check is the PR's `headRefOid`, not `git merge-base
+  --is-ancestor` against the squash commit.** We squash-merge, so a branch tip is
+  *never* an ancestor of its own squash commit. An ancestry test there would refuse
+  every legitimate cleanup. (`--is-ancestor` IS used, but for a different pair: local
+  tip vs. `headRefOid`, both pre-squash feature-branch states — the behind/ahead/diverged
+  check above, #317.)
 - **The local delete is `git branch -D`, not `-d`.** For the same reason: git never
   considers a squash-merged branch merged, so `-d` would refuse every time. The PR gate
   above is the stronger proof — it pins the tip to the exact merged commit.
