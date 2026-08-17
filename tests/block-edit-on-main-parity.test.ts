@@ -80,6 +80,38 @@ function assertBoth(filePath: string, cwd: string, verdict: "allow" | "block", w
   expect(shVerdict(filePath, cwd), `sh: ${why}`).toBe(verdict);
 }
 
+// Same assertion, but with the PROCESS cwd pinned to `processCwd` for both
+// halves. Needed only for the relative-path cases: `cwd` in the hook payload
+// and the process's own cwd are two different inputs, and a relative path with
+// an empty payload cwd falls through to the process one. shVerdict/tsVerdict
+// both leave the process cwd alone, so they cannot express that case.
+function assertBothFromCwd(
+  filePath: string,
+  cwd: string,
+  processCwd: string,
+  verdict: "allow" | "block",
+  why: string,
+) {
+  const input = JSON.stringify({ tool_input: { file_path: filePath }, cwd });
+  const res = spawnSync("bash", [SH_HOOK], { input, encoding: "utf8", cwd: processCwd });
+  if (res.status !== 0 && res.status !== 2) {
+    throw new Error(`sh hook exited ${res.status} (expected 0 or 2): ${res.stderr || res.stdout}`);
+  }
+  const sh = res.status === 0 ? "allow" : "block";
+
+  const previous = process.cwd();
+  process.chdir(processCwd);
+  let ts: "allow" | "block";
+  try {
+    ts = tsVerdict(filePath, cwd);
+  } finally {
+    process.chdir(previous);
+  }
+
+  expect(ts, `ts: ${why}`).toBe(verdict);
+  expect(sh, `sh: ${why}`).toBe(verdict);
+}
+
 describe("block-edit-on-main parity (#303)", () => {
   test("blocks an edit inside a repo on 'main'", () => {
     const repo = repoOnBranch("main");
@@ -242,6 +274,93 @@ describe("block-edit-on-main parity (#303)", () => {
     assertBoth(path.join(repo, "new", "subdir", "f.txt"), repo, "block", "new nested file, main");
   });
 
+  // Relative path + empty cwd (#316, second fail-open in the same function).
+  // The shell walker starts at "/", so a relative input has to be anchored to
+  // the PROCESS cwd first — exactly what edit-on-main-core.ts:91 does before
+  // walking. The hop-cap rewrite dropped that anchor, so "sub/f.txt" resolved
+  // to "/sub/f.txt", DIR became "/", `git -C /` answered "not a repo", and the
+  // hook returned ALLOW inside a repo on main. `realpath -m` never had this
+  // gap, which is why the original code survived it: the regression arrived
+  // WITH the fix for the ELOOP fail-open, and is the identical failure mode.
+  test("blocks a relative path with an empty cwd, in a repo on main (anchors to process cwd)", () => {
+    const repo = repoOnBranch("main");
+    fs.mkdirSync(path.join(repo, "sub"), { recursive: true });
+    assertBothFromCwd("sub/f.txt", "", repo, "block", "relative path anchors to the process cwd");
+  });
+
+  test("allows a relative path with an empty cwd, in a repo on a feature branch", () => {
+    const repo = repoOnBranch("42-slug");
+    fs.mkdirSync(path.join(repo, "sub"), { recursive: true });
+    assertBothFromCwd("sub/f.txt", "", repo, "allow", "relative path, feature branch");
+  });
+
+  // Newline inside a path component (macroscopeapp on PR #321, third fail-open
+  // of the same class). The shell walker split the path with `read -ra`, which
+  // is line-oriented: it stops at the first newline and drops the rest, so
+  // "we\nird/f.txt" was walked as just "we" and the git query landed on a
+  // shorter, different path than the edit would. Newlines are legal in POSIX
+  // filenames. The bot also reported backslash mangling here — that half is
+  // wrong (`-r` already disables escape processing), so only the newline case
+  // is asserted; the backslash case is asserted alongside it to pin the
+  // behaviour that was ALREADY correct, so a future "fix" can't regress it.
+  // This is the #267 symlink-bypass case with a newline in front of the
+  // symlink. It has to be built this way to bite: truncating at the newline
+  // has to move DIR OUT of the repo the bytes really land in. A newline in a
+  // path that stays inside the same repo blocks either way and proves nothing
+  // — the first version of this test made that mistake and passed pre-fix.
+  test("blocks a symlink to a repo on main sitting behind a newline in the path", () => {
+    const mainRepo = repoOnBranch("main");
+    const featRepo = repoOnBranch("42-slug");
+    const weird = path.join(featRepo, "we\nird");
+    fs.mkdirSync(weird, { recursive: true });
+    fs.writeFileSync(path.join(mainRepo, "f.txt"), "");
+    fs.symlinkSync(path.join(mainRepo, "f.txt"), path.join(weird, "tomain"));
+    assertBoth(
+      path.join(weird, "tomain"),
+      featRepo,
+      "block",
+      "newline truncation must not hide the symlink that lands on main",
+    );
+  });
+
+  // Trailing newline in a symlink TARGET (macroscopeapp on PR #321, second
+  // report; fourth fail-open of the same class). Command substitution strips
+  // every trailing newline, so `$(readlink …)` and `$(dirname …)` both handed
+  // back a path one byte shorter than the real one. To bite, the strip has to
+  // cross a repo boundary — hence two SIBLING repos whose names differ only by
+  // that trailing newline, the shorter on a feature branch and the longer on
+  // main. Pre-fix the hook resolved to the feature sibling and returned ALLOW
+  // while the bytes were destined for main; verified at exit 0.
+  test("blocks a symlink whose target directory name ends in a newline, landing on main", () => {
+    const base = tmpRepo("edit-main-tnl-");
+    const decoy = path.join(base, "x"); // feature branch
+    const real = path.join(base, "x\n"); // main — differs only by the newline
+    for (const [dir, branch] of [
+      [decoy, "42-slug"],
+      [real, "main"],
+    ] as const) {
+      fs.mkdirSync(dir, { recursive: true });
+      git(dir, "init", "-q");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "x");
+      git(dir, "checkout", "-q", "-B", branch);
+    }
+    const featRepo = repoOnBranch("42-slug");
+    fs.symlinkSync(real, path.join(featRepo, "lnk"));
+    assertBoth(
+      path.join(featRepo, "lnk", "f.txt"),
+      featRepo,
+      "block",
+      "a stripped trailing newline must not resolve to the feature-branch sibling",
+    );
+  });
+
+  test("blocks a path whose component contains a backslash, in a repo on main", () => {
+    const repo = repoOnBranch("main");
+    const weird = path.join(repo, "link\\name");
+    fs.mkdirSync(weird, { recursive: true });
+    assertBoth(path.join(weird, "f.txt"), repo, "block", "backslash in a path component");
+  });
+
   // Deep-symlink fail-closed (#303 review finding, macroscopeapp on PR #313,
   // thread PRRT_kwDOS37--c6Zr6MV): edit-on-main-core.ts's tolerant realpath
   // walker capped a single component's symlink chain at 40 hops, but on
@@ -313,5 +432,21 @@ describe("block-edit-on-main parity (#303)", () => {
       "block",
       "chain exceeds the 40-hop cap; guard must refuse rather than assume the safe (feature-branch) case",
     );
+  });
+
+  // Self-referential symlink (#316): GNU `realpath -m` hits ELOOP internally
+  // resolving a symlink that points at itself, but -m mode SWALLOWS that
+  // failure and returns the unresolved input path with rc=0 — the shell
+  // hook then treated an unproven path as resolved and ALLOWED the edit,
+  // even on a feature branch where nothing else about this case would be
+  // blocked. The TS twin already fails closed here: the walker keeps
+  // re-expanding the same self-target forever, so the existing 40-hop cap
+  // trips and SymlinkDepthExceededError converts to BLOCK. This pins the
+  // two twins in agreement on the case the issue reports as diverging.
+  test("blocks a self-referential symlink (realpath -m returns rc=0 unresolved)", () => {
+    const repo = repoOnBranch("42-slug");
+    const selfLink = path.join(repo, "selfLink");
+    fs.symlinkSync("selfLink", selfLink);
+    assertBoth(selfLink, repo, "block", "self-referential symlink cannot be resolved — fail closed, not fail open");
   });
 });

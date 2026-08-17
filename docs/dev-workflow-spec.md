@@ -314,7 +314,12 @@ them would pin worktrees open forever.
 **Still needs an explicit yes:** a branch whose PR was *rejected* or closed unmerged, or
 one that never had a PR at all. That is where real work loss lives, and `pr-cleanup`
 already fails closed on both — with no merged PR it refuses unless the tip is already an
-ancestor of `origin/main`.
+ancestor of `origin/main`. That escape hatch used to apply only to a branch absent from
+origin; `wt-new` pushing every branch at creation time (#250) meant an abandoned branch
+was *always* present on origin and so was refused unconditionally, forever. #266 taught
+the present-on-origin case the same ancestry proof — checking **both** the local tip and,
+since the two can diverge, the remote tip — so an abandoned `wt-new` branch with no work
+of its own is self-serviceable too.
 
 Sequence:
 
@@ -466,8 +471,14 @@ bare form, since the bare form's safety depends on which branch you happen to be
 standing on.
 
 **`git worktree remove --force`/`-f` is blocked unconditionally**, same class as
-`clean -f` (#225 gap 2) — teardown is meant to be confirm-first, per the [Worktree
-Teardown](#why-this-reverses-the-out-of-tree-rule-257) sequence above. Plain
+`clean -f` (#225 gap 2) — this is a **safety precondition, not a permission question**.
+`--force` overrides git's own dirty-tree refusal, and that refusal is what would
+otherwise catch a live session still inside the worktree and strand its transcript
+under a path that no longer exists (princess-pi-packages#158, #221). Per the [Worktree
+Teardown](#why-this-reverses-the-out-of-tree-rule-257) sequence above, merging a
+branch's PRs is already the authorization to remove its worktree — no separate
+confirmation is asked for that — but this block stands regardless, because it is
+guarding against a different failure than the one the merge settles. Plain
 `git worktree remove` (no force) stays allowed: git's own refusal on a dirty tree is the
 existing safeguard there, unchanged.
 
@@ -606,7 +617,7 @@ fails and the list drains itself instead of becoming decoration.
 |---|---|
 | `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> <path> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
 | `pr-open` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create` |
-| `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
+| `pr-merge [--no-refresh] [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. On success, best-effort refreshes every other open PR targeting the same base (#332 — the ruleset's `strict_required_status_checks_policy` marks them out of date on every merge, otherwise serializing a merge burst behind a manual "Update branch" click per PR); never changes `pr-merge`'s own exit code. `--no-refresh` opts out. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. |
@@ -834,9 +845,9 @@ the [#224 table](#exit-codes--the-shared-pr--contract-224) exactly:
 
 ### Exit codes — the shared pr-* contract (#224)
 
-`pr-cleanup`, `pr-open`, `wt-new`, `pr-merge`, and `pr-threads` map every failure to one
-of six codes instead of a bare `exit 1`. The distinction that carries weight is **5 vs
-6**: "I could not check" versus "I checked and it says no." The rows below are
+`pr-cleanup`, `pr-open`, `wt-new`, `pr-merge`, `pr-reject`, and `pr-threads` map every
+failure to one of six codes instead of a bare `exit 1`. The distinction that carries
+weight is **5 vs 6**: "I could not check" versus "I checked and it says no." The rows below are
 deliberately general — each script's own header spells out exactly which of its checks
 lands on which code; a header disagreeing with this table is a bug in the header, not
 license to add a seventh number.
@@ -849,8 +860,6 @@ license to add a seventh number.
 | 4 | not found — a required piece of local git state or a PR is missing (no main/master worktree registered, no local branch by that name, no `origin` remote configured, no such PR, no open PR for the branch) |
 | 5 | remote/API failure — state could **not** be determined (network down, `gh` outage, an incomplete API response, a local check like `merge-base` that could not even run, or a ref the remote named that was never fetched locally) |
 | 6 | safety gate refused — state **was** determined, and it says no (unmerged work, a diverged or moved remote, a dirty or locked worktree refusing removal, a rejected push, a ref that won't delete, a target path or branch that already exists, ambiguous PR selection, `pr-merge`'s pr-threads gate) |
-
-`pr-reject` still exits `0`/`1` only; adopting the table for it is tracked by #224.
 
 **`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
 #232's `--json` already shipped depending on it: `1` means "the check succeeded and
@@ -897,6 +906,49 @@ of quietly escaping to `~/bin`. Command position specifically — `pr-merge` nam
 `pr-threads` six times in its own error prose, and matching the bare string would flag all
 of them.
 
+### `pr-merge` refreshes every other open PR after a merge (#332)
+
+The ruleset sets `strict_required_status_checks_policy: true` ("require branches to be
+up to date before merging"), so merging any one PR marks every *other* open PR out of
+date. Each then needs GitHub's "Update branch" button pressed — re-running CI — before
+it can merge. With one PR open that's invisible; with several (the normal shape of an
+agent session) it serializes the whole burst, one click-and-CI-wait at a time.
+
+Right after a successful merge, `pr-merge` presses that button itself for every other
+open PR targeting the **same base** as the one just merged, via the same call the button
+makes:
+
+```
+gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch
+```
+
+Draft PRs and PRs targeting a different base are skipped. `--no-refresh` opts out
+entirely.
+
+**Best-effort — never changes `pr-merge`'s own exit code.** The merge already happened
+and is irreversible; a refresh failure reported as a merge failure would be actively
+misleading. `refresh_other_open_prs()` is only ever called from inside the
+`if gh pr merge ...; then` branch (i.e. after success is already known), every `gh`/`jq`
+call inside it is individually guarded under `set +e`, and the function always returns
+`0` regardless of what it found. `pr-merge` still ends with an explicit `exit 0` on the
+success path — nothing after the merge is allowed to touch the exit code again.
+
+Output is one `refresh <pr#> <status> [<detail>]` line per PR — flat, stable keys, per
+this repo's Agent-First Output standard:
+
+- `refresh <pr#> ok`
+- `refresh <pr#> skipped up-to-date` — the API's own 422 "There are no new commits on
+  the base branch.", not a failure
+- `refresh <pr#> skipped draft`
+- `refresh <pr#> skipped different-base`
+- `refresh <pr#> failed <reason>`
+
+Covered in `tests/pr-merge-gate.test.ts`: refresh fires once per other open PR after a
+successful merge; a failed/refused merge triggers no refresh at all; a 422 reports
+`skipped`, not `failed`; a hard-failing refresh still leaves `pr-merge` at exit 0;
+`--no-refresh` suppresses it entirely; a draft PR and a different-base PR are both
+skipped (no `update-branch` call for either).
+
 ### `pr-cleanup` fails closed, by design
 
 Every gate aborts when it cannot **prove** its precondition. It never treats a failed
@@ -908,9 +960,9 @@ refuse, and tell you why, when:
 | cwd is inside the worktree this run would remove | Removing it out from under the caller strands that session's own transcript — `git worktree remove` doesn't move it back, only `ExitWorktree` does. Checked first, before any gate that costs a network/API call (#221). Recovery: `ExitWorktree { action: "keep" }` (or `"remove"`), then re-run `pr-cleanup <branch>` from the main clone. |
 | The target worktree is **locked** (typically by `EnterWorktree` holding it open for a live session) | Previously misdiagnosed as "likely has uncommitted or untracked changes" (#262), which sent an agent hunting for phantom dirty files. Detected via `git worktree list --porcelain -z`'s `locked` attribute and reported as locked, naming `EnterWorktree` as the likely holder. |
 | The worktree has uncommitted or untracked changes | `git worktree remove` refusing IS the safeguard. There is no `--force` retry — a merged PR says nothing about local-only edits. Commit, stash, or force it by hand once you are sure. |
-| Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. |
+| Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. Three distinct relationships get distinguished with `git merge-base --is-ancestor` (#317): **behind** — GitHub's "Update branch" moved the PR's `headRefOid` forward with no local involvement (routine, not unmerged work) — names `git pull --ff-only`; **ahead** — genuine unmerged commits, the original diagnosis; **diverged** — neither is an ancestor of the other. All three still refuse (exit 6); only the prose differs. A `merge-base` that can't even run (exit 128) is exit 5, not 6 — same care as the squash-commit-vs-`origin/main` check below. |
 | `git fetch`, `git ls-remote` or `gh pr list` fails | An unreachable or unauthenticated remote is not proof of anything. |
-| There is no merged PR, the branch is absent from origin, **and** its tip isn't in the primary branch | Absence from origin is not authorization. That is exactly the state of a branch never pushed, or one whose remote ref was deleted *without* merging — its commits exist nowhere else. |
+| There is no merged PR, **and** its local tip (plus, if the branch is on origin, its remote tip too) isn't already an ancestor of the primary branch | No PR to appeal to, so the only proof left is that neither tip carries anything unique. Covers a branch never pushed, or whose remote ref was deleted *without* merging (absent from origin), **and** — since #266 — a branch `wt-new` pushed at creation and that was then abandoned with no commits of its own (present on origin). Both tips must check out clean for either shape to clean up; either one carrying commits not on the primary branch is a refusal, because step 4 deletes both refs. |
 | `origin/<branch>` has moved since the PR merged | Someone pushed after the merge. Your local tip still matches the PR, so nothing local hints at it — those commits live only on the remote. The delete also carries a `--force-with-lease` pinned to the merged sha, so a commit landing mid-run is rejected rather than swept up. |
 | `git push --delete` fails and the ref is still on origin | Includes protected-ref rejections. It exits non-zero instead of printing `✅ Cleanup complete`. |
 | `git branch -D` fails while the branch still exists | A ref lock or a permissions problem — reported as a failure, never as "already gone". |
@@ -922,9 +974,12 @@ up from here" (#262).
 
 Two things that look like bugs and are not:
 
-- **The merge check is the PR's `headRefOid`, not `git merge-base --is-ancestor`.**
-  We squash-merge, so a branch tip is *never* an ancestor of its own squash commit.
-  An ancestry test would refuse every legitimate cleanup.
+- **The merge-into-`origin/main` check is the PR's `headRefOid`, not `git merge-base
+  --is-ancestor` against the squash commit.** We squash-merge, so a branch tip is
+  *never* an ancestor of its own squash commit. An ancestry test there would refuse
+  every legitimate cleanup. (`--is-ancestor` IS used, but for a different pair: local
+  tip vs. `headRefOid`, both pre-squash feature-branch states — the behind/ahead/diverged
+  check above, #317.)
 - **The local delete is `git branch -D`, not `-d`.** For the same reason: git never
   considers a squash-merged branch merged, so `-d` would refuse every time. The PR gate
   above is the stronger proof — it pins the tip to the exact merged commit.

@@ -83,6 +83,12 @@ interface SandboxOpts {
 	staleRefLock?: boolean;
 	/** shim `git` so ONLY ls-remote fails — fetch still succeeds */
 	failLsRemote?: boolean;
+	/** simulate GitHub's "Update branch" button: origin/<branch> gets an extra
+	 *  merge-from-primary commit BEFORE the squash-merge, moving the PR's
+	 *  headRefOid ahead of what this clone's worktree/mainClone has — the
+	 *  routine BEHIND case (#317). Returns the updated tip via headRefOid
+	 *  default unless `headRefOid` overrides it. */
+	updateBranchBeforeMerge?: boolean;
 }
 
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
@@ -108,6 +114,28 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	git(worktree, ["commit", "-q", "-m", "feature work"]);
 	git(worktree, ["push", "-q", "-u", "origin", branch]);
 	const branchTip = git(worktree, ["rev-parse", "HEAD"]);
+
+	// "Update branch" happens server-side, from a clone that never touches our
+	// worktree/mainClone — a merge commit lands on origin/<branch> only, ahead
+	// of branchTip, which stays the local tip until someone pulls.
+	let remoteHeadOid = branchTip;
+	if (opts.updateBranchBeforeMerge) {
+		// Give primary a commit the feature branch doesn't have yet — otherwise
+		// "merge origin/primary into branch" is a no-op fast-forward that mints
+		// no new commit, and the simulated Update-branch tip equals branchTip.
+		git(mainClone, ["fetch", "-q", "origin", primary]);
+		fs.writeFileSync(path.join(mainClone, "PRIMARY_PROGRESS.md"), "primary moved on\n");
+		git(mainClone, ["add", "-A"]);
+		git(mainClone, ["commit", "-q", "-m", "unrelated primary progress"]);
+		git(mainClone, ["push", "-q", "origin", primary]);
+
+		const updater = path.join(root, "update-branch-clone");
+		git(root, ["clone", "-q", "-b", branch, remote, updater]);
+		git(updater, ["fetch", "-q", "origin", primary]);
+		git(updater, ["merge", "-q", "--no-ff", "-m", `Merge branch '${primary}' into ${branch}`, `origin/${primary}`]);
+		git(updater, ["push", "-q", "origin", branch]);
+		remoteHeadOid = git(updater, ["rev-parse", "HEAD"]);
+	}
 
 	fs.writeFileSync(path.join(mainClone, "feature.txt"), "work\n");
 	git(mainClone, ["add", "-A"]);
@@ -153,7 +181,7 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 				{
 					number: 1,
 					mergeCommit: { oid: mergeSha },
-					headRefOid: opts.headRefOid ?? branchTip,
+					headRefOid: opts.headRefOid ?? remoteHeadOid,
 					headRepositoryOwner: { login: "duppypro" },
 				},
 			])
@@ -207,13 +235,19 @@ function runCleanup(
 	sb: Sandbox,
 	cwd: string = sb.mainClone,
 	branchArg: string | null = sb.branch,
+	extraEnv: Record<string, string> = {},
 ): { code: number; out: string } {
 	const args = branchArg === null ? [] : [branchArg];
 	try {
 		const out = execFileSync("bash", [PR_CLEANUP, ...args], {
 			cwd,
 			encoding: "utf8",
-			env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}` },
+			env: {
+				...process.env,
+				...GIT_ENV,
+				PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}`,
+				...extraEnv,
+			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		return { code: 0, out };
@@ -463,6 +497,70 @@ console.log("\nbranch tip ahead of the merged PR (reused name / later commits):"
 		"tip ahead of headRefOid → says why", out);
 }
 
+// --- #317: local BEHIND the merged PR head is not unmerged work ---
+//
+// GitHub's "Update branch" button (or PUT .../update-branch) can move the
+// PR's headRefOid forward with no local involvement — routine, not a defect.
+// LOCAL_TIP is an ancestor of PR_HEAD_OID here, the opposite relationship
+// from the "tip ahead" case above. Must still refuse (nothing was verified
+// merged yet), but must name `git pull --ff-only`, never "open a new PR".
+console.log("\nlocal branch behind the merged PR head (routine Update-branch):");
+{
+	const sb = makeSandbox("42-feature", { updateBranchBeforeMerge: true });
+	const { code, out } = runCleanup(sb);
+	check(code === 6, "behind → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "behind → worktree survives", out);
+	check(localBranchExists(sb), "behind → local branch survives", out);
+	check(remoteBranchExists(sb), "behind → remote branch survives", out);
+	check(/git pull --ff-only/.test(out), "behind → names git pull --ff-only", out);
+	check(!/Open a new PR for the extra commits/i.test(out), "behind → does not suggest opening a new PR", out);
+	// macroscopeapp review of #317 (PR #322): the old message just said
+	// "Run 'git pull --ff-only'" with no directory — since pr-cleanup runs
+	// FROM mainClone (which has the primary branch checked out, never
+	// $BRANCH), following it literally there fast-forwards the wrong ref
+	// and the next pr-cleanup run hits the identical refusal. The branch is
+	// checked out in its own worktree here, so the remedy must name that
+	// worktree path, not the main clone.
+	check(out.includes(sb.worktree), "behind → names the worktree the fix must run in", out);
+	check(!/git update-ref/.test(out), "behind (worktree checked out) → does not suggest update-ref, which would desync the worktree", out);
+}
+
+// --- #317/PR #322 follow-up: BEHIND, but the branch's worktree was already
+// removed (post ExitWorktree{action:"remove"}) — refs/heads/$BRANCH lives
+// only in mainClone with nothing checked out on it. Here a direct ref move
+// is safe (no worktree to desync), so the remedy must say so instead of
+// naming a worktree path that no longer exists. ---
+console.log("\nlocal branch behind the merged PR head, worktree already removed:");
+{
+	const sb = makeSandbox("42-feature", { updateBranchBeforeMerge: true });
+	git(sb.mainClone, ["worktree", "remove", "--force", sb.worktree]);
+	const { code, out } = runCleanup(sb);
+	check(code === 6, "behind, no worktree → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
+	check(localBranchExists(sb), "behind, no worktree → local branch survives", out);
+	check(remoteBranchExists(sb), "behind, no worktree → remote branch survives", out);
+	check(out.includes(sb.mainClone), "behind, no worktree → names the main clone", out);
+	check(/update-ref refs\/heads\/42-feature/.test(out), "behind, no worktree → names the update-ref remedy", out);
+}
+
+// --- #317: local and PR head have DIVERGED — neither is an ancestor of the
+// other. Built by combining an Update-branch move on the remote side with an
+// independent local-only commit off the original branchTip: neither history
+// contains the other, so both --is-ancestor checks must answer "no". ---
+console.log("\nlocal branch and PR head have diverged:");
+{
+	const sb = makeSandbox("42-feature", { updateBranchBeforeMerge: true });
+	fs.writeFileSync(path.join(sb.worktree, "diverged.txt"), "local-only work, never pushed\n");
+	git(sb.worktree, ["add", "-A"]);
+	git(sb.worktree, ["commit", "-q", "-m", "local-only divergent work"]);
+	const { code, out } = runCleanup(sb);
+	check(code === 6, "diverged → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "diverged → worktree survives", out);
+	check(localBranchExists(sb), "diverged → local branch survives", out);
+	check(remoteBranchExists(sb), "diverged → remote branch survives", out);
+	check(/diverged/i.test(out), "diverged → says diverged", out);
+	check(!/git pull --ff-only/.test(out), "diverged → does not claim a plain fast-forward fixes it", out);
+}
+
 // --- swallowed push --delete failure reported as success ---
 console.log("\nremote rejects the delete:");
 {
@@ -600,6 +698,53 @@ console.log("\nno merged PR, branch still on origin:");
 	check(code === 6, "no merged PR → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "no merged PR → worktree survives", out);
 	check(localBranchExists(sb), "no merged PR → local branch survives", out);
+	check(remoteBranchExists(sb), "no merged PR → remote branch survives (the guard #266 must not regress)", out);
+}
+
+// --- #266: wt-new's eager push means an abandoned branch that never got a PR
+// is ALWAYS "present on origin" — the old code refused this unconditionally,
+// with no ancestry check at all. A branch whose tip (local AND remote) is
+// already contained in origin/$PRIMARY_REF carries no unique work and must be
+// self-serviceable, exactly like the already-absent-from-origin case below. ---
+console.log("\nabandoned branch (wt-new's eager push): exists on origin, zero own commits (#266):");
+{
+	const sb = makeSandbox("42-feature", { prMerged: false });
+	// Simulate what wt-new actually produces: a branch pushed at creation time
+	// with nothing of its own since — reset BOTH the local tip and the remote
+	// ref back to origin/main, discarding the sandbox's default "feature work"
+	// commit so the tip is provably empty on both sides.
+	git(sb.worktree, ["fetch", "-q", "origin"]);
+	git(sb.worktree, ["reset", "-q", "--hard", "origin/main"]);
+	git(sb.worktree, ["push", "-q", "-f", "origin", sb.branch]);
+	const { code, out } = runCleanup(sb);
+	check(code === 0, "abandoned branch, exists on origin, zero own commits → exits 0", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(sb.worktree), "abandoned branch → worktree removed", out);
+	check(!localBranchExists(sb), "abandoned branch → local branch deleted", out);
+	check(!remoteBranchExists(sb), "abandoned branch → remote ref is REALLY gone, not just refused-then-ignored", out);
+}
+
+// --- Step 4 picks its --force-with-lease shape by testing `${PR_HEAD_OID:-}`
+// then `${REMOTE_TIP:-}`, but neither is assigned on every path that reaches
+// it: PR_HEAD_OID only inside the merged-PR branch, REMOTE_TIP only when
+// origin has the branch. Before the fix, a value INHERITED from the caller's
+// environment therefore decided the lease on the other paths — pinning a
+// delete to an OID this run never verified, or taking the pinned-tip arm where
+// must-not-exist was correct (macroscopeapp on PR #331). Poison both names and
+// require the outcome to be identical to the clean-environment run above. ---
+console.log("\nlease shape ignores inherited PR_HEAD_OID / REMOTE_TIP from the environment (#331):");
+{
+	const sb = makeSandbox("42-feature", { prMerged: false });
+	git(sb.worktree, ["fetch", "-q", "origin"]);
+	git(sb.worktree, ["reset", "-q", "--hard", "origin/main"]);
+	git(sb.worktree, ["push", "-q", "-f", "origin", sb.branch]);
+	const poison = {
+		PR_HEAD_OID: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		REMOTE_TIP: "cafebabecafebabecafebabecafebabecafebabe",
+	};
+	const { code, out } = runCleanup(sb, sb.mainClone, sb.branch, poison);
+	check(code === 0, "poisoned env → still exits 0 (lease chosen from this run's own checks)", `got ${code}, output:\n${out}`);
+	check(!remoteBranchExists(sb), "poisoned env → remote ref still really deleted", out);
+	check(!localBranchExists(sb), "poisoned env → local branch still deleted", out);
 }
 
 // ---

@@ -40,7 +40,7 @@ Full spec: `docs/dev-workflow-spec.md`.
 | `git-overview` | Branch + status + diff stat + recent commits in one call |
 | `wt-new <issue#>-<slug>` | Fetches, detects main/master, creates the in-tree worktree, and pushes with the correct upstream in one step (#250) |
 | `pr-open` | Pushes only if needed, refusing a diverged branch → pre-checks → `gh pr create` (the one command to ship) |
-| `pr-merge [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**) |
+| `pr-merge [--no-refresh] [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**). After a successful merge, best-effort refreshes every other open PR targeting the same base (#332 — strict status checks otherwise serialize a merge burst); never changes `pr-merge`'s exit code. `--no-refresh` opts out |
 | `pr-reject [-b <branch>] [reason]` | Closes that branch's PR without merging; defaults to the current branch (**human-only**) |
 | `pr-cleanup <branch>` | Deletes branch + remote + worktree after the PR is merged; `<branch>` is required, run from the main clone |
 | `repo-gate [<repo>...]` | Reports how each repo's live branch protection AND the policy bot login's write access (`.bot_login`) differ from `docs/repo-policy.json` (exit 6 = drift). Never writes. `--remedy <repo>` prints two commands that are **not equally runnable**: `docs/repo-gate-apply.md` teaches an agent to apply the *ruleset* fix, but the *collaborator grant* needs a separate explicit go-ahead naming that action — it changes who can push to a real repo, and #304's credential half is not built yet |

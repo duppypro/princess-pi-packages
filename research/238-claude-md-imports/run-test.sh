@@ -21,6 +21,57 @@ trap 'rm -rf "$SCRATCH"' EXIT
 
 echo "== fixtures in $SCRATCH =="
 
+# --- Harness config isolation (#245 item 3) ---------------------------------
+# Both harnesses merge a *global*, home-scope config on top of whatever
+# project fixture is loaded: Claude Code always reads ~/.claude/CLAUDE.md
+# (and ~/.claude/settings.json) as user memory, and Pi's resource-loader
+# reads <agentDir>/CLAUDE.md via loadContextFileFromDir(resolvedAgentDir)
+# (core/resource-loader.js) regardless of cwd. Without redirecting that
+# global dir to an empty scratch location, the probe's result depends on
+# whatever the developer's real global config happens to contain that day —
+# non-reproducible, and it reads the developer's real files into subprocess
+# output. Point each harness at a fresh empty dir so the fixture files above
+# are the *only* context that can load.
+#
+# CLAUDE_CONFIG_DIR is confirmed by the installed `claude` binary itself
+# (strings on the executable: "Use CLAUDE_CONFIG_DIR=/tmp for ephemeral
+# local writes" — an officially supported redirect of the whole ~/.claude
+# tree). PI_CODING_AGENT_DIR is Pi's equivalent: config.js derives
+# ENV_AGENT_DIR as `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`, and this
+# package's APP_NAME is "pi" (no piConfig.name override), so the var is
+# PI_CODING_AGENT_DIR — confirmed by reading config.js's getAgentDir().
+CLAUDE_CONFIG_ISOLATED="$SCRATCH/claude-config"
+PI_CONFIG_ISOLATED="$SCRATCH/pi-agent"
+mkdir -p "$CLAUDE_CONFIG_ISOLATED" "$PI_CONFIG_ISOLATED"
+
+# Resolve the CALLER's own config dirs before the isolation exports below
+# (CLAUDE_CONFIG_DIR at line ~104, PI_CODING_AGENT_DIR at line ~114)
+# reassign those same variables. A developer who already runs with a custom
+# CLAUDE_CONFIG_DIR/PI_CODING_AGENT_DIR keeps their credentials there, not
+# under $HOME — hardcoding the $HOME path would silently find nothing for
+# them and the probe would misreport "not logged in". (#327 review)
+SOURCE_CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SOURCE_PI_CONFIG_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+
+# Carry over only the credential file, never CLAUDE.md/settings.json/memory —
+# redirecting the whole config dir also redirects where each harness looks
+# for its login, so an empty isolated dir can authenticate with nobody
+# logged in. Copying just the credential file keeps the probe runnable
+# without reintroducing the ambient CLAUDE.md/settings this fix isolates
+# against. A missing credential file is reported loudly with the exact path
+# looked at, rather than left to surface later as a confusing "not logged
+# in" from the harness itself.
+if [ -f "$SOURCE_CLAUDE_CONFIG_DIR/.credentials.json" ]; then
+  cp "$SOURCE_CLAUDE_CONFIG_DIR/.credentials.json" "$CLAUDE_CONFIG_ISOLATED/.credentials.json"
+else
+  echo "⚠ no Claude Code credentials found at $SOURCE_CLAUDE_CONFIG_DIR/.credentials.json — Claude Code probes below will report 'not logged in'" >&2
+fi
+if [ -f "$SOURCE_PI_CONFIG_DIR/auth.json" ]; then
+  cp "$SOURCE_PI_CONFIG_DIR/auth.json" "$PI_CONFIG_ISOLATED/auth.json"
+else
+  echo "⚠ no Pi credentials found at $SOURCE_PI_CONFIG_DIR/auth.json — the Pi probe below will report 'not logged in'" >&2
+fi
+
 # --- Fixture 1: basic relative @import -------------------------------------
 mkdir -p "$SCRATCH/basic"
 printf 'See @./imported.md for context.\n' > "$SCRATCH/basic/CLAUDE.md"
@@ -64,12 +115,18 @@ run_probe() {
 echo
 echo "== Claude Code =="
 
+export CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_ISOLATED"
+
 run_probe "basic relative import (expect: FLAMINGO42)" "$SCRATCH/basic" claude -p "$PROMPT"
 run_probe "import of a missing file (expect: no error, session proceeds)" "$SCRATCH/missing" claude -p "Just say OK."
 run_probe "external absolute-path import, headless/non-interactive (expect: NONE — approval dialog can't fire, so the import stays disabled)" "$SCRATCH/external" claude -p "$PROMPT"
 
 echo
 echo "== Pi (@earendil-works/pi-coding-agent) =="
+
+unset CLAUDE_CONFIG_DIR
+export PI_CODING_AGENT_DIR="$PI_CONFIG_ISOLATED"
+
 # --no-extensions: an unrelated pre-existing bug in this machine's wtft
 # extension (a session-end timer touching a stale ctx) throws after the
 # answer prints, turning a clean probe into a nonzero exit. Disabling
