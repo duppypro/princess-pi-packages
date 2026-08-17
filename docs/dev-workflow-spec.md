@@ -894,12 +894,16 @@ the two collapsed conditions apart:
   their URLs and the `--resolve` invocation. This is stated as **our** policy, not a
   prediction about the server: a reviewer asked a question and nobody answered it, and that
   is worth refusing over even where the ruleset does not require resolution.
-- **`mergeStateStatus`** of `CLEAN`, `HAS_HOOKS`, or `UNSTABLE` → merge. `UNSTABLE` means
-  non-required checks are red, which the web UI merges too.
-- **`BEHIND` / `DIRTY` / `DRAFT` / `BLOCKED`** → refuse (exit `6`), quoting GitHub's verdict
-  verbatim and naming the actionable fix (`gh pr update-branch`, resolve conflicts, mark
-  ready). `BLOCKED` additionally prints `pr-threads` output as context. An **unrecognised**
-  status refuses rather than guesses.
+- **`mergeStateStatus`** of `CLEAN`, `HAS_HOOKS`, `UNSTABLE`, or `BEHIND` → merge. `UNSTABLE`
+  means non-required checks are red, which the web UI merges too. `BEHIND` means the head ref
+  is out of date, which only blocks where the repo requires up-to-date branches — refusing it
+  up front would be this same bug one state over, and these scripts run against every repo
+  under `~/git-projects`, not only the ones with `strict_required_status_checks_policy`. If
+  the server *does* refuse a `BEHIND` merge, the failure path names the remedy
+  (`gh pr update-branch <pr>`) — guidance after a real refusal, not instead of one.
+- **`DIRTY` / `DRAFT` / `BLOCKED`** → refuse (exit `6`), quoting GitHub's verdict verbatim and
+  naming the actionable fix (resolve conflicts, mark ready). `BLOCKED` additionally prints
+  `pr-threads` output as context. An **unrecognised** status refuses rather than guesses.
 - **Head coverage** is a warning that never blocks — nothing enforces it, and the human can
   see the sha. It stays visible because #254's case is real: a bot that reviews once per PR
   never sees the commits written in response to its own findings.

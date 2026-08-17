@@ -372,13 +372,15 @@ fi
 # Everything else gets refused for the reason GITHUB gave, quoted verbatim, so
 # no message here asserts a rule this script never read.
 case "$MERGE_STATE" in
-  CLEAN|HAS_HOOKS|UNSTABLE) ;;
-  BEHIND)
-    echo "❌ pr-merge: PR #$PR is BEHIND its base — GitHub refuses the merge until the" >&2
-    echo "   branch is updated (this repo requires branches to be up to date)." >&2
-    echo "   Fix: gh pr update-branch $PR   (or merge from the web UI, which offers it)" >&2
-    exit 6
-    ;;
+  # BEHIND is in the ELIGIBLE list, not refused. "The head ref is out of date"
+  # only blocks where the repo requires branches to be up to date; without that
+  # setting GitHub merges a behind branch happily. Refusing here would be this
+  # PR's own bug one state over — predicting a rule instead of reading it — and
+  # these scripts run against every repo under ~/git-projects, not just the one
+  # whose ruleset sets strict_required_status_checks_policy. The merge attempt
+  # is cheap and non-destructive; if the server does refuse, the failure path
+  # below turns its error into the actionable fix.
+  CLEAN|HAS_HOOKS|UNSTABLE|BEHIND) ;;
   DIRTY)
     echo "❌ pr-merge: PR #$PR has merge conflicts with its base (mergeStateStatus=DIRTY)." >&2
     echo "   Resolve them on the branch, then re-run." >&2
@@ -531,6 +533,13 @@ MERGE_STATUS=$?
 set -e
 if [ "$MERGE_STATUS" -ne 0 ]; then
   echo "   ❌ ERROR: 'gh pr merge' failed for PR #$PR (gh exit $MERGE_STATUS) — the merge did NOT happen." >&2
+  # The one state where gh's own error is famously unhelpful and the remedy is
+  # exact. We no longer refuse BEHIND up front (the server decides), so this is
+  # where that guidance has to live — after a real refusal, not instead of one.
+  if [ "$MERGE_STATE" = "BEHIND" ]; then
+    echo "   PR #$PR was BEHIND its base and this repo requires branches to be up to date." >&2
+    echo "   Fix: gh pr update-branch $PR   (or merge from the web UI, which offers it)" >&2
+  fi
   echo "   No other PR was refreshed: refresh runs only after a merge succeeds." >&2
   exit 5
 fi

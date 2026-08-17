@@ -758,13 +758,35 @@ console.log("\nserver says BLOCKED:");
 	check(/BLOCKED/.test(out), "BLOCKED → quotes the server's own verdict", out);
 }
 
-console.log("\nserver says BEHIND (base moved under strict status checks):");
+// BEHIND is ELIGIBLE, not refused (macroscopeapp finding on PR #354, rated
+// High; adopted). "Head ref is out of date" only blocks where the repo requires
+// up-to-date branches — refusing it outright would be this PR's own bug one
+// state over. The server gets to say no, and only then do we explain how to fix
+// it. Both halves are asserted, because "let it through" is only correct if the
+// guidance survives somewhere.
+console.log("\nserver says BEHIND, and the server accepts it:");
 {
 	const sb = makeSandbox("42-feature", { threadState: "clean", mergeState: "BEHIND" });
 	const { code, out } = runPrMerge(sb);
-	check(code === 6, "BEHIND → exit 6", `got ${code}, output:\n${out}`);
-	check(!merged(sb), "BEHIND → gh pr merge never called", out);
-	check(/update/i.test(out), "BEHIND → says to update the branch", out);
+	check(code === 0, "BEHIND + server accepts → merges", `got ${code}, output:\n${out}`);
+	check(merged(sb), "BEHIND + server accepts → gh pr merge WAS called", out);
+}
+
+console.log("\nserver says BEHIND and then refuses the merge:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		mergeState: "BEHIND",
+		failGhMerge: true,
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code === 5, "BEHIND + server refuses → exit 5", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "BEHIND + server refuses → no merge recorded", out);
+	check(
+		/update-branch/.test(out),
+		"BEHIND + server refuses → names the exact remedy, after the attempt",
+		out,
+	);
 }
 
 console.log("\nserver says DIRTY / mergeable CONFLICTING:");
