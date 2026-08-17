@@ -2210,6 +2210,7 @@ var IDLE_EXIT_MS = 24 * 60 * 60 * 1000;
 var TAG_SUFFIX = `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`;
 var POLL_MS = 667;
 var IDLE_EXIT_MS2 = 24 * 60 * 60 * 1000;
+var SESSION_WAIT_MAX_MS = 60 * 60 * 1000;
 var sessionPath = "";
 var tagPath = "";
 var pidPath = "";
@@ -2502,7 +2503,31 @@ function followMovedSession() {
 function sessionIsGone(sessionCmdlinePath) {
   if (fs9.existsSync(sessionCmdlinePath))
     return false;
-  return resolveMovedSession(sessionCmdlinePath) === null;
+  if (resolveMovedSession(sessionCmdlinePath) !== null)
+    return false;
+  return sessionWasEverParsed(sessionCmdlinePath);
+}
+function sessionWasEverParsed(sessionCmdlinePath) {
+  try {
+    const tagsDir = path9.join(path9.dirname(sessionCmdlinePath), "wtft-tags");
+    const prefix = path9.basename(sessionCmdlinePath) + ".wtft-tag.v";
+    for (const f of fs9.readdirSync(tagsDir)) {
+      if (!f.startsWith(prefix))
+        continue;
+      const content = fs9.readFileSync(path9.join(tagsDir, f), "utf8");
+      for (const line of content.split(`
+`)) {
+        if (!line.trim())
+          continue;
+        try {
+          const o = JSON.parse(line);
+          if (o.cat !== undefined || o._meta !== undefined)
+            return true;
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  return false;
 }
 var WARN_LOG_DIR = path9.join(os5.homedir(), ".local", "state", "wtft");
 var WARN_LOG = path9.join(WARN_LOG_DIR, "reap.log");
@@ -2546,7 +2571,7 @@ function reapAndWarn() {
       } catch (_) {}
       continue;
     }
-    if (sessionFound && sessionIsGone(sessionFound)) {
+    if (pid !== process.pid && sessionFound && sessionIsGone(sessionFound)) {
       process.kill(pid, "SIGTERM");
       try {
         fs9.unlinkSync(fullPath);
@@ -2962,6 +2987,10 @@ Daemon mode:
         }
       }
       const now = Date.now();
+      if (!sessionExisted && now - startupTime >= SESSION_WAIT_MAX_MS) {
+        shutdown("session never written");
+        return;
+      }
       if (idleStartMs === 0)
         idleStartMs = now;
       upsertHeartbeat(now);

@@ -3910,6 +3910,26 @@ function checkDaemonHealth(sessionPath, tagPath) {
   const timeStr = `${hh}:${mm}`;
   return { alive: false, reason: "idle-timeout", lastHbTime: timeStr };
 }
+async function awaitDaemonUp(sessionPath, child, ceilingMs, pollMs = 50) {
+  const start = Date.now();
+  const leaseAlive = () => checkDaemonHealth(sessionPath, getCurrentVersionTagPath(sessionPath)).alive;
+  for (;; ) {
+    if (leaseAlive()) {
+      return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null };
+    }
+    const exitCode = child ? child.exitCode : null;
+    const signalCode = child ? child.signalCode : null;
+    if (child && (exitCode !== null || signalCode !== null)) {
+      if (leaseAlive())
+        return { state: "up", exitCode, signalCode };
+      return { state: "dead", exitCode, signalCode };
+    }
+    if (Date.now() - start >= ceilingMs) {
+      return { state: "unknown", exitCode, signalCode };
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
 function restartDaemon(sessionPath, daemonPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   try {
@@ -3934,11 +3954,12 @@ function restartDaemon(sessionPath, daemonPath) {
     return false;
   }
 }
-async function watchTagFile(sessionPath, tagPath, settings) {
+async function watchTagFile(sessionPath, tagPathHint, settings) {
   if (!process.stdout.isTTY) {
     console.error("❌ --watch requires a real terminal (TTY). Refusing to start.");
     process.exit(1);
   }
+  let tagPath = fs8.existsSync(tagPathHint) ? tagPathHint : getCurrentVersionTagPath(sessionPath);
   let totalCost = 0;
   let interactionCount = 0;
   let needsRedraw = true;
@@ -4155,6 +4176,8 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       }
       for (const l of lines)
         buf.push(l);
+    } else if (!fs8.existsSync(sessionPath)) {
+      buf.push("\x1B[90mWaiting for session .jsonl to be written (first prompt not completed yet)...\x1B[0m");
     } else {
       buf.push("\x1B[90mWaiting for session data...\x1B[0m");
     }
@@ -4230,17 +4253,51 @@ async function watchTagFile(sessionPath, tagPath, settings) {
       }
     });
   };
+  const child = settings.daemonChild ?? null;
+  const NO_HANDLE_CEILING_MS = 5000;
+  const teardownForError = () => {
+    if (daemonWatchdog)
+      clearTimeout(daemonWatchdog);
+    if (lastLineCount > 0)
+      clearPreviousLines(lastLineCount);
+    showCursor();
+    cleanupStdin();
+  };
   const fileWaitStart = Date.now();
-  while (!fs8.existsSync(tagPath) && Date.now() - fileWaitStart < 5000) {
+  for (;; ) {
+    if (fs8.existsSync(tagPath))
+      break;
+    const resolved = getCurrentVersionTagPath(sessionPath);
+    if (resolved !== tagPath && fs8.existsSync(resolved)) {
+      tagPath = resolved;
+      break;
+    }
+    const childExited = child ? child.exitCode !== null || child.signalCode !== null : false;
+    const leaseAlive = checkDaemonHealth(sessionPath, tagPath).alive;
+    if (child && childExited && !leaseAlive) {
+      teardownForError();
+      const how = child.signalCode ? `on ${child.signalCode}` : `with code ${child.exitCode}`;
+      console.error(`❌ wtft-daemon exited ${how} before creating its tag file.`);
+      console.error(`   Expected: ${tagPath}`);
+      process.exit(1);
+    }
+    if (!child && Date.now() - fileWaitStart > NO_HANDLE_CEILING_MS && !leaseAlive) {
+      teardownForError();
+      console.error(`❌ No wtft-daemon holds the lease for this session and no tag file appeared within ${NO_HANDLE_CEILING_MS / 1000}s. Is wtft-daemon installed?`);
+      console.error(`   Expected: ${tagPath}`);
+      process.exit(1);
+    }
     await new Promise((r) => setTimeout(r, 250));
   }
-  if (fs8.existsSync(tagPath)) {
-    startWatching();
-  } else {
-    console.error("❌ Log parser daemon did not create tag file within 5s. Is wtft-daemon installed?");
-    console.error(`   Expected: ${tagPath}`);
-    process.exit(1);
+  allInteractions = readClassifiedTagFile(tagPath);
+  try {
+    lastReadOffset = fs8.statSync(tagPath).size;
+  } catch {
+    lastReadOffset = 0;
   }
+  needsRedraw = true;
+  render();
+  startWatching();
   setTimeout(() => {
     updateDaemonHealth();
     needsRedraw = true;
@@ -4731,6 +4788,9 @@ function parseWtftCliArgs(argv) {
     thinkingBudget
   };
 }
+function isPendingSessionPath(p) {
+  return path10.isAbsolute(p) && p.endsWith(".jsonl") && !p.includes(".wtft-tag.v");
+}
 function spawnWtftDaemon(sessionPath, daemonDir) {
   const daemonPath = path10.join(daemonDir, "wtft-daemon.mjs");
   try {
@@ -4872,9 +4932,13 @@ async function main() {
   }
   const candidates = discoverSessions(opts.harnessOption, opts.cwdOverride);
   let finalSessionPath = "";
+  let sessionPending = false;
   if (opts.targetSession) {
     if (fs12.existsSync(opts.targetSession)) {
       finalSessionPath = opts.targetSession;
+    } else if (isPendingSessionPath(opts.targetSession)) {
+      finalSessionPath = opts.targetSession;
+      sessionPending = true;
     } else {
       const filter = opts.targetSession.toLowerCase();
       const filtered = candidates.filter((c) => c.path.toLowerCase().includes(filter) || c.name.toLowerCase().includes(filter));
@@ -4897,7 +4961,7 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !fs12.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !sessionPending && !fs12.existsSync(finalSessionPath)) {
     console.error("❌ Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
@@ -4927,17 +4991,15 @@ async function main() {
     console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path11.basename(finalSessionPath)}\x1B[0m`);
   }
   if (opts.showWatch) {
-    const sessionDir2 = path11.dirname(finalSessionPath);
-    const sessionBase2 = path11.basename(finalSessionPath);
-    const tagsDir2 = path11.join(sessionDir2, "wtft-tags");
-    const tagPath2 = path11.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+    const tagPath2 = getCurrentVersionTagPath(finalSessionPath);
     const daemonPath = path11.join(daemonDir, "wtft-daemon.mjs");
-    if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
+    const daemonChild2 = spawnWtftDaemon(finalSessionPath, daemonDir);
+    if (!daemonChild2) {
       console.error(`\x1B[31m❌ Failed to start log parser daemon: ${daemonPath}\x1B[0m`);
       process.exit(1);
     }
-    await new Promise((resolve5) => setTimeout(resolve5, 500));
     await watchTagFile(finalSessionPath, tagPath2, {
+      daemonChild: daemonChild2,
       interval: opts.hasInterval ? opts.interval : "1h",
       limit: opts.hasLimit ? opts.limit : 100,
       mode: opts.hasMode ? opts.mode : "cumulative",
@@ -4954,17 +5016,28 @@ async function main() {
     });
     return;
   }
-  const sessionDir = path11.dirname(finalSessionPath);
-  const sessionBase = path11.basename(finalSessionPath);
-  const tagsDir = path11.join(sessionDir, "wtft-tags");
-  const tagPath = path11.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
-  if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
+  const tagPath = getTagPath(finalSessionPath);
+  const daemonChild = spawnWtftDaemon(finalSessionPath, daemonDir);
+  if (!daemonChild) {
     console.error(`\x1B[31m❌ wtft-daemon not found at ${path11.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
     process.exit(1);
   }
   let interactions = [];
   if (fs12.existsSync(tagPath)) {
     interactions = readClassifiedTagFile(tagPath);
+  }
+  if (interactions.length === 0 && !fs12.existsSync(finalSessionPath)) {
+    const DAEMON_START_CEILING_MS = 5000;
+    const startup = await awaitDaemonUp(finalSessionPath, daemonChild, DAEMON_START_CEILING_MS);
+    if (startup.state === "dead") {
+      const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
+      console.error(`\x1B[31m❌ wtft-daemon exited ${how} before claiming this session — nothing is waiting on ${finalSessionPath}\x1B[0m`);
+      console.error(`\x1B[90mExpected the daemon at ${path11.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
+      process.exit(1);
+    }
+    console.log(`\x1B[33mSession log not written yet: ${finalSessionPath}\x1B[0m`);
+    console.log(`\x1B[90mClaude Code writes its first line after the first real prompt (not a /command) completes. ` + `The wtft daemon is running and waiting on it — run again after the first response, or use --watch to stay attached.\x1B[0m`);
+    process.exit(0);
   }
   if (interactions.length === 0) {
     const tagWaitStart = Date.now();
@@ -4979,6 +5052,12 @@ async function main() {
   }
   if (interactions.length === 0) {
     const sessionName = path11.basename(finalSessionPath).replace(/.jsonl$/, "");
+    const startup = await awaitDaemonUp(finalSessionPath, daemonChild, 0);
+    if (startup.state === "dead") {
+      const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
+      console.error(`\x1B[31m❌ wtft-daemon exited ${how} before writing any classified data for session ${sessionName.slice(0, 12)}….\x1B[0m`);
+      process.exit(1);
+    }
     console.log(`\x1B[33mDaemon started on session ${sessionName.slice(0, 12)}… — no data yet. Try again in a moment.\x1B[0m`);
     process.exit(0);
   }
