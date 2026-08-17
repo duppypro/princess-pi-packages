@@ -1,5 +1,5 @@
 /**
- * Git Guardrails core decision logic (#70, #74) — harness-independent.
+ * Git Guardrails core decision logic (#70, #74, #301) — harness-independent.
  *
  * Pure functions, no Pi imports, so tests/git-guardrails-parity.test.ts can
  * exercise this directly. The Pi extension (extensions/git-guardrails.ts)
@@ -9,6 +9,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 // --- Helpers ---
@@ -21,8 +22,18 @@ function currentBranch(cwd: string): string {
   }
 }
 
+// Sentinel for "the effective cwd is UNKNOWN" (PR #305 round 4): a cd whose
+// operand cannot be resolved here (`cd "$VAR"` set in an earlier tool call,
+// `cd ~user`) may have moved the real shell into a main checkout, so the model
+// does not stay put — it becomes unknown, and unknown is treated as protected by
+// every branch-scoped check until a resolvable cd (or `cd -`/popd) restores it.
+// A double-slash path is never a real directory, so it rides through the
+// scope/snapshot plumbing as an ordinary cwd value.
+const UNKNOWN_CWD = "//unknown";
+
 function isMainRef(ref: string): boolean {
   return (
+    ref === UNKNOWN_CWD || // unknown effective cwd is protected (fail-closed)
     ref === "main" ||
     ref === "master" ||
     ref === "refs/heads/main" ||
@@ -52,6 +63,140 @@ function branchOf(cPath: string, hookCwd: string, gitDir = ""): string {
     }
   }
   return currentBranch(dir);
+}
+
+// ---
+// Line-state (#301). The hook runs BEFORE the line executes, so every
+// sub-command would otherwise be judged against the tool-call cwd and the
+// branch that repo is on right now. Two things an earlier sub-command in the
+// same line changes for the later ones:
+//   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
+//          `pushd` reset it to the tool-call cwd; an unresolvable operand makes it
+//          UNKNOWN, which every branch-scoped check treats as protected.
+//   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan <name>` mark
+//          the repo they ran in as being on <name> for the rest of the line
+//          (so `git checkout -b 301-slug && git commit` is allowed on main);
+//          a plain `checkout main` / `switch main` marks it as on main (so
+//          `git checkout main && git commit` is blocked from a feature branch).
+//          A plain `checkout <other>` does NOT lift: the positional may be a
+//          path (file restore) and guessing fails open.
+// The lift is keyed to the repo that switched (-C/--git-dir/cwd resolved), so
+// `git -C other checkout -b x && git commit` still judges the cwd repo.
+// ---
+export interface LineState {
+  cwd: string;
+  origCwd: string;
+  /** repo key → branch it was switched to earlier in the line — one entry per
+   *  repo, so a two-repo line does not clobber itself (PR #305 review). */
+  lifts: Map<string, string>;
+  /** `(` pushes the effective cwd + vars, `)` pops them — nothing set inside a
+   *  subshell group reaches the parent shell (PR #305 review, twice). Lifts are
+   *  not scoped: a branch switch inside a group happened on disk. */
+  scopeStack: { cwd: string; vars: Map<string, string> }[];
+  /** Literal `NAME=value` assignments seen earlier in the line, so `cd "$WT"`
+   *  and `checkout -b "$BRANCH"` can be resolved. Unresolvable = unknown, and
+   *  unknown never moves the cwd or lifts the gate (fail-closed). */
+  vars: Map<string, string>;
+}
+
+function newLineState(cwd: string): LineState {
+  return { cwd, origCwd: cwd, lifts: new Map(), scopeStack: [], vars: new Map() };
+}
+
+type Snapshot = { cwd: string; vars: Map<string, string>; lifts: Map<string, string> };
+function snapshot(st: LineState): Snapshot {
+  return { cwd: st.cwd, vars: new Map(st.vars), lifts: new Map(st.lifts) };
+}
+function restore(st: LineState, sn: Snapshot): void {
+  st.cwd = sn.cwd; st.vars = sn.vars; st.lifts = sn.lifts;
+}
+
+/**
+ * Resolve $NAME / ${NAME} in a word from the line's assignments, then this
+ * process's environment (HOME, PWD and other exported names are shared with
+ * the tool's shell). Returns null when anything is left unresolved — command
+ * substitution, an unknown variable — so the caller fails closed instead of
+ * trusting a literal '$WT'.
+ */
+function expandWord(w: string, st: LineState): string | null {
+  if (w.includes("`") || w.includes("$(")) return null;
+  const out = w.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (m, name: string) => {
+    const v = st.vars.get(name) ?? process.env[name];
+    return v === undefined ? "\u0000" : v;
+  });
+  if (out.includes("\u0000") || out.includes("$")) return null;
+  return out;
+}
+
+/** `NAME=value` (or `export NAME=value`) STANDING ALONE as a sub-command. */
+function recordAssignment(T: string[], st: LineState): boolean {
+  let w = T[0];
+  if (w === "export") { if (T.length !== 2) return false; w = T[1]; }
+  else if (T.length !== 1) return false; // `VAR=x git commit` is a command with a prefix
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(w);
+  if (!m) return false;
+  if (!m[2].includes("$") && !m[2].includes("`")) st.vars.set(m[1], m[2]);
+  return true;
+}
+
+/** Does <ref> exist in the repo the sub-command acts on? Same -C/--git-dir resolution as branchOf. */
+function refExists(cPath: string, st: LineState, gitDir: string, ref: string): boolean {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  try {
+    execSync(`git show-ref --verify --quiet ${JSON.stringify(ref)}`, {
+      cwd: dir || ".",
+      stdio: "ignore",
+      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function repoKey(cPath: string, cwd: string, gitDir: string): string {
+  const dir = cPath ? resolve(cwd || ".", cPath) : cwd;
+  return `${dir}|${gitDir ? resolve(dir || ".", gitDir) : ""}`;
+}
+
+/** Branch the sub-command acts on, honouring an earlier switch in the same line. */
+function effectiveBranch(cPath: string, st: LineState, gitDir = ""): string {
+  // unknown cwd + a relative (or absent) -C target → the branch is unknowable
+  if (st.cwd === UNKNOWN_CWD && (!cPath || !cPath.startsWith("/"))) return UNKNOWN_CWD;
+  const lifted = st.lifts.get(repoKey(cPath, st.cwd, gitDir));
+  if (lifted !== undefined) return lifted;
+  return branchOf(cPath, st.cwd, gitDir);
+}
+
+/** `cd`/`pushd`/`popd` as the FIRST word of a sub-command moves the effective cwd. */
+function applyCd(T: string[], st: LineState): boolean {
+  const w = T[0]?.slice(T[0].lastIndexOf("/") + 1);
+  if (w !== "cd" && w !== "pushd" && w !== "popd") return false;
+  const home = process.env.HOME || "";
+  if (w === "pushd" && T.includes("-n")) return true; // rotates the stack, no directory change (PR #305 round 3)
+  const positionals = T.slice(1).filter((t) => !t.startsWith("-") || t === "-");
+  if (positionals.length > 1) return true; // bash rejects `cd a b` — the real shell stays put (PR #305 round 4)
+  const rawArg = positionals[0];
+  if (w === "popd" || rawArg === "-" || (w === "pushd" && rawArg === undefined)) {
+    st.cwd = st.origCwd; // previous directory is unknowable here — never guess
+    return true;
+  }
+  let target: string;
+  if (rawArg === undefined || rawArg === "~") {
+    target = home;
+  } else {
+    const arg = expandWord(rawArg, st);
+    if (arg === null) { st.cwd = UNKNOWN_CWD; return true; } // unresolvable → the cwd is UNKNOWN (protected)
+    if (arg.startsWith("~/")) target = resolve(home, arg.slice(2));
+    else if (arg.startsWith("~")) { st.cwd = UNKNOWN_CWD; return true; } // `~user` — not resolved here → unknown
+    else if (arg.startsWith("/")) target = arg;
+    else if (st.cwd === UNKNOWN_CWD) return true; // relative from unknown stays unknown
+    else target = resolve(st.cwd || ".", arg);
+  }
+  // The cwd only moves to a directory that EXISTS: a failing `cd /nope; git
+  // commit` leaves the real shell where it was, so the model must too.
+  if (existsSync(target) && statSync(target).isDirectory()) st.cwd = target;
+  return true;
 }
 
 // ---
@@ -128,7 +273,7 @@ const PUSH_ARG_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--ex
 // ---
 // Push-target parsing (#74): returns a block reason, or null to allow.
 // ---
-function checkPush(tokens: string[], cPath: string, hookCwd: string, gitDir: string): string | null {
+function checkPush(tokens: string[], cPath: string, st: LineState, gitDir: string): string | null {
   let remote = "";
   const refspecs: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -157,7 +302,7 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string, gitDir: str
 
   if (refspecs.length === 0) {
     // Bare push (at most a remote): the affected repo's current branch decides
-    if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
+    if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
       return "pushes current branch main/master.";
     }
     return null;
@@ -177,7 +322,7 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string, gitDir: str
       // symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       // same-named remote ref — resolve it instead of matching the literal
       // string (#74 review finding 8)
-      if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
+      if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
         return "pushes current branch (HEAD) to main/master.";
       }
       continue;
@@ -251,11 +396,19 @@ function splitOutsideQuotes(s: string): string[] {
       q = ch;
       cur += ch;
     } else if (ch === "\n" || ch === ";") {
-      subs.push(cur);
+      // Separators become standalone MARKER entries so the walk can model
+      // control flow (PR #305 review round 2): ';' ends a chain, '&&'/'||'
+      // make what follows conditional, '|' and a single '&' put the adjacent
+      // sub-command in a subshell, '(' / ')' open/close a scope. `$(…)`
+      // bodies were already inspected by checkSubstitutions.
+      subs.push(cur, ";");
+      cur = "";
+    } else if (ch === "(" || ch === ")") {
+      subs.push(cur, ch);
       cur = "";
     } else if (ch === "&" || ch === "|") {
-      if (s[i + 1] === ch) i++; // && or ||
-      subs.push(cur);
+      if (s[i + 1] === ch) { i++; subs.push(cur, "&&"); } // && or || — conditional
+      else subs.push(cur, ch);
       cur = "";
     } else {
       cur += ch;
@@ -318,7 +471,7 @@ function isGuardedWord(t: string): boolean {
 // regions are literal and skipped; bodies recurse through the whole check
 // (#105 / the command-substitution residual documented at findings 14+15).
 // ---
-function checkSubstitutions(s: string, hookCwd: string): string | null {
+function checkSubstitutions(s: string, st: LineState): string | null {
   // Double-quote state is load-bearing (#208/#105): inside "…" an apostrophe is
   // ORDINARY TEXT, not a quote delimiter, while $( ) and ` ` still expand. The
   // scan used to treat every ' as opening a literal region, so the first
@@ -357,7 +510,7 @@ function checkSubstitutions(s: string, hookCwd: string): string | null {
         }
         j++;
       }
-      const reason = checkGitCommand(s.slice(i + 2, j), hookCwd);
+      const reason = checkChild(s.slice(i + 2, j), st);
       if (reason) return reason;
       i = j;
     } else if (ch === "`") {
@@ -366,7 +519,7 @@ function checkSubstitutions(s: string, hookCwd: string): string | null {
         if (s[j] === "\\") j++;
         j++;
       }
-      const reason = checkGitCommand(s.slice(i + 1, j), hookCwd);
+      const reason = checkChild(s.slice(i + 1, j), st);
       if (reason) return reason;
       i = j;
     }
@@ -397,7 +550,7 @@ type PrefixScan =
  * `GH_HOST=… gh pr merge` — walked straight through the human-only merge gate.
  * One parser, two consumers: a wrapper learned here is understood by both.
  */
-function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
+function skipBenignPrefix(T: string[], st: LineState): PrefixScan {
   let i = 0;
   let wrapperArgOpts: Set<string> | null = null; // arg-consuming options of the wrapper we're inside
   while (i < T.length && !isGuardedWord(T[i])) {
@@ -413,7 +566,7 @@ function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
         const a = T[j];
         if (a === "-c" || /^-[A-Za-z]*c[A-Za-z]*$/.test(a)) {
           const nested = T[j + 1];
-          return { kind: "verdict", reason: nested ? checkGitCommand(nested, hookCwd) : null };
+          return { kind: "verdict", reason: nested ? checkChild(nested, st) : null };
         }
         if (!a.startsWith("-")) break;
       }
@@ -421,7 +574,8 @@ function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
     }
     if (t === "eval") {
       // eval concatenates and re-parses its arguments as a shell command
-      return { kind: "verdict", reason: checkGitCommand(T.slice(i + 1).join(" "), hookCwd) };
+      // eval runs in the SAME shell: its cd and lifts persist — share the state
+      return { kind: "verdict", reason: checkWithState(T.slice(i + 1).join(" "), st) };
     }
     const opts = GIT_WRAPPERS.get(base);
     if (opts) {
@@ -443,11 +597,55 @@ function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
   return { kind: "start", i };
 }
 
+// Sub-commands that create or move commits on the current branch (#301).
+const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "pull"]);
+const UNDOABLE = new Set(["merge", "rebase", "cherry-pick", "am"]);
+// Options whose SEPARATE next word is an argument. Over-skipping is safe (a
+// missed --abort/--ff-only only blocks); under-skipping is the fail-open case.
+const ARG_OPTIONS = new Set([
+  "-m", "-F", "-C", "-c", "-s", "-X", "-S", "-x", "--message", "--file", "--strategy",
+  "--strategy-option", "--onto", "--exec", "--author", "--date", "--template", "--fixup",
+  "--squash", "--reuse-message", "--reedit-message", "--gpg-sign", "--cleanup",
+  "--into-name", "--patch-format", "--whitespace", "--directory", "--exclude", "--include",
+  "--mainline",
+]);
+
+/**
+ * Record a branch switch for the rest of the line (#301 line-state).
+ * Only an unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate;
+ * a plain positional lowers it when it names main/master and is otherwise
+ * ignored (it may be a pathspec — guessing would fail open). A `--` means
+ * pathspecs follow: file restore, no switch at all.
+ */
+function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
+  if (rest.includes("--")) return;
+  const createOpts = cmd === "checkout"
+    ? new Set(["-b", "-B", "--orphan"])
+    : new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
+  let target = "";
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (createOpts.has(t)) { target = rest[i + 1] ?? ""; break; }
+    if (t.startsWith("-")) continue;
+    if (isMainRef(t)) { target = t; break; } // moving TO main lowers the gate
+    return; // positional that is not main: could be a path — no line-state change
+  }
+  if (!target) return;
+  const resolved = expandWord(target, st);
+  if (resolved === null) return; // '$BRANCH' unresolved → no lift (fail-closed)
+  // `checkout -b` / `switch -c` / `--orphan` FAIL when the branch already
+  // exists, leaving the repo on main — so an existing name must not lift
+  // (PR #305 review). -B / -C / --force-create reset-or-create and always land.
+  const force = rest.some((t) => t === "-B" || t === "-C" || t === "--force-create");
+  if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
+  st.lifts.set(repoKey(cPath, st.cwd, gitDir), resolved);
+}
+
 /**
  * Inspect a git invocation. `start` indexes the `git` word itself — the benign
  * prefix before it has already been consumed by skipBenignPrefix.
  */
-function checkGitSubcommand(T: string[], start: number, hookCwd: string): string | null {
+function checkGitSubcommand(T: string[], start: number, st: LineState): string | null {
   let i = start + 1;
 
   // git global options before the subcommand; capture -C <path> and
@@ -482,10 +680,10 @@ function checkGitSubcommand(T: string[], start: number, hookCwd: string): string
   const rest = T.slice(i + 1);
 
   if (cmd === "push") {
-    return checkPush(rest, cPath, hookCwd, gitDir);
+    return checkPush(rest, cPath, st, gitDir);
   }
   if (cmd === "reset" && rest.includes("--hard")) {
-    if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
+    if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
       return "hard-resets on main/master.";
     }
     return null;
@@ -526,6 +724,44 @@ function checkGitSubcommand(T: string[], start: number, hookCwd: string): string
     if (rest.includes(".")) {
       return `discards uncommitted work ('git ${cmd} .', always blocked).`;
     }
+    if (cmd === "checkout") applyLift(cmd, rest, cPath, gitDir, st);
+    return null;
+  }
+  if (cmd === "switch") {
+    applyLift(cmd, rest, cPath, gitDir, st);
+    return null;
+  }
+  // Commits on main are blocked, not just pushes (#301, btw#21): main advances
+  // only through PRs, so every enforced check concentrates on PR review.
+  // `git-checkpoint` already refuses on main (#225); this closes the raw-git
+  // path. --abort/--quit undo (allowed); --ff-only creates no commit (allowed,
+  // Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit on a
+  // diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are not in
+  // this set — the escape from main can never deadlock.
+  if (COMMIT_LIKE.has(cmd)) {
+    // Option ARGUMENTS are not options: `git commit -m --abort` is a commit
+    // whose message is '--abort' (PR #305 review). Skip the word after any
+    // argument-taking option, stop at `--`, and honour --abort/--quit only
+    // for the sub-commands that have them.
+    let ffOnly = false;
+    for (let k = 0; k < rest.length; k++) {
+      const t = rest[k];
+      if (t === "--") break;
+      if (ARG_OPTIONS.has(t)) { k++; continue; }
+      if ((t === "--abort" || t === "--quit") && UNDOABLE.has(cmd)) return null;
+      if (t === "--ff-only") ffOnly = true;
+    }
+    if (ffOnly && (cmd === "merge" || cmd === "pull")) return null;
+    const eb = effectiveBranch(cPath, st, gitDir);
+    if (eb === UNKNOWN_CWD) {
+      return `${cmd}s with an UNKNOWN effective cwd — an earlier cd in this line could not be resolved ($VAR from another call, ~user); use a literal path or run the cd on its own line.`;
+    }
+    if (isMainRef(eb)) {
+      const hint = cmd === "pull" || cmd === "merge"
+        ? "use --ff-only to sync main, or"
+        : "main advances only through PRs (#301) —";
+      return `${cmd}s on main/master; ${hint} run 'wt-new <issue#>-<slug>' (or 'git checkout -b') first.`;
+    }
     return null;
   }
   if (cmd === "clean") {
@@ -559,32 +795,78 @@ function checkGitSubcommand(T: string[], start: number, hookCwd: string): string
  * fixture against this implementation directly.
  */
 export function checkGitCommand(command: string, hookCwd: string): string | null {
+  return checkWithState(command, newLineState(hookCwd));
+}
+
+/**
+ * A child shell (`bash -c`, `$(…)`, backticks) sees the current state, but
+ * NOTHING it sets comes back — not cwd, not vars, and not lifts either:
+ * substitutions are inspected before the walk, so a lift from one would apply
+ * to sub-commands that ran EARLIER (PR #305 review round 2). Cost: `bash -c
+ * 'git checkout -b x' && git commit` false-blocks; the child's own
+ * sub-commands still see the lift.
+ */
+function checkChild(command: string, st: LineState): string | null {
+  const child: LineState = { ...st, scopeStack: [], vars: new Map(st.vars), lifts: new Map(st.lifts) };
+  return checkWithState(command, child);
+}
+
+function checkWithState(command: string, st: LineState): string | null {
   const stripped = stripHeredocs(command);
 
   // Substitution bodies execute — inspect them before the main token walk
-  const substReason = checkSubstitutions(stripped, hookCwd);
+  const substReason = checkSubstitutions(stripped, st);
   if (substReason) return substReason;
 
   // Split on shell separators; heredoc bodies already stripped.
   // One blocked sub-command blocks the whole command line (fail-safe).
+  // Walk the split with control flow modelled fail-closed (PR #305 review round 2):
+  //   ';'        ends a &&/|| chain — state changes made under a condition are
+  //              REVERTED (`false && git checkout -b x; git commit` is judged on
+  //              main). The FIRST sub-command of a chain is unconditional, so
+  //              `cd wt && git commit; git push` keeps its cd.
+  //   '&&' '||'  everything after the first one in a chain is conditional.
+  //   '|' '&'    the adjacent sub-command runs in a subshell: its cd/vars/lifts
+  //              are dropped (`cd x | cat; git commit`).
+  //   '(' ')'    scope: cwd and vars restored at ')'.
   const subs = splitOutsideQuotes(stripped);
-  for (const sub of subs) {
-    const toks = tokenize(sub);
-    if (toks.length === 0) continue;
-    // Strip the benign prefix ONCE, then dispatch on what is actually being run.
-    // Doing it once matters: the walk recurses into `bash -c` / `eval` bodies,
-    // and running it per-checker would re-walk every nested string twice.
-    const scan = skipBenignPrefix(toks, hookCwd);
-    if (scan.kind === "verdict") {
-      if (scan.reason) return scan.reason;
+  let chainSnap: Snapshot | null = null;
+  for (let i = 0; i < subs.length; i++) {
+    const sub = subs[i];
+    if (sub === "(") { st.scopeStack.push({ cwd: st.cwd, vars: new Map(st.vars) }); continue; }
+    if (sub === ")") {
+      const sc = st.scopeStack.pop();
+      if (sc) { st.cwd = sc.cwd; st.vars = sc.vars; }
       continue;
     }
-    const reason = isGitWord(toks[scan.i])
-      ? checkGitSubcommand(toks, scan.i, hookCwd)
-      : checkGhSubcommand(toks, scan.i);
+    if (sub === ";") { if (chainSnap) { restore(st, chainSnap); chainSnap = null; } continue; }
+    if (sub === "&&") { if (!chainSnap) chainSnap = snapshot(st); continue; }
+    if (sub === "|" || sub === "&") continue;
+    const prev = i > 0 ? subs[i - 1] : "";
+    const next = subs[i + 1] ?? "";
+    const subshell = prev === "|" || next === "|" || next === "&";
+    const before = subshell ? snapshot(st) : null;
+    const reason = checkOneSub(sub, st);
+    if (before) restore(st, before); // pipeline element / background job: nothing persists
     if (reason) return reason;
   }
   return null;
+}
+
+/** One sub-command: line-state changes (assignment, cd, lift) or a check. */
+function checkOneSub(sub: string, st: LineState): string | null {
+  const toks = tokenize(sub);
+  if (toks.length === 0) return null;
+  if (recordAssignment(toks, st)) return null; // NAME=value alone: remembered, nothing to block
+  if (applyCd(toks, st)) return null; // line-state only, nothing to block (#301)
+  // Strip the benign prefix ONCE, then dispatch on what is actually being run.
+  // Doing it once matters: the walk recurses into `bash -c` / `eval` bodies,
+  // and running it per-checker would re-walk every nested string twice.
+  const scan = skipBenignPrefix(toks, st);
+  if (scan.kind === "verdict") return scan.reason;
+  return isGitWord(toks[scan.i])
+    ? checkGitSubcommand(toks, scan.i, st)
+    : checkGhSubcommand(toks, scan.i);
 }
 
 /**

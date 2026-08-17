@@ -6,7 +6,11 @@
  *   Always block: checkout ., restore ., clean -f (discard work, any branch)
  *   Block on main/master only: push whose DESTINATION ref is main/master,
  *     bare push / reset --hard when the affected repo is on main/master,
- *     branch -D main/master.
+ *     branch -D main/master; and (#301) commit / merge / rebase / cherry-pick /
+ *     am / pull when the affected repo is on main/master — main advances only
+ *     through PRs. Allowed there: --ff-only (pull/merge), every --abort/--quit,
+ *     checkout -b / switch -c (the escape; can never deadlock). Line-state for
+ *     cd/pushd and checkout -b/switch -c lives in lib/git-guardrails-core.ts.
  *
  * Why token parsing (#74): the old greedy regex `push\s+.*\b(main|master)\b`
  * spanned the whole command line, so any co-occurrence of the words blocked
