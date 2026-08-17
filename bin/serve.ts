@@ -64,13 +64,18 @@ async function handleList(): Promise<void> {
 	console.log(buildListSummary(activeServers));
 }
 
+// #134: version comes from package.json ONLY — the manifest used to carry its own
+// "version" field too, and only one of the two ever got bumped, so a globally
+// installed build could report 1.0.0 while it was actually running 1.1.0's code.
+// package.json is the one file every release process already bumps, so it's the
+// single source of truth; nothing else in serve reports a version.
 function handleVersion(): void {
 	try {
-		const manifestPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-		console.log(`${manifest.name} ${manifest.version}`);
+		const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+		const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+		console.log(`serve ${pkg.version}`);
 	} catch (err) {
-		console.error(`⚠️ Failed to load command manifest: ${err}`);
+		console.error(`⚠️ Failed to read package version: ${err}`);
 		process.exitCode = 1;
 	}
 }
