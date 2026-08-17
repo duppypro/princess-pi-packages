@@ -106,6 +106,22 @@
 # ---
 set -euo pipefail
 
+# -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
+# message, and "wt-new --help" used to be treated as one.
+case "${1:-}" in
+  -h|--help)
+    cat <<'EOF'
+usage: wt-new <issue#>-<slug>
+
+From the main clone: fetch origin, create the in-tree worktree at
+.claude/worktrees/<branch>, push the branch with its upstream set, and
+(best effort) open a herdr tab. Prints the worktree path last.
+
+exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
+EOF
+    exit 0 ;;
+esac
+
 if [ $# -ne 1 ]; then
   echo "usage: wt-new <issue#>-<slug>" >&2
   exit 2

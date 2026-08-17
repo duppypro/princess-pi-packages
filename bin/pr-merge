@@ -67,6 +67,21 @@
 # ---
 set -euo pipefail
 
+# -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
+# message, and "pr-merge --help" used to be treated as one.
+case "${1:-}" in
+  -h|--help)
+    cat <<'EOF'
+usage: pr-merge [<branch>]
+
+Human-only: squash-merge the open PR for <branch> (default: current branch),
+gated on pr-threads (0 unresolved conversations, head reviewed).
+
+exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
+EOF
+    exit 0 ;;
+esac
+
 # The advertised `pr-merge <branch>` form used to be a lie: BRANCH was hardcoded
 # to the current branch, so the argument was ignored — on main it still errored,
 # and on a feature branch it merged that branch instead of the one named (#209).

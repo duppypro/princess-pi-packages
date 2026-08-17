@@ -53,6 +53,22 @@
 # boundary where callers (agents especially) read the outcome.
 set -euo pipefail
 
+# -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
+# message, and "pr-cleanup --help" used to be treated as one.
+case "${1:-}" in
+  -h|--help)
+    cat <<'EOF'
+usage: pr-cleanup <branch>
+
+After the PR is MERGED: remove the branch's worktree, delete the remote and
+local branch. Run from the main clone. Refuses if the branch tip is not what
+the PR merged (unmerged work), or if the PR was rejected/never opened.
+
+exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
+EOF
+    exit 0 ;;
+esac
+
 # --- argument parsing --------------------------------------------------------
 # <branch> is required — see the "no-argument mode removed (#221 finding 2)"
 # header note above for why the old cwd-discovery fallback is gone.

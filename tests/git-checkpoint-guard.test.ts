@@ -186,5 +186,43 @@ console.log("\non a feature branch (happy path):");
 	check(/👑π🐱/.test(git(sb.clone, ["log", "-1", "--format=%s"])), "feature branch → commit message carries the signature", out);
 }
 
+// --- #310: a flag is never a commit message ---
+// `git-checkpoint --help` once committed AND pushed with the message "--help 👑π🐱"
+// (commit 93f1151 on 308-wtft-lagging-session). Same sandbox: the property is
+// that no commit lands and the remote tip does not move.
+console.log("\n#310 — flags are not messages:");
+{
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
+	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
+	const before = tip(sb.clone);
+	const remoteBefore = tip(sb.remote, "refs/heads/42-feature");
+
+	for (const flag of ["--help", "-h"]) {
+		const { code, out } = runCheckpoint(sb.clone, flag);
+		check(code === 0, `${flag} → exit 0`, `got ${code}, output:\n${out}`);
+		check(/usage/i.test(out) && /git-checkpoint/.test(out), `${flag} → prints usage`, out);
+		check(tip(sb.clone) === before, `${flag} → no commit created`, out);
+		check(tip(sb.remote, "refs/heads/42-feature") === remoteBefore, `${flag} → remote tip unchanged`, out);
+	}
+	{
+		const { code, out } = runCheckpoint(sb.clone, "--not-a-flag");
+		check(code === 1, "unknown -flag → exit 1 (usage error)", `got ${code}, output:\n${out}`);
+		check(/--not-a-flag/.test(out) && /--/.test(out), "unknown -flag → names it and points at `--` for a message that starts with '-'", out);
+		check(tip(sb.clone) === before, "unknown -flag → no commit created", out);
+	}
+	{
+		// `--` ends flag parsing: a message that genuinely starts with '-' is still possible.
+		let code = -1, out = "";
+		try {
+			out = execFileSync("bash", [GIT_CHECKPOINT, "--", "-dashy message (#310)"], { cwd: sb.clone, encoding: "utf8", env: { ...process.env, ...GIT_ENV }, stdio: ["ignore", "pipe", "pipe"] });
+			code = 0;
+		} catch (err: any) { code = err?.status ?? -1; out = `${err?.stdout || ""}${err?.stderr || ""}`; }
+		check(code === 0, "`-- -dashy message` → exit 0 (committed)", `got ${code}, output:\n${out}`);
+		check(/^-dashy message \(#310\) 👑π🐱$/.test(git(sb.clone, ["log", "-1", "--format=%s"])), "`--` → the dash-leading message is the commit subject", git(sb.clone, ["log", "-1", "--format=%s"]));
+	}
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} git-checkpoint guard: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

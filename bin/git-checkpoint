@@ -1,19 +1,49 @@
 #!/usr/bin/env bash
 # git-checkpoint — add all changes, commit, and push in one command.
 # Usage: git-checkpoint "your commit message"
+#        git-checkpoint -- "-a message that starts with a dash"
+#        git-checkpoint -h | --help
 #
 # --- Exit codes ---
-#   0  success — committed and pushed
-#   1  usage error — no message given
+#   0  success — committed and pushed (or usage printed for -h/--help)
+#   1  usage error — no message given, or a flag-shaped argument that is not
+#      -h/--help/-- (#310: `git-checkpoint --help` used to commit AND push
+#      with the message "--help"; a flag is never a message)
 #   3  precondition not met — on main/master (#225 gap 1), or the branch has no
 #      upstream to push to (#228)
 # ---
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+usage: git-checkpoint "<commit message>"
+       git-checkpoint -- "<message that starts with ->"
+       git-checkpoint -h | --help
+
+Adds ALL changes (git add -A), commits with the message + 👑π🐱, and pushes.
+Refuses on main/master, on a detached HEAD, and on a branch with no upstream.
+
+exit codes: 0 ok · 1 usage · 3 precondition (protected branch / no upstream)
+EOF
+}
+
+# A flag is never a commit message (#310). Only -h/--help and the `--` terminator
+# are recognised; any other leading '-' is refused rather than committed, because
+# the cost of guessing wrong is a staged, committed AND pushed "--typo".
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  --) shift ;;
+  -*)
+    echo "git-checkpoint: '$1' looks like a flag, not a commit message — refusing to commit it." >&2
+    echo "  For a message that really starts with '-': git-checkpoint -- \"$1\"" >&2
+    echo "  Usage: git-checkpoint --help" >&2
+    exit 1 ;;
+esac
+
 MSG="${1:-}"
 if [ -z "$MSG" ]; then
-  echo "git-checkpoint: message required"
-  echo "  git-checkpoint \"feat: add widget (#42)\""
+  echo "git-checkpoint: message required" >&2
+  echo "  git-checkpoint \"feat: add widget (#42)\"" >&2
   exit 1
 fi
 
