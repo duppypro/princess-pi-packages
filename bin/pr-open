@@ -60,6 +60,21 @@
 # ---
 set -euo pipefail
 
+# -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
+# message, and "pr-open --help" used to be treated as one.
+case "${1:-}" in
+  -h|--help)
+    cat <<'EOF'
+usage: pr-open
+
+Create the PR for the CURRENT feature branch (from its worktree): pushes,
+then `gh pr create` with the branch's commits as the body. Takes no arguments.
+
+exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
+EOF
+    exit 0 ;;
+esac
+
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "pr-open: not inside a git repository." >&2
   exit 2
