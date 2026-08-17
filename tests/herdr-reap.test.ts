@@ -84,6 +84,13 @@ function makeStub(opts: {
 	/** Workspace ids before, and after the first close (0.8.0 last-tab behaviour). */
 	workspacesBefore?: string[];
 	workspacesAfter?: string[];
+	/**
+	 * Panes served from the SECOND `pane list` call onward. This is what makes
+	 * the pre-close recheck testable at all: the whole point of that recheck is
+	 * that the world may have moved between the snapshot and the close, and a
+	 * stub that answers identically forever can never express "it moved".
+	 */
+	panesAfter?: Pane[];
 }): Stub {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-stub-"));
 	const bin = path.join(dir, "bin");
@@ -92,6 +99,12 @@ function makeStub(opts: {
 	const paneList =
 		opts.paneListGarbage ?? JSON.stringify({ id: "cli:pane:list", result: { panes: opts.panes } });
 	fs.writeFileSync(path.join(dir, "panes.json"), paneList);
+	if (opts.panesAfter) {
+		fs.writeFileSync(
+			path.join(dir, "panes2.json"),
+			JSON.stringify({ id: "cli:pane:list", result: { panes: opts.panesAfter } }),
+		);
+	}
 	fs.writeFileSync(path.join(dir, "refuse.txt"), (opts.refuseClose ?? []).join("\n"));
 
 	const wsDoc = (ids: string[]) =>
@@ -110,7 +123,12 @@ set -uo pipefail
 D="${dir}"
 case "$1 \${2:-}" in
   "pane list")
-    ${opts.paneListFails ? "exit 1" : 'cat "$D/panes.json"'}
+    ${
+			opts.paneListFails
+				? "exit 1"
+				: 'n=$(cat "$D/panecalls" 2>/dev/null || echo 0); echo $((n+1)) > "$D/panecalls";\n' +
+					'    if [ "$n" -ge 1 ] && [ -f "$D/panes2.json" ]; then cat "$D/panes2.json"; else cat "$D/panes.json"; fi'
+		}
     ;;
   "workspace list")
     if [ -s "$D/closed.log" ]; then cat "$D/ws-after.json"; else cat "$D/ws-before.json"; fi
@@ -392,6 +410,64 @@ console.log("herdr-reap (#277)\n");
 	check(r.json !== null, "a path with spaces, a quote and a backslash still yields parseable JSON", r.stdout);
 	check(r.json?.reaped?.[0]?.cwd?.includes('we ird"quote'), "…and round-trips the path", JSON.stringify(r.json));
 	check(JSON.stringify(stub.closed()) === JSON.stringify(["wS:tODD"]), "…and closes it", JSON.stringify(stub.closed()));
+}
+
+// ---
+// TOCTOU: the snapshot that SELECTED a tab is a claim about the past. Between
+// it and the close, an agent can attach to the pane, or the directory can be
+// recreated (`wt-new` re-run at the same path). Both must spare the tab — the
+// first is the mid-turn kill this script's whole disposition exists to avoid.
+// (Review finding on PR #312, confirmed: nothing re-read state before the
+// destructive call.) The recheck narrows the window rather than closing it —
+// herdr has no atomic compare-and-close — which is exactly why it is worth
+// having and worth saying plainly.
+// ---
+{
+	const dead = deadCwd();
+	const stub = makeStub({
+		panes: [{ pane_id: "wS:p2", tab_id: "wS:tRACE", cwd: dead }],
+		// Same tab, same dead cwd — but an agent has since attached.
+		panesAfter: [{ pane_id: "wS:p2", tab_id: "wS:tRACE", cwd: dead, agent: "claude" }],
+	});
+	const r = runReap(stub, ["--json"]);
+	check(
+		stub.closed().length === 0,
+		"an agent that attached between the snapshot and the close spares its tab",
+		`closed=${JSON.stringify(stub.closed())}`,
+	);
+	check(r.json?.spared?.[0]?.reason === "changed", "…reported as spared/changed", JSON.stringify(r.json));
+	check(r.json?.tabs_closed === 0, "…and nothing is counted as closed", JSON.stringify(r.json));
+}
+{
+	const live = liveDir();
+	const stub = makeStub({
+		panes: [{ pane_id: "wS:p2", tab_id: "wS:tREBORN", cwd: deadCwd() }],
+		// The worktree was recreated at a real path before the close landed.
+		panesAfter: [{ pane_id: "wS:p2", tab_id: "wS:tREBORN", cwd: live }],
+	});
+	const r = runReap(stub, ["--json"]);
+	check(
+		stub.closed().length === 0,
+		"a cwd recreated between the snapshot and the close spares its tab",
+		`closed=${JSON.stringify(stub.closed())}`,
+	);
+	check(r.json?.spared?.[0]?.reason === "changed", "…also reported as spared/changed", JSON.stringify(r.json));
+}
+{
+	// And the recheck must not become a way to never close anything: an
+	// unchanged world still reaps.
+	const dead = deadCwd();
+	const stub = makeStub({
+		panes: [{ pane_id: "wS:p2", tab_id: "wS:tSTEADY", cwd: dead }],
+		panesAfter: [{ pane_id: "wS:p2", tab_id: "wS:tSTEADY", cwd: dead }],
+	});
+	const r = runReap(stub, ["--json"]);
+	check(
+		JSON.stringify(stub.closed()) === JSON.stringify(["wS:tSTEADY"]),
+		"an unchanged world still closes the tab — the recheck is a gate, not a veto",
+		`closed=${JSON.stringify(stub.closed())}`,
+	);
+	check(r.json?.tabs_closed === 1, "…and counts it", JSON.stringify(r.json));
 }
 
 // ---

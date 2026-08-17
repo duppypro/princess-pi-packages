@@ -78,6 +78,20 @@
 # already reads — so it is on. It fails toward "a stale tab lingers", the
 # harmless direction, and `herdr tab close <id>` remains available by hand.
 #
+# The predicate is `.agent != null` and deliberately NOT `.agent_status`.
+# Raised on PR #312 and declined there: the proposal was to spare only panes
+# reporting `agent_status == "working"`, on the grounds that a tab whose agent
+# shows `done` is then spared forever. The gap is real — leftover agent
+# metadata does keep a stale tab alive indefinitely — but it is the direction
+# this script chooses everywhere else, and the remedy inverts a safe failure
+# into an unsafe one. herdr's agent states are idle / working / blocked / done,
+# and a Claude or Pi session sitting between turns reports `done` or `idle`
+# while being entirely alive. Narrowing to `working` would close tabs out from
+# under live-but-momentarily-idle agents — the exact mid-turn kill the guard
+# exists to prevent, reintroduced through the guard itself. A status is not a
+# liveness proof; herdr exposes no signal that is one (`agent_session` carries
+# an id, not a reachability check). So the tab lingers, and a human closes it.
+#
 # --- exit codes (shared pr-* contract, #224) -------------------------------
 #   0  success — including "not inside herdr" and "nothing was stale". Both are
 #      normal outcomes for a decoration tool that must never be load-bearing;
@@ -215,6 +229,61 @@ dir_state() { # $1 = cwd
 	fi
 }
 
+# ---
+# Re-verify one tab immediately before closing it. 0 = still reapable.
+#
+# `pane list` is a snapshot, and a snapshot is a claim about the past. Between
+# the read that selected this tab and the close that acts on it, a directory
+# can be recreated (`git worktree add` at the same path, `wt-new` re-run) and
+# an agent can attach to the pane. Acting on the older read is a TOCTOU whose
+# worst outcome is precisely the one this script exists not to cause.
+#
+# This NARROWS the window; it does not close it, and it cannot. herdr exposes
+# no atomic compare-and-close, so a gap between the last read and the write is
+# unavoidable. What the recheck buys is proportion: the exposure shrinks from
+# "the whole run, including however many round trips other tabs took first" to
+# "one round trip", and — the part that actually matters — every reason to
+# spare is re-applied against current state rather than remembered from old
+# state.
+#
+# Every failure path returns 1. A `pane list` that fails, a tab that has
+# vanished, a cwd that reappeared, an agent that attached, a jq that could not
+# parse: all of them mean "do not close", because not-knowing spares. That is
+# the same disposition as the rest of this script, applied at the one moment
+# where being wrong is destructive.
+# ---
+still_reapable() { # $1 = tab_id
+	local snapshot tmp agent_n unknown_n cwd_n live
+	snapshot=$(herdr pane list 2>/dev/null) || return 1
+	agent_n=$(printf '%s' "$snapshot" |
+		jq --arg t "$1" '[.result.panes[]? | select(.tab_id == $t and .agent != null)] | length' 2>/dev/null) || return 1
+	unknown_n=$(printf '%s' "$snapshot" |
+		jq --arg t "$1" '[.result.panes[]? | select(.tab_id == $t and (.cwd == null or .cwd == ""))] | length' 2>/dev/null) || return 1
+	[ "$agent_n" = "0" ] || return 1
+	[ "$unknown_n" = "0" ] || return 1
+
+	tmp=$(mktemp "${TMPDIR:-/tmp}/herdr-reap-recheck.XXXXXX")
+	if ! printf '%s' "$snapshot" |
+		jq -j --arg t "$1" '.result.panes[]? | select(.tab_id == $t and .cwd != null and .cwd != "") | .cwd + "\u0000"' \
+			>"$tmp" 2>/dev/null; then
+		rm -f "$tmp"
+		return 1
+	fi
+	cwd_n=0
+	live=0
+	while IFS= read -r -d '' c; do
+		cwd_n=$((cwd_n + 1))
+		[ "$(dir_state "$c")" = gone ] || live=1
+	done <"$tmp"
+	rm -f "$tmp"
+
+	# No panes at all means the tab is already gone — nothing to close, and
+	# nothing proven either way.
+	[ "$cwd_n" -gt 0 ] || return 1
+	[ "$live" -eq 0 ] || return 1
+	return 0
+}
+
 # --- not inside herdr: the normal case for a plain shell, not a failure -----
 if ! herdr_available; then
 	if [ "$JSON" -eq 1 ]; then emit_json no_herdr "" ""; fi
@@ -344,6 +413,13 @@ while [ "$idx" -lt "${#CLOSE_LIST[@]}" ]; do
 		TABS_CLOSED=$((TABS_CLOSED + 1))
 		REAPED_JSON="${REAPED_JSON:+$REAPED_JSON,}{\"tab_id\":\"$(json_str "$tab_id")\",\"cwd\":\"$(json_str "$cwd")\"}"
 		[ "$JSON" -eq 1 ] || echo "would close $tab_id — $cwd"
+		continue
+	fi
+	# Last look before the destructive call — see still_reapable() for why the
+	# snapshot alone is not enough, and for what this does and does not buy.
+	if ! still_reapable "$tab_id"; then
+		SPARED_JSON="${SPARED_JSON:+$SPARED_JSON,}{\"tab_id\":\"$(json_str "$tab_id")\",\"reason\":\"changed\"}"
+		[ "$JSON" -eq 1 ] || echo "herdr-reap: $tab_id changed since the snapshot — left as-is." >&2
 		continue
 	fi
 	if herdr tab close "$tab_id" >/dev/null 2>&1; then
