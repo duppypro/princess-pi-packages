@@ -1412,6 +1412,44 @@
       "c_path_rel": "rel-repo",
       "verdict": "block",
       "why": "PR #305 round 3: `pushd -n` pushes onto the dir stack without changing directory — the commit runs in the main-clone cwd"
+    },
+    {
+      "id": "block-cd-too-many-args-stays-put",
+      "command": "cd rel-repo extra; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "PR #305 round 4: bash rejects `cd a b` (too many arguments) — the real shell stays in the main clone"
+    },
+    {
+      "id": "block-cd-tilde-user-is-unknown",
+      "command": "cd ~nobody-301/repo; git commit -m x",
+      "branch": "301-feat",
+      "verdict": "block",
+      "why": "PR #305 round 4: `~user` is not resolved here; from a FEATURE cwd the real shell may now be in a main checkout, so the cwd is unknown and unknown is protected"
+    },
+    {
+      "id": "block-cd-unresolved-var-from-feature-is-unknown",
+      "command": "cd \"$UNSET_TARGET_301\"; git commit -m x",
+      "branch": "301-feat",
+      "verdict": "block",
+      "why": "PR #305 round 4: same for an unresolvable variable — the earlier 'stays put' model would have allowed a commit the real shell may run on main"
+    },
+    {
+      "id": "allow-unknown-cwd-restored-by-absolute-cd",
+      "command": "cd \"$UNSET_TARGET_301\"; cd /repo; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "verdict": "allow",
+      "why": "a later resolvable absolute cd makes the cwd known again"
+    },
+    {
+      "id": "allow-unknown-cwd-restored-by-cd-dash",
+      "command": "cd \"$UNSET_TARGET_301\"; cd -; git commit -m x",
+      "branch": "301-feat",
+      "verdict": "allow",
+      "why": "`cd -` returns to the tool-call cwd (feature) — known again"
     }
   ]
 }

@@ -282,8 +282,11 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   fails open) — run it as its own command. **Unknown never moves the model (PR #305
   review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
   too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`
-  earlier in the same line, then from the environment, and an unresolved operand neither
-  moves the cwd nor lifts; `checkout -b <existing>` / `switch -c <existing>` do not lift
+  earlier in the same line, then from the environment; an unresolved branch operand never
+  lifts, and an unresolved `cd` operand (or `~user`) makes the effective cwd **unknown** —
+  the real shell may now be in a main checkout — and unknown is protected until a
+  resolvable `cd`, `cd -` or `popd` restores it (`cd a b` is rejected by bash, so it stays
+  put); `checkout -b <existing>` / `switch -c <existing>` do not lift
   (git refuses and leaves you on `main` — `-B`/`-C`/`--force-create` do); `( … )` groups
   scope `cd` and assignments; `$( … )` / `bash -c` bodies, pipeline elements and
   backgrounded jobs are child shells and *nothing* they set carries back — not even a

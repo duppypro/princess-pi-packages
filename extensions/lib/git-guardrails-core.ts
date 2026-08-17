@@ -22,8 +22,18 @@ function currentBranch(cwd: string): string {
   }
 }
 
+// Sentinel for "the effective cwd is UNKNOWN" (PR #305 round 4): a cd whose
+// operand cannot be resolved here (`cd "$VAR"` set in an earlier tool call,
+// `cd ~user`) may have moved the real shell into a main checkout, so the model
+// does not stay put — it becomes unknown, and unknown is treated as protected by
+// every branch-scoped check until a resolvable cd (or `cd -`/popd) restores it.
+// A double-slash path is never a real directory, so it rides through the
+// scope/snapshot plumbing as an ordinary cwd value.
+const UNKNOWN_CWD = "//unknown";
+
 function isMainRef(ref: string): boolean {
   return (
+    ref === UNKNOWN_CWD || // unknown effective cwd is protected (fail-closed)
     ref === "main" ||
     ref === "master" ||
     ref === "refs/heads/main" ||
@@ -61,7 +71,8 @@ function branchOf(cPath: string, hookCwd: string, gitDir = ""): string {
 // branch that repo is on right now. Two things an earlier sub-command in the
 // same line changes for the later ones:
 //   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
-//          `pushd` reset it to the tool-call cwd (fail-safe: never guess).
+//          `pushd` reset it to the tool-call cwd; an unresolvable operand makes it
+//          UNKNOWN, which every branch-scoped check treats as protected.
 //   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan <name>` mark
 //          the repo they ran in as being on <name> for the rest of the line
 //          (so `git checkout -b 301-slug && git commit` is allowed on main);
@@ -150,6 +161,8 @@ function repoKey(cPath: string, cwd: string, gitDir: string): string {
 
 /** Branch the sub-command acts on, honouring an earlier switch in the same line. */
 function effectiveBranch(cPath: string, st: LineState, gitDir = ""): string {
+  // unknown cwd + a relative (or absent) -C target → the branch is unknowable
+  if (st.cwd === UNKNOWN_CWD && (!cPath || !cPath.startsWith("/"))) return UNKNOWN_CWD;
   const lifted = st.lifts.get(repoKey(cPath, st.cwd, gitDir));
   if (lifted !== undefined) return lifted;
   return branchOf(cPath, st.cwd, gitDir);
@@ -161,7 +174,9 @@ function applyCd(T: string[], st: LineState): boolean {
   if (w !== "cd" && w !== "pushd" && w !== "popd") return false;
   const home = process.env.HOME || "";
   if (w === "pushd" && T.includes("-n")) return true; // rotates the stack, no directory change (PR #305 round 3)
-  const rawArg = T.slice(1).find((t) => !t.startsWith("-") || t === "-");
+  const positionals = T.slice(1).filter((t) => !t.startsWith("-") || t === "-");
+  if (positionals.length > 1) return true; // bash rejects `cd a b` — the real shell stays put (PR #305 round 4)
+  const rawArg = positionals[0];
   if (w === "popd" || rawArg === "-" || (w === "pushd" && rawArg === undefined)) {
     st.cwd = st.origCwd; // previous directory is unknowable here — never guess
     return true;
@@ -171,8 +186,12 @@ function applyCd(T: string[], st: LineState): boolean {
     target = home;
   } else {
     const arg = expandWord(rawArg, st);
-    if (arg === null) return true; // unresolvable → unknown → stay put
-    target = arg.startsWith("~/") ? resolve(home, arg.slice(2)) : resolve(st.cwd || ".", arg);
+    if (arg === null) { st.cwd = UNKNOWN_CWD; return true; } // unresolvable → the cwd is UNKNOWN (protected)
+    if (arg.startsWith("~/")) target = resolve(home, arg.slice(2));
+    else if (arg.startsWith("~")) { st.cwd = UNKNOWN_CWD; return true; } // `~user` — not resolved here → unknown
+    else if (arg.startsWith("/")) target = arg;
+    else if (st.cwd === UNKNOWN_CWD) return true; // relative from unknown stays unknown
+    else target = resolve(st.cwd || ".", arg);
   }
   // The cwd only moves to a directory that EXISTS: a failing `cd /nope; git
   // commit` leaves the real shell where it was, so the model must too.
@@ -733,7 +752,11 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
       if (t === "--ff-only") ffOnly = true;
     }
     if (ffOnly && (cmd === "merge" || cmd === "pull")) return null;
-    if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
+    const eb = effectiveBranch(cPath, st, gitDir);
+    if (eb === UNKNOWN_CWD) {
+      return `${cmd}s with an UNKNOWN effective cwd — an earlier cd in this line could not be resolved ($VAR from another call, ~user); use a literal path or run the cd on its own line.`;
+    }
+    if (isMainRef(eb)) {
       const hint = cmd === "pull" || cmd === "merge"
         ? "use --ff-only to sync main, or"
         : "main advances only through PRs (#301) —";

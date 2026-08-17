@@ -46,6 +46,14 @@ HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
 # ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
 # earlier in the same line for the repo that switched (see effective_branch).
 ORIG_CWD="$HOOK_CWD"
+# Sentinel for "the effective cwd is UNKNOWN" (PR #305 round 4): a cd whose
+# operand cannot be resolved here (`cd "$VAR"` set in an earlier tool call,
+# `cd ~user`) may have moved the real shell into a main checkout, so the model
+# does not stay put — it becomes unknown, and unknown is treated as protected by
+# every branch-scoped check until a resolvable cd (or `cd -`/popd) restores it.
+# A double-slash path is never a real directory, so it rides through the
+# scope/snapshot plumbing as an ordinary cwd value.
+UNKNOWN_CWD="//unknown"
 # LIFTS: newline-separated `<repo key>=<branch>` records, latest wins — one
 # entry per repo, so a two-repo line does not clobber itself (PR #305 review).
 LIFTS=$'\n'
@@ -67,6 +75,7 @@ block() {
 is_main_ref() {
   case "$1" in
     main|master|refs/heads/main|refs/heads/master) return 0 ;;
+    //unknown) return 0 ;;   # unknown effective cwd is protected (fail-closed, PR #305 round 4)
   esac
   return 1
 }
@@ -104,7 +113,8 @@ branch_of() {
 # branch that repo is on right now. Two things an earlier sub-command in the
 # same line changes for the later ones:
 #   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
-#          `pushd` reset it to the tool-call cwd (fail-safe: never guess).
+#          `pushd` reset it to the tool-call cwd; an unresolvable operand makes it
+#          UNKNOWN, which every branch-scoped check treats as protected.
 #   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan <name>` mark
 #          the repo they ran in as being on <name> for the rest of the line
 #          (so `git checkout -b 301-slug && git commit` is allowed on main);
@@ -133,6 +143,10 @@ repo_key() {
 # Branch the sub-command acts on, honouring an earlier switch in the same line.
 effective_branch() {
   local key rest
+  # unknown cwd + a relative (or absent) -C target → the branch is unknowable
+  if [ "$HOOK_CWD" = "$UNKNOWN_CWD" ] && { [ -z "$1" ] || [ "${1#/}" = "$1" ]; }; then
+    printf '%s' "$UNKNOWN_CWD"; return
+  fi
   key=$(repo_key "$1" "$2")
   rest="${LIFTS##*$'\n'$key=}"        # ## → LAST record for this key
   if [ "$rest" != "$LIFTS" ]; then
@@ -194,13 +208,17 @@ check_child_string() {
 # The cwd only moves to a directory that EXISTS: a failing `cd /nope; git commit`
 # leaves the real shell where it was, so the model must too (PR #305 review).
 apply_cd() {
-  local w="${TOKENS[0]##*/}" arg="" t
+  local w="${TOKENS[0]##*/}" arg="" t npos=0
   case "$w" in cd|pushd|popd) ;; *) return 1 ;; esac
   for t in "${TOKENS[@]:1}"; do
     # `pushd -n <dir>` rotates the stack without changing directory (PR #305 round 3)
     if [ "$w" = "pushd" ] && [ "$t" = "-n" ]; then return 0; fi
-    if [ "$t" = "-" ] || [ "${t#-}" = "$t" ]; then arg="$t"; break; fi
+    if [ "$t" = "-" ] || [ "${t#-}" = "$t" ]; then
+      npos=$((npos + 1)); [ "$npos" -eq 1 ] && arg="$t"
+    fi
   done
+  # bash rejects `cd a b` ("too many arguments") — the real shell stays put (PR #305 round 4)
+  [ "$npos" -gt 1 ] && return 0
   local target
   if [ "$w" = "popd" ] || [ "$arg" = "-" ] || { [ "$w" = "pushd" ] && [ -z "$arg" ]; }; then
     HOOK_CWD="$ORIG_CWD"   # previous directory is unknowable here — never guess
@@ -208,12 +226,17 @@ apply_cd() {
   elif [ -z "$arg" ] || [ "$arg" = "~" ]; then
     target="$HOME"
   else
-    arg=$(expand_word "$arg") || return 0   # unresolvable → unknown → stay put
+    if ! arg=$(expand_word "$arg"); then
+      HOOK_CWD="$UNKNOWN_CWD"; return 0     # unresolvable → the cwd is UNKNOWN (protected)
+    fi
     if [ "${arg#\~/}" != "$arg" ]; then
       target="$HOME/${arg#\~/}"
+    elif [ "${arg#\~}" != "$arg" ]; then
+      HOOK_CWD="$UNKNOWN_CWD"; return 0     # `~user` — not resolved here → unknown
     elif [ "${arg#/}" != "$arg" ]; then
       target="$arg"
     else
+      [ "$HOOK_CWD" = "$UNKNOWN_CWD" ] && return 0   # relative from unknown stays unknown
       target="${HOOK_CWD:-.}/$arg"
     fi
   fi
@@ -798,6 +821,9 @@ check_git_subcommand() {
         return 0
       fi
       b6=$(effective_branch "$cpath" "$gitdir")
+      if [ "$b6" = "$UNKNOWN_CWD" ]; then
+        block "${cmd}s with an UNKNOWN effective cwd — an earlier cd in this line could not be resolved (\$VAR from another call, ~user); use a literal path or run the cd on its own line."
+      fi
       if is_main_ref "$b6"; then
         if [ "$cmd" = "pull" ] || [ "$cmd" = "merge" ]; then
           block "${cmd}s on main/master; use --ff-only to sync main, or run 'wt-new <issue#>-<slug>' (or 'git checkout -b') first."
