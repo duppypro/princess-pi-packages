@@ -370,9 +370,9 @@ var require_wcwidth = __commonJS((exports, module) => {
 });
 
 // bin/serve.ts
-import * as fs6 from "fs";
-import * as path7 from "path";
-import { fileURLToPath } from "url";
+import * as fs7 from "fs";
+import * as path8 from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
 import { spawn } from "child_process";
 
 // extensions/lib/serve/process.ts
@@ -966,11 +966,54 @@ function shortenPath(rawPath, cwd = process.cwd()) {
   return rel;
 }
 
+// extensions/lib/build-stamp.ts
+import * as fs4 from "node:fs";
+import * as path5 from "node:path";
+import { fileURLToPath } from "node:url";
+var STAMP_BASENAME = "build-stamp.json";
+function readBuildStamp(moduleUrl) {
+  try {
+    const dir = path5.dirname(fileURLToPath(moduleUrl));
+    const raw = fs4.readFileSync(path5.join(dir, STAMP_BASENAME), "utf8");
+    const s = JSON.parse(raw);
+    if (typeof s.sha !== "string" || typeof s.builtFrom !== "string")
+      return null;
+    return s;
+  } catch {
+    return null;
+  }
+}
+function stampSuffix(stamp) {
+  return stamp.dirty ? `+${stamp.sha}-dev-${stamp.dev}` : `+${stamp.sha}`;
+}
+function formatVersion(toolName, semver, moduleUrl) {
+  let self;
+  try {
+    self = fs4.realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    self = fileURLToPath(moduleUrl);
+  }
+  const stamp = readBuildStamp(moduleUrl);
+  const lines = [];
+  if (stamp) {
+    lines.push(`${toolName} ${semver}${stampSuffix(stamp)}`);
+  } else if (self.endsWith(".ts")) {
+    lines.push(`${toolName} ${semver}+source`);
+  } else {
+    lines.push(`${toolName} ${semver}`);
+  }
+  lines.push(`path ${self}`);
+  if (stamp)
+    lines.push(`built-from ${stamp.builtFrom}`);
+  return lines.join(`
+`);
+}
+
 // extensions/lib/serve/tui.ts
 var import_wcwidth = __toESM(require_wcwidth(), 1);
 import * as os4 from "node:os";
-import * as fs4 from "node:fs";
-import * as path5 from "node:path";
+import * as fs5 from "node:fs";
+import * as path6 from "node:path";
 function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }
@@ -1036,10 +1079,10 @@ function formatServerCard(server) {
   const urlLine = `  \x1B[4m\x1B[34m${server.url}\x1B[0m`;
   const infoLine = `  ${typeColor}${typeLabel}\x1B[0m · logs: \x1B[36m${logPath}\x1B[0m`;
   let aclLine = null;
-  const aclFilePath = path5.join(server.dir, ".serve-acl");
+  const aclFilePath = path6.join(server.dir, ".serve-acl");
   try {
-    if (fs4.existsSync(aclFilePath)) {
-      const content = fs4.readFileSync(aclFilePath, "utf8");
+    if (fs5.existsSync(aclFilePath)) {
+      const content = fs5.readFileSync(aclFilePath, "utf8");
       const entries = content.split(/\r?\n/).map((l) => {
         const h = l.indexOf("#");
         return (h !== -1 ? l.substring(0, h) : l).trim();
@@ -1112,22 +1155,22 @@ function buildKilledSummary(killedList) {
 }
 
 // extensions/lib/serve/cloudflare.js
-import * as fs5 from "node:fs";
-import * as path6 from "node:path";
+import * as fs6 from "node:fs";
+import * as path7 from "node:path";
 import * as os5 from "node:os";
 import * as net2 from "node:net";
 import { execSync } from "node:child_process";
-var CONFIG_DIR2 = path6.join(os5.homedir(), ".config", "princess-pi");
-var CF_ENV_PATH2 = path6.join(CONFIG_DIR2, "cf.env");
-var LOCK_PATH2 = path6.join(CONFIG_DIR2, "tunnel-config.lock");
+var CONFIG_DIR2 = path7.join(os5.homedir(), ".config", "princess-pi");
+var CF_ENV_PATH2 = path7.join(CONFIG_DIR2, "cf.env");
+var LOCK_PATH2 = path7.join(CONFIG_DIR2, "tunnel-config.lock");
 var CF_API2 = "https://api.cloudflare.com/client/v4";
 var ZONE_SUFFIX2 = "princess-pi.dev";
-var SERVE_CONFIG_DIR4 = path6.join(os5.homedir(), ".config", "princess-pi-packages", "serve");
-var SUBDOMAIN_MAP_PATH2 = path6.join(SERVE_CONFIG_DIR4, "subdomains.json");
+var SERVE_CONFIG_DIR4 = path7.join(os5.homedir(), ".config", "princess-pi-packages", "serve");
+var SUBDOMAIN_MAP_PATH2 = path7.join(SERVE_CONFIG_DIR4, "subdomains.json");
 function readSubdomainMap2() {
   try {
-    if (fs5.existsSync(SUBDOMAIN_MAP_PATH2)) {
-      return JSON.parse(fs5.readFileSync(SUBDOMAIN_MAP_PATH2, "utf8"));
+    if (fs6.existsSync(SUBDOMAIN_MAP_PATH2)) {
+      return JSON.parse(fs6.readFileSync(SUBDOMAIN_MAP_PATH2, "utf8"));
     }
   } catch {}
   return {};
@@ -1138,8 +1181,8 @@ function writeSubdomainMap(port, subdomain) {
   if (!arr.includes(subdomain))
     arr.push(subdomain);
   map[String(port)] = arr;
-  fs5.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
-  fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
+  fs6.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
+  fs6.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
 }
 function removeSubdomainFromMap2(subdomain) {
   const map = readSubdomainMap2();
@@ -1150,7 +1193,7 @@ function removeSubdomainFromMap2(subdomain) {
     else
       map[port] = arr;
   }
-  fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
+  fs6.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
 }
 var APP_PREFIX2 = "serve ";
 var FALLBACK_RESERVED2 = new Set(["www", "mail", "logger", "preview", "apex", "ns1", "ns2", "_dmarc", "_domainkey"]);
@@ -1158,28 +1201,28 @@ var LOCK_TIMEOUT_MS2 = 15000;
 var LOCK_STALE_MS2 = 60000;
 function parseAclFile(targetDir) {
   const homeDir = os5.homedir();
-  const gitIgnoreDir = path6.join(homeDir, ".config", "git");
-  const gitIgnorePath = path6.join(gitIgnoreDir, "ignore");
+  const gitIgnoreDir = path7.join(homeDir, ".config", "git");
+  const gitIgnorePath = path7.join(gitIgnoreDir, "ignore");
   try {
-    if (!fs5.existsSync(gitIgnoreDir))
-      fs5.mkdirSync(gitIgnoreDir, { recursive: true });
-    let ignoreContent = fs5.existsSync(gitIgnorePath) ? fs5.readFileSync(gitIgnorePath, "utf8") : "";
+    if (!fs6.existsSync(gitIgnoreDir))
+      fs6.mkdirSync(gitIgnoreDir, { recursive: true });
+    let ignoreContent = fs6.existsSync(gitIgnorePath) ? fs6.readFileSync(gitIgnorePath, "utf8") : "";
     if (!ignoreContent.includes(".serve-acl")) {
       const sep = ignoreContent.endsWith(`
 `) || ignoreContent === "" ? "" : `
 `;
-      fs5.appendFileSync(gitIgnorePath, `${sep}.serve-acl
+      fs6.appendFileSync(gitIgnorePath, `${sep}.serve-acl
 `);
     }
   } catch {}
-  const aclPath = path6.join(targetDir, ".serve-acl");
-  if (!fs5.existsSync(aclPath)) {
-    const configDir = path6.join(homeDir, ".config", "princess-pi");
-    const defaultAclPath = path6.join(configDir, "default-acl");
+  const aclPath = path7.join(targetDir, ".serve-acl");
+  if (!fs6.existsSync(aclPath)) {
+    const configDir = path7.join(homeDir, ".config", "princess-pi");
+    const defaultAclPath = path7.join(configDir, "default-acl");
     let defaultEmails = [];
-    if (fs5.existsSync(defaultAclPath)) {
+    if (fs6.existsSync(defaultAclPath)) {
       try {
-        defaultEmails = fs5.readFileSync(defaultAclPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+        defaultEmails = fs6.readFileSync(defaultAclPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
       } catch {}
     }
     if (defaultEmails.length === 0) {
@@ -1191,9 +1234,9 @@ function parseAclFile(targetDir) {
         gitEmail = "david@princess-pi.dev";
       defaultEmails = [gitEmail];
       try {
-        if (!fs5.existsSync(configDir))
-          fs5.mkdirSync(configDir, { recursive: true });
-        fs5.writeFileSync(defaultAclPath, `# Global default ACL for /serve
+        if (!fs6.existsSync(configDir))
+          fs6.mkdirSync(configDir, { recursive: true });
+        fs6.writeFileSync(defaultAclPath, `# Global default ACL for /serve
 ${gitEmail}
 `, "utf8");
       } catch {}
@@ -1208,12 +1251,12 @@ ${gitEmail}
       ].join(`
 `) + `
 `;
-      fs5.writeFileSync(aclPath, localContent, "utf8");
+      fs6.writeFileSync(aclPath, localContent, "utf8");
     } catch (err) {
       throw new Error(`Failed to auto-seed local .serve-acl file in "${targetDir}": ${err.message}`);
     }
   }
-  const content = fs5.readFileSync(aclPath, "utf8");
+  const content = fs6.readFileSync(aclPath, "utf8");
   const emails = [];
   for (const line of content.split(/\r?\n/)) {
     const hashIdx = line.indexOf("#");
@@ -1248,7 +1291,7 @@ function flattenSubdomainToLabel2(subdomain) {
 function loadCfEnv2(envPath = CF_ENV_PATH2) {
   let raw;
   try {
-    raw = fs5.readFileSync(envPath, "utf8");
+    raw = fs6.readFileSync(envPath, "utf8");
   } catch (err) {
     throw new Error(`Cloudflare token file not found or unreadable at ${envPath} (${err.code || err.message}). ` + `Create it (0600) with CF_API_TOKEN / CF_ACCOUNT_ID / CF_ZONE_ID / CF_TUNNEL_ID — see the runbook 6B.0.`);
   }
@@ -1288,23 +1331,23 @@ async function cfFetch2(cf, urlPath, { method = "GET", body } = {}) {
 }
 async function acquireLock2() {
   try {
-    fs5.mkdirSync(CONFIG_DIR2, { recursive: true });
+    fs6.mkdirSync(CONFIG_DIR2, { recursive: true });
   } catch {}
   const deadline = Date.now() + LOCK_TIMEOUT_MS2;
   for (;; ) {
     try {
-      const fd = fs5.openSync(LOCK_PATH2, "wx");
-      fs5.writeSync(fd, `${process.pid} ${new Date().toISOString()}
+      const fd = fs6.openSync(LOCK_PATH2, "wx");
+      fs6.writeSync(fd, `${process.pid} ${new Date().toISOString()}
 `);
-      fs5.closeSync(fd);
+      fs6.closeSync(fd);
       return;
     } catch (err) {
       if (err.code !== "EEXIST")
         throw err;
       try {
-        const st = fs5.statSync(LOCK_PATH2);
+        const st = fs6.statSync(LOCK_PATH2);
         if (Date.now() - st.mtimeMs > LOCK_STALE_MS2) {
-          fs5.unlinkSync(LOCK_PATH2);
+          fs6.unlinkSync(LOCK_PATH2);
           continue;
         }
       } catch {}
@@ -1316,7 +1359,7 @@ async function acquireLock2() {
 }
 function releaseLock2() {
   try {
-    fs5.unlinkSync(LOCK_PATH2);
+    fs6.unlinkSync(LOCK_PATH2);
   } catch {}
 }
 async function withLock2(fn) {
@@ -1509,10 +1552,10 @@ async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
     return [];
   }
   try {
-    if (fs5.existsSync(LOCK_PATH2)) {
-      const st = fs5.statSync(LOCK_PATH2);
+    if (fs6.existsSync(LOCK_PATH2)) {
+      const st = fs6.statSync(LOCK_PATH2);
       if (Date.now() - st.mtimeMs > LOCK_STALE_MS2)
-        fs5.unlinkSync(LOCK_PATH2);
+        fs6.unlinkSync(LOCK_PATH2);
     }
   } catch {}
   return withLock2(async () => {
@@ -1588,8 +1631,8 @@ async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
         }
       }
       if (changed) {
-        fs5.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
-        fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
+        fs6.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
+        fs6.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
       }
     }
     return reaped;
@@ -1623,9 +1666,9 @@ async function handleList() {
 }
 function handleVersion() {
   try {
-    const pkgPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-    const pkg = JSON.parse(fs6.readFileSync(pkgPath, "utf8"));
-    console.log(`serve ${pkg.version}`);
+    const pkgPath = path8.join(path8.dirname(fileURLToPath2(import.meta.url)), "..", "package.json");
+    const pkg = JSON.parse(fs7.readFileSync(pkgPath, "utf8"));
+    console.log(formatVersion("serve", pkg.version, import.meta.url));
   } catch (err) {
     console.error(`\u26A0\uFE0F Failed to read package version: ${err}`);
     process.exitCode = 1;
@@ -1633,8 +1676,8 @@ function handleVersion() {
 }
 function handleWhy() {
   try {
-    const manifestPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path8.join(path8.dirname(fileURLToPath2(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs7.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let text = `${manifest.name} - ${manifest.tagline}
 
@@ -1667,8 +1710,8 @@ function handleWhy() {
 }
 function handleHelp() {
   try {
-    const manifestPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf8"));
+    const manifestPath = path8.join(path8.dirname(fileURLToPath2(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
+    const manifest = JSON.parse(fs7.readFileSync(manifestPath, "utf8"));
     const invokedAs = "./serve";
     let helpText = `${manifest.name} - ${manifest.tagline}
 
@@ -1856,13 +1899,13 @@ async function handleStart(trimmedArgs) {
   }
   const activeLabels = new Set;
   for (const rawDir of dirs) {
-    const targetDir = path7.resolve(process.cwd(), rawDir);
-    if (!fs6.existsSync(targetDir) || !fs6.statSync(targetDir).isDirectory()) {
+    const targetDir = path8.resolve(process.cwd(), rawDir);
+    if (!fs7.existsSync(targetDir) || !fs7.statSync(targetDir).isDirectory()) {
       console.warn(`\u26A0\uFE0F Warning: Directory "${rawDir}" does not exist. Skipping.`);
       continue;
     }
     const activeServers = await discoverServers();
-    const existingServer = activeServers.find((s) => path7.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic);
+    const existingServer = activeServers.find((s) => path8.resolve(process.cwd(), s.dir) === targetDir && !!s.isLive === !isStatic);
     if (existingServer) {
       if (overrideSubdomain) {
         try {
@@ -1880,8 +1923,8 @@ async function handleStart(trimmedArgs) {
       }
       continue;
     }
-    const envPath = path7.join(targetDir, ".env");
-    if (fs6.existsSync(envPath) && !force) {
+    const envPath = path8.join(targetDir, ".env");
+    if (fs7.existsSync(envPath) && !force) {
       console.warn(`\u26A0\uFE0F Found .env file in "${rawDir}"! Skipping (pass --force to serve anyway).`);
       continue;
     }
@@ -1892,8 +1935,8 @@ async function handleStart(trimmedArgs) {
     }
     startPort = port + 1;
     const subdomain = overrideSubdomain;
-    const __dirname2 = path7.dirname(fileURLToPath(import.meta.url));
-    const runnerPath = path7.resolve(__dirname2, "../extensions/lib/serve/run-live-server.js");
+    const __dirname2 = path8.dirname(fileURLToPath2(import.meta.url));
+    const runnerPath = path8.resolve(__dirname2, "../extensions/lib/serve/run-live-server.js");
     const spawnCmd = isStatic ? "npx" : "node";
     const spawnArgs = isStatic ? ["--", "http-server", targetDir, "-p", String(port), "-a", "127.0.0.1"] : [runnerPath, targetDir, ...subdomain ? ["--subdomain", subdomain] : [], "-p", String(port), "-a", "127.0.0.1"];
     const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
@@ -1905,7 +1948,7 @@ async function handleStart(trimmedArgs) {
       registerServer({
         pid: serverProcess.pid,
         port,
-        dir: path7.resolve(process.cwd(), targetDir),
+        dir: path8.resolve(process.cwd(), targetDir),
         kind: isStatic ? "static" : "live",
         subdomain
       });

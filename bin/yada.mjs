@@ -3,9 +3,9 @@
 // Edits are overwritten on every build/prepare. Edit the .ts source instead.
 
 // bin/yada.ts
-import * as fs2 from "node:fs";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import * as fs3 from "node:fs";
+import * as path2 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // extensions/lib/config.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -155,6 +155,49 @@ function renderWhy(manifestPath, invokedAs) {
   return text;
 }
 
+// extensions/lib/build-stamp.ts
+import * as fs2 from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+var STAMP_BASENAME = "build-stamp.json";
+function readBuildStamp(moduleUrl) {
+  try {
+    const dir = path.dirname(fileURLToPath(moduleUrl));
+    const raw = fs2.readFileSync(path.join(dir, STAMP_BASENAME), "utf8");
+    const s = JSON.parse(raw);
+    if (typeof s.sha !== "string" || typeof s.builtFrom !== "string")
+      return null;
+    return s;
+  } catch {
+    return null;
+  }
+}
+function stampSuffix(stamp) {
+  return stamp.dirty ? `+${stamp.sha}-dev-${stamp.dev}` : `+${stamp.sha}`;
+}
+function formatVersion(toolName, semver, moduleUrl) {
+  let self;
+  try {
+    self = fs2.realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    self = fileURLToPath(moduleUrl);
+  }
+  const stamp = readBuildStamp(moduleUrl);
+  const lines = [];
+  if (stamp) {
+    lines.push(`${toolName} ${semver}${stampSuffix(stamp)}`);
+  } else if (self.endsWith(".ts")) {
+    lines.push(`${toolName} ${semver}+source`);
+  } else {
+    lines.push(`${toolName} ${semver}`);
+  }
+  lines.push(`path ${self}`);
+  if (stamp)
+    lines.push(`built-from ${stamp.builtFrom}`);
+  return lines.join(`
+`);
+}
+
 // bin/yada.ts
 var config = loadConfig("yada", {
   similarity: 0.85,
@@ -165,13 +208,14 @@ var config = loadConfig("yada", {
   maxGap: 1e4
 });
 var options = { ...config };
-var manifestPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "yada-cmd.json");
+var manifestPath = path2.join(path2.dirname(fileURLToPath2(import.meta.url)), "..", "docs", "manifests", "yada-cmd.json");
 function invokedAs() {
-  return path.basename(process.argv[1] ?? "yada", path.extname(process.argv[1] ?? ".mjs")) || "yada";
+  return path2.basename(process.argv[1] ?? "yada", path2.extname(process.argv[1] ?? ".mjs")) || "yada";
 }
 function printVersion() {
-  const manifest = JSON.parse(fs2.readFileSync(manifestPath, "utf8"));
-  console.log(`${manifest.name} ${manifest.version}`);
+  const pkgPath = path2.join(path2.dirname(fileURLToPath2(import.meta.url)), "..", "package.json");
+  const pkg = JSON.parse(fs3.readFileSync(pkgPath, "utf8"));
+  console.log(formatVersion(invokedAs(), pkg.version, import.meta.url));
 }
 for (let i = 2;i < process.argv.length; i++) {
   const arg = process.argv[i];

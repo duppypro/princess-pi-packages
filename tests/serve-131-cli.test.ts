@@ -76,7 +76,14 @@ ok("--version shows name and semver", () => {
 ok("--version matches package.json exactly (#134 — no second source of truth)", () => {
 	const { stdout } = run(["--version"]);
 	const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
-	assert.strictEqual(stdout.trim(), `serve ${pkg.version}`, "serve --version must report package.json's version, not a separately-maintained copy");
+	// #178 added `path` / `built-from` lines beneath, so this pins the FIRST line
+	// rather than the whole output. #134's actual claim is unchanged: the semver
+	// reported must be package.json's, never a separately-maintained copy.
+	const first = stdout.trim().split("\n")[0];
+	assert.ok(
+		first === `serve ${pkg.version}` || first.startsWith(`serve ${pkg.version}+`),
+		`serve --version must report package.json's version, not a separately-maintained copy — got ${JSON.stringify(first)}`,
+	);
 });
 
 console.log("\n=== serve --list ===\n");

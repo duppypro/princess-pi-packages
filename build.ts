@@ -151,11 +151,65 @@ const TARGETS: BuildTarget[] = [
   { name: "yada", external: [] },
 ];
 
+// ---
+// #178 BUILD STAMP — record which working tree produced these artifacts.
+//
+// Written to bin/build-stamp.json (gitignored) rather than baked into the
+// bundles: bin/*.mjs are COMMITTED and the staleness gate asserts a fresh build
+// leaves `git diff --exit-code -- bin/` empty, so a per-build value inside them
+// would fail that gate forever. Baking HEAD's sha is also impossible in
+// principle — the file carrying it becomes part of the next commit, whose sha
+// differs, so a clean rebuild could never reproduce the committed bytes.
+//
+// `dev` counts DIRTY builds at the current sha, 0-based, resetting when the sha
+// moves. Why it matters: while developing you nearly always have uncommitted
+// edits, so a bare sha would name a commit whose code is not what is running —
+// the same silent wrong answer #178 exists to kill, one layer up.
+// ---
+function writeBuildStamp(): void {
+  const git = (args: string[]): string => {
+    try {
+      return require("node:child_process")
+        .execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+        .trim();
+    } catch {
+      return "";
+    }
+  };
+
+  const sha = git(["rev-parse", "--short", "HEAD"]);
+  // No git (a source tarball, say) — skip the stamp entirely rather than write
+  // a half-true one. `--version` degrades to semver + path, which still answers
+  // #178's question.
+  if (!sha) return;
+
+  const dirty = git(["status", "--porcelain"]) !== "";
+  const builtFrom = git(["rev-parse", "--show-toplevel"]) || process.cwd();
+  const stampPath = path.join("bin", "build-stamp.json");
+
+  // The sidecar is the only state — it already carries the previous build's
+  // (sha, dirty, dev), which is everything the next count needs. Advance only
+  // when the PREVIOUS build was dirty at this same sha; anything else (new
+  // commit, or a clean build in between) starts the sequence over at 0.
+  let dev = 0;
+  try {
+    const prev = JSON.parse(fs.readFileSync(stampPath, "utf8")) as { sha?: string; dirty?: boolean; dev?: number };
+    if (prev.sha === sha && prev.dirty === true && typeof prev.dev === "number") dev = prev.dev + 1;
+  } catch {
+    dev = 0;
+  }
+  if (!dirty) dev = 0;
+
+  fs.writeFileSync(stampPath, `${JSON.stringify({ sha, dirty, dev, builtFrom }, null, 2)}\n`);
+  console.log(`🔖 build stamp: ${sha}${dirty ? `-dev-${dev}` : ""} (${builtFrom})`);
+}
+
 async function buildAll(): Promise<void> {
   validateSkills();
   generateHarnessRegistry();
 
   console.log("🛠️  Building cross-harness CLI binaries (Bun.build)...");
+  writeBuildStamp();
 
   for (const t of TARGETS) {
     const result = await Bun.build({

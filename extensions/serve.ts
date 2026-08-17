@@ -21,6 +21,7 @@ import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable, formatServerCard } from "./lib/serve/tui.js";
 // --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans, subdomainToHostname } from "./lib/serve/cloudflare.js";
+import { formatVersion } from "./lib/build-stamp.ts";
 
 // Track widget visibility state locally (persisted across reloads via session log)
 let isWidgetVisible = true;
@@ -133,7 +134,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		try {
 			const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 			const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-			ctx.ui.notify(`serve ${pkg.version}`, "info");
+			ctx.ui.notify(formatVersion("serve", pkg.version, import.meta.url), "info");
 		} catch (err) {
 			ctx.ui.notify(`\u26A0\uFE0F Failed to read package version: ${err}`, "error");
 		}
