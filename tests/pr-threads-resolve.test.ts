@@ -281,6 +281,77 @@ console.log("pr-threads --resolve: closing the review loop (#232)");
 	check(resolveMutationCalls(calls).length === 1, "reply failure → resolve mutation is never attempted", JSON.stringify(calls));
 }
 
+// 11. macroscopeapp PR #314 finding (High, bin/pr-threads:133-145): --resolve
+//     and --reply consume the FOLLOWING token unconditionally, so a flag
+//     typo'd after them (or omitted entirely with another flag trailing) gets
+//     swallowed as the value instead of reported as missing. `--resolve
+//     --json` must never attempt to resolve a thread literally named
+//     "--json" — it must be a usage error, and it must never reach gh at all.
+{
+	const { code, err, calls } = run([], ["1", "--resolve", "--json"]);
+	check(code === 2, "--resolve --json → exit 2 (never treats --json as the thread id)", `got ${code}\n${err}`);
+	check(resolveMutationCalls(calls).length === 0, "--resolve --json → no graphql call attempted", JSON.stringify(calls));
+}
+
+// 12. Same defect, --reply half: `--reply --json` must not post the literal
+//     text "--json" as the reply.
+{
+	const { code, err, calls } = run([], ["1", "--resolve", "PRRT_x", "--reply", "--json"]);
+	check(code === 2, "--reply --json → exit 2 (never posts --json as reply text)", `got ${code}\n${err}`);
+	check(resolveMutationCalls(calls).length === 0, "--reply --json → no graphql call attempted", JSON.stringify(calls));
+}
+
+// 13. Ergonomics choice for the fix (see bin/pr-threads comment above the flag
+//     loop): a bare leading-dash rejection would also reject a LEGITIMATE
+//     reply that happens to start with "-" (e.g. "-1, disagree"). Thread ids
+//     (case 11) never start with "-" — GitHub's PRRT_/PRRT_... node id format
+//     never does — so --resolve rejects a leading dash outright. --reply text
+//     is free-form human prose, so it gets a `--` terminator instead: text
+//     after an explicit `--` is taken verbatim, dash and all.
+{
+	const { code, calls } = run(
+		[
+			{ status: 0, out: replyResponse("RC_1", "https://github.com/o/r/pull/1#discussion_r1") },
+			{ status: 0, out: resolvedResponse("PRRT_x", true) },
+		],
+		["1", "--resolve", "PRRT_x", "--reply", "--", "-1, disagree with this approach"],
+	);
+	check(code === 0, "--reply -- '-1, ...' → the -- terminator lets dash-led text through", `got ${code}`);
+	const mutCalls = resolveMutationCalls(calls);
+	check(
+		mutCalls[0]?.includes("body=-1, disagree with this approach"),
+		"the dash-led text composes verbatim into the reply mutation, -- itself stripped",
+		JSON.stringify(mutCalls[0]),
+	);
+}
+
+// 14. Without the -- escape, dash-led reply text is rejected rather than
+//     silently risking a swallowed flag — same usage-error shape as case 12.
+{
+	const { code, err } = run([], ["1", "--resolve", "PRRT_x", "--reply", "-1, disagree"]);
+	check(code === 2, "--reply '-1, ...' without -- → exit 2, not silently accepted", `got ${code}\n${err}`);
+}
+
+// 15. macroscopeapp PR #314 finding (Medium, bin/pr-threads:231): a missing or
+//     null `.data.resolveReviewThread.thread.isResolved` must report "could
+//     not determine" (exit 5), never "the API refused" (exit 6) — the #224
+//     5-vs-6 discipline this script's own header documents. The old `// false`
+//     jq fallback turned an absent field into a determined `false`.
+{
+	const { code, out, err } = run(
+		[{ status: 0, out: JSON.stringify({ data: { resolveReviewThread: { thread: { id: "PRRT_x" } } } }) }],
+		["1", "--resolve", "PRRT_x"],
+	);
+	check(code === 5, "missing isResolved → exit 5 (could not determine), never 6", `got ${code}\n${out}\n${err}`);
+}
+{
+	const { code, out, err } = run(
+		[{ status: 0, out: JSON.stringify({ data: { resolveReviewThread: { thread: { id: "PRRT_x", isResolved: null } } } }) }],
+		["1", "--resolve", "PRRT_x"],
+	);
+	check(code === 5, "null isResolved → exit 5 (could not determine), never 6", `got ${code}\n${out}\n${err}`);
+}
+
 // ---
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-threads --resolve: ${checks - failures} of ${checks} checks passed.`);

@@ -130,7 +130,14 @@ while [ "$#" -gt 0 ]; do
     --json) json_mode=1; shift ;;
     --resolve)
       shift
-      if [ "$#" -eq 0 ]; then
+      # macroscopeapp finding on PR #314 (High): a bare `[ "$#" -eq 0 ]` check
+      # only catches a MISSING value — `--resolve --json` shifted `--json`
+      # into $resolve_id and tried to resolve a thread literally named
+      # "--json" instead of reporting the missing argument. Also reject a
+      # value starting with "-": GitHub's opaque node ids (PRRT_...) never
+      # start with a dash, so this cannot reject a legitimate thread id, only
+      # a following flag that got swallowed by mistake.
+      if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
         echo "pr-threads: --resolve requires a thread id" >&2
         exit 2
       fi
@@ -138,11 +145,26 @@ while [ "$#" -gt 0 ]; do
       ;;
     --reply)
       shift
-      if [ "$#" -eq 0 ]; then
-        echo "pr-threads: --reply requires text" >&2
+      # Same class of bug as --resolve above, with a different fix: --reply's
+      # value is free-form human text, which CAN legitimately start with "-"
+      # (e.g. "-1, disagree"), so a bare leading-dash rejection would reject
+      # correct input, not just a swallowed flag. Chosen ergonomics: the
+      # conventional `--` terminator — text after an explicit `--` is taken
+      # verbatim, dash and all; without it, a leading dash is treated as a
+      # misplaced flag and rejected rather than silently accepted.
+      if [ "$#" -gt 0 ] && [ "$1" = "--" ]; then
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "pr-threads: --reply requires text after --" >&2
+          exit 2
+        fi
+        reply_text="$1"; have_reply=1; shift
+      elif [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
+        echo "pr-threads: --reply requires text (use -- before text starting with -)" >&2
         exit 2
+      else
+        reply_text="$1"; have_reply=1; shift
       fi
-      reply_text="$1"; have_reply=1; shift
       ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
     *)
@@ -228,7 +250,18 @@ mutation($threadId: ID!) {
 }' 2>"$gh_err_file"); then
     not_found_or_die "resolve"
   fi
-  if ! resolved=$(jq -r '.data.resolveReviewThread.thread.isResolved // false' <<<"$resolve_json" 2>"$gh_err_file"); then
+  # macroscopeapp finding on PR #314 (Medium): the old `// false` fallback
+  # made a missing/null isResolved report as a DETERMINED "false" — collapsing
+  # into exit 6 ("checked, and the API says no") a case that is really exit 5
+  # ("could not determine"), exactly the #210/#224 discipline this script's
+  # own header documents for every other undetermined-state case above. Fail
+  # the jq parse itself (via `error()`) unless isResolved actually came back
+  # as a boolean, so an absent field is caught by the same `! resolved=$(...)`
+  # branch as a genuine parse failure, not silently promoted to a real answer.
+  if ! resolved=$(jq -r '
+    .data.resolveReviewThread.thread.isResolved
+    | if type == "boolean" then tostring else error("isResolved missing or not boolean") end
+  ' <<<"$resolve_json" 2>"$gh_err_file"); then
     echo "pr-threads: could not parse the resolve response for thread $resolve_id:" >&2
     cat "$gh_err_file" >&2
     exit 5
