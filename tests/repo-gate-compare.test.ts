@@ -52,6 +52,12 @@ esac
 for a in "\$@"; do
   case "\$a" in
     user/repos*) cat "\$F/repos.json"; exit 0 ;;
+    users/*)
+      # The owner-type probe (#304 review): GitHub's collaborator-add endpoint only
+      # accepts a \`permission\` body on organization-owned repos, so repo-gate must
+      # know which kind of account \$OWNER is before it can print a safe PUT.
+      [ -f "\$F/ownertypefail" ] && exit 1
+      cat "\$F/ownertype.json"; exit 0 ;;
     repos/*/rulesets\\?per_page=100)
       name="\${a#repos/${OWNER}/}"; name="\${name%/rulesets?per_page=100}"
       [ -f "\$F/listfail-\$name" ] && exit 1
@@ -60,6 +66,15 @@ for a in "\$@"; do
       id="\${a##*/}"
       [ -f "\$F/getfail-\$id" ] && exit 1
       cat "\$F/rs-\$id.json"; exit 0 ;;
+    repos/*/collaborators/*/permission)
+      # Strip owner/ prefix and /collaborators/.../permission suffix to recover the
+      # repo name, the same way the rulesets branches above do.
+      name="\${a#repos/${OWNER}/}"; name="\${name%%/collaborators/*}"
+      [ -f "\$F/botfail-\$name" ] && exit 1
+      # Default: write access, so every scenario that does not care about bot
+      # access at all (the vast majority) does not have to fixture it.
+      if [ -f "\$F/bot-\$name.json" ]; then cat "\$F/bot-\$name.json"; else echo '{"permission":"write"}'; fi
+      exit 0 ;;
   esac
 done
 echo "gh stub: unhandled: \$args" >&2
@@ -103,7 +118,21 @@ interface Scenario {
 	plan?: string | null;
 	listFail?: string[];
 	getFail?: number[];
+	/** repo name -> the bot's collaborator permission on it (default: "write" for every repo) */
+	botPermission?: Record<string, string>;
+	/** repo names on which the collaborator/permission lookup itself fails */
+	botPermissionFail?: string[];
+	/**
+	 * GitHub account type for `.owner` in the policy — "User" or "Organization".
+	 * Defaults to "Organization" so the pre-existing collaborator-remedy fixtures
+	 * below (written before #304's owner-type fix) keep asserting the org-shaped
+	 * `{"permission":"push"}` body unchanged. `null` makes the `users/{owner}` probe
+	 * itself fail, simulating an owner type that could not be determined.
+	 */
+	ownerType?: "User" | "Organization" | null;
 	args?: string[];
+	/** Run `--remedy <repo>` instead of `--json`. Output is raw text, not parsed. */
+	remedy?: string;
 }
 
 function run(s: Scenario) {
@@ -143,6 +172,15 @@ function run(s: Scenario) {
 		}
 		for (const n of s.listFail ?? []) fs.writeFileSync(path.join(dir, `listfail-${n}`), "");
 		for (const id of s.getFail ?? []) fs.writeFileSync(path.join(dir, `getfail-${id}`), "");
+		for (const [name, perm] of Object.entries(s.botPermission ?? {})) {
+			fs.writeFileSync(path.join(dir, `bot-${name}.json`), JSON.stringify({ permission: perm }));
+		}
+		for (const n of s.botPermissionFail ?? []) fs.writeFileSync(path.join(dir, `botfail-${n}`), "");
+		if (s.ownerType === null) {
+			fs.writeFileSync(path.join(dir, "ownertypefail"), "");
+		} else {
+			fs.writeFileSync(path.join(dir, "ownertype.json"), JSON.stringify({ type: s.ownerType ?? "Organization" }));
+		}
 
 		const policy = {
 			...REAL_POLICY,
@@ -158,7 +196,9 @@ function run(s: Scenario) {
 		fs.mkdirSync(binDir);
 		fs.writeFileSync(path.join(binDir, "gh"), GH_STUB, { mode: 0o755 });
 
-		const r = spawnSync(GATE_PATH, ["--policy", policyPath, "--json", ...(s.args ?? [])], {
+		const extraArgs = s.remedy ? ["--remedy", s.remedy] : (s.args ?? []);
+		const modeArgs = s.remedy ? [] : ["--json"];
+		const r = spawnSync(GATE_PATH, ["--policy", policyPath, ...modeArgs, ...extraArgs], {
 			encoding: "utf8",
 			timeout: 20_000,
 			env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, RG_FIXTURES: dir },
@@ -167,8 +207,8 @@ function run(s: Scenario) {
 			!r.stderr.includes("gh stub: unhandled"),
 			`the stub saw a request it does not model — the test is lying, not passing:\n${r.stderr}`,
 		);
-		const json = r.stdout.trim() ? JSON.parse(r.stdout) : null;
-		return { status: r.status, stderr: r.stderr, json, byRepo: (n: string) => json?.repos?.find((x: { repo: string }) => x.repo === n) };
+		const json = !s.remedy && r.stdout.trim() ? JSON.parse(r.stdout) : null;
+		return { status: r.status, stderr: r.stderr, stdout: r.stdout, json, byRepo: (n: string) => json?.repos?.find((x: { repo: string }) => x.repo === n) };
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -391,5 +431,265 @@ describe("repo-gate — findings that arrived while the earlier ones were being 
 		const r = run({ repos: { alpha: "no-such-tier" }, lists: { alpha: [[]] }, plan: "free" });
 		assert.strictEqual(r.status, 3, "a policy that cannot describe its own repos is unusable");
 		assert.match(r.stderr, /no-such-tier|does not define/, "the refusal must name the offending assignment");
+	});
+});
+
+describe("repo-gate — bot write access (#304)", () => {
+	// Rulesets say who a rule binds; they say nothing about whether the bot can push
+	// at all. Without this probe a repo missing the collaborator grant is
+	// indistinguishable from a correctly configured one until an agent tries to push.
+
+	it("the bot has write access: no extra problem, status stays ok", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "write" },
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "ok");
+		assert.strictEqual(rec.bot_access.status, "ok");
+		assert.strictEqual(r.status, 0);
+	});
+
+	it("maintain and admin also satisfy write — both are 'can push'", () => {
+		for (const perm of ["maintain", "admin"]) {
+			const r = run({
+				lists: { alpha: [[compliant(1)]] },
+				rulesets: { 1: compliant(1) },
+				botPermission: { alpha: perm },
+			});
+			assert.strictEqual(r.byRepo("alpha").bot_access.status, "ok", `${perm} should satisfy write`);
+			assert.strictEqual(r.status, 0);
+		}
+	});
+
+	it("the bot is not a collaborator: drift, distinct wording from 'insufficient'", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.strictEqual(rec.bot_access.status, "none");
+		assert.match(rec.bot_access.detail, /not a collaborator/);
+		assert.match(rec.remedy, /collaborators\/princess-pi-bot/, "the remedy must name the bot login");
+		assert.strictEqual(r.status, 6);
+	});
+
+	it("the bot has access but below write: drift, reported as 'insufficient', not 'none'", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "read" },
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.strictEqual(rec.bot_access.status, "insufficient", "read access is a distinct outcome from no access at all");
+		assert.strictEqual(r.status, 6);
+	});
+
+	it("a missing bot grant folds into an already-drifting ruleset record, not a second row", () => {
+		const rs = compliant(1);
+		(rs.rules as unknown[]).splice(2, 1); // drop pull_request -> ruleset drift too
+		const r = run({
+			lists: { alpha: [[rs]] },
+			rulesets: { 1: rs },
+			botPermission: { alpha: "none" },
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.ok(rec.problems.some((p: string) => /missing rule: pull_request/.test(p)), "the ruleset problem must survive");
+		assert.ok(rec.problems.some((p: string) => /not a collaborator/.test(p)), "the bot problem must be added, not lost");
+		assert.strictEqual(r.json.counts.total, 1, "one repo is still one record, not two");
+	});
+
+	it("the collaborator-permission lookup itself failing is 'error', never reported as 'no access'", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermissionFail: ["alpha"],
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "error");
+		assert.strictEqual(rec.bot_access.status, "error");
+		assert.strictEqual(r.status, 5, "could not check must exit 5, not 6");
+	});
+
+	it("a bot-check failure overrides an otherwise-ok ruleset verdict to error, not ok", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermissionFail: ["alpha"],
+		});
+		assert.strictEqual(r.byRepo("alpha").status, "error", "an unknown half of the picture must not read as a clean pass");
+	});
+
+	it("plan-blocked repos are still probed for bot access — the waiver excuses the ruleset, not the push grant", () => {
+		const r = run({
+			repos: { alpha: "plan-blocked" },
+			lists: { alpha: [[]] },
+			plan: "free",
+			botPermission: { alpha: "none" },
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift", "n/a on the ruleset must not swallow a real bot-access finding");
+		assert.strictEqual(rec.bot_access.status, "none");
+	});
+
+	it("a 'gone' repo is not probed for bot access — there is nothing to check permission on", () => {
+		const r = run({
+			repos: { alpha: "protected", vanished: "protected" },
+			account: [{ name: "alpha" }],
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+		});
+		const rec = r.byRepo("vanished");
+		assert.strictEqual(rec.status, "gone");
+		assert.strictEqual(rec.bot_access, undefined, "a nonexistent repo cannot carry a collaborator verdict");
+	});
+
+	it("--json carries bot_login at the top level, sourced from the policy, not hardcoded", () => {
+		const r = run({ lists: { alpha: [[compliant(1)]] }, rulesets: { 1: compliant(1) } });
+		assert.strictEqual(r.json.bot_login, "princess-pi-bot");
+	});
+});
+
+describe("repo-gate --remedy — the bot grant is printed, never run (#304)", () => {
+	it("write access: no collaborator command is printed", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "write" },
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.ok(!/collaborators/.test(r.stdout!), "nothing to fix means nothing about collaborators is printed");
+	});
+
+	it("no access: prints the exact gh api PUT that would add the collaborator, and never runs it", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.match(r.stdout!, /gh api -X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+		assert.match(r.stdout!, /"permission":"push"/);
+	});
+
+	it("insufficient access: still offers the same PUT (push is push, regardless of what was there)", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "read" },
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.match(r.stdout!, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+	});
+
+	it("the permission lookup failing exits 5 and prints no collaborator remedy", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermissionFail: ["alpha"],
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 5);
+		assert.ok(!/-X PUT.*collaborators/.test(r.stdout!), "an unknown state must not print a guessed remedy");
+	});
+
+	it("plan-blocked tier still gets a bot remedy — 'none' is about the ruleset, not the push grant", () => {
+		const r = run({
+			repos: { alpha: "plan-blocked" },
+			lists: { alpha: [[]] },
+			plan: "free",
+			botPermission: { alpha: "none" },
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.match(r.stdout!, /^# alpha — tier 'plan-blocked'/m);
+		assert.match(r.stdout!, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+	});
+});
+
+describe("repo-gate — collaborator remedy shape depends on owner type (#304 review)", () => {
+	// GitHub's docs for `PUT /repos/{owner}/{repo}/collaborators/{username}` say the
+	// `permission` body parameter is "Only valid on organization-owned repositories."
+	// Sending it for a personal (User) account is REJECTED, not defaulted — so the
+	// remedy this tool prints must omit the body entirely there and let the endpoint's
+	// documented default (push) apply, while still sending the body for orgs (where a
+	// bare PUT would silently grant whatever GitHub's own default is, not necessarily
+	// what the tier asked for).
+
+	it("an organization owner keeps the permission body", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: "Organization",
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.match(r.stdout!, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+		assert.match(r.stdout!, /"permission":"push"/);
+	});
+
+	it("a personal (User) owner gets a bodyless PUT — GitHub's permission param is org-only", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: "User",
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.match(r.stdout!, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+		assert.ok(!/"permission"/.test(r.stdout!), "GitHub rejects a `permission` body on personal-account repos");
+	});
+
+	it("in the full report, a personal-account repo's missing-bot-grant remedy has no permission body", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: "User",
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.match(rec.remedy, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+		assert.ok(!/"permission"/.test(rec.remedy), "personal accounts reject the permission body");
+		assert.strictEqual(r.status, 6);
+	});
+
+	it("--remedy: owner type could not be determined -> exit 6, no guessed remedy printed", () => {
+		// Same class as the ambiguous-ruleset-name case above: the bot-access STATE is
+		// known (drift — no access), only the single safe command shape is not, because
+		// the org shape 422s on a personal account and the personal shape silently
+		// leaves an org repo at GitHub's default instead of what the policy asked for.
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: null,
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 6, "the state is known (drift); guessing the write shape is the unsafe part, not the check");
+		assert.ok(!/-X PUT.*collaborators/.test(r.stdout!), "an unknown owner type must not print a guessed remedy");
+	});
+
+	it("full report: owner type indeterminate keeps status drift but withholds a guessed PUT", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: null,
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.ok(!/-X PUT/.test(rec.remedy), "no owner type means no safe PUT can be printed");
+		assert.strictEqual(r.status, 6, "the state is known to be drift — not the same as could-not-check (5)");
 	});
 });

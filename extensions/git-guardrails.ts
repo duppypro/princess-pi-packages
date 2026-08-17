@@ -1,5 +1,5 @@
 /**
- * Git Guardrails Extension (#70, #74)
+ * Git Guardrails Extension (#70, #74, #303)
  *
  * Blocks dangerous git commands via Pi's bash-spawn-hook, branch-aware AND
  * push-target-aware:
@@ -25,15 +25,30 @@
  * target ~/.claude/hooks/). Keep logic in sync — tests/git-guardrails-parity.test.ts
  * runs the same fixture (tests/fixtures/git-guardrails-cases.json) against both.
  *
+ * Edit/Write gate (#303): Pi's `tool_call` event fires before a tool executes
+ * and CAN block (`return { block: true, reason }`, event.toolName narrows to
+ * "edit"/"write", event.input.path is the target file) — confirmed against
+ * @earendil-works/pi-coding-agent's shipped .d.ts (ToolCallEvent/ToolCallEventResult
+ * in dist/core/extensions/types.d.ts), not assumed. Bash-spawn-hook only sees
+ * the Bash tool, so the file-edit hazard #301 explicitly left open ("mode 1":
+ * uncommitted Bash-authored edits) needed a second seam. This registers a
+ * `tool_call` handler alongside the bash-spawn-hook, wrapping
+ * checkEditOnMain() in lib/edit-on-main-core.ts — the Pi twin of
+ * hooks/block-edit-on-main.sh, same relationship as checkGitCommand() below.
+ * Cross-harness twin: hooks/block-edit-on-main.sh (PreToolUse matcher
+ * `Edit|Write|MultiEdit`). Parity: tests/block-edit-on-main-parity.test.ts.
+ *
  * Usage:
  *   pi -e ./extensions/git-guardrails.ts
  *
  * Spec: https://github.com/duppypro/princess-pi-packages/issues/74 (supersedes #70 regexes)
+ *       https://github.com/duppypro/princess-pi-packages/issues/303 (Edit/Write gate)
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import { checkGitCommand } from "./lib/git-guardrails-core";
+import { checkEditOnMain } from "./lib/edit-on-main-core";
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -62,11 +77,11 @@ export default function (pi: ExtensionAPI) {
   const cwd = process.cwd();
 
   // Session-start branch check (#124): warn if cwd is on main/master.
-  // Claude Code already blocks edits on main via PreToolUse hook
-  // (block-edit-on-main.sh); this is the Pi-side equivalent — it can't
-  // block, but it puts the reminder front-and-center before any work.
-  // Also persists a custom entry to the session transcript so ax can
-  // surface the metric (ax recall main-branch-warning, future signal).
+  // This fires once, before any tool call, so it stays even though #303 gave
+  // Pi a real per-edit block below — an upfront nudge is cheaper than
+  // discovering the gate on the first blocked Edit. Also persists a custom
+  // entry to the session transcript so ax can surface the metric (ax recall
+  // main-branch-warning, future signal).
   pi.on("session_start", async (_event, ctx) => {
     try {
       const inside = execSync("git rev-parse --is-inside-work-tree", { cwd, encoding: "utf8", timeout: 3000 }).trim();
@@ -83,6 +98,26 @@ export default function (pi: ExtensionAPI) {
         );
       }
     } catch { /* not a git repo, or git not available — silent */ }
+  });
+
+  // Edit/Write gate (#303): the Pi twin of hooks/block-edit-on-main.sh.
+  // `tool_call` fires before the tool executes and can block by returning
+  // `{ block: true, reason }` — verified in @earendil-works/pi-coding-agent's
+  // shipped .d.ts, not assumed (see file header). Only edit/write are gated,
+  // matching the Claude Code hook's `Edit|Write|MultiEdit` matcher scope —
+  // Pi has no MultiEdit tool, and gating Bash here would deadlock the escape
+  // hatch (`git checkout -b <slug>` is itself a Bash command).
+  //
+  // ctx.cwd (not the module-load-time `cwd` captured above) is used
+  // deliberately: it is Pi's per-call notion of "current working directory"
+  // and is the closer analogue of the JSON `cwd` field Claude Code passes to
+  // block-edit-on-main.sh on every invocation.
+  pi.on("tool_call", async (event, ctx) => {
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    const filePath = (event.input as { path?: string }).path;
+    if (!filePath) return;
+    const reason = checkEditOnMain(filePath, ctx.cwd || cwd);
+    if (reason) return { block: true, reason };
   });
 
   const bashTool = createBashTool(cwd, {

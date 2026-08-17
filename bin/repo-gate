@@ -2,30 +2,38 @@
 # ---
 # repo-gate [<repo>...] [--json] [--policy <path>] [--remedy <repo>] — compare every
 # repo's live branch-protection ruleset against the declared policy in
-# docs/repo-policy.json, and report the difference. REPORT ONLY: this script never
-# writes to GitHub (#288).
+# docs/repo-policy.json, and report the difference. Also asserts that the bot login
+# named in the policy (`.bot_login`) holds write access on every in-scope repo — a
+# repo missing that grant looks identical to a correctly configured one until an
+# agent tries to push and is refused (#304). REPORT ONLY: this script never writes
+# to GitHub (#288).
 #
 # Why it exists: "is this repo governed?" was answerable only by opening the GitHub
 # UI one repo at a time, 29 times. Nothing recorded what the answer was *supposed*
 # to be, so a repo that drifted looked exactly like a repo that was deliberately
 # different. The policy file supplies the intent; this script supplies the diff.
 #
-# Why report-only: the fix is a PUT that rewrites branch protection on a repo. That
-# is worth a human reading the payload the first few times. Every drift record
-# carries a `remedy` naming the exact command, so an agent can act without
-# re-deriving it — and so a future applier executes strings that already shipped
-# and are already under test.
+# Why report-only: the fix is a PUT that rewrites branch protection on a repo, or
+# one that adds a collaborator. That is worth a human reading the payload the first
+# few times. Every drift record carries a `remedy` naming the exact command, so an
+# agent can act without re-deriving it — and so a future applier executes strings
+# that already shipped and are already under test.
 #
 # --- Exit codes (the shared pr-* contract, docs/dev-workflow-spec.md#exit-codes) ---
-#   0  every in-scope repo matches the declared policy
+#   0  every in-scope repo matches the declared policy AND the bot has write access
 #   2  usage error — bad flag, or a repo named that the policy does not govern
-#   3  precondition not met — policy file found but unreadable/invalid JSON
+#   3  precondition not met — policy file found but unreadable/invalid JSON, or
+#      missing `.bot_login`
 #   4  not found — no policy file at any searched path
-#   5  remote/API failure — state could NOT be determined for at least one repo
-#   6  drift found — state WAS determined, and it differs from the policy
+#   5  remote/API failure — state could NOT be determined for at least one repo,
+#      including "the bot's collaborator permission could not be read"
+#   6  drift found — state WAS determined, and it differs from the policy, including
+#      "the bot is not a collaborator" or "the bot's access is below write"
 #
 # 5 vs 6 is the distinction that carries weight here, same as everywhere else in
-# this family: "I could not check" is not "I checked and it says no."
+# this family: "I could not check" is not "I checked and it says no." A missing or
+# insufficient bot grant is 6, same as ruleset drift; a `gh api` failure while
+# probing it is 5, never silently reported as "no access".
 # ---
 set -uo pipefail
 
@@ -64,14 +72,17 @@ POLICY SEARCH ORDER
   3. ~/git-projects/princess-pi-packages/docs/repo-policy.json
 
 EXIT CODES
-  0  every governed repo matches its tier (or is a held waiver)
+  0  every governed repo matches its tier (or is a held waiver), and the bot has write
   2  usage error — unknown flag, missing argument, repo not governed by the policy
-  3  environment or policy is unusable — gh/jq missing, policy not JSON, no .owner
+  3  environment or policy is unusable — gh/jq missing, policy not JSON, no .owner,
+     no .bot_login
   4  no policy file found in the search order
   5  the account could not be fully read — some repo's state is UNKNOWN, not clean.
      Never conflated with 6: "I could not look" and "I looked and found drift" are
-     different facts, and only one of them is safe to ignore
-  6  drift — at least one repo differs from its declared tier
+     different facts, and only one of them is safe to ignore. Includes "the bot's
+     collaborator permission could not be read".
+  6  drift — at least one repo differs from its declared tier, or the bot login named
+     in the policy lacks write access on it
 
 This script never writes to GitHub. See --why for what it does and does not prove.
 EOF
@@ -84,8 +95,9 @@ repo-gate — why would I run this?
 SCENARIO  You are about to trust a repo's branch protection and want to know whether
           it matches what was decided, without opening 29 GitHub settings pages.
   repo-gate
-RESULT    One line per repo: ok, drift (with exactly which rules differ), or n/a.
-          Exit 6 if anything drifted, so it works as a check in a script.
+RESULT    One line per repo: ok, drift (with exactly which rules differ, and whether
+          the policy's bot_login lacks write access), or n/a. Exit 6 if anything
+          drifted, so it works as a check in a script.
 
 SCENARIO  A repo came back red and you want to fix it.
   repo-gate --remedy watu
@@ -179,6 +191,7 @@ fi
 POLICY_REQUIRED='
   ["owner",                            "string"],
   ["ruleset_name",                     "string"],
+  ["bot_login",                        "string"],
   ["repos",                            "object"],
   ["tiers",                            "object"],
   ["scope",                            "object"],
@@ -225,6 +238,17 @@ fi
 
 OWNER=$(jq -r '.owner' "$POLICY")
 RULESET_NAME=$(jq -r '.ruleset_name' "$POLICY")
+BOT_LOGIN=$(jq -r '.bot_login' "$POLICY")
+
+# Structurally present but empty is not the same fact as "not there" (the
+# POLICY_REQUIRED gate above), and it is the specific way this field would fail
+# silently: every bot-access check below would probe `collaborators//permission`
+# — a 404 that reads exactly like "not a collaborator" instead of "policy is broken".
+if [ -z "$BOT_LOGIN" ]; then
+	echo "$SELF: '$POLICY' has .bot_login but it is empty." >&2
+	echo "  Refusing to probe bot access against no login — every check would look like a 404." >&2
+	exit 3
+fi
 
 # ---
 # REMEDY SYNTHESIS
@@ -285,6 +309,90 @@ remedy_for() {
 	else
 		echo "gh api -X POST repos/$OWNER/$repo/rulesets --input - <<< $quoted"
 	fi
+}
+
+# ---
+# BOT ACCESS PROBE
+# ---
+
+# Rulesets only decide who a rule binds; they say nothing about whether the bot can
+# push at all. A repo missing the collaborator grant looks IDENTICAL to a correctly
+# configured one until an agent tries to push and the server refuses it — this probe
+# exists so that gap shows up here, in a report, instead of at push time (#304).
+#
+# The three outcomes the issue calls for, kept distinct rather than folded into one
+# boolean: `ok` (write/maintain/admin — all three satisfy "can push"), `insufficient`
+# (a collaborator, but below write — read/triage), and `none` (not a collaborator at
+# all). `error` is a fourth state and is NOT one of the three: it means the probe
+# itself failed, which must never be reported as "no access" — an API hiccup and a
+# missing grant are different facts, same as everywhere else in this script.
+#
+# Emits one JSON object on stdout: {status, permission, detail}. Never touches
+# $records directly, so it stays a pure function of one `gh api` call and is callable
+# from both the main loop and the single-repo --remedy path.
+bot_access_of() {
+	local repo="$1"
+	local perm_json
+	if ! perm_json=$(gh api "repos/$OWNER/$repo/collaborators/$BOT_LOGIN/permission" 2>/dev/null); then
+		jq -n --arg login "$BOT_LOGIN" '{
+			status: "error", permission: null,
+			detail: ($login + "'"'"'s permission on this repo could not be determined — gh api failed")
+		}'
+		return
+	fi
+	jq -n --arg login "$BOT_LOGIN" --argjson r "$perm_json" '
+		($r.permission // "") as $perm
+		| if ($perm == "admin" or $perm == "maintain" or $perm == "write") then
+			{ status: "ok", permission: $perm, detail: ($login + " has " + $perm + " access") }
+		  elif ($perm == "" or $perm == "none") then
+			{ status: "none", permission: (if $perm == "" then null else $perm end),
+			  detail: ($login + " is not a collaborator on this repo") }
+		  else
+			{ status: "insufficient", permission: $perm,
+			  detail: ($login + " has permission " + $perm + " (below write)") }
+		  end
+	'
+}
+
+# GitHub's docs for this endpoint ("Add a repository collaborator") say of the
+# `permission` body parameter: "Only valid on organization-owned repositories." That is
+# not advisory — sending it for a personal (User) account is REJECTED, not defaulted
+# (#304 review). $OWNER is one fixed account for the whole policy file, so this is
+# probed once, not per repo, the same way PLAN_STATUS is above.
+OWNER_TYPE=""
+if owner_json=$(gh api "users/$OWNER" 2>/dev/null); then
+	ot=$(jq -r '.type // ""' <<<"$owner_json" 2>/dev/null) || ot=""
+	if [ "$ot" = "User" ] || [ "$ot" = "Organization" ]; then
+		OWNER_TYPE="$ot"
+	fi
+fi
+if [ -n "$OWNER_TYPE" ]; then
+	OWNER_TYPE_DETAIL="'$OWNER' is a $OWNER_TYPE account"
+else
+	OWNER_TYPE_DETAIL="could not determine whether '$OWNER' is a User or Organization account — gh api users/$OWNER failed or returned no recognized .type"
+fi
+
+# Returns 1 (and prints nothing) when the owner type is not known, rather than
+# guessing a shape: the org shape 422s on a personal account, and the personal shape
+# would silently leave an org grant at GitHub's bare-PUT default instead of the
+# permission the policy asked for. Callers treat that refusal the same way the
+# ambiguous-ruleset-name case above does — the bot-access STATE is still known and
+# reported as drift, only the single safe write command is not.
+bot_remedy_for() {
+	local repo="$1"
+	case "$OWNER_TYPE" in
+		Organization)
+			echo "gh api -X PUT repos/$OWNER/$repo/collaborators/$BOT_LOGIN --input - <<< '{\"permission\":\"push\"}'"
+			;;
+		User)
+			# No body: personal accounts have no permission tiers to choose between for
+			# this endpoint, and the documented default when the body is omitted is push.
+			echo "gh api -X PUT repos/$OWNER/$repo/collaborators/$BOT_LOGIN"
+			;;
+		*)
+			return 1
+			;;
+	esac
 }
 
 # ---
@@ -366,6 +474,32 @@ if [ -n "$REMEDY" ]; then
 		echo "# Printing the '$eff_tier' remedy, not 'none' — this matches what the report says."
 	fi
 	remedy_for "$REMEDY" "$eff_tier" "$id"
+
+	# The bot-access half of the remedy (#304). Probed and printed regardless of
+	# tier — a plan-blocked repo still needs the bot to be able to push, ruleset or
+	# not — but never merged into the ruleset payload above: they are two different
+	# APIs (rulesets vs. collaborators) and two different writes.
+	bot=$(bot_access_of "$REMEDY")
+	bstatus=$(jq -r '.status' <<<"$bot")
+	case "$bstatus" in
+		ok) : ;;
+		error)
+			bdetail=$(jq -r '.detail' <<<"$bot")
+			echo "# $bdetail — no collaborator remedy printed." >&2
+			exit 5
+			;;
+		*)
+			bdetail=$(jq -r '.detail' <<<"$bot")
+			echo "# $bdetail"
+			if ! bot_remedy_for "$REMEDY"; then
+				echo "# $OWNER_TYPE_DETAIL — no collaborator remedy printed." >&2
+				echo "# The write shape differs by owner type (org needs a permission body," >&2
+				echo "# a personal account rejects one) and guessing wrong either 422s or" >&2
+				echo "# silently grants the wrong permission." >&2
+				exit 6
+			fi
+			;;
+	esac
 	exit 0
 fi
 
@@ -586,6 +720,62 @@ for repo in "${TARGETS[@]}"; do
 	fi
 done
 
+# ---
+# BOT ACCESS — folded into the records already built above (#304)
+# ---
+
+# A second pass, deliberately, rather than threaded into the loop above: the ruleset
+# comparison already has a `continue` for every early exit (gone, list failure, get
+# failure, duplicate name, no ruleset, plan-blocked ok/drift/n-a), and reproducing the
+# fold at each one would multiply the surface for the same bug the #289 review kept
+# finding — a record silently skipped or double-counted. This pass instead runs once
+# per already-recorded repo and folds the verdict in by `repo` key, so the ruleset
+# logic above is untouched and this stays a pure "merge another fact in" step.
+for repo in "${TARGETS[@]}"; do
+	# A "gone" repo does not exist on the account, so there is nothing to probe
+	# collaborator permission on — the ruleset record already says why.
+	if jq -e --arg r "$repo" '.[] | select(.repo == $r and .status == "gone")' <<<"$records" >/dev/null 2>&1; then
+		continue
+	fi
+	bot=$(bot_access_of "$repo")
+	bstatus=$(jq -r '.status' <<<"$bot")
+	brem=""
+	if [ "$bstatus" != "ok" ] && [ "$bstatus" != "error" ]; then
+		# A definite negative (none/insufficient) is still known even when the owner
+		# type is not: same as the ambiguous-ruleset-name case, the state stays
+		# "drift", the remedy field just becomes prose instead of a guessed command.
+		if ! brem=$(bot_remedy_for "$repo"); then
+			brem="# $OWNER_TYPE_DETAIL — no collaborator remedy printed (org repos need a permission body, personal accounts reject one)"
+		fi
+	fi
+	if [ "$bstatus" = "error" ]; then
+		api_failed=1
+	fi
+	records=$(jq -c --arg repo "$repo" --argjson bot "$bot" --arg brem "$brem" '
+		map(
+			if .repo != $repo then .
+			else
+				(. + { bot_access: $bot }) as $withbot
+				| if $bot.status == "ok" then $withbot
+				  elif $bot.status == "error" then
+				    # "Could not check" outranks whatever the ruleset half found: the
+				    # record can no longer claim to fully describe this repo.
+				    ($withbot | .status = "error" | .detail = (.detail + " | " + $bot.detail))
+				  else
+				    # A definite negative (none/insufficient). If the ruleset half
+				    # already errored, leave that status alone — still "error", not
+				    # "drift" — but still surface what IS known about the bot.
+				    ($withbot
+				     | .status = (if .status == "error" then "error" else "drift" end)
+				     | .problems = ((.problems // []) + [$bot.detail])
+				     | .detail = (.detail + " | " + $bot.detail)
+				     | .remedy = (if (.remedy // "") == "" then $brem else .remedy + "\n" + $brem end))
+				  end
+			end
+		)
+	' <<<"$records")
+done
+
 # Unlisted repos are appended only on a full run: naming specific repos on the
 # command line is a request about those repos, not an audit of coverage.
 if [ ${#ONLY[@]} -eq 0 ]; then
@@ -617,12 +807,14 @@ total=$(jq 'length' <<<"$records")
 if [ "$JSON" -eq 1 ]; then
 	jq -n --slurpfile p "$POLICY" --argjson recs "$records" \
 		--arg policy "$POLICY" --arg plan_status "$PLAN_STATUS" --arg plan_detail "$PLAN_DETAIL" \
+		--arg bot_login "$BOT_LOGIN" \
 		--argjson counts "{\"total\":$total,\"ok\":$ok,\"drift\":$drift,\"na\":$na,\"unlisted\":$unlisted,\"gone\":$gone,\"error\":$errors}" '
 		{
 			schema: "repo-gate/report@1",
 			policy_path: $policy,
 			policy_schema: $p[0].schema,
 			enforcement_disclosure: $p[0].enforcement_disclosure,
+			bot_login: $bot_login,
 			plan: { status: $plan_status, detail: $plan_detail },
 			counts: $counts,
 			repos: $recs
@@ -642,6 +834,7 @@ else
 	jq -r '.enforcement_disclosure | "    " + .summary, "    " + .what_is_actually_enforced' "$POLICY" | fmt -w 96 -s | sed 's/^/  /'
 	echo
 	echo "  ${DIM}plan probe: $PLAN_STATUS — $PLAN_DETAIL${RESET}"
+	echo "  ${DIM}bot access probed for: $BOT_LOGIN (needs write on every repo below)${RESET}"
 	echo
 
 	jq -r '

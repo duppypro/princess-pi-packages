@@ -149,5 +149,31 @@ console.log("install-workflow-tools: removes nothing, reports stale tools (#235)
 	check(!/stale/i.test(out), "stale name that exists but isn't on PATH anywhere → not reported", out);
 }
 
+// 7. Bare-name PATH collision with an unrelated binary must NOT be reported
+//    as stale — the false positive at the center of #246: /usr/bin/merge
+//    (RCS three-way merge, ships with rcs/diffutils, zero relation to this
+//    repo) shares the retired "merge" name and used to get flagged "removed
+//    in #201, replaced by pr-open" on any host that happens to have that
+//    package installed. Every script this repo has ever shipped — every
+//    current bash entry AND the old merge.ts/merge.mjs before #201 — opens
+//    with a shebang (`#!`); a compiled binary's first two bytes never do.
+//    Simulate the collision with raw ELF-magic bytes rather than a real
+//    binary, since the fixture only needs to prove "not a script we could
+//    plausibly have shipped".
+{
+	const home = freshHome();
+	fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+	const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-collision-"));
+	const collision = path.join(elsewhere, "merge");
+	fs.writeFileSync(collision, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00])); // ELF magic, no shebang
+	fs.chmodSync(collision, 0o755);
+
+	const { code, out } = run(home, elsewhere);
+
+	check(code === 0, "unrelated PATH binary sharing a stale name → exit status still 0", `got ${code}`);
+	check(!/stale/i.test(out), "unrelated binary with no shebang → not reported as stale", out);
+	check(!out.includes(collision), "unrelated binary's path not named in the report", out);
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} install-workflow-tools no-delete: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

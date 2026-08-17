@@ -3,6 +3,8 @@
   "issue": 288,
   "owner": "duppypro",
   "ruleset_name": "protect-default-branch-owner-only",
+  "bot_login": "princess-pi-bot",
+  "bot_login_why": "The single source of truth for which GitHub account agent sessions push as (#304). repo-gate reads this rather than hardcoding the login so the policy file stays the one baseline both the ruleset shape and the bot's collaborator grant are checked against.",
   "enforcement_disclosure": {
     "summary": "These rulesets are a SIGNAL, not a block. Red means look at this; it does not mean you cannot proceed.",
     "why": [

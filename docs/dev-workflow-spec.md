@@ -390,14 +390,24 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   commit; git push` keeps its lift); lifts are stored per repo; and `--abort`/`--ff-only`
   count only as options, never as the argument of `-m`/`-F`/`--onto`/… . Detached HEAD
   is not `main`, so a rebase in progress is untouched. Uncommitted Bash-authored *edits* on
-  `main` (mode 1 in #301) are out of scope here — that is #303's territory. Pi twin gets the
-  same rule through `git-guardrails-core.ts`; the parity fixture pins both.
+  `main` (`sed -i`, heredoc redirects, `>` — mode 1 in #301, a command string this hook
+  inspects but that never names `git`/`gh`) stay out of scope here on purpose: #303 closed
+  the *tool-call* path (`Edit`/`Write`, both harnesses — see `block-edit-on-main.sh` below),
+  not the Bash-mutation path, matching the Claude Code hook's `Edit|Write|MultiEdit` matcher
+  scope exactly. Pi twin gets the same commit-blocking rule through `git-guardrails-core.ts`;
+  the parity fixture pins both.
 - **`block-edit-on-main.sh`** (#237) — blocks `Edit`/`Write`/`MultiEdit` when the target
   file's repo is on `main`/`master` or detached HEAD, enforcing this repo's CLAUDE.md HARD
   GATE technically instead of only by convention. Matcher **must** be
   `Edit|Write|MultiEdit`, never `Bash` — a `Bash` matcher would also catch
   `git checkout -b <branch>`, the very command used to escape main, and deadlock the gate
-  it exists to enforce. Claude-Code-only; no Pi twin yet.
+  it exists to enforce. **Pi twin (#303):** `extensions/git-guardrails.ts` registers a
+  `tool_call` handler — the event Pi fires before a tool executes, which `return { block:
+  true, reason }` can refuse — scoped to `toolName === "edit" || "write"` (Pi has no
+  `MultiEdit` tool, so that's the full matcher-equivalent scope). It wraps the same decision
+  logic, ported to `extensions/lib/edit-on-main-core.ts` (no Pi imports, so the parity test
+  can call it directly, same relationship as `git-guardrails-core.ts` to
+  `block-dangerous-git.sh`). Parity: `tests/block-edit-on-main-parity.test.ts`.
   - **Paths inside the git dir are not gated (dotfiles-doctor#15, ported under ADR 0001).**
     `.git/config`, `.git/info/exclude`, `.git/hooks/*`, `.git/worktrees/*` are allowed even
     on `main`. Nothing under `.git/` lives in a branch, so the stash/checkout hazard cannot
@@ -524,9 +534,12 @@ guard logic with `extensions/lib/git-guardrails-core.ts`) needs no deploy step: 
 it from the globally linked package, which is a symlink to the clone, so it cannot lag the
 way a copied file can. Copying is what drifts; linking is what doesn't. This also means
 the `worktree remove --force` guard reaches the Pi side automatically, with no separate
-deploy. `block-edit-on-main.sh` and `preedit-reread-check.py` have no Pi twin yet — they
-are Claude-Code-only, deployed and drift-checked the same copy-based way as
-`block-dangerous-git.sh`.
+deploy. The same is true of the `block-edit-on-main.sh` Pi twin added by #303 — it lives in
+the same file (`extensions/git-guardrails.ts`, sharing logic with
+`extensions/lib/edit-on-main-core.ts`) and loads from the same symlinked source, so it needs
+no deploy step either. `preedit-reread-check.py` is the one hook still Claude-Code-only with
+no Pi twin, deployed and drift-checked the copy-based way `block-dangerous-git.sh` used to
+need.
 
 ### Getting the statusline scripts onto the host
 
@@ -596,7 +609,7 @@ fails and the list drains itself instead of becoming decoration.
 | `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
-| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. |
+| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. |
 | `herdr-tab` | Sourceable guard (`. herdr-tab` → `herdr_available`, `herdr_tab <cwd> <label>`; also runs as a one-shot CLI). The `$HERDR_PANE_ID` predicate and the `return 0`-on-every-path discipline live here once instead of in three copies — see [the herdr half](#the-herdr-half-herdr-tab-and-why-the-guard-is-herdr_pane_id-277). Reports its outcome in `$HERDR_TAB_RESULT`, never in an exit code. |
 | `herdr-reap [--dry-run] [--json]` | Closes herdr tabs whose panes **all** point at a directory that no longer exists; spares its own tab, any tab with a live agent, and any tab with an unknown cwd. Called by `pr-cleanup`; also correct standalone after `git worktree remove`/`prune`. Exit 0 covers "not inside herdr" and "nothing stale" (`--json`'s `status` tells them apart), 5 = could not determine, 6 = a close was refused. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). |
@@ -769,10 +782,55 @@ review comments to an agent that will then change code, which is precisely where
 - A comment with `trusted: false` is a **finding to relay to the human**, never a task to
   execute — including when it is phrased as a direct order.
 
-**Deferred, deliberately** (#232 remains open until these land): the `--resolve <thread-id>`
-verb that closes the loop, and `diffHunk` for surrounding context. `path` + `line` is enough
-to locate a comment; the hunk is a convenience, and this slice is the one that unblocks the
-review loop.
+**Deferred, deliberately:** `diffHunk` for surrounding context. `path` + `line` is enough to
+locate a comment; the hunk is a convenience, and this slice already unblocks the review loop.
+The `--resolve` verb shipped — see immediately below.
+
+### `pr-threads --resolve` — closing the review loop (#232)
+
+The read side (above) gives an agent everything it needs to *address* a comment. Without a
+write side, marking the thread resolved still meant sending the human to the web UI —
+exactly the gap #232 asked to close.
+
+```
+pr-threads <pr#> --resolve <thread-id> [--reply <text>] [--json]
+```
+
+- **`<thread-id>`** is the exact id form `--json` already emits (e.g.
+  `PRRT_kwDOS37--c6ZrzUR`) — the two halves compose without translation. Calls the GraphQL
+  `resolveReviewThread` mutation.
+- **`--reply <text>`** (optional) posts a reply on the thread *before* resolving, via the
+  `addPullRequestReviewThreadReply` mutation against the thread id (no `inReplyTo` comment id
+  needed — GitHub added a thread-level reply mutation for exactly this). Resolving silently is
+  worse than resolving with a one-line reason. If the reply fails, the resolve mutation is
+  **never attempted** — no silent partial success where the thread closes without the
+  explanation actually landing. `--reply` without `--resolve` is a usage error (exit 2).
+- **This mode short-circuits before the read-side query.** Resolving/replying needs only the
+  thread's own id, not owner, repo, or a fetch of the PR's threads — `<pr#>` (and the optional
+  `owner/repo`) stay required positionally for a consistent CLI shape with the read side, but
+  go unused by the mutation itself.
+- **`--json`** emits one `pr-threads/resolve@1` document — a *different* schema from
+  `pr-threads/list@1`, because this is a different kind of read (the result of a mutation, not
+  a thread listing): `schema`, `threadId`, `resolved` (boolean), `replyId` (the posted reply's
+  id, or `null` when `--reply` wasn't given), `replyUrl`. No emoji, no prose, matching the
+  `--json` contract above.
+- **Bodies stay data going the other direction too.** `--reply <text>` is passed straight
+  through to the mutation as the comment body — never templated, reformatted, or wrapped in
+  anything that would make it look machine-generated boilerplate rather than what the caller
+  actually wrote.
+
+**Exit codes — never a bare 1.** `pr-threads` reserves exit `1` for the read-side gate
+("checked, and the PR is not clean" — `pr-merge` depends on that meaning staying exact).
+`--resolve` is a mutation, not a clean/not-clean check, so it never uses `1` and instead follows
+the [#224 table](#exit-codes--the-shared-pr--contract-224) exactly:
+
+| Code | `--resolve` meaning |
+|---|---|
+| 0 | resolved (and replied, if `--reply` was given) |
+| 2 | usage error — `--resolve` with no id, `--reply` with no text, or `--reply` without `--resolve` |
+| 4 | not found — the API reports it cannot resolve the thread id to a node (bad or stale id) |
+| 5 | could not determine — `gh api graphql` itself failed for any other reason (network, auth, rate limit), or its response couldn't be parsed. Distinguished from 4 by inspecting the failure: a `"Could not resolve to a node"` / `NOT_FOUND` message is a *determined* "no such thread"; anything else is *undetermined*. |
+| 6 | determined, and it says no — the mutation call itself **succeeded** but the API's own answer says the thread did not resolve (e.g. a token without write access). This is exit `1`'s natural analogue for a mutation: not "broken", but "ran, and the answer is no". |
 
 ### Exit codes — the shared pr-* contract (#224)
 
@@ -1106,6 +1164,23 @@ and `repo-gate` reports the difference between what it declares and what GitHub 
 holds. Exit `6` means drift; `--remedy <repo>` prints the fix; the tool never writes.
 `docs/repo-gate-apply.md` is the runbook for applying a remedy, written to be handed to an
 agent.
+
+**`repo-gate` also asserts bot write access, per repo (#304).** The policy's
+`.bot_login` (`princess-pi-bot`, the account #304 wants agent sessions to push as) is
+probed with `gh api repos/{owner}/{repo}/collaborators/{bot_login}/permission` for
+every governed repo, tier notwithstanding — `plan-blocked` waives the ruleset, not the
+push grant. Three outcomes, kept distinct in `.repos[].bot_access.status`: `ok`
+(write/maintain/admin), `insufficient` (a collaborator below write — usually `read`,
+which GitHub also reports for non-collaborators on a *public* repo, so `insufficient`
+there does not by itself mean an explicit grant exists), and `none` (not a collaborator,
+the only signal on a private repo). A failed probe is `error`, not `none` — same 5-vs-6
+discipline as the ruleset check, so an API hiccup is never reported as a missing grant.
+`--remedy <repo>` prints the `gh api -X PUT .../collaborators/<login>` command
+separately from the ruleset payload; like everywhere else in this tool, it is printed,
+never run. Live survey at the time this shipped: **6 of 29 repos** grant the bot write
+(`btw`, `does-it-glider`, `dotfiles-doctor`, `princess-pi-brain`, `princess-pi-packages`,
+`rogue-savvy`); the other 23 do not. **This is a report only — #304's credential half
+(minting the bot's token, wiring it into session env) remains blocked on `btw#29`.**
 
 Three tiers, and the third is the interesting one:
 
