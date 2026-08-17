@@ -31,9 +31,10 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-	getRegistryPath, registerServer, liveServers, readRegistry, verifyRecord, type ServerRecord,
+	getRegistryPath, registerServer, liveServers, readRegistry, verifyRecord, setRecordSubdomain, type ServerRecord,
 } from "../extensions/lib/serve/registry.ts";
 import { awaitServerUp } from "../extensions/lib/serve/process.ts";
+import { skip } from "./lib/skips.ts";
 
 const RED = "\x1b[31m", GREEN = "\x1b[32m", RESET = "\x1b[0m";
 let passed = 0, failed = 0;
@@ -82,16 +83,22 @@ const { classifyReapCandidate } = cf;
 // ===========================================================================
 // A. #306 — the reap decision needs registry evidence, not just a silent port
 // ===========================================================================
-console.log("A. classifyReapCandidate: probe is necessary, never sufficient");
+console.log("A. classifyReapCandidate: probe is necessary, never sufficient; evidence is hostname+port bound");
 {
-	const ev = (port: number, verdict: "live" | "dead" | "recycled") => [{ port, verdict }];
-	assert("port answers → keep (still serving), regardless of registry", classifyReapCandidate({ port: 1, probeLive: true, evidence: [] }) === "keep-live");
-	assert("port silent + registry says our process is DEAD → reap", classifyReapCandidate({ port: 1, probeLive: false, evidence: ev(1, "dead") }) === "reap");
-	assert("port silent + registry says our PID was RECYCLED → reap (our process is gone)", classifyReapCandidate({ port: 1, probeLive: false, evidence: ev(1, "recycled") }) === "reap");
-	assert("port silent + registry says our process is LIVE → keep (still starting)", classifyReapCandidate({ port: 1, probeLive: false, evidence: ev(1, "live") }) === "keep-starting");
-	assert("port silent + NO registry record → keep-unverified (not something serve spawned)", classifyReapCandidate({ port: 1, probeLive: false, evidence: [] }) === "keep-unverified");
-	assert("evidence for a DIFFERENT port is not evidence", classifyReapCandidate({ port: 1, probeLive: false, evidence: ev(2, "dead") }) === "keep-unverified");
-	assert("no evidence argument at all → keep-unverified (fail-safe for a legacy caller)", classifyReapCandidate({ port: 1, probeLive: false }) === "keep-unverified");
+	const H = "h1.princess-pi.dev", H2 = "h2.princess-pi.dev";
+	const ev = (port: number, verdict: "live" | "dead" | "recycled", hostname: string | null = H) => [{ port, hostname, verdict }];
+	const c = (port: number, probeLive: boolean, evidence?: any, hostname = H) => classifyReapCandidate({ port, hostname, probeLive, evidence });
+	assert("port answers → keep (still serving), regardless of registry", c(1, true, []) === "keep-live");
+	assert("port silent + registry says our process is DEAD → reap", c(1, false, ev(1, "dead")) === "reap");
+	assert("port silent + registry says our PID was RECYCLED → reap (our process is gone)", c(1, false, ev(1, "recycled")) === "reap");
+	assert("port silent + registry says our process is LIVE → keep (still starting)", c(1, false, ev(1, "live")) === "keep-starting");
+	assert("port silent + NO registry record → keep-unverified (not something serve spawned)", c(1, false, []) === "keep-unverified");
+	assert("evidence for a DIFFERENT port is not evidence", c(1, false, ev(2, "dead")) === "keep-unverified");
+	assert("no evidence argument at all → keep-unverified (fail-safe for a legacy caller)", c(1, false) === "keep-unverified");
+	// PR #318 review: a reused port must not let one tenant's death vouch for another's.
+	assert("dead record for the SAME port but a DIFFERENT hostname is not evidence (port reuse)", c(1, false, ev(1, "dead", H2)) === "keep-unverified");
+	assert("dead record with NO hostname (never published / pre-#318) is not evidence", c(1, false, ev(1, "dead", null)) === "keep-unverified");
+	assert("mixed: dead record for H2 + live record for H on the same port → H is keep-starting", c(1, false, [...ev(1, "dead", H2), ...ev(1, "live", H)]) === "keep-starting");
 }
 
 // ===========================================================================
@@ -112,10 +119,90 @@ console.log("\nB. A published server's dead record is kept by liveServers(); an 
 	assert("the PUBLISHED dead record survives on disk (reap's evidence)", raw.some(r => r.port === 59921), JSON.stringify(raw));
 	assert("the UNPUBLISHED dead record is pruned as before", !raw.some(r => r.port === 59922), JSON.stringify(raw));
 	assert("…and verifyRecord still calls the survivor dead", raw.filter(r => r.port === 59921).every(r => verifyRecord(r) !== "live"));
-	// The evidence adapter callers hand to reapOrphans: (port, verdict) pairs from the raw registry.
-	const evidence = readRegistry().map((r: ServerRecord) => ({ port: r.port, verdict: verifyRecord(r) }));
-	assert("evidence adapter yields the dead published port", classifyReapCandidate({ port: 59921, probeLive: false, evidence }) === "reap");
+	// The evidence adapter callers hand to reapOrphans: (port, hostname, verdict) from the raw registry.
+	const evidence = readRegistry().map((r: ServerRecord) => ({ port: r.port, hostname: r.subdomain ? cf.subdomainToHostname(r.subdomain) : null, verdict: verifyRecord(r) }));
+	assert("evidence adapter yields the dead published port for ITS hostname", classifyReapCandidate({ port: 59921, hostname: cf.subdomainToHostname("pub-preview"), probeLive: false, evidence }) === "reap");
+	assert("…and not for another hostname on that port", classifyReapCandidate({ port: 59921, hostname: "other.princess-pi.dev", probeLive: false, evidence }) === "keep-unverified");
+	// setRecordSubdomain: publish-after-start writes the fact reap will later need.
+	const late = spawnSleeper(); await sleep(100);
+	registerServer({ pid: late.pid!, port: 59923, dir: "/tmp/late", kind: "static", subdomain: null });
+	setRecordSubdomain(59923, "late-pub");
+	assert("setRecordSubdomain writes the sub-domain onto the port's record", readRegistry().some(r => r.port === 59923 && r.subdomain === "late-pub"));
+	late.kill("SIGKILL"); await waitExit(late); liveServers();
+	assert("…so the record now survives its process (it is published)", readRegistry().some(r => r.port === 59923));
 	fs.rmSync(REGISTRY_PATH, { force: true });
+}
+
+// ===========================================================================
+// B2. #306 — reapOrphans commits ingress FIRST; a failed PUT tears nothing down
+// ===========================================================================
+// Cloudflare is stood in by a fetch mock that intercepts only api.cloudflare.com and
+// throws on anything else, so no real call can leak. Needs cf.env for loadCfEnv (token is
+// only ever placed in a header the mock ignores); absent → declared skip.
+console.log("\nB2. reapOrphans: PUT first, teardown after; failed PUT leaves evidence, app and map intact");
+{
+	const CF_ENV = path.join(os.homedir(), ".config", "princess-pi", "cf.env"); // CONFIG_DIR in cloudflare.js
+	if (!fs.existsSync(CF_ENV)) {
+		skip("no cf.env on this host — reapOrphans ordering not exercised");
+	} else {
+		const H1 = "reap-h1.princess-pi.dev", H2 = "svc-h2.princess-pi.dev", P = 59941;
+		const MAP = path.join(os.homedir(), ".config", "princess-pi-packages", "serve", "subdomains.json");
+		const mapBackup = fs.existsSync(MAP) ? fs.readFileSync(MAP, "utf8") : null;
+		const restoreMap = () => { try { if (mapBackup === null) fs.rmSync(MAP, { force: true }); else fs.writeFileSync(MAP, mapBackup, "utf8"); } catch {} };
+		const realFetch = globalThis.fetch;
+		const calls: string[] = [];
+		let putShouldFail = true;
+		const ingress = [
+			{ hostname: H1, service: `http://127.0.0.1:${P}` },
+			{ hostname: H2, service: `http://127.0.0.1:${P}` }, // a service tenant on a reused port — no record
+			{ service: "http_status:404" },
+		];
+		const apps = [
+			{ id: "app1", name: `serve reap-h1`, domain: H1 },
+			{ id: "app2", name: `serve svc-h2`, domain: H2 },
+		];
+		const ok = (result: any) => new Response(JSON.stringify({ success: true, result }), { status: 200 });
+		globalThis.fetch = (async (input: any, init: any = {}) => {
+			const url = String(input);
+			if (!url.startsWith("https://api.cloudflare.com/")) throw new Error(`test fetch mock: unexpected URL ${url}`);
+			const method = init.method || "GET";
+			calls.push(`${method} ${url.replace(/^.*\/v4/, "")}`);
+			if (/\/cfd_tunnel\/.*\/configurations$/.test(url) && method === "GET") return ok({ config: { ingress } });
+			if (/\/cfd_tunnel\/.*\/configurations$/.test(url) && method === "PUT") {
+				if (putShouldFail) return new Response(JSON.stringify({ success: false, errors: [{ code: 1000, message: "injected" }] }), { status: 500 });
+				return ok({});
+			}
+			if (/\/access\/apps\?/.test(url) && method === "GET") return ok(apps);
+			if (/\/access\/apps\/app\d+$/.test(url) && method === "DELETE") return ok({});
+			throw new Error(`test fetch mock: unhandled ${method} ${url}`);
+		}) as any;
+		try {
+			const evidence = [{ port: P, hostname: H1, verdict: "dead" }];
+			fs.mkdirSync(path.dirname(MAP), { recursive: true });
+			fs.writeFileSync(MAP, JSON.stringify({ [String(P)]: ["reap-h1"] }), "utf8");
+			const reapedCb: string[] = [], unverified: string[] = [];
+			// Run 1 — PUT fails.
+			let threw = false;
+			try { await cf.reapOrphans({ evidence, onReaped: (h: string) => reapedCb.push(h), onUnverified: (h: string) => unverified.push(h) }); }
+			catch { threw = true; }
+			assert("failed PUT propagates as an error (caller prints 'reap skipped')", threw);
+			assert("H2 (service tenant, no record) reported unverified, not reaped", unverified.includes(H2) && !reapedCb.includes(H2), JSON.stringify({ unverified, reapedCb }));
+			assert("failed PUT → onReaped never called (registry evidence intact)", reapedCb.length === 0, JSON.stringify(reapedCb));
+			assert("failed PUT → no Access-app DELETE issued", !calls.some(c => c.startsWith("DELETE")), calls.join("\n"));
+			assert("failed PUT → subdomain map untouched", JSON.parse(fs.readFileSync(MAP, "utf8"))[String(P)]?.[0] === "reap-h1");
+			// Run 2 — PUT succeeds.
+			calls.length = 0; putShouldFail = false;
+			const reaped = await cf.reapOrphans({ evidence, onReaped: (h: string) => reapedCb.push(h), onUnverified: (h: string) => unverified.push(h) });
+			assert("successful run reaps H1 only", reaped.length === 1 && reaped[0] === H1, JSON.stringify(reaped));
+			const putIdx = calls.findIndex(c => c.startsWith("PUT")), delIdx = calls.findIndex(c => c.startsWith("DELETE"));
+			assert("PUT is issued before any DELETE", putIdx >= 0 && delIdx > putIdx, calls.join("\n"));
+			assert("onReaped called for H1 after the commit", reapedCb.length === 1 && reapedCb[0] === H1);
+			assert("map entry for the reaped port removed", !JSON.parse(fs.readFileSync(MAP, "utf8"))[String(P)]);
+		} finally {
+			globalThis.fetch = realFetch;
+			restoreMap();
+		}
+	}
 }
 
 // ===========================================================================
@@ -145,6 +232,15 @@ console.log("\nC. awaitServerUp resolves on port-up, child-exit, or a bounded pe
 	const slow = spawnSleeper();
 	const r3 = await awaitServerUp({ port: 59933, child: slow, ceilingMs: 400 });
 	assert("child alive + port silent past the ceiling → pending", r3.state === "pending", JSON.stringify(r3));
+
+	// bind race (PR #318 review): a FOREIGN listener already owns the port and our child dies
+	// — the answering port must not be reported as our server being up.
+	const FOREIGN = 59935;
+	await listenOn(FOREIGN);
+	const loser = spawn(process.execPath, ["-e", "process.exit(98)"], { stdio: "ignore" }); spawned.push(loser);
+	await waitExit(loser);
+	const r5 = await awaitServerUp({ port: FOREIGN, child: loser, ceilingMs: 5_000 });
+	assert("port answers but OUR child is dead → exited, not up (bind race lost)", r5.state === "exited" && r5.exitCode === 98, JSON.stringify(r5));
 
 	// signal: killed child → exited with the signal named.
 	const sig = spawnSleeper(); sig.kill("SIGKILL"); await waitExit(sig);

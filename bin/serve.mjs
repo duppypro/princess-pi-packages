@@ -622,12 +622,17 @@ async function awaitServerUp(opts) {
   const { port, child, ceilingMs } = opts;
   const pollMs = opts.pollMs ?? 100;
   const start = Date.now();
+  const exited = () => !!child && (child.exitCode !== null || child.signalCode !== null);
   for (;; ) {
-    if (await probePortOnce(port, Math.min(500, pollMs * 5))) {
-      return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
-    }
-    if (child && (child.exitCode !== null || child.signalCode !== null)) {
+    if (exited()) {
       return { state: "exited", exitCode: child.exitCode, signalCode: child.signalCode, elapsedMs: Date.now() - start };
+    }
+    const portUp = await probePortOnce(port, Math.min(500, pollMs * 5));
+    if (exited()) {
+      return { state: "exited", exitCode: child.exitCode, signalCode: child.signalCode, elapsedMs: Date.now() - start };
+    }
+    if (portUp) {
+      return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
     }
     if (Date.now() - start >= ceilingMs) {
       return { state: "pending", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
@@ -761,6 +766,18 @@ function registerServer(entry) {
   const kept = readRaw2().filter((r) => r.pid !== record.pid && r.port !== record.port);
   writeRaw2([...kept, record]);
   return record;
+}
+function setRecordSubdomain(port, subdomain) {
+  const all = readRaw2();
+  let changed = false;
+  const next = all.map((r) => {
+    if (r.port !== port || r.subdomain === subdomain)
+      return r;
+    changed = true;
+    return { ...r, subdomain };
+  });
+  if (changed)
+    writeRaw2(next);
 }
 function unregisterPort(port) {
   const all = readRaw2();
@@ -1052,6 +1069,9 @@ ${gitEmail}
     throw new Error("The .serve-acl file must contain at least one valid email address or @domain rule.");
   return emails;
 }
+function subdomainToHostname(subdomain) {
+  return `${flattenSubdomainToLabel2(subdomain)}.${ZONE_SUFFIX}`;
+}
 function flattenSubdomainToLabel2(subdomain) {
   let label = String(subdomain).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, "");
   if (!label)
@@ -1165,10 +1185,10 @@ async function isPortLive(port, attempts = 3, delayMs = 500) {
   }
   return false;
 }
-function classifyReapCandidate({ port, probeLive, evidence }) {
+function classifyReapCandidate({ port, hostname, probeLive, evidence }) {
   if (probeLive)
     return "keep-live";
-  const records = Array.isArray(evidence) ? evidence.filter((e) => e && e.port === port) : [];
+  const records = Array.isArray(evidence) ? evidence.filter((e) => e && e.port === port && !!e.hostname && e.hostname === hostname) : [];
   if (records.length === 0)
     return "keep-unverified";
   if (records.some((e) => e.verdict === "live"))
@@ -1348,7 +1368,7 @@ async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
     } catch {
       return [];
     }
-    let next = ingress;
+    const candidates = [];
     for (const rule of ingress) {
       if (!rule.hostname || !rule.service?.startsWith("http://127.0.0.1:"))
         continue;
@@ -1356,7 +1376,7 @@ async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
         continue;
       const port = parseInt(rule.service.split(":").pop(), 10);
       const probeLive = await isPortLive(port);
-      const verdict = classifyReapCandidate({ port, probeLive, evidence });
+      const verdict = classifyReapCandidate({ port, hostname: rule.hostname, probeLive, evidence });
       if (verdict === "keep-live" || verdict === "keep-starting")
         continue;
       if (verdict === "keep-unverified") {
@@ -1367,18 +1387,27 @@ async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
         }
         continue;
       }
-      next = next.filter((r) => r.hostname !== rule.hostname);
-      deadPorts.add(port);
-      const label = rule.hostname.endsWith(`.${ZONE_SUFFIX}`) ? rule.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
+      candidates.push({ hostname: rule.hostname, port });
+    }
+    if (candidates.length === 0)
+      return reaped;
+    const reapedHosts = new Set(candidates.map((c) => c.hostname));
+    const next = ingress.filter((r) => !reapedHosts.has(r.hostname));
+    if (!next.some((r) => !r.hostname))
+      next.push({ service: "http_status:404" });
+    await putTunnelConfig(cf, { ...config, ingress: next });
+    for (const c of candidates) {
+      deadPorts.add(c.port);
+      const label = c.hostname.endsWith(`.${ZONE_SUFFIX}`) ? c.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
       if (label) {
         try {
           await deleteAccessApp(cf, label);
         } catch {}
       }
-      reaped.push(rule.hostname);
+      reaped.push(c.hostname);
       if (typeof onReaped === "function") {
         try {
-          onReaped(rule.hostname, port);
+          onReaped(c.hostname, c.port);
         } catch {}
       }
     }
@@ -1395,11 +1424,6 @@ async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
         fs5.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
         fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
       }
-    }
-    if (reaped.length) {
-      if (!next.some((r) => !r.hostname))
-        next.push({ service: "http_status:404" });
-      await putTunnelConfig(cf, { ...config, ingress: next });
     }
     return reaped;
   });
@@ -1652,7 +1676,7 @@ async function handleStart(trimmedArgs) {
   const startedPorts = [];
   const started = [];
   try {
-    const evidence = readRegistry2().map((r) => ({ port: r.port, verdict: verifyRecord2(r) }));
+    const evidence = readRegistry2().map((r) => ({ port: r.port, hostname: r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord2(r) }));
     const reaped = await reapOrphans({
       evidence,
       onReaped: (_hostname, port) => unregisterPort(port),
@@ -1677,6 +1701,7 @@ async function handleStart(trimmedArgs) {
         try {
           const emails = parseAclFile(targetDir);
           const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
+          setRecordSubdomain(existingServer.port, overrideSubdomain);
           activeLabels.add(hostname.split(".")[0]);
           console.log(`\uD83C\uDF10 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`);
           console.log(formatServerCard({ ...existingServer, url: `https://${hostname}/` }));

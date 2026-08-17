@@ -14,13 +14,13 @@ import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, awaitServerUp } from "./lib/serve/process.js";
-import { registerServer, readRegistry, verifyRecord, unregisterPort } from "./lib/serve/registry.js";
+import { registerServer, readRegistry, verifyRecord, unregisterPort, setRecordSubdomain } from "./lib/serve/registry.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable, formatServerCard } from "./lib/serve/tui.js";
 // --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
-import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans } from "./lib/serve/cloudflare.js";
+import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans, subdomainToHostname } from "./lib/serve/cloudflare.js";
 
 // Track widget visibility state locally (persisted across reloads via session log)
 let isWidgetVisible = true;
@@ -320,7 +320,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		// #306: reap needs a second fact besides a silent port — the registry's verdict on the
 		// process serve spawned for it. Silent + no record → left published and said out loud.
 		try {
-			const evidence = readRegistry().map(r => ({ port: r.port, verdict: verifyRecord(r) }));
+			const evidence = readRegistry().map(r => ({ port: r.port, hostname: r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord(r) }));
 			const reaped = await reapOrphans({
 				evidence,
 				onReaped: (_hostname, port) => unregisterPort(port),
@@ -354,6 +354,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 					try {
 						const emails = parseAclFile(targetDir);
 						const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
+					setRecordSubdomain(existingServer.port, overrideSubdomain); // reap evidence is hostname-bound (#318)
 						activeLabels.add(hostname.split(".")[0]);
 						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.\n\n${formatServerCard({ ...existingServer, url: `https://${hostname}/` })}`, "info");
 					} catch (err) {

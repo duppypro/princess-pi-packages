@@ -15,11 +15,11 @@ import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
 import { type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, awaitServerUp } from "../extensions/lib/serve/process.js";
-import { registerServer, readRegistry, verifyRecord, unregisterPort } from "../extensions/lib/serve/registry.js";
+import { registerServer, readRegistry, verifyRecord, unregisterPort, setRecordSubdomain } from "../extensions/lib/serve/registry.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
 // --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
-import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans } from "../extensions/lib/serve/cloudflare.js";
+import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans, subdomainToHostname } from "../extensions/lib/serve/cloudflare.js";
 
 // No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
@@ -307,7 +307,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 	// #306: reap needs a second fact besides a silent port — the registry's verdict on the
 	// process serve spawned for it. Silent + no record → left published and said out loud.
 	try {
-		const evidence = readRegistry().map(r => ({ port: r.port, verdict: verifyRecord(r) }));
+		const evidence = readRegistry().map(r => ({ port: r.port, hostname: r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord(r) }));
 		const reaped = await reapOrphans({
 			evidence,
 			onReaped: (_hostname, port) => unregisterPort(port),
@@ -339,6 +339,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 				try {
 					const emails = parseAclFile(targetDir);
 					const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
+					setRecordSubdomain(existingServer.port, overrideSubdomain); // reap evidence is hostname-bound (#318)
 					activeLabels.add(hostname.split(".")[0]);
 					console.log(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`);
 				console.log(formatServerCard({ ...existingServer, url: `https://${hostname}/` }));

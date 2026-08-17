@@ -178,6 +178,11 @@ export function parseAclFile(targetDir) {
  * @param {string} subdomain
  * @returns {string} a valid single DNS label
  */
+/** The public hostname `serve` publishes a sub-domain at — one place, so callers never assemble it. */
+export function subdomainToHostname(subdomain) {
+	return `${flattenSubdomainToLabel(subdomain)}.${ZONE_SUFFIX}`;
+}
+
 export function flattenSubdomainToLabel(subdomain) {
 	let label = String(subdomain)
 		.toLowerCase()
@@ -346,19 +351,27 @@ async function isPortLive(port, attempts = 3, delayMs = 500) {
 //                      REPORT it as unverified so it is not silent; `--unpublish` is the
 //                      deliberate path.
 //
+// Evidence is bound to the HOSTNAME as well as the port (PR #318 review). A port is reused:
+// a serve-spawned preview at H1 dies on port P (record kept), a service tenant is published
+// at H2 on the same P and is silent for a moment — a port-only match would let H1's death
+// vouch for reaping H2. So a record is evidence for a rule only when it names that rule's
+// hostname; a record with no hostname (never published, or pre-#318) vouches for nothing.
+//
 // Pure and exported: the decision is testable without Cloudflare, and `reapOrphans` receives
 // the evidence by injection because this file must stay plain-node importable
 // (run-live-server.js loads it under node; the registry module is TypeScript).
 //
-// @param {{port:number, probeLive:boolean, evidence?:Array<{port:number, verdict:"live"|"dead"|"recycled"}>}} args
+// @param {{port:number, hostname:string, probeLive:boolean, evidence?:Array<{port:number, hostname:string|null, verdict:"live"|"dead"|"recycled"}>}} args
 // @returns {"keep-live"|"keep-starting"|"reap"|"keep-unverified"}
 // ---
-export function classifyReapCandidate({ port, probeLive, evidence }) {
+export function classifyReapCandidate({ port, hostname, probeLive, evidence }) {
 	if (probeLive) return "keep-live";
-	const records = Array.isArray(evidence) ? evidence.filter((e) => e && e.port === port) : [];
+	const records = Array.isArray(evidence)
+		? evidence.filter((e) => e && e.port === port && !!e.hostname && e.hostname === hostname)
+		: [];
 	if (records.length === 0) return "keep-unverified";
 	if (records.some((e) => e.verdict === "live")) return "keep-starting";
-	return "reap"; // every record for this port is dead or recycled — our process is gone
+	return "reap"; // every record for this hostname+port is dead or recycled — our process is gone
 }
 
 // ---
@@ -564,16 +577,19 @@ export async function updateSubdomainAllowlist({ subdomain, emails }) {
  * rules pointing at 127.0.0.1 and Access apps named `serve <..>`. Also cleans the local
  * subdomain map for reaped ports and removes any stale tunnel lockfile.
  *
- * `evidence` is the registry read by the caller (`readRegistry().map(r => ({port, verdict:
- * verifyRecord(r)}))`) — injected, see classifyReapCandidate. Omit it and nothing is
- * reaped (every silent port is unverified): the fail-safe reading for a caller that has no
- * registry to offer.
+ * `evidence` is the registry read by the caller (`readRegistry().map(r => ({port, hostname:
+ * r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord(r)}))`) —
+ * injected, see classifyReapCandidate. Omit it and nothing is reaped (every silent port is
+ * unverified): the fail-safe reading for a caller that has no registry to offer.
  *
  * `onUnverified(hostname, port)` is called for each serve-owned rule whose port is silent
  * but which the registry cannot vouch for — so "left published, could not verify" is said
  * out loud instead of being the silent no-op it would otherwise be. `onReaped(hostname,
- * port)` is called for each rule actually removed, so the caller can retire the registry
- * record that served as evidence (this module cannot import the registry — see above).
+ * port)` is called for each rule actually removed — AFTER the tunnel configuration PUT has
+ * succeeded (PR #318 review): nothing local or at the edge is torn down until the ingress
+ * change is committed, so a failed PUT leaves the evidence, the Access app and the map
+ * intact for the next run. The caller uses it to retire the registry record that served as
+ * evidence (this module cannot import the registry — see above).
  *
  * KNOWN GAP (deferred, follow-up issue): nothing reaps between a crash and the next serve
  * run — no periodic/TTL GC yet.
@@ -612,27 +628,46 @@ export async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
 		} catch {
 			return []; // can't prove ownership → reap nothing (fail-safe)
 		}
-		let next = ingress;
+		// Phase 1 — decide. Nothing is touched here.
+		const candidates = []; // { hostname, port }
 		for (const rule of ingress) {
 			if (!rule.hostname || !rule.service?.startsWith("http://127.0.0.1:")) continue;
 			if (!ownedHosts.has(rule.hostname)) continue; // not serve-owned → leave it alone
 			const port = parseInt(rule.service.split(":").pop(), 10);
 			const probeLive = await isPortLive(port);
-			const verdict = classifyReapCandidate({ port, probeLive, evidence });
+			const verdict = classifyReapCandidate({ port, hostname: rule.hostname, probeLive, evidence });
 			if (verdict === "keep-live" || verdict === "keep-starting") continue;
 			if (verdict === "keep-unverified") {
 				if (typeof onUnverified === "function") { try { onUnverified(rule.hostname, port); } catch {} }
 				continue;
 			}
-			next = next.filter((r) => r.hostname !== rule.hostname);
-			deadPorts.add(port);
-			const label = rule.hostname.endsWith(`.${ZONE_SUFFIX}`) ? rule.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
+			candidates.push({ hostname: rule.hostname, port });
+		}
+		if (candidates.length === 0) return reaped;
+
+		// Phase 2 — commit the ingress change FIRST (PR #318 review). This is the one write
+		// that actually stops traffic, and it is all-or-nothing: if it throws, no Access app
+		// has been deleted, no registry record retired, no map entry dropped — the next run
+		// sees exactly the state this one saw and can try again. The old order (tear down
+		// per rule, PUT at the end) left a failed PUT with the ingress still live and its
+		// evidence gone, i.e. an orphan that could never again be reaped automatically.
+		const reapedHosts = new Set(candidates.map((c) => c.hostname));
+		const next = ingress.filter((r) => !reapedHosts.has(r.hostname));
+		if (!next.some((r) => !r.hostname)) next.push({ service: "http_status:404" });
+		await putTunnelConfig(cf, { ...config, ingress: next });
+
+		// Phase 3 — tear down what the committed ingress no longer references. Best-effort
+		// per item: an Access-app delete that fails leaves a harmless app with no ingress
+		// behind it (the next run's ownership scan still sees it; the rule it fronted is gone).
+		for (const c of candidates) {
+			deadPorts.add(c.port);
+			const label = c.hostname.endsWith(`.${ZONE_SUFFIX}`) ? c.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
 			if (label) { try { await deleteAccessApp(cf, label); } catch {} }
-			reaped.push(rule.hostname);
-			if (typeof onReaped === "function") { try { onReaped(rule.hostname, port); } catch {} }
+			reaped.push(c.hostname);
+			if (typeof onReaped === "function") { try { onReaped(c.hostname, c.port); } catch {} }
 		}
 
-		// Clean subdomain map — remove entries for every dead port so --list does not
+		// Clean subdomain map — remove entries for every reaped port so --list does not
 		// show a public URL for a server that no longer exists.
 		if (deadPorts.size > 0) {
 			const map = readSubdomainMap();
@@ -644,11 +679,6 @@ export async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
 				fs.mkdirSync(SERVE_CONFIG_DIR, { recursive: true });
 				fs.writeFileSync(SUBDOMAIN_MAP_PATH, JSON.stringify(map), "utf8");
 			}
-		}
-
-		if (reaped.length) {
-			if (!next.some((r) => !r.hostname)) next.push({ service: "http_status:404" });
-			await putTunnelConfig(cf, { ...config, ingress: next });
 		}
 		return reaped;
 	});

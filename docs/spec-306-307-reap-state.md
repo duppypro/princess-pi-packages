@@ -31,13 +31,19 @@ kernel by `(pid, startTicks)`:
 | silent | `live` | `keep-starting` | our process is alive and not answering yet — starting or wedged, not gone |
 | silent | no record | `keep-unverified` | serve never spawned it (a service tenant, or a pre-#181 orphan) — not ours to delete on a probe; **reported**, not silent |
 
-`classifyReapCandidate({port, probeLive, evidence})` in `extensions/lib/serve/cloudflare.js` is
-that table, pure and exported. `reapOrphans({evidence, onReaped, onUnverified})` takes the
+`classifyReapCandidate({port, hostname, probeLive, evidence})` in `extensions/lib/serve/cloudflare.js`
+is that table, pure and exported. **Evidence is bound to hostname + port** (PR #318 review): a
+port is reused, so a record for the same port but another hostname — or with no hostname
+(never published, or pre-#318) — vouches for nothing. `setRecordSubdomain(port, subdomain)` writes
+the hostname onto the record at publish-after-start (#119), so that fact exists when needed. `reapOrphans({evidence, onReaped, onUnverified})` takes the
 evidence by **injection**: `cloudflare.js` must stay plain-node importable (`run-live-server.js`
 loads it) and the registry is TypeScript, so callers pass
 `readRegistry().map(r => ({port: r.port, verdict: verifyRecord(r)}))`. Omit `evidence` and every
 silent port is unverified — nothing is reaped (fail-safe for a legacy caller). `onReaped` lets
-the caller `unregisterPort` the record that served as evidence; `onUnverified` prints
+the caller `unregisterPort` the record that served as evidence — and is called **only after the
+tunnel-config PUT has succeeded** (PR #318 review): reap is decide → commit ingress → tear down, so
+a failed PUT leaves evidence, Access app and map intact for the next run instead of stranding an
+orphan that can never be reaped again; `onUnverified` prints
 `⚠️ <host> → 127.0.0.1:<port> is not answering, but serve has no record of spawning it — left
 published … Use --unpublish if it is gone.`
 
@@ -62,7 +68,9 @@ served"* while the server came up 2 s later; a spawn that died at 1.3 s reported
 **Is:** `awaitServerUp({port, child, ceilingMs})` in `extensions/lib/serve/process.ts` polls
 state (100 ms):
 
-- `up` — the port accepts a connection → in the summary.
+- `up` — the port accepts a connection **and our child is still alive** (child state read before
+  and after the probe, PR #318 review — a child that lost the bind race to a foreign listener is
+  `exited`, not `up`) → in the summary.
 - `exited` — the child is gone → `❌ Server for "<dir>" exited with code N / on SIGNAL before
   answering on 127.0.0.1:<port> (after N ms).`, and the registry record is retired.
 - `pending` — 10 s ceiling with the child alive and the port silent → `⏳ … started but is not
@@ -74,15 +82,20 @@ construction).
 
 ## 4. Verification
 
-`tests/serve-306-307-reap-state.test.ts` (26 assertions):
+`tests/serve-306-307-reap-state.test.ts` (42 assertions):
 
-- A. `classifyReapCandidate` — all seven cells of the table above, incl. evidence for a different
-  port and no evidence at all.
+- A. `classifyReapCandidate` — every cell of the table above, plus: evidence for a different port,
+  none at all, same port / different hostname (port reuse), no hostname, and mixed records.
 - B. `liveServers()` keeps a dead **published** record and prunes a dead unpublished one; the
-  evidence adapter yields `reap` for the survivor. Real processes, SIGKILLed.
+  evidence adapter yields `reap` for the survivor's own hostname and `keep-unverified` for another;
+  `setRecordSubdomain` makes a publish-after-start record survive its process. Real processes.
+- B2. `reapOrphans` against a `fetch` mock (intercepts only api.cloudflare.com, throws otherwise):
+  failed PUT → error propagates, no `onReaped`, no Access DELETE, map untouched, the co-ported
+  service tenant reported unverified; successful PUT → H1 reaped, PUT ordered before DELETE,
+  `onReaped` after commit, map entry gone. Declared `##SKIP##` on a host without `cf.env`.
 - C. `awaitServerUp` — late-binding listener (700 ms) → `up` under 1.5 s; child `exit(3)` →
-  `exited` with code, promptly; alive child + silent port → `pending` at ceiling; SIGKILLed child →
-  `exited` naming the signal.
+  `exited` with code, promptly; alive child + silent port → `pending` at ceiling; foreign
+  listener + dead child → `exited` (bind race lost); SIGKILLed child → `exited` naming the signal.
 - D. source pins — no `setTimeout(r, 1200)` in either caller; both call `awaitServerUp` and pass
   `evidence` to `reapOrphans`; `reapOrphans` routes through `classifyReapCandidate`.
 

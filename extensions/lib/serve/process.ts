@@ -269,12 +269,21 @@ export async function awaitServerUp(opts: {
 	const { port, child, ceilingMs } = opts;
 	const pollMs = opts.pollMs ?? 100;
 	const start = Date.now();
+	const exited = () => !!child && (child.exitCode !== null || child.signalCode !== null);
 	for (;;) {
-		if (await probePortOnce(port, Math.min(500, pollMs * 5))) {
-			return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+		// Child state is read BEFORE and AFTER the probe (PR #318 review). A port that answers
+		// is only "our server is up" if our child is still alive: a child that lost the bind
+		// race to a foreign listener, or died during the probe, must read `exited` — the
+		// answering port belongs to someone else and its record must not survive as ours.
+		if (exited()) {
+			return { state: "exited", exitCode: child!.exitCode, signalCode: child!.signalCode, elapsedMs: Date.now() - start };
 		}
-		if (child && (child.exitCode !== null || child.signalCode !== null)) {
-			return { state: "exited", exitCode: child.exitCode, signalCode: child.signalCode, elapsedMs: Date.now() - start };
+		const portUp = await probePortOnce(port, Math.min(500, pollMs * 5));
+		if (exited()) {
+			return { state: "exited", exitCode: child!.exitCode, signalCode: child!.signalCode, elapsedMs: Date.now() - start };
+		}
+		if (portUp) {
+			return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
 		}
 		if (Date.now() - start >= ceilingMs) {
 			return { state: "pending", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };

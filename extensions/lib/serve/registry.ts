@@ -205,6 +205,24 @@ export function registerServer(entry: {
 	return record;
 }
 
+/**
+ * Record that the server on `port` is now published at `subdomain` (#119 publish-after-start).
+ * WHY: reap's evidence is bound to hostname + port (PR #318 review). A record that says
+ * `subdomain: null` for a port that is in fact published cannot vouch for that hostname —
+ * and would be pruned as unpublished the moment its process dies. Writing the fact here, at
+ * publish time, is what makes a later crash-without-kill reapable.
+ */
+export function setRecordSubdomain(port: number, subdomain: string | null): void {
+	const all = readRaw();
+	let changed = false;
+	const next = all.map(r => {
+		if (r.port !== port || r.subdomain === subdomain) return r;
+		changed = true;
+		return { ...r, subdomain };
+	});
+	if (changed) writeRaw(next);
+}
+
 export function unregisterPid(pid: number): void {
 	const all = readRaw();
 	const kept = all.filter(r => r.pid !== pid);
