@@ -294,6 +294,42 @@ describe("block-edit-on-main parity (#303)", () => {
     assertBothFromCwd("sub/f.txt", "", repo, "allow", "relative path, feature branch");
   });
 
+  // Newline inside a path component (macroscopeapp on PR #321, third fail-open
+  // of the same class). The shell walker split the path with `read -ra`, which
+  // is line-oriented: it stops at the first newline and drops the rest, so
+  // "we\nird/f.txt" was walked as just "we" and the git query landed on a
+  // shorter, different path than the edit would. Newlines are legal in POSIX
+  // filenames. The bot also reported backslash mangling here — that half is
+  // wrong (`-r` already disables escape processing), so only the newline case
+  // is asserted; the backslash case is asserted alongside it to pin the
+  // behaviour that was ALREADY correct, so a future "fix" can't regress it.
+  // This is the #267 symlink-bypass case with a newline in front of the
+  // symlink. It has to be built this way to bite: truncating at the newline
+  // has to move DIR OUT of the repo the bytes really land in. A newline in a
+  // path that stays inside the same repo blocks either way and proves nothing
+  // — the first version of this test made that mistake and passed pre-fix.
+  test("blocks a symlink to a repo on main sitting behind a newline in the path", () => {
+    const mainRepo = repoOnBranch("main");
+    const featRepo = repoOnBranch("42-slug");
+    const weird = path.join(featRepo, "we\nird");
+    fs.mkdirSync(weird, { recursive: true });
+    fs.writeFileSync(path.join(mainRepo, "f.txt"), "");
+    fs.symlinkSync(path.join(mainRepo, "f.txt"), path.join(weird, "tomain"));
+    assertBoth(
+      path.join(weird, "tomain"),
+      featRepo,
+      "block",
+      "newline truncation must not hide the symlink that lands on main",
+    );
+  });
+
+  test("blocks a path whose component contains a backslash, in a repo on main", () => {
+    const repo = repoOnBranch("main");
+    const weird = path.join(repo, "link\\name");
+    fs.mkdirSync(weird, { recursive: true });
+    assertBoth(path.join(weird, "f.txt"), repo, "block", "backslash in a path component");
+  });
+
   // Deep-symlink fail-closed (#303 review finding, macroscopeapp on PR #313,
   // thread PRRT_kwDOS37--c6Zr6MV): edit-on-main-core.ts's tolerant realpath
   // walker capped a single component's symlink chain at 40 hops, but on

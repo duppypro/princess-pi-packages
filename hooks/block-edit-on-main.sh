@@ -42,6 +42,28 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 # chain deep enough this guard cannot prove where it lands either way) → fail
 # closed (#210: a check that cannot prove its precondition must refuse).
 # Sets RESOLVED_TOLERANT on success; returns 1 (unset) once the cap trips.
+# Split a pathname on "/" WITHOUT `read`. `read` is line-oriented: it stops at
+# the first newline and silently drops the rest, so "a/we<newline>ird/c" split
+# to just [a] [we] — the walk would then resolve a SHORTER path than the caller
+# asked about, take dirname of the wrong thing, and query git somewhere else
+# entirely. A newline in a filename is legal on every POSIX filesystem, and
+# this is the same fail-open class as the two defects above. Word splitting on
+# IFS='/' preserves every byte; `set -f` keeps a component like `*` from
+# glob-expanding on the way through.
+#
+# (macroscopeapp on PR #321 reported this as backslash mangling too — that half
+# is wrong: the `r` in `read -ra` already disables escape processing, verified
+# directly. The newline half is the real defect and is what this fixes.)
+split_on_slash() {
+  local previous_ifs="$IFS"
+  set -f
+  IFS='/'
+  # Deliberately unquoted — this expansion IS the split.
+  SPLIT_PARTS=($1)
+  set +f
+  IFS="$previous_ifs"
+}
+
 realpath_tolerant() {
   local input="$1"
   local -a queue parts
@@ -54,7 +76,8 @@ realpath_tolerant() {
   # putting the git query in the wrong place. `realpath -m` never had this gap.
   [ "${input:0:1}" = "/" ] || input="$PWD/$input"
 
-  IFS='/' read -ra queue <<< "$input"
+  split_on_slash "$input"
+  queue=("${SPLIT_PARTS[@]}")
 
   while [ "${#queue[@]}" -gt 0 ]; do
     part="${queue[0]}"
@@ -85,7 +108,8 @@ realpath_tolerant() {
     fi
 
     target=$(readlink "$candidate")
-    IFS='/' read -ra parts <<< "$target"
+    split_on_slash "$target"
+    parts=("${SPLIT_PARTS[@]}")
     [ "${target:0:1}" = "/" ] && real="/"
     queue=("${parts[@]}" "${queue[@]}")
   done
