@@ -28,7 +28,7 @@ A short, URL-safe name that identifies a published preview. Passed via `--pub <s
 _Avoid_: Slug, label, hostname, alias
 
 **Publish**:
-Creating the Cloudflare resources for a sub-domain: a Tunnel ingress rule (`<subdomain>.princess-pi.dev → 127.0.0.1:<port>`) and a per-subdomain Access application gated by email OTP. Done by `publishSubdomain()` in `cloudflare.js`. Writes to the sub-domain map. Multiple sub-domains can point to the same port — one directory can have several public URLs.
+Creating the Cloudflare resources for a sub-domain: a Tunnel ingress rule (`<subdomain>.princess-pi.dev → 127.0.0.1:<port>`) and a per-subdomain Access application carrying the `.serve-acl` allow-list. Done by `publishSubdomain()` in `cloudflare.js`. Writes to the sub-domain map. Multiple sub-domains can point to the same port — one directory can have several public URLs. Publishing creates an **authorization** boundary, not a login: it does not force anyone holding an Identity session to authenticate again, so do not verify a fresh publish from a signed-in browser (`serve-standard.md` §7.6).
 _Avoid_: Deploy, expose, register
 
 **Alias**:
@@ -52,11 +52,15 @@ Scanning Cloudflare Tunnel ingress rules and deleting those that are **serve-own
 _Avoid_: Cleanup, sweep, GC
 
 **Access application**:
-A Cloudflare Access resource created per sub-domain. Carries the email allow-list from the served directory's `.serve-acl` file. Authenticates visitors via email One-Time-PIN before they reach the origin.
+A Cloudflare Access resource created per sub-domain. Carries the email allow-list from the served directory's `.serve-acl` file, and **authorizes** visitors against it before they reach the origin. It does *not* authenticate them — that happens once per account, at the Identity session (below). A visitor who already holds a session opens a brand-new sub-domain with no prompt at all; what the application decides is whether that identity is on *this* sub-domain's list. `serve-standard.md` §8.7.
 _Avoid_: Auth app, OAuth app, gate
 
+**Identity session**:
+The proof of *who a visitor is*, established once by email One-Time-PIN and held on the Cloudflare team domain (`princess-pi.cloudflareaccess.com`) as a `CF_AppSession` cookie, ~24h. **Account-scoped, not per-sub-domain** — it is what makes the first visit to a newly published sub-domain silent for someone already signed in. One browser profile holds exactly one at a time: signing in as a second address replaces it rather than adding to it. Read it with `https://<host>/cdn-cgi/access/get-identity`; clear it with `https://princess-pi.cloudflareaccess.com/cdn-cgi/access/logout`.
+_Avoid_: Login, cookie, OTP session, auth token
+
 **Serve ACL**:
-The `.serve-acl` file in a served directory. One email per line. Parsed by `parseAclFile()` and fed into the Access application's allow policy on publish.
+The `.serve-acl` file in a served directory. One email per line (or `@domain` for a whole domain). Parsed by `parseAclFile()` and fed into the Access application's allow policy on publish. It is the **only** thing that isolates one sub-domain from another — the login prompt does not (`serve-standard.md` §8.7). When missing it is auto-seeded from `~/.config/princess-pi/default-acl`, else the repo's `git config user.email`. **`~/.serve-acl` is never read**: it calls itself "the cascade root … inherited by every directory served under $HOME", but that cascade (#32/#34) never landed, so the file looks authoritative and is dormant.
 _Avoid_: Allow-list file, email list
 
 **Loopback**:

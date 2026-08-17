@@ -8,6 +8,14 @@
  *   - upserts a per-subdomain Access APPLICATION + Allow policy carrying the `.serve-acl`
  *     email allow-list (per-subdomain app = hard isolation; client A's reviewer can't reach B).
  *
+ * WHAT THE ISOLATION IS AND IS NOT (#329): the allow-list isolates; the login prompt does not.
+ * Cloudflare authenticates ONCE PER ACCOUNT — the identity session lives on the team domain
+ * (`princess-pi.cloudflareaccess.com`, ~24h), not on the hostname — so a visitor already signed
+ * in to ANY preview opens a brand-new one with no challenge, and only the per-app policy below
+ * decides whether they get in. Consequence for anyone testing this code: a gate can never be
+ * verified from a signed-in browser. Use `curl -sI https://<label>.princess-pi.dev/` and expect
+ * a 302 to cloudflareaccess.com. See `docs/serve-standard.md` §7.6 / §8.7 / §8.8.
+ *
  * WHY a whole new module and not an edit of nginx.js: the failure modes are disjoint —
  * nginx.js failed on filesystem/sudo, this fails on HTTP/token/lock. Keeping them as
  * separate files makes the 6A→6B swap legible in history (nginx.js deleted, cloudflare.js

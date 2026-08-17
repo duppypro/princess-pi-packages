@@ -31,6 +31,29 @@
 >    (gate lives only at the Cloudflare edge). PASS
 > Final config: OTP sole IdP; app `preview princess-pi` → `preview.princess-pi.dev`;
 > policy `allow-duppy` = `duppypro@gmail.com`; org label `princess-pi.cloudflareaccess.com`.
+>
+> **SSO carry-over verification log (2026-08-17 UTC, Duppy + Claude; #329).** Raised as a
+> suspected gate failure: a first tab opened to a brand-new `serve --pub pantograph` served
+> content with **no OTP challenge**. Gate proved sound; the behaviour is account-scoped
+> authentication. Method and results:
+> 1. App state — `serve pantograph` created `04:12:37Z`, policy `serve allow pantograph` =
+>    `duppypro@gmail.com`, `david@princess-pi.dev`. `curl -sI` (no cookies) → `302` to
+>    `princess-pi.cloudflareaccess.com`. Gate enforcing. PASS
+> 2. Identity provenance — `/cdn-cgi/access/get-identity` in the un-challenged browser returned
+>    `amr:["onetimepin"]`, `duppypro@gmail.com`, `iat 2026-08-16T20:28:55Z` — **7h 44m before the
+>    application existed**, so it cannot have come from a pantograph login. Carried over. PASS
+> 3. Isolation still holds — a second tenant (`acltest`) whose `.serve-acl` **excluded** that
+>    identity showed the Access login page in the same browser, in the same minute that
+>    `pantograph` was serving silently. The prompt is policy-driven, not session-driven. PASS
+> 4. Deny path re-measured — submitting `duppypro@gmail.com` to the `acltest` login page produced
+>    **no code email**, reproducing Phase 5 step 3 on a `serve`-published tenant and confirming
+>    an allow-list cannot be satisfied by re-authenticating. PASS
+> 5. Account IdPs — `access/identity_providers` returns `[]`; one-time PIN remains the sole login
+>    method, so a Chrome Google login has no bearing on Access identity. PASS
+>
+> Standard reconciled in `serve-standard.md` §7.6 (never verify a gate from a signed-in browser),
+> §8.7 (two steps, two scopes) and §8.8 (a login prompt is not a signal). No code change: the
+> defect was in what our artifacts led the operator to expect.
 
 ## Goal
 `serve <dir>` on a loopback port, reachable at a **named subdomain** of princess-pi.dev,
