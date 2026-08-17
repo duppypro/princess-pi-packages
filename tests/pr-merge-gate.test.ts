@@ -103,7 +103,7 @@ interface SandboxOpts {
 	 * strict-status-checks policy; DIRTY = conflicts; UNSTABLE = non-required
 	 * checks failing, which the web UI merges anyway.
 	 */
-	mergeState?: "CLEAN" | "BLOCKED" | "BEHIND" | "DIRTY" | "UNSTABLE" | "DRAFT";
+	mergeState?: "CLEAN" | "BLOCKED" | "BEHIND" | "DIRTY" | "UNSTABLE" | "DRAFT" | "UNKNOWN";
 	/**
 	 * `mergeable` answers UNKNOWN for this many calls before settling on
 	 * `mergeable` above — GitHub computes mergeability lazily (#349). A number
@@ -812,6 +812,32 @@ console.log("\nmergeability never settles:");
 	check(
 		!/clear to merge|not clear/i.test(out),
 		"UNKNOWN forever → never claims it found a problem",
+		out,
+	);
+}
+
+// The two fields settle independently. `mergeable` answering MERGEABLE while
+// `mergeStateStatus` is still UNKNOWN is "not computed yet", not "a state we
+// refuse" — classifying it as the latter turns a transient into a refusal.
+// (macroscopeapp finding on PR #354, rated High; verified against the code.)
+console.log("\nmergeable settles but mergeStateStatus stays UNKNOWN:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", mergeState: "UNKNOWN" });
+	const { code, out } = runPrMerge(sb);
+	check(
+		code === 5,
+		"mergeStateStatus UNKNOWN → exit 5 (could not determine), NOT 6",
+		`got ${code}, output:\n${out}`,
+	);
+	check(!merged(sb), "mergeStateStatus UNKNOWN → gh pr merge never called", out);
+	check(
+		/mergeStateStatus/.test(out),
+		"mergeStateStatus UNKNOWN → names the field that did not settle",
+		out,
+	);
+	check(
+		!/does not recognise|do not recognise/i.test(out),
+		"mergeStateStatus UNKNOWN → not reported as an unrecognised state",
 		out,
 	);
 }

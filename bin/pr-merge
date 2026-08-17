@@ -292,17 +292,27 @@ while [ "$try" -lt "$MERGE_TRIES" ]; do
   fi
   MERGEABLE=$(printf '%s' "$STATE_JSON" | jq -r '.mergeable // "UNKNOWN"' 2>/dev/null || echo UNKNOWN)
   MERGE_STATE=$(printf '%s' "$STATE_JSON" | jq -r '.mergeStateStatus // "UNKNOWN"' 2>/dev/null || echo UNKNOWN)
-  [ "$MERGEABLE" != "UNKNOWN" ] && break
+  # BOTH fields, not just mergeable. They are computed separately, so a
+  # response can carry mergeable=MERGEABLE while mergeStateStatus is still
+  # UNKNOWN. Breaking on mergeable alone let that reach the case below, where
+  # UNKNOWN matches no arm and got refused as "a state we do not recognise" —
+  # turning "GitHub hasn't finished thinking" into a merge refusal.
+  [ "$MERGEABLE" != "UNKNOWN" ] && [ "$MERGE_STATE" != "UNKNOWN" ] && break
   try=$((try + 1))
   if [ "$try" -lt "$MERGE_TRIES" ] && [ "$RETRY_SLEEP" != "0" ]; then
     sleep "$RETRY_SLEEP"
   fi
 done
 
-if [ "$MERGEABLE" = "UNKNOWN" ]; then
+# Same asymmetry, one line later: guarding on MERGEABLE alone would let a
+# persistently UNKNOWN mergeStateStatus fall through to the case below and be
+# refused as unrecognised. Either field still unknown means the same thing —
+# state could not be determined (5), never refused (6).
+if [ "$MERGEABLE" = "UNKNOWN" ] || [ "$MERGE_STATE" = "UNKNOWN" ]; then
   echo "⚠️  pr-merge: GitHub has not finished computing mergeability for PR #$PR" >&2
-  echo "   (mergeable=UNKNOWN after $MERGE_TRIES queries). Aborting rather than merging" >&2
-  echo "   blind — this is 'could not determine', not 'found a problem'. Re-run in a moment." >&2
+  echo "   (mergeable=$MERGEABLE, mergeStateStatus=$MERGE_STATE after $MERGE_TRIES queries)." >&2
+  echo "   Aborting rather than merging blind — this is 'could not determine', not" >&2
+  echo "   'found a problem'. Re-run in a moment." >&2
   exit 5
 fi
 
