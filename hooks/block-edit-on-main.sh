@@ -22,26 +22,6 @@ INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
-# realpath_tolerant: mirrors extensions/lib/edit-on-main-core.ts's
-# realpathTolerant() — walk the path component by component, resolving each
-# symlink found along the way and tolerating components that don't exist yet
-# (new-file creation), but cap the WHOLE walk at 40 symlink hops, same as the
-# TS twin's SymlinkDepthExceededError budget (#303 review finding, #316).
-#
-# Why not just `realpath -m` (#267's original choice): -m resolves symlinks
-# and tolerates missing components, which is exactly what new-file creation
-# needs — but on an actual symlink LOOP (e.g. `ln -s selfLink selfLink`) GNU
-# realpath hits ELOOP internally and in -m mode SWALLOWS that error, printing
-# the unresolved input path with rc=0. This hook trusted that rc, so an
-# unresolvable path was treated as resolved and the edit was ALLOWED — a
-# guardrail failing open. Plain `realpath` (no -m) DOES report ELOOP as a
-# real failure, but it also refuses any path with a not-yet-existing
-# ancestor directory, which breaks new-file creation. Reimplementing the walk
-# here (same as the TS twin already does) is what lets both cases be told
-# apart: hitting the hop cap while still looking at a symlink is a loop (or a
-# chain deep enough this guard cannot prove where it lands either way) → fail
-# closed (#210: a check that cannot prove its precondition must refuse).
-# Sets RESOLVED_TOLERANT on success; returns 1 (unset) once the cap trips.
 # Split a pathname on "/" WITHOUT `read`. `read` is line-oriented: it stops at
 # the first newline and silently drops the rest, so "a/we<newline>ird/c" split
 # to just [a] [we] — the walk would then resolve a SHORTER path than the caller
@@ -64,6 +44,47 @@ split_on_slash() {
   IFS="$previous_ifs"
 }
 
+# dirname, without the subshell. `$(dirname "$p")` strips every trailing
+# newline from its own output, so a directory whose name legally ends in one
+# comes back SHORTER — and since DIR is what decides which repository gets
+# asked "what branch are you on?", that silently moves the question to a
+# different repo. Verified: two sibling repos whose names differ only by a
+# trailing newline, one on a feature branch and one on main, and the hook
+# allowed an edit destined for main. Sets DIR_OF.
+dir_of() {
+  local p="$1"
+  case "$p" in
+    /) DIR_OF="/" ;;
+    */*)
+      p="${p%/*}"
+      [ -z "$p" ] && p="/"
+      DIR_OF="$p"
+      ;;
+    # No slash at all — dirname's answer is the current directory.
+    *) DIR_OF="." ;;
+  esac
+}
+
+# realpath_tolerant: mirrors extensions/lib/edit-on-main-core.ts's
+# realpathTolerant() — walk the path component by component, resolving each
+# symlink found along the way and tolerating components that don't exist yet
+# (new-file creation), but cap the WHOLE walk at 40 symlink hops, same as the
+# TS twin's SymlinkDepthExceededError budget (#303 review finding, #316).
+#
+# Why not just `realpath -m` (#267's original choice): -m resolves symlinks
+# and tolerates missing components, which is exactly what new-file creation
+# needs — but on an actual symlink LOOP (e.g. `ln -s selfLink selfLink`) GNU
+# realpath hits ELOOP internally and in -m mode SWALLOWS that error, printing
+# the unresolved input path with rc=0. This hook trusted that rc, so an
+# unresolvable path was treated as resolved and the edit was ALLOWED — a
+# guardrail failing open. Plain `realpath` (no -m) DOES report ELOOP as a
+# real failure, but it also refuses any path with a not-yet-existing
+# ancestor directory, which breaks new-file creation. Reimplementing the walk
+# here (same as the TS twin already does) is what lets both cases be told
+# apart: hitting the hop cap while still looking at a symlink is a loop (or a
+# chain deep enough this guard cannot prove where it lands either way) → fail
+# closed (#210: a check that cannot prove its precondition must refuse).
+# Sets RESOLVED_TOLERANT on success; returns 1 (unset) once the cap trips.
 realpath_tolerant() {
   local input="$1"
   local -a queue parts
@@ -85,7 +106,12 @@ realpath_tolerant() {
     [ -z "$part" ] && continue
     [ "$part" = "." ] && continue
     if [ "$part" = ".." ]; then
-      real=$(dirname "$real")
+      # Parameter expansion, not `dirname`: command substitution strips ALL
+      # trailing newlines, so `dirname` on a directory whose name legitimately
+      # ends in one would hand back a shorter, different path (macroscopeapp on
+      # PR #321, second report). No subshell also means no strip.
+      dir_of "$real"
+      real="$DIR_OF"
       continue
     fi
     if [ "$real" = "/" ]; then
@@ -107,7 +133,21 @@ realpath_tolerant() {
       return 1
     fi
 
-    target=$(readlink "$candidate")
+    # `target=$(readlink "$candidate")` would strip every trailing newline from
+    # the link target, so a symlink pointing at a path that legally ends in one
+    # resolved to a SHORTER, different path — and DIR could then land in another
+    # repository entirely (macroscopeapp on PR #321, second report; same
+    # fail-open class as the newline-truncation and hop-cap defects above).
+    #
+    # The `printf x` sentinel is what makes this survivable: command
+    # substitution strips trailing newlines, so we append a byte that is not a
+    # newline, then remove exactly that byte. `readlink` itself adds one
+    # trailing newline of its own, which is removed separately — deliberately
+    # ONE `%` strip, not `%%`, so newlines belonging to the target survive.
+    # (`readlink -z` would be cleaner but is GNU-only; this stays portable.)
+    target=$(readlink "$candidate"; printf x)
+    target="${target%x}"
+    target="${target%$'\n'}"
     split_on_slash "$target"
     parts=("${SPLIT_PARTS[@]}")
     [ "${target:0:1}" = "/" ] && real="/"
@@ -145,7 +185,8 @@ if [ -n "$FILE" ]; then
     exit 2
   fi
   RESOLVED="$RESOLVED_TOLERANT"
-  DIR=$(dirname "$RESOLVED")
+  dir_of "$RESOLVED"
+  DIR="$DIR_OF"
 else
   DIR="${CWD:-.}"
 fi
@@ -155,7 +196,8 @@ fi
 # be created in a repo sitting on main, bypassing the gate entirely. Walk up to
 # the nearest existing parent before asking git anything.
 while [ ! -d "$DIR" ] && [ "$DIR" != "/" ] && [ -n "$DIR" ]; do
-  DIR=$(dirname "$DIR")
+  dir_of "$DIR"
+  DIR="$DIR_OF"
 done
 
 # Inside the git dir itself (.git/config, .git/info/exclude, .git/hooks/*,

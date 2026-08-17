@@ -323,6 +323,37 @@ describe("block-edit-on-main parity (#303)", () => {
     );
   });
 
+  // Trailing newline in a symlink TARGET (macroscopeapp on PR #321, second
+  // report; fourth fail-open of the same class). Command substitution strips
+  // every trailing newline, so `$(readlink …)` and `$(dirname …)` both handed
+  // back a path one byte shorter than the real one. To bite, the strip has to
+  // cross a repo boundary — hence two SIBLING repos whose names differ only by
+  // that trailing newline, the shorter on a feature branch and the longer on
+  // main. Pre-fix the hook resolved to the feature sibling and returned ALLOW
+  // while the bytes were destined for main; verified at exit 0.
+  test("blocks a symlink whose target directory name ends in a newline, landing on main", () => {
+    const base = tmpRepo("edit-main-tnl-");
+    const decoy = path.join(base, "x"); // feature branch
+    const real = path.join(base, "x\n"); // main — differs only by the newline
+    for (const [dir, branch] of [
+      [decoy, "42-slug"],
+      [real, "main"],
+    ] as const) {
+      fs.mkdirSync(dir, { recursive: true });
+      git(dir, "init", "-q");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "x");
+      git(dir, "checkout", "-q", "-B", branch);
+    }
+    const featRepo = repoOnBranch("42-slug");
+    fs.symlinkSync(real, path.join(featRepo, "lnk"));
+    assertBoth(
+      path.join(featRepo, "lnk", "f.txt"),
+      featRepo,
+      "block",
+      "a stripped trailing newline must not resolve to the feature-branch sibling",
+    );
+  });
+
   test("blocks a path whose component contains a backslash, in a repo on main", () => {
     const repo = repoOnBranch("main");
     const weird = path.join(repo, "link\\name");
