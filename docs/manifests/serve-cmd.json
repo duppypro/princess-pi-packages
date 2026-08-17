@@ -97,7 +97,7 @@
       "commands": [
         "  # won't help"
       ],
-      "result": "The serve tool is a local development preview server only — not a production web server. Publish previews with `serve <dir> --as <slug>` (Cloudflare Tunnel + Access); use Railway or another production deployment tool for public-facing services."
+      "result": "The serve tool is a local development preview server only — not a production web server. Publish previews with `serve <dir> --pub <slug>` (Cloudflare Tunnel + Access); use Railway or another production deployment tool for public-facing services."
     },
     {
       "scenario": "An agent or script needs to know what is being served without parsing a TUI table.",
