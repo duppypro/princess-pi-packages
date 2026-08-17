@@ -119,13 +119,23 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 	}
 
+	// #134: version comes from package.json ONLY (mirrors bin/serve.ts's handleVersion
+	// for the standalone CLI) — the manifest's own "version" field was a second,
+	// never-bumped copy that let two different builds report identical version strings.
+	//
+	// Resolved from THIS file's location, not process.cwd(). The manifest read that
+	// used to live here was cwd-relative, which was already wrong but failed LOUDLY
+	// ("Failed to load command manifest") whenever Pi ran outside the repo. Reading
+	// package.json cwd-relative would fail quietly instead: any other node project
+	// has a package.json, so serve would print that project's version as its own —
+	// a wrong answer where there used to be an error, which is the worse trade.
 	async function handleVersion(ctx: any): Promise<void> {
 		try {
-			const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
-			const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-			ctx.ui.notify(`${manifest.name} ${manifest.version}`, "info");
+			const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+			const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+			ctx.ui.notify(`serve ${pkg.version}`, "info");
 		} catch (err) {
-			ctx.ui.notify(`\u26A0\uFE0F Failed to load command manifest: ${err}`, "error");
+			ctx.ui.notify(`\u26A0\uFE0F Failed to read package version: ${err}`, "error");
 		}
 	}
 

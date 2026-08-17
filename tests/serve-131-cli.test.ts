@@ -10,6 +10,7 @@
  */
 import * as assert from "node:assert";
 import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 const serveBin = path.join(process.cwd(), "bin/serve.mjs");
@@ -65,6 +66,17 @@ ok("--version shows name and semver", () => {
 	const { stdout } = run(["--version"]);
 	assert.ok(stdout.trim().startsWith("serve "), "starts with 'serve '");
 	assert.ok(/\d+\.\d+\.\d+/.test(stdout), "contains semver");
+});
+
+// #134: the printed version and package.json's version came from two different
+// files (a manifest and package.json) that only one of them was ever bumped —
+// this diverges deliberately from the "independent known literal" pattern above
+// because the whole point is to compare the CLI's live output against the
+// actual source of truth, not a hand-copied expectation that could itself drift.
+ok("--version matches package.json exactly (#134 — no second source of truth)", () => {
+	const { stdout } = run(["--version"]);
+	const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+	assert.strictEqual(stdout.trim(), `serve ${pkg.version}`, "serve --version must report package.json's version, not a separately-maintained copy");
 });
 
 console.log("\n=== serve --list ===\n");
