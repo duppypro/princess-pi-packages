@@ -37,9 +37,13 @@
 #   1  NOT clean, but the check itself SUCCEEDED — unresolved threads and/or
 #      no review covers the current head. This is "look at the output", never
 #      "broken". #258's pr-merge treats this as the one code that means print
-#      details and refuse to merge, not abort-in-confusion.
-#   2  usage error (bad flag).
-#   4  not found — no such PR (or repo) at all.
+#      details and refuse to merge, not abort-in-confusion. RESERVED for the
+#      read-side gate only — --resolve (below) never exits 1, so pr-merge's
+#      dependence on this code staying unambiguous is unaffected by it.
+#   2  usage error (bad flag; --resolve given with no thread id; --reply given
+#      with no text; --reply given without --resolve).
+#   4  not found — no such PR (or repo) at all; for --resolve, a thread id the
+#      API reports it cannot resolve to a node (bad/stale id).
 #   5  remote/API failure — gh itself failed; state could NOT be determined.
 #      This is the code that used to collide with 1: under `set -e`, a failed
 #      `gh api graphql` used to propagate gh's own exit status (usually 1),
@@ -78,8 +82,29 @@
 #      pre-#254 test fixtures that never stubbed `headRefOid` — deleted
 #      (#258 macroscopeapp follow-up): those fixtures now stub it like every
 #      other fixture, so production and tests share the one code path.
-#   3, 6  not used by this script — reserved by the #224 table for other pr-*
-#      scripts (precondition-not-met, safety-gate-refused).
+#   3  not used by this script — reserved by the #224 table for other pr-*
+#      scripts (precondition-not-met).
+#   6  --resolve ONLY: determined, and it says no — the mutation ran (gh
+#      itself succeeded) but the API's own answer says the thread is not
+#      resolved, e.g. a token with read-only access. Distinct from 5: this is
+#      "checked, and the answer is no", the same shape #224 gives every other
+#      pr-* script's safety-gate-refused case. Never used by the read-side
+#      gate above, which keeps 6 all the way to itself.
+#
+# --resolve <thread-id> [--reply <text>] (#232 write side): calls the
+# resolveReviewThread GraphQL mutation against the exact id form --json
+# already emits, so the two halves compose without translation. --reply posts
+# a reply on the thread FIRST (addPullRequestReviewThreadReply) — resolving
+# silently is worse than resolving with a one-line reason, and if the reply
+# fails the resolve mutation is never attempted (no silent partial success).
+# Follows the #224 table exactly and NEVER collapses into a bare exit 1 —
+# that code means something specific above and --resolve is a different kind
+# of operation (a mutation, not a clean/not-clean check) that must not be
+# confused with it by pr-merge or any other caller keyed on this script's
+# exit code. --resolve short-circuits before the read-side query below: it
+# needs only the thread id (and, with --reply, the reply text), not owner,
+# repo, or pr# — those stay required positionally for a consistent CLI shape
+# with the read side, but this mode does not use them.
 # ---
 set -euo pipefail
 
@@ -90,23 +115,50 @@ set -euo pipefail
 TRUSTED_LOGINS='["duppypro","princess-pi-bot","cwerk-bot"]'
 
 # Flags are scanned out first: `--json` used to be swallowed as the positional
-# `repo`, which reported on a repository named "--json".
+# `repo`, which reported on a repository named "--json". `--resolve` and
+# `--reply` each take the FOLLOWING argument as their value, so this is a
+# `shift`-driven loop rather than the old `for arg in "$@"` — a value-taking
+# flag can't consume its neighbour in a plain for-loop.
 json_mode=0
 pr=""
 repo=""
-for arg in "$@"; do
-  case "$arg" in
-    --json) json_mode=1 ;;
-    -*) echo "unknown flag: $arg" >&2; exit 2 ;;
-    *)
-      if [ -z "$pr" ]; then pr="$arg"
-      elif [ -z "$repo" ]; then repo="$arg"
+resolve_id=""
+reply_text=""
+have_reply=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) json_mode=1; shift ;;
+    --resolve)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "pr-threads: --resolve requires a thread id" >&2
+        exit 2
       fi
+      resolve_id="$1"; shift
+      ;;
+    --reply)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "pr-threads: --reply requires text" >&2
+        exit 2
+      fi
+      reply_text="$1"; have_reply=1; shift
+      ;;
+    -*) echo "unknown flag: $1" >&2; exit 2 ;;
+    *)
+      if [ -z "$pr" ]; then pr="$1"
+      elif [ -z "$repo" ]; then repo="$1"
+      fi
+      shift
       ;;
   esac
 done
 if [ -z "$pr" ]; then
-  echo "usage: pr-threads <pr#> [owner/repo] [--json]" >&2
+  echo "usage: pr-threads <pr#> [owner/repo] [--json] [--resolve <thread-id> [--reply <text>]]" >&2
+  exit 2
+fi
+if [ "$have_reply" -eq 1 ] && [ -z "$resolve_id" ]; then
+  echo "pr-threads: --reply requires --resolve" >&2
   exit 2
 fi
 
@@ -115,6 +167,103 @@ fi
 # warning breaking `jq` downstream on the SUCCESS path too).
 gh_err_file=$(mktemp)
 trap 'rm -f "$gh_err_file"' EXIT
+
+# --- --resolve <thread-id> [--reply <text>] (#232 write side) --------------
+# Short-circuits before the read-side query below: resolving/replying needs
+# only the thread's own GraphQL id, never owner/repo/pr — those stay required
+# positionally for a consistent CLI shape but go unused here.
+if [ -n "$resolve_id" ]; then
+  # not_found_or_die <what> — inspect a failed gh api graphql call's stderr
+  # (already in $gh_err_file) and exit 4 if the API says it could not resolve
+  # the id to a node (bad/stale thread id — a DETERMINED "no such thread"),
+  # else exit 5 (transport/auth/rate-limit/anything else — NOT determined).
+  # Never exits 1: that code is reserved above for the read-side gate.
+  not_found_or_die() {
+    local __what="$1"
+    echo "pr-threads: could not $__what for thread $resolve_id:" >&2
+    cat "$gh_err_file" >&2
+    if grep -qi 'could not resolve to a node\|NOT_FOUND' "$gh_err_file"; then
+      exit 4
+    fi
+    exit 5
+  }
+
+  reply_id=""
+  reply_url=""
+  if [ "$have_reply" -eq 1 ]; then
+    # Reply FIRST, resolve second (issue #232: "resolving silently is worse
+    # than resolving with a one-line reason"). If the reply fails, the resolve
+    # mutation is never attempted — no silent partial success.
+    if ! reply_json=$(gh api graphql \
+      -F threadId="$resolve_id" \
+      -F body="$reply_text" \
+      -f query='
+mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+    comment { id url }
+  }
+}' 2>"$gh_err_file"); then
+      not_found_or_die "post the reply"
+    fi
+    if ! reply_id=$(jq -r '.data.addPullRequestReviewThreadReply.comment.id // empty' <<<"$reply_json" 2>"$gh_err_file"); then
+      echo "pr-threads: could not parse the reply response for thread $resolve_id:" >&2
+      cat "$gh_err_file" >&2
+      exit 5
+    fi
+    reply_url=$(jq -r '.data.addPullRequestReviewThreadReply.comment.url // empty' <<<"$reply_json")
+    if [ -z "$reply_id" ]; then
+      echo "pr-threads: reply mutation returned no comment id for thread $resolve_id — reply may not have posted; not resolving:" >&2
+      echo "$reply_json" >&2
+      exit 5
+    fi
+  fi
+
+  if ! resolve_json=$(gh api graphql \
+    -F threadId="$resolve_id" \
+    -f query='
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}' 2>"$gh_err_file"); then
+    not_found_or_die "resolve"
+  fi
+  if ! resolved=$(jq -r '.data.resolveReviewThread.thread.isResolved // false' <<<"$resolve_json" 2>"$gh_err_file"); then
+    echo "pr-threads: could not parse the resolve response for thread $resolve_id:" >&2
+    cat "$gh_err_file" >&2
+    exit 5
+  fi
+
+  if [ "$json_mode" -eq 1 ]; then
+    jq -n -c \
+      --arg schema "pr-threads/resolve@1" \
+      --arg threadId "$resolve_id" \
+      --argjson resolved "$resolved" \
+      --arg replyId "$reply_id" \
+      --arg replyUrl "$reply_url" \
+      '{
+        schema: $schema,
+        threadId: $threadId,
+        resolved: $resolved,
+        replyId: ($replyId | if . == "" then null else . end),
+        replyUrl: ($replyUrl | if . == "" then null else . end)
+      }'
+  else
+    if [ "$have_reply" -eq 1 ]; then
+      echo "💬 replied to thread $resolve_id"
+    fi
+    if [ "$resolved" = "true" ]; then
+      echo "✅ resolved thread $resolve_id"
+    else
+      echo "❌ thread $resolve_id was not resolved (the API accepted the request but reports isResolved: false)"
+    fi
+  fi
+
+  if [ "$resolved" != "true" ]; then
+    exit 6
+  fi
+  exit 0
+fi
 
 # jq_or_die <outvar> [jq-args...] — run jq against the current page's $json
 # and either populate $outvar or exit 5. A failing command substitution
