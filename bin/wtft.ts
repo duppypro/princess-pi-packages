@@ -37,6 +37,7 @@ import {
 	readClassifiedTagFile,
 	getDaemonPidPath,
 	getTagPath,
+	awaitDaemonUp,
 	checkDaemonHealth,
 	IDLE_THRESHOLD_MS,
 	WTFT_TAGGER_VERSION,
@@ -390,12 +391,14 @@ async function main() {
 	// ---
 	if (opts.showWatch) {
 
-		// Tag file path — always use the current version. The daemon
-		// handles stale-version cleanup internally on startup.
-		const sessionDir = path.dirname(finalSessionPath);
-		const sessionBase = path.basename(finalSessionPath);
-		const tagsDir = path.join(sessionDir, "wtft-tags");
-		const tagPath = path.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+		// Tag file path — ASK, do not assemble (#309 review). Hand-building the
+		// own-dir path here quietly opted the CLI out of #155: a session that
+		// changed project dirs keeps its tag file in the old dir, and the daemon
+		// adopts it rather than starting a second one. getCurrentVersionTagPath is
+		// the same resolution the writer uses, so reader and writer cannot disagree
+		// about where the file is. (watchTagFile re-resolves too, for a move that
+		// happens after this line.)
+		const tagPath = getCurrentVersionTagPath(finalSessionPath);
 
 		// Auto-spawn daemon if not already running (singleton via PID file).
 		const daemonPath = path.join(daemonDir, "wtft-daemon.mjs");
@@ -434,11 +437,11 @@ async function main() {
 	// the daemon is the sole harness→tag converter.
 	// ---
 
-	// Compute tag path — always use the current version (no stale-version scan).
-	const sessionDir = path.dirname(finalSessionPath);
-	const sessionBase = path.basename(finalSessionPath);
-	const tagsDir = path.join(sessionDir, "wtft-tags");
-	const tagPath = path.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+	// Resolve the tag path, same as watch mode above (#309 review). getTagPath —
+	// not getCurrentVersionTagPath — because this is a one-shot READ: a stale
+	// version's tag is still data worth charting, and nothing here attaches an
+	// fs.watch that the daemon's startup sweep could pull out from under us.
+	const tagPath = getTagPath(finalSessionPath);
 
 	// Auto-spawn daemon (singleton via PID file).
 	const daemonChild = spawnWtftDaemon(finalSessionPath, daemonDir);
@@ -457,6 +460,24 @@ async function main() {
 	// is the true state. Only an existing-but-unclassified session earns the short
 	// wait below.
 	if (interactions.length === 0 && !fs.existsSync(finalSessionPath)) {
+		// "The daemon is running and waiting on it" is the whole value of this
+		// message, and it was never checked (#309 review): spawnWtftDaemon only
+		// proves spawn() did not throw, so a daemon that dies during startup
+		// printed reassurance and exited 0. Nothing else in this branch ever looks
+		// at the daemon again — this is the last chance to tell the truth.
+		//
+		// State, not a stopwatch: a healthy daemon claims its lease in a poll or
+		// two, so the ceiling only bounds the case where the child is alive and has
+		// claimed nothing — and that case still exits 0, because a slow box is not
+		// a failure.
+		const DAEMON_START_CEILING_MS = 5000;
+		const startup = await awaitDaemonUp(finalSessionPath, daemonChild, DAEMON_START_CEILING_MS);
+		if (startup.state === "dead") {
+			const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
+			console.error(`\x1b[31m❌ wtft-daemon exited ${how} before claiming this session — nothing is waiting on ${finalSessionPath}\x1b[0m`);
+			console.error(`\x1b[90mExpected the daemon at ${path.join(daemonDir, "wtft-daemon.mjs")}\x1b[0m`);
+			process.exit(1);
+		}
 		console.log(`\x1b[33mSession log not written yet: ${finalSessionPath}\x1b[0m`);
 		console.log(`\x1b[90mClaude Code writes its first line after the first real prompt (not a /command) completes. ` +
 			`The wtft daemon is running and waiting on it — run again after the first response, or use --watch to stay attached.\x1b[0m`);

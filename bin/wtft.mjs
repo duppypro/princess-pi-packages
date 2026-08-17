@@ -3910,6 +3910,24 @@ function checkDaemonHealth(sessionPath, tagPath) {
   const timeStr = `${hh}:${mm}`;
   return { alive: false, reason: "idle-timeout", lastHbTime: timeStr };
 }
+async function awaitDaemonUp(sessionPath, child, ceilingMs, pollMs = 50) {
+  const start = Date.now();
+  for (;; ) {
+    const tagPath = getCurrentVersionTagPath(sessionPath);
+    if (checkDaemonHealth(sessionPath, tagPath).alive || fs8.existsSync(tagPath)) {
+      return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null };
+    }
+    const exitCode = child ? child.exitCode : null;
+    const signalCode = child ? child.signalCode : null;
+    if (child && (exitCode !== null || signalCode !== null)) {
+      return { state: "dead", exitCode, signalCode };
+    }
+    if (Date.now() - start >= ceilingMs) {
+      return { state: "unknown", exitCode, signalCode };
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
 function restartDaemon(sessionPath, daemonPath) {
   const pidPath = getDaemonPidPath(sessionPath);
   try {
@@ -3934,11 +3952,12 @@ function restartDaemon(sessionPath, daemonPath) {
     return false;
   }
 }
-async function watchTagFile(sessionPath, tagPath, settings) {
+async function watchTagFile(sessionPath, tagPathHint, settings) {
   if (!process.stdout.isTTY) {
     console.error("❌ --watch requires a real terminal (TTY). Refusing to start.");
     process.exit(1);
   }
+  let tagPath = fs8.existsSync(tagPathHint) ? tagPathHint : getCurrentVersionTagPath(sessionPath);
   let totalCost = 0;
   let interactionCount = 0;
   let needsRedraw = true;
@@ -4246,6 +4265,11 @@ async function watchTagFile(sessionPath, tagPath, settings) {
   for (;; ) {
     if (fs8.existsSync(tagPath))
       break;
+    const resolved = getCurrentVersionTagPath(sessionPath);
+    if (resolved !== tagPath && fs8.existsSync(resolved)) {
+      tagPath = resolved;
+      break;
+    }
     const childExited = child ? child.exitCode !== null || child.signalCode !== null : false;
     const leaseAlive = checkDaemonHealth(sessionPath, tagPath).alive;
     if (child && childExited && !leaseAlive) {
@@ -4263,6 +4287,14 @@ async function watchTagFile(sessionPath, tagPath, settings) {
     }
     await new Promise((r) => setTimeout(r, 250));
   }
+  allInteractions = readClassifiedTagFile(tagPath);
+  try {
+    lastReadOffset = fs8.statSync(tagPath).size;
+  } catch {
+    lastReadOffset = 0;
+  }
+  needsRedraw = true;
+  render();
   startWatching();
   setTimeout(() => {
     updateDaemonHealth();
@@ -4957,10 +4989,7 @@ async function main() {
     console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path11.basename(finalSessionPath)}\x1B[0m`);
   }
   if (opts.showWatch) {
-    const sessionDir2 = path11.dirname(finalSessionPath);
-    const sessionBase2 = path11.basename(finalSessionPath);
-    const tagsDir2 = path11.join(sessionDir2, "wtft-tags");
-    const tagPath2 = path11.join(tagsDir2, sessionBase2 + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+    const tagPath2 = getCurrentVersionTagPath(finalSessionPath);
     const daemonPath = path11.join(daemonDir, "wtft-daemon.mjs");
     const daemonChild2 = spawnWtftDaemon(finalSessionPath, daemonDir);
     if (!daemonChild2) {
@@ -4985,10 +5014,7 @@ async function main() {
     });
     return;
   }
-  const sessionDir = path11.dirname(finalSessionPath);
-  const sessionBase = path11.basename(finalSessionPath);
-  const tagsDir = path11.join(sessionDir, "wtft-tags");
-  const tagPath = path11.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
+  const tagPath = getTagPath(finalSessionPath);
   const daemonChild = spawnWtftDaemon(finalSessionPath, daemonDir);
   if (!daemonChild) {
     console.error(`\x1B[31m❌ wtft-daemon not found at ${path11.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
@@ -4999,6 +5025,14 @@ async function main() {
     interactions = readClassifiedTagFile(tagPath);
   }
   if (interactions.length === 0 && !fs12.existsSync(finalSessionPath)) {
+    const DAEMON_START_CEILING_MS = 5000;
+    const startup = await awaitDaemonUp(finalSessionPath, daemonChild, DAEMON_START_CEILING_MS);
+    if (startup.state === "dead") {
+      const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
+      console.error(`\x1B[31m❌ wtft-daemon exited ${how} before claiming this session — nothing is waiting on ${finalSessionPath}\x1B[0m`);
+      console.error(`\x1B[90mExpected the daemon at ${path11.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
+      process.exit(1);
+    }
     console.log(`\x1B[33mSession log not written yet: ${finalSessionPath}\x1B[0m`);
     console.log(`\x1B[90mClaude Code writes its first line after the first real prompt (not a /command) completes. ` + `The wtft daemon is running and waiting on it — run again after the first response, or use --watch to stay attached.\x1B[0m`);
     process.exit(0);

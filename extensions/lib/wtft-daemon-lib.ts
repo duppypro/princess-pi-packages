@@ -736,6 +736,69 @@ export function checkDaemonHealth(sessionPath: string, tagPath: string): DaemonS
 	return { alive: false, reason: "idle-timeout", lastHbTime: timeStr };
 }
 
+// ---
+// DAEMON STARTUP PROOF (#309 review)
+// ---
+
+/**
+ * What a freshly spawned daemon turned out to be. `"up"` and `"dead"` are
+ * facts; `"unknown"` is the honest third answer — the child is still alive but
+ * has claimed nothing yet, which is not evidence of failure.
+ */
+export type DaemonStartupState = "up" | "dead" | "unknown";
+
+export interface DaemonStartupResult {
+	state: DaemonStartupState;
+	exitCode: number | null;
+	signalCode: NodeJS.Signals | null;
+}
+
+/**
+ * Wait until the daemon we just spawned proves it came up — or proves it died.
+ *
+ * `spawnWtftDaemon` returning a handle means `spawn()` did not throw, nothing
+ * more: a missing or broken `wtft-daemon.mjs` still yields a live-looking child
+ * that exits a moment later. Any caller that goes on to TELL THE USER the daemon
+ * is running owes them this check first (#309 review), or a dead daemon reads as
+ * success.
+ *
+ * "Up" is either half of what a started daemon does: claims the singleton lease,
+ * or has a tag file on disk. The lease alone is enough because the daemon writes
+ * its PID file before `initClassified()`, and it covers the singleton case too —
+ * the child exits 0 immediately because an *older* daemon already owns the
+ * session, which is up, not dead.
+ *
+ * "Dead" needs all three: the child is gone, no lease is held, and no tag file
+ * exists. Anything less is a live daemon we simply have not seen work yet.
+ *
+ * The ceiling bounds the ambiguous case only — a healthy daemon resolves in one
+ * or two polls, so a one-shot CLI does not sit here. Hitting the ceiling returns
+ * `"unknown"`, never `"dead"`: a slow box must not be reported as a failure.
+ */
+export async function awaitDaemonUp(
+	sessionPath: string,
+	child: ChildProcess | null,
+	ceilingMs: number,
+	pollMs = 50
+): Promise<DaemonStartupResult> {
+	const start = Date.now();
+	for (;;) {
+		const tagPath = getCurrentVersionTagPath(sessionPath);
+		if (checkDaemonHealth(sessionPath, tagPath).alive || fs.existsSync(tagPath)) {
+			return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null };
+		}
+		const exitCode = child ? child.exitCode : null;
+		const signalCode = child ? child.signalCode : null;
+		if (child && (exitCode !== null || signalCode !== null)) {
+			return { state: "dead", exitCode, signalCode };
+		}
+		if (Date.now() - start >= ceilingMs) {
+			return { state: "unknown", exitCode, signalCode };
+		}
+		await new Promise(r => setTimeout(r, pollMs));
+	}
+}
+
 export function restartDaemon(sessionPath: string, daemonPath: string): boolean {
 	// Kill existing daemon (stale or alive) for this session.
 	const pidPath = getDaemonPidPath(sessionPath);
@@ -763,13 +826,27 @@ export function restartDaemon(sessionPath: string, daemonPath: string): boolean 
 
 export async function watchTagFile(
 	sessionPath: string,
-	tagPath: string,
+	tagPathHint: string,
 	settings: WatchSettings
 ): Promise<void> {
 	if (!process.stdout.isTTY) {
 		console.error("❌ --watch requires a real terminal (TTY). Refusing to start.");
 		process.exit(1);
 	}
+
+	// The reader's tag path is RESOLVED, never assumed (#309 review). A session
+	// that changed project dirs (#155) leaves its tag file in the old dir, and the
+	// daemon that replaces it adopts that same file (getCurrentVersionTagPath) —
+	// so an own-dir path built from the session's *current* directory can be a
+	// file nobody will ever write. The wait loop below has no exit for that state
+	// (lease alive + own file absent), which made it hang forever. Mutable because
+	// the move can also happen while we are still waiting.
+	//
+	// getCurrentVersionTagPath, not getTagPath: a watcher must bind to what the
+	// WRITER picks. getTagPath's stale-version fallback is right for a one-shot
+	// read and wrong here — the daemon deletes stale tags on startup (#95), so
+	// fs.watch would attach to a file that is about to vanish.
+	let tagPath = fs.existsSync(tagPathHint) ? tagPathHint : getCurrentVersionTagPath(sessionPath);
 
 	let totalCost = 0;
 	let interactionCount = 0;
@@ -1152,6 +1229,13 @@ export async function watchTagFile(
 	const fileWaitStart = Date.now();
 	for (;;) {
 		if (fs.existsSync(tagPath)) break;
+		// Re-resolve before judging the lease (#309 review). A daemon that is alive
+		// but writing into a sibling project dir is not "still starting" — its file
+		// already exists, just not where we last looked. Without this, `leaseAlive`
+		// stays true and the own-dir path never appears: neither exit condition can
+		// ever fire, and the loop spins for the life of the terminal.
+		const resolved = getCurrentVersionTagPath(sessionPath);
+		if (resolved !== tagPath && fs.existsSync(resolved)) { tagPath = resolved; break; }
 		const childExited = child ? (child.exitCode !== null || child.signalCode !== null) : false;
 		const leaseAlive = checkDaemonHealth(sessionPath, tagPath).alive;
 		if (child && childExited && !leaseAlive) {
@@ -1169,6 +1253,18 @@ export async function watchTagFile(
 		}
 		await new Promise(r => setTimeout(r, 250));
 	}
+
+	// Seed the reader from the file that actually won (#309 review). The initial
+	// read above ran before the wait, when the path was still empty or pointed at
+	// the wrong dir — so `allInteractions` is empty and `lastReadOffset` is 0. An
+	// adopted sibling file already holds the whole session; without re-seeding,
+	// the first frame renders nothing and everything written before now is only
+	// picked up by luck, on whatever change event happens next.
+	allInteractions = readClassifiedTagFile(tagPath);
+	try { lastReadOffset = fs.statSync(tagPath).size; } catch { lastReadOffset = 0; }
+	needsRedraw = true;
+	render();
+
 	startWatching();
 
 	// Initial daemon health check — run after a short settle (500ms) instead of
