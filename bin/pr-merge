@@ -54,8 +54,14 @@
 # --- Exit codes (#224 table) ---
 #   0  success — merged (refresh of other open PRs, #332, is best-effort and
 #      NEVER changes this — see the refresh section below)
-#   2  usage error (unknown flag)
-#   3  precondition not met — on main/master
+#   2  usage error — unknown flag, a second positional argument, or a
+#      protected branch (main/master) named EXPLICITLY as the <branch>
+#      argument (#330: automation cannot tell "you told me something invalid"
+#      apart from "you told me nothing and cwd can't answer" unless the
+#      script itself tracks which one happened — same fix as pr-reject's
+#      BRANCH_SOURCE, #324)
+#   3  precondition not met — on main/master with nothing to discover
+#      otherwise: the branch was DISCOVERED from cwd, not named explicitly
 #   4  not found — no open PR for this branch
 #   5  remote/API failure — `gh pr list`/`gh pr view` (or pr-threads itself)
 #      could not determine state, or `gh pr merge` itself failed and the merge
@@ -154,9 +160,23 @@ done
 # The advertised `pr-merge <branch>` form used to be a lie: BRANCH was hardcoded
 # to the current branch, so the argument was ignored — on main it still errored,
 # and on a feature branch it merged that branch instead of the one named (#209).
-BRANCH="${BRANCH:-$(git branch --show-current)}"
+# BRANCH_SOURCE tracks whether BRANCH came from the positional argument or from
+# cwd, so the main/master check below can tell "you told me something invalid"
+# (explicit → 2) apart from "you told me nothing and cwd can't answer" (cwd → 3)
+# — #330, same shape as pr-reject's BRANCH_SOURCE (#324).
+if [ -n "$BRANCH" ]; then
+  BRANCH_SOURCE="explicit"
+else
+  BRANCH_SOURCE="cwd"
+  BRANCH="$(git branch --show-current)"
+fi
 
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  if [ "$BRANCH_SOURCE" = "explicit" ]; then
+    echo "pr-merge: '$BRANCH' is a protected branch — refusing to merge it via an explicit argument." >&2
+    echo "  pr-merge <branch>" >&2
+    exit 2
+  fi
   echo "pr-merge: on main — pass a branch name or switch to a feature worktree." >&2
   echo "  pr-merge <branch>" >&2
   exit 3
