@@ -612,7 +612,7 @@ fails and the list drains itself instead of becoming decoration.
 |---|---|
 | `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> <path> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
 | `pr-open` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create` |
-| `pr-merge [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. |
+| `pr-merge [--no-refresh] [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. On success, best-effort refreshes every other open PR targeting the same base (#332 — the ruleset's `strict_required_status_checks_policy` marks them out of date on every merge, otherwise serializing a merge burst behind a manual "Update branch" click per PR); never changes `pr-merge`'s own exit code. `--no-refresh` opts out. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. |
@@ -900,6 +900,49 @@ the sandbox, so the next helper call added to a `pr-*` script fails loudly by na
 of quietly escaping to `~/bin`. Command position specifically — `pr-merge` names
 `pr-threads` six times in its own error prose, and matching the bare string would flag all
 of them.
+
+### `pr-merge` refreshes every other open PR after a merge (#332)
+
+The ruleset sets `strict_required_status_checks_policy: true` ("require branches to be
+up to date before merging"), so merging any one PR marks every *other* open PR out of
+date. Each then needs GitHub's "Update branch" button pressed — re-running CI — before
+it can merge. With one PR open that's invisible; with several (the normal shape of an
+agent session) it serializes the whole burst, one click-and-CI-wait at a time.
+
+Right after a successful merge, `pr-merge` presses that button itself for every other
+open PR targeting the **same base** as the one just merged, via the same call the button
+makes:
+
+```
+gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch
+```
+
+Draft PRs and PRs targeting a different base are skipped. `--no-refresh` opts out
+entirely.
+
+**Best-effort — never changes `pr-merge`'s own exit code.** The merge already happened
+and is irreversible; a refresh failure reported as a merge failure would be actively
+misleading. `refresh_other_open_prs()` is only ever called from inside the
+`if gh pr merge ...; then` branch (i.e. after success is already known), every `gh`/`jq`
+call inside it is individually guarded under `set +e`, and the function always returns
+`0` regardless of what it found. `pr-merge` still ends with an explicit `exit 0` on the
+success path — nothing after the merge is allowed to touch the exit code again.
+
+Output is one `refresh <pr#> <status> [<detail>]` line per PR — flat, stable keys, per
+this repo's Agent-First Output standard:
+
+- `refresh <pr#> ok`
+- `refresh <pr#> skipped up-to-date` — the API's own 422 "There are no new commits on
+  the base branch.", not a failure
+- `refresh <pr#> skipped draft`
+- `refresh <pr#> skipped different-base`
+- `refresh <pr#> failed <reason>`
+
+Covered in `tests/pr-merge-gate.test.ts`: refresh fires once per other open PR after a
+successful merge; a failed/refused merge triggers no refresh at all; a 422 reports
+`skipped`, not `failed`; a hard-failing refresh still leaves `pr-merge` at exit 0;
+`--no-refresh` suppresses it entirely; a draft PR and a different-base PR are both
+skipped (no `update-branch` call for either).
 
 ### `pr-cleanup` fails closed, by design
 

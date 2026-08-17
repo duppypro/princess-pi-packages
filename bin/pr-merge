@@ -52,8 +52,9 @@
 # ---
 #
 # --- Exit codes (#224 table) ---
-#   0  success — merged
-#   2  usage error (not used today — kept for the shared table)
+#   0  success — merged (refresh of other open PRs, #332, is best-effort and
+#      NEVER changes this — see the refresh section below)
+#   2  usage error (unknown flag)
 #   3  precondition not met — on main/master
 #   4  not found — no open PR for this branch
 #   5  remote/API failure — `gh pr list`/`gh pr view` (or pr-threads itself)
@@ -65,27 +66,72 @@
 #      moved between the pr-threads gate and the merge call (TOCTOU guard —
 #      re-run pr-merge to re-verify the new head)
 # ---
+#
+# --- #332: post-merge refresh of every other open PR ------------------------
+# The ruleset sets strict_required_status_checks_policy: true ("require
+# branches to be up to date before merging"), so merging THIS PR marks every
+# OTHER open PR out of date. Each then needs GitHub's "Update branch" button
+# pressed — re-running CI — before IT can merge. With several PRs open (the
+# normal shape of an agent session), that serializes the whole merge burst.
+#
+# Right after a successful merge, pr-merge now presses that button itself for
+# every other open PR targeting the same base, via the same API call the
+# button makes: `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`.
+# Draft PRs and PRs targeting a different base are skipped. `--no-refresh`
+# opts out.
+#
+# Best-effort — THE hard rule (req #2): this must NEVER change pr-merge's own
+# exit code. The merge already happened and is irreversible; a refresh
+# failure reported as a merge failure would be actively misleading. Every
+# call in refresh_other_open_prs() is individually guarded (explicit status
+# capture under `set +e`, restored before returning) and the function itself
+# is only ever invoked from inside an `if gh pr merge ...; then` branch whose
+# own success already latched EXIT_CODE=0 beforehand — nothing after that
+# point is allowed to touch EXIT_CODE again.
+#
+# Output is machine-readable per this repo's Agent-First Output standard: one
+# `refresh <pr#> <status> [<detail>]` line per PR, flat, stable keys —
+#   refresh <pr#> ok
+#   refresh <pr#> skipped up-to-date      (422 "no new commits" — not a failure)
+#   refresh <pr#> skipped draft
+#   refresh <pr#> skipped different-base
+#   refresh <pr#> failed <reason>
+# ---
 set -euo pipefail
 
-# -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
-# message, and "pr-merge --help" used to be treated as one.
-case "${1:-}" in
-  -h|--help)
-    cat <<'EOF'
-usage: pr-merge [<branch>]
+# Flags are scanned out first (shift-driven loop, same convention as
+# bin/pr-threads) so `--no-refresh` and `--help` can appear in either order
+# relative to the optional branch name; a flag is never mistaken for a branch
+# name or a message (#310).
+NO_REFRESH=0
+BRANCH=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      cat <<'EOF'
+usage: pr-merge [--no-refresh] [<branch>]
 
 Human-only: squash-merge the open PR for <branch> (default: current branch),
-gated on pr-threads (0 unresolved conversations, head reviewed).
+gated on pr-threads (0 unresolved conversations, head reviewed). After a
+successful merge, refreshes every other open PR targeting the same base
+branch (best-effort, never changes the exit code); --no-refresh disables it.
 
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
-    exit 0 ;;
-esac
+      exit 0 ;;
+    --no-refresh) NO_REFRESH=1; shift ;;
+    -*) echo "pr-merge: unknown flag: $1" >&2; exit 2 ;;
+    *)
+      if [ -z "$BRANCH" ]; then BRANCH="$1"; fi
+      shift
+      ;;
+  esac
+done
 
 # The advertised `pr-merge <branch>` form used to be a lie: BRANCH was hardcoded
 # to the current branch, so the argument was ignored — on main it still errored,
 # and on a feature branch it merged that branch instead of the one named (#209).
-BRANCH="${1:-$(git branch --show-current)}"
+BRANCH="${BRANCH:-$(git branch --show-current)}"
 
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-merge: on main — pass a branch name or switch to a feature worktree." >&2
@@ -105,12 +151,14 @@ fi
 # No `2>/dev/null || true` here: it would make a network outage, expired auth or
 # API error indistinguishable from "no PR found", and send the user hunting for
 # a missing PR instead of showing them the actual error. Fail loudly instead.
-if ! CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
-  --json number,headRepositoryOwner \
-  --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv"); then
+# baseRefName rides along with the fetch (#332) so the just-merged PR's base is
+# available for the post-merge refresh without a second `gh` round-trip.
+if ! CANDIDATES_JSON=$(gh pr list --head "$BRANCH" --state open \
+  --json number,headRepositoryOwner,baseRefName); then
   echo "pr-merge: 'gh pr list' failed — cannot determine the PR for '$BRANCH'." >&2
   exit 5
 fi
+CANDIDATES=$(printf '%s' "$CANDIDATES_JSON" | jq -r "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv")
 
 # shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
 PRS=($CANDIDATES)
@@ -126,6 +174,7 @@ if [ "${#PRS[@]}" -gt 1 ]; then
   exit 6
 fi
 PR="${PRS[0]}"
+BASE=$(printf '%s' "$CANDIDATES_JSON" | jq -r --argjson pr "$PR" '.[] | select(.number == $pr) | .baseRefName // empty')
 
 # resolve_head <PR> — current headRefOid for the PR, or exit 5 (state could
 # not be determined; same treatment as any other gh/API failure in this
@@ -181,5 +230,78 @@ if [ "$HEAD_BEFORE_MERGE" != "$HEAD_BEFORE_GATE" ]; then
   exit 6
 fi
 
+# refresh_other_open_prs <merged-pr#> <base> — #332, best-effort only.
+# Presses GitHub's "Update branch" (gh api -X PUT .../update-branch) for every
+# OTHER open PR targeting the same base, so its CI is already running by the
+# time a human reaches it. Every gh/jq call here is individually guarded
+# under `set +e`: this function must never `exit`, and its own return status
+# is never inspected by its caller — nothing it does may affect pr-merge's
+# exit code (the hard rule, req #2). Output is one `refresh <pr#> ...` line
+# per PR — see the header comment for the full format.
+refresh_other_open_prs() {
+  local merged_pr="$1" base="$2"
+  set +e
+
+  if [ -z "$base" ]; then
+    echo "refresh - failed could-not-determine-base"
+    set -e
+    return 0
+  fi
+
+  local repo_full
+  repo_full=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
+  if [ -z "$repo_full" ]; then
+    echo "refresh - failed could-not-determine-repo"
+    set -e
+    return 0
+  fi
+
+  local others_json
+  others_json=$(gh pr list --state open --json number,baseRefName,isDraft 2>/dev/null)
+  if [ -z "$others_json" ]; then
+    echo "refresh - failed could-not-list-open-prs"
+    set -e
+    return 0
+  fi
+
+  local nums n
+  nums=$(printf '%s' "$others_json" | jq -r --argjson pr "$merged_pr" '.[] | select(.number != $pr) | .number')
+  for n in $nums; do
+    local is_draft pr_base
+    is_draft=$(printf '%s' "$others_json" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .isDraft')
+    pr_base=$(printf '%s' "$others_json" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .baseRefName')
+
+    if [ "$is_draft" = "true" ]; then
+      echo "refresh $n skipped draft"
+      continue
+    fi
+    if [ "$pr_base" != "$base" ]; then
+      echo "refresh $n skipped different-base"
+      continue
+    fi
+
+    local api_out api_status
+    api_out=$(gh api -X PUT "repos/$repo_full/pulls/$n/update-branch" \
+      -H "Accept: application/vnd.github+json" 2>&1)
+    api_status=$?
+    if [ "$api_status" -eq 0 ]; then
+      echo "refresh $n ok"
+    elif printf '%s' "$api_out" | grep -qi "no new commits"; then
+      echo "refresh $n skipped up-to-date"
+    else
+      echo "refresh $n failed ${api_out//$'\n'/ }"
+    fi
+  done
+
+  set -e
+  return 0
+}
+
 echo "🔀 Squash-merging PR #$PR (branch: $BRANCH)..."
-gh pr merge "$PR" --squash
+if gh pr merge "$PR" --squash; then
+  if [ "$NO_REFRESH" -eq 0 ]; then
+    refresh_other_open_prs "$PR" "$BASE"
+  fi
+  exit 0
+fi
+exit $?

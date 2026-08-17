@@ -67,6 +67,15 @@ interface Sandbox {
 	binDir: string;
 	mergedFlag: string;
 	branch: string;
+	/** every `gh api -X PUT repos/.../pulls/<n>/update-branch` call logs `<n>` here, one per line */
+	apiCallsLog: string;
+}
+
+/** #332: the just-merged PR's other-open-PR fixture, for the post-merge refresh. */
+interface OtherPr {
+	number: number;
+	base?: string;
+	draft?: boolean;
 }
 
 interface SandboxOpts {
@@ -87,6 +96,12 @@ interface SandboxOpts {
 	headMovesBetweenGateAndMerge?: boolean;
 	/** stub `gh pr view` itself fails (outage / expired auth) */
 	failGhView?: boolean;
+	/** #332: base branch of the just-merged PR (#42). Default "main". */
+	mergedBase?: string;
+	/** #332: every OTHER open PR on the repo, as `gh pr list --state open` (no --head) would report them. */
+	otherOpenPRs?: OtherPr[];
+	/** #332: per-PR-number outcome for `gh api -X PUT .../update-branch`. Default "ok" for any PR not listed. */
+	updateBranchOutcome?: Record<number, "ok" | "conflict" | "hardfail">;
 }
 
 /** A real git repo with a feature branch — pr-merge only needs `git branch --show-current` to work. */
@@ -102,27 +117,88 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	const binDir = path.join(root, "stubbin");
 	fs.mkdirSync(binDir);
 	const mergedFlag = path.join(root, "merged.flag");
+	const apiCallsLog = path.join(root, "api-calls.log");
+	fs.writeFileSync(apiCallsLog, "");
 
-	// --- stub gh: repo view / pr list / pr merge ---
+	// --- stub gh: repo view / pr list / pr view / pr merge / api (#332) ---
 	const noPr = opts.noPr ?? false;
 	const multiPr = opts.multiPr ?? false;
+	const mergedBase = opts.mergedBase ?? "main";
+	// `gh pr list --head "$BRANCH" ...` — the #209 branch-selection fixture, now
+	// carrying baseRefName too so pr-merge can read the just-merged PR's base
+	// straight out of the same JSON without a second gh call.
 	const prJson = opts.failGhList
 		? ""
 		: noPr
 			? "[]"
 			: multiPr
 				? JSON.stringify([
-						{ number: 42, headRepositoryOwner: { login: "duppypro" } },
-						{ number: 43, headRepositoryOwner: { login: "duppypro" } },
+						{ number: 42, headRepositoryOwner: { login: "duppypro" }, baseRefName: mergedBase },
+						{ number: 43, headRepositoryOwner: { login: "duppypro" }, baseRefName: mergedBase },
 					])
-				: JSON.stringify([{ number: 42, headRepositoryOwner: { login: "duppypro" } }]);
+				: JSON.stringify([{ number: 42, headRepositoryOwner: { login: "duppypro" }, baseRefName: mergedBase }]);
+	// `gh pr list --state open ...` with NO --head — #332's post-merge "every
+	// other open PR" listing. Excludes #42 (the just-merged PR) by construction;
+	// callers supply exactly the OTHER PRs they want visible.
+	const otherPrsJson = JSON.stringify(
+		(opts.otherOpenPRs ?? []).map((p) => ({
+			number: p.number,
+			baseRefName: p.base ?? mergedBase,
+			isDraft: p.draft ?? false,
+		})),
+	);
+	const outcomeEntries = Object.entries(opts.updateBranchOutcome ?? {});
+	const hardfailNums = outcomeEntries.filter(([, v]) => v === "hardfail").map(([k]) => k);
+	const conflictNums = outcomeEntries.filter(([, v]) => v === "conflict").map(([k]) => k);
 	const headCallCounter = path.join(root, "prview-callcount");
 	fs.writeFileSync(headCallCounter, "0");
 	const gh = `#!/usr/bin/env bash
+# --- #332: gh api -X PUT repos/.../pulls/<n>/update-branch ---
+if [ "$1" = "api" ]; then
+  shift
+  url=""
+  for a in "$@"; do
+    case "$a" in
+      repos/*/pulls/*/update-branch) url="$a" ;;
+    esac
+  done
+  n=$(printf '%s' "$url" | sed -E 's#.*/pulls/([0-9]+)/update-branch#\\1#')
+  printf '%s\\n' "$n" >> ${JSON.stringify(apiCallsLog)}
+  case ",${hardfailNums.join(",")}," in
+    *",$n,"*) echo "gh: permission denied updating PR #$n" >&2; exit 1 ;;
+  esac
+  case ",${conflictNums.join(",")}," in
+    *",$n,"*) echo '{"message":"There are no new commits on the base branch.","status":"422"}' >&2; exit 1 ;;
+  esac
+  echo "Updating pull request branch."
+  exit 0
+fi
+
+# generic --jq extractor, mirroring tests/pr-scripts-args.test.ts's stub
+jqexpr=""
+head=""
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    --jq|-q) jqexpr="$a" ;;
+    --head) head="$a" ;;
+  esac
+  prev="$a"
+done
+emit() {
+  if [ -n "$jqexpr" ]; then printf '%s' "$1" | jq -r "$jqexpr"; else printf '%s\\n' "$1"; fi
+}
+
 case "$1 $2" in
-  "repo view") echo '{"owner":{"login":"duppypro"}}' ;;
+  "repo view")
+    emit '{"owner":{"login":"duppypro"},"nameWithOwner":"duppypro/princess-pi-packages"}'
+    ;;
   "pr list")
-    ${opts.failGhList ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : `echo ${JSON.stringify(prJson)} | jq -r '[.[] | select(.headRepositoryOwner.login == "duppypro") | .number] | @tsv'`}
+    if [ -n "$head" ]; then
+      ${opts.failGhList ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : `emit ${JSON.stringify(prJson)}`}
+    else
+      emit ${JSON.stringify(otherPrsJson)}
+    fi
     ;;
   "pr view")
     ${
@@ -158,7 +234,7 @@ exit ${exitCode}
 	}
 	// "missing" → deliberately do not create a pr-threads stub; PATH has none.
 
-	return { root, worktree, binDir, mergedFlag, branch };
+	return { root, worktree, binDir, mergedFlag, branch, apiCallsLog };
 }
 
 // Deliberately NOT `${sb.binDir}:${process.env.PATH}` — this host already has a
@@ -170,9 +246,9 @@ exit ${exitCode}
 // bin dir gives git/jq/bash without leaking any host-installed workflow tool.
 const ISOLATED_PATH = `${path.dirname(execFileSync("which", ["bash"], { encoding: "utf8" }).trim())}${path.delimiter}/usr/bin${path.delimiter}/bin`;
 
-function runPrMerge(sb: Sandbox): { code: number; out: string } {
+function runPrMerge(sb: Sandbox, extraArgs: string[] = []): { code: number; out: string } {
 	try {
-		const out = execFileSync("bash", [PR_MERGE], {
+		const out = execFileSync("bash", [PR_MERGE, ...extraArgs], {
 			cwd: sb.worktree,
 			encoding: "utf8",
 			env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${ISOLATED_PATH}` },
@@ -186,6 +262,15 @@ function runPrMerge(sb: Sandbox): { code: number; out: string } {
 
 function merged(sb: Sandbox): boolean {
 	return fs.existsSync(sb.mergedFlag);
+}
+
+/** #332: PR numbers `gh api -X PUT .../update-branch` was actually called for, in call order. */
+function apiCalls(sb: Sandbox): string[] {
+	return fs
+		.readFileSync(sb.apiCallsLog, "utf8")
+		.trim()
+		.split("\n")
+		.filter(Boolean);
 }
 
 // ---
@@ -317,6 +402,123 @@ console.log("\nregression: gh pr view itself fails:");
 	const { code, out } = runPrMerge(sb);
 	check(code === 5, "gh pr view fails → exit 5 (remote/API failure)", `got ${code}, output:\n${out}`);
 	check(!merged(sb), "gh pr view fails → gh pr merge never called", out);
+}
+
+// ---
+// #332: post-merge refresh of every other open PR
+// ---
+// strict_required_status_checks_policy means merging THIS PR marks every
+// OTHER open PR (same base) out of date — each then needs GitHub's "Update
+// branch" pressed before it can merge. pr-merge now presses that button
+// itself, right after a successful merge, via the same API call:
+//   gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch
+// Best-effort only (req #2, THE hard rule): nothing here may ever change
+// pr-merge's own exit code — the merge already happened and is irreversible.
+
+console.log("\npr-merge: post-merge refresh of other open PRs (#332)");
+
+// a. After a successful merge, refresh fires once per other open PR.
+console.log("\nsuccessful merge → refresh fires once per other open PR:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		mergedBase: "main",
+		otherOpenPRs: [
+			{ number: 50, base: "main" },
+			{ number: 51, base: "main" },
+		],
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "merge + refresh → exits 0", `got ${code}, output:\n${out}`);
+	check(merged(sb), "merge + refresh → gh pr merge WAS called", out);
+	const calls = apiCalls(sb);
+	check(calls.length === 2, "refresh called exactly once per other open PR", calls.join(","));
+	check(calls.includes("50") && calls.includes("51"), "refresh called for PR #50 and #51", calls.join(","));
+	check(out.includes("refresh 50 ok"), "output: refresh 50 ok", out);
+	check(out.includes("refresh 51 ok"), "output: refresh 51 ok", out);
+}
+
+// b. No merge (gate refuses) → no refresh at all.
+console.log("\nno merge (gate refuses) → no refresh at all:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "unresolved",
+		mergedBase: "main",
+		otherOpenPRs: [{ number: 50, base: "main" }],
+	});
+	const { code } = runPrMerge(sb);
+	check(code === 6, "gate refuses → exit 6 (unchanged)", `got ${code}`);
+	check(!merged(sb), "gate refuses → gh pr merge never called", "");
+	check(apiCalls(sb).length === 0, "gate refuses → update-branch never called", apiCalls(sb).join(","));
+}
+
+// c. A 422 ("no new commits") response reports `skipped`, not `failed`.
+console.log("\n422 'no new commits' → skipped, not failed:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		mergedBase: "main",
+		otherOpenPRs: [{ number: 50, base: "main" }],
+		updateBranchOutcome: { 50: "conflict" },
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "422 on refresh → pr-merge still exits 0", `got ${code}, output:\n${out}`);
+	check(out.includes("refresh 50 skipped"), "422 → reported as skipped", out);
+	check(!out.includes("refresh 50 failed"), "422 → NOT reported as failed", out);
+}
+
+// d. A hard-failing refresh (e.g. permission denied) still leaves pr-merge exit 0.
+console.log("\nhard-failing refresh → pr-merge still exits 0:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		mergedBase: "main",
+		otherOpenPRs: [{ number: 50, base: "main" }],
+		updateBranchOutcome: { 50: "hardfail" },
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "hard-failing refresh → pr-merge exit code UNCHANGED (0)", `got ${code}, output:\n${out}`);
+	check(merged(sb), "hard-failing refresh → the merge itself still happened", out);
+	check(out.includes("refresh 50 failed"), "hard-failing refresh → reported as failed", out);
+}
+
+// e. `--no-refresh` suppresses it entirely.
+console.log("\n--no-refresh suppresses the refresh entirely:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		mergedBase: "main",
+		otherOpenPRs: [
+			{ number: 50, base: "main" },
+			{ number: 51, base: "main" },
+		],
+	});
+	const { code, out } = runPrMerge(sb, ["--no-refresh"]);
+	check(code === 0, "--no-refresh → exits 0", `got ${code}, output:\n${out}`);
+	check(merged(sb), "--no-refresh → the merge itself still happened", out);
+	check(apiCalls(sb).length === 0, "--no-refresh → update-branch never called", apiCalls(sb).join(","));
+	check(!out.includes("refresh "), "--no-refresh → no refresh lines in output", out);
+}
+
+// f. A draft PR, and a PR with a different base, are both skipped.
+console.log("\ndraft PR and different-base PR are both skipped:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		mergedBase: "main",
+		otherOpenPRs: [
+			{ number: 50, base: "main", draft: true },
+			{ number: 51, base: "some-other-base" },
+			{ number: 52, base: "main" },
+		],
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "draft/different-base → exits 0", `got ${code}, output:\n${out}`);
+	const calls = apiCalls(sb);
+	check(!calls.includes("50"), "draft PR → update-branch never called for it", calls.join(","));
+	check(!calls.includes("51"), "different-base PR → update-branch never called for it", calls.join(","));
+	check(calls.includes("52"), "eligible PR (same base, not draft) → update-branch WAS called", calls.join(","));
+	check(out.includes("refresh 52 ok"), "output: refresh 52 ok", out);
 }
 
 // ---
