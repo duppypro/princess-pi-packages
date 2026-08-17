@@ -371,6 +371,24 @@ console.log("\nregression: on main refuses before any PR lookup:");
 	check(/on main/i.test(out), "on main → says so", out);
 }
 
+// 8. #330: a protected branch named EXPLICITLY (the positional argument) is a
+//    usage error (#224 code 2), not a precondition failure (code 3) — the
+//    caller told pr-merge something invalid, versus code 3's "cwd couldn't
+//    answer". Same distinction pr-reject already draws (#324) between
+//    `-b main` (explicit → 2) and cwd-discovered main (→ 3). Before this fix,
+//    `BRANCH="${BRANCH:-$(git branch --show-current)}"` collapsed both cases
+//    onto the same unconditional `exit 3`, so `pr-merge main` — run from a
+//    FEATURE branch — reported "nothing to discover from cwd" even though a
+//    branch was in fact given.
+console.log("\n#330: 'main' named explicitly as the argument → exit 2, not 3:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean" });
+	const { code, out } = runPrMerge(sb, ["main"]);
+	check(code === 2, "explicit 'main' argument → exit 2 (usage error)", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "explicit 'main' argument → gh pr merge never called", out);
+	check(/main/i.test(out), "explicit 'main' argument → message names the branch", out);
+}
+
 // 5. Ambiguous PR selection: more than one open PR shares the branch's head.
 //    Untested before this fix (#224 table and pr-merge's own header both say
 //    6 here — the header used to say 4, contradicting both; see bin/pr-merge
