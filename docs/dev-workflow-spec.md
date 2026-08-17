@@ -1165,6 +1165,23 @@ holds. Exit `6` means drift; `--remedy <repo>` prints the fix; the tool never wr
 `docs/repo-gate-apply.md` is the runbook for applying a remedy, written to be handed to an
 agent.
 
+**`repo-gate` also asserts bot write access, per repo (#304).** The policy's
+`.bot_login` (`princess-pi-bot`, the account #304 wants agent sessions to push as) is
+probed with `gh api repos/{owner}/{repo}/collaborators/{bot_login}/permission` for
+every governed repo, tier notwithstanding — `plan-blocked` waives the ruleset, not the
+push grant. Three outcomes, kept distinct in `.repos[].bot_access.status`: `ok`
+(write/maintain/admin), `insufficient` (a collaborator below write — usually `read`,
+which GitHub also reports for non-collaborators on a *public* repo, so `insufficient`
+there does not by itself mean an explicit grant exists), and `none` (not a collaborator,
+the only signal on a private repo). A failed probe is `error`, not `none` — same 5-vs-6
+discipline as the ruleset check, so an API hiccup is never reported as a missing grant.
+`--remedy <repo>` prints the `gh api -X PUT .../collaborators/<login>` command
+separately from the ruleset payload; like everywhere else in this tool, it is printed,
+never run. Live survey at the time this shipped: **6 of 29 repos** grant the bot write
+(`btw`, `does-it-glider`, `dotfiles-doctor`, `princess-pi-brain`, `princess-pi-packages`,
+`rogue-savvy`); the other 23 do not. **This is a report only — #304's credential half
+(minting the bot's token, wiring it into session env) remains blocked on `btw#29`.**
+
 Three tiers, and the third is the interesting one:
 
 | Tier | Rules | Who |
