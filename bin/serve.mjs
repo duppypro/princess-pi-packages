@@ -1623,11 +1623,11 @@ async function handleList() {
 }
 function handleVersion() {
   try {
-    const manifestPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "serve-cmd.json");
-    const manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf8"));
-    console.log(`${manifest.name} ${manifest.version}`);
+    const pkgPath = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+    const pkg = JSON.parse(fs6.readFileSync(pkgPath, "utf8"));
+    console.log(`serve ${pkg.version}`);
   } catch (err) {
-    console.error(`\u26A0\uFE0F Failed to load command manifest: ${err}`);
+    console.error(`\u26A0\uFE0F Failed to read package version: ${err}`);
     process.exitCode = 1;
   }
 }
