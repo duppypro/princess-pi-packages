@@ -36,6 +36,32 @@
 #      "foo (deleted)" would false-positive on a suffix match and correctly
 #      pass a stat.
 #
+# --- KNOWN LIMITATION: a shell that never reached the directory -------------
+# The whole predicate rests on a pane's shell HOLDING the deleted directory as
+# its cwd — that is what makes /proc report it, suffix and all. If the shell
+# never got there, there is nothing to hold and nothing to detect.
+#
+# Measured on 0.8.0, 2026-08-16, by deleting a directory immediately after
+# `herdr tab create --cwd` and before the pane's shell had started:
+#
+#   {"pane_id":"wD:pK","tab_id":"wD:tF","cwd":"/","foreground_cwd":"/",
+#    "terminal_title":"p-pi@overcity: /tmp/.../lv.M0y8ZX"}
+#
+# The shell could not chdir into a directory that no longer existed, fell back
+# to `/`, and `/` exists — so the tab reads as perfectly healthy and lingers
+# forever. Reaping it needs a human.
+#
+# Not worked around, deliberately. The only surviving trace of the intended
+# directory is `terminal_title`, which is a human-facing string this repo's
+# Agent-First rule forbids parsing for state — and it would be a bad signal
+# anyway, since it is whatever the shell's prompt last wrote there.
+#
+# The narrow trigger is why this is a footnote and not a defect: it needs the
+# directory to vanish inside the tab-creation window. The real sequence —
+# `wt-new` opens a tab, the shell starts in a live worktree, `pr-cleanup`
+# removes it much later — puts the shell inside the directory first, which is
+# the case that works and the one this tool was built for.
+#
 # --- why standalone, and why no retry loop ----------------------------------
 # Because "all panes point at nothing" never names WHICH worktree died,
 # reaping is correct whenever it runs — after a manual `git worktree remove`,
@@ -163,14 +189,25 @@ done
 # Output). `status` carries what the exit code deliberately does not: whether
 # this host was even inside herdr.
 # ---
+#
+# `workspaces_closed` is a number when it was actually counted and JSON `null`
+# when it could not be — never 0 standing in for "I did not find out". Those
+# are different facts, and 0 is the one a caller would act on. It is emitted
+# with %s rather than %d for exactly that reason.
+# ---
 emit_json() { # $1 = status, $2 = reaped array body, $3 = spared array body
-	printf '{"tool":"herdr-reap","schema":1,"status":"%s","dry_run":%s,"tabs_closed":%d,"workspaces_closed":%d,"tabs_failed":%d,"reaped":[%s],"spared":[%s]}\n' \
+	local ws
+	if [ "$WORKSPACES_KNOWN" -eq 1 ]; then ws="$WORKSPACES_CLOSED"; else ws="null"; fi
+	printf '{"tool":"herdr-reap","schema":1,"status":"%s","dry_run":%s,"tabs_closed":%d,"workspaces_closed":%s,"tabs_failed":%d,"reaped":[%s],"spared":[%s]}\n' \
 		"$1" "$([ "$DRY_RUN" -eq 1 ] && echo true || echo false)" \
-		"$TABS_CLOSED" "$WORKSPACES_CLOSED" "$TABS_FAILED" "$2" "$3"
+		"$TABS_CLOSED" "$ws" "$TABS_FAILED" "$2" "$3"
 }
 
 TABS_CLOSED=0
 WORKSPACES_CLOSED=0
+# Known by default: when nothing is closed, nothing can have taken a workspace
+# with it, and 0 is a real answer rather than an unasked question.
+WORKSPACES_KNOWN=1
 TABS_FAILED=0
 REAPED_JSON=""
 SPARED_JSON=""
@@ -307,7 +344,16 @@ if ! PANES=$(herdr pane list 2>/dev/null); then
 fi
 
 # --- workspaces BEFORE, so the count below is observed rather than predicted -
-WS_BEFORE=$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[]?.workspace_id' 2>/dev/null | sort || true)
+# Success is tracked, not inferred from emptiness. A failed query and a host
+# with no workspaces both yield an empty string, and only one of them licenses
+# a diff. `set -o pipefail` (top of file) makes the assignment carry the
+# failure of `herdr` or `jq`, not just `sort`.
+WS_BEFORE_OK=0
+if WS_BEFORE=$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[]?.workspace_id' 2>/dev/null | sort); then
+	WS_BEFORE_OK=1
+else
+	WS_BEFORE=""
+fi
 
 # ---
 # Group panes by tab in jq, and hand bash one NUL-delimited record per tab:
@@ -433,16 +479,34 @@ while [ "$idx" -lt "${#CLOSE_LIST[@]}" ]; do
 done
 
 # --- workspaces AFTER: report what happened, not what was expected ----------
+# The diff is computed ONLY when both reads succeeded. A failed post-close
+# query used to fall back to an empty WS_AFTER, which made `comm` report every
+# workspace that existed beforehand as closed — a maximally wrong number,
+# published confidently in the notification and the JSON. That is the exact
+# inversion of this section's own claim: "observed, never predicted" has to
+# include observing that the observation failed (PR #312 review).
 if [ "$TABS_CLOSED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-	WS_AFTER=$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[]?.workspace_id' 2>/dev/null | sort || true)
-	if [ -n "$WS_BEFORE" ]; then
+	WS_AFTER_OK=0
+	if WS_AFTER=$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[]?.workspace_id' 2>/dev/null | sort); then
+		WS_AFTER_OK=1
+	fi
+	if [ "$WS_BEFORE_OK" -eq 1 ] && [ "$WS_AFTER_OK" -eq 1 ]; then
 		WORKSPACES_CLOSED=$(comm -23 <(printf '%s\n' "$WS_BEFORE") <(printf '%s\n' "$WS_AFTER") | grep -c . || true)
+	else
+		WORKSPACES_KNOWN=0
 	fi
 fi
 
 if [ "$TABS_CLOSED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
 	body="closed $TABS_CLOSED stale tab$([ "$TABS_CLOSED" -eq 1 ] || echo s)"
-	[ "$WORKSPACES_CLOSED" -gt 0 ] && body="$body ($WORKSPACES_CLOSED workspace$([ "$WORKSPACES_CLOSED" -eq 1 ] || echo s))"
+	if [ "$WORKSPACES_KNOWN" -eq 0 ]; then
+		# Say so rather than omit it. Silence here reads as "no workspaces were
+		# closed", and since 0.8.0 a last-tab close takes its workspace with it —
+		# the one outcome the human most needs to not be quietly wrong about.
+		body="$body (workspace count unavailable)"
+	elif [ "$WORKSPACES_CLOSED" -gt 0 ]; then
+		body="$body ($WORKSPACES_CLOSED workspace$([ "$WORKSPACES_CLOSED" -eq 1 ] || echo s))"
+	fi
 	herdr notification show "herdr-reap" --body "$body" --sound done >/dev/null 2>&1 || true
 fi
 

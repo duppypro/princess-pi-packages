@@ -91,6 +91,9 @@ function makeStub(opts: {
 	 * stub that answers identically forever can never express "it moved".
 	 */
 	panesAfter?: Pane[];
+	/** `workspace list` fails on the post-close read (and/or the pre-close one). */
+	workspaceListFailsAfter?: boolean;
+	workspaceListFailsBefore?: boolean;
 }): Stub {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-stub-"));
 	const bin = path.join(dir, "bin");
@@ -131,7 +134,11 @@ case "$1 \${2:-}" in
 		}
     ;;
   "workspace list")
-    if [ -s "$D/closed.log" ]; then cat "$D/ws-after.json"; else cat "$D/ws-before.json"; fi
+    if [ -s "$D/closed.log" ]; then
+      ${opts.workspaceListFailsAfter ? "exit 1" : 'cat "$D/ws-after.json"'}
+    else
+      ${opts.workspaceListFailsBefore ? "exit 1" : 'cat "$D/ws-before.json"'}
+    fi
     ;;
   "tab close")
     if grep -qxF "$3" "$D/refuse.txt" 2>/dev/null; then exit 1; fi
@@ -339,6 +346,60 @@ console.log("herdr-reap (#277)\n");
 		(stub.notified()[0] ?? "").includes("1 workspace"),
 		"V8 notification names the workspace too",
 		JSON.stringify(stub.notified()),
+	);
+}
+
+// ---
+// A failed workspace query must not become a confident count. With WS_AFTER
+// empty, `comm` reports EVERY workspace that existed beforehand as closed —
+// maximally wrong, published in both the notification and the JSON. 0 would be
+// wrong too, differently: it is a real answer to a question never asked. So
+// `workspaces_closed` goes null. (Review finding on PR #312.)
+// ---
+{
+	const stub = makeStub({
+		panes: [{ pane_id: "wS:p2", tab_id: "wS:tONLY", cwd: deadCwd() }],
+		workspacesBefore: ["wS", "wA", "wB"],
+		workspaceListFailsAfter: true,
+	});
+	const r = runReap(stub, ["--json"]);
+	check(r.json?.tabs_closed === 1, "the tab still closes when the workspace query fails", JSON.stringify(r.json));
+	check(
+		r.json?.workspaces_closed === null,
+		"workspaces_closed is null when it could not be counted — never 0, never 3",
+		JSON.stringify(r.json),
+	);
+	check(
+		(stub.notified()[0] ?? "").includes("workspace count unavailable"),
+		"…and the notification says so rather than staying silent",
+		JSON.stringify(stub.notified()),
+	);
+}
+{
+	// Same rule at the other end: a failed PRE-close read also licenses no diff.
+	const stub = makeStub({
+		panes: [{ pane_id: "wS:p2", tab_id: "wS:tONLY", cwd: deadCwd() }],
+		workspaceListFailsBefore: true,
+	});
+	const r = runReap(stub, ["--json"]);
+	check(
+		r.json?.workspaces_closed === null,
+		"a failed pre-close workspace read also yields null, not 0",
+		JSON.stringify(r.json),
+	);
+}
+{
+	// And the normal path still reports a real number, including a real zero.
+	const stub = makeStub({
+		panes: [{ pane_id: "wS:p2", tab_id: "wS:tONLY", cwd: deadCwd() }],
+		workspacesBefore: ["wS"],
+		workspacesAfter: ["wS"],
+	});
+	const r = runReap(stub, ["--json"]);
+	check(
+		r.json?.workspaces_closed === 0,
+		"a successful count of zero is still reported as 0, not null",
+		JSON.stringify(r.json),
 	);
 }
 

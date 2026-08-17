@@ -230,6 +230,18 @@ the filesystem was consistent when `rm -rf` returned 24/24 and the deleted cwd w
 visible on the **first** poll 24/24, latency 5.5–20.5 ms — the API round trip itself.
 **Do not encode a delay without a measurement that falsifies its absence.**
 
+**Known limitation — a shell that never reached the directory.** The predicate rests on a
+pane's shell *holding* the deleted directory as its cwd; that is what makes `/proc` report
+it. Delete the directory inside the tab-creation window, before the shell has started, and
+the shell cannot chdir there — it falls back to `/`, which exists, so the tab reads as
+healthy and lingers until a human closes it. Measured on 0.8.0, 2026-08-16:
+`{"pane_id":"wD:pK","cwd":"/","foreground_cwd":"/","terminal_title":"p-pi@overcity: /tmp/.../lv.M0y8ZX"}`.
+Not worked around: the only surviving trace is `terminal_title`, a human-facing string the
+Agent-First rule forbids parsing for state, and an unreliable one (it is whatever the
+prompt last wrote). The real sequence — `wt-new` opens the tab, the shell starts inside a
+live worktree, `pr-cleanup` removes it much later — puts the shell in the directory first,
+which is the case that works.
+
 **Blast radius, stated rather than discovered in production:** since 0.8.0 (upstream
 herdrdev/herdr#1760/#1899) closing the last tab in a workspace closes the *workspace*.
 For a worktree-backed workspace whose worktree was just removed that is arguably right,
