@@ -13,8 +13,8 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort } from "./lib/serve/process.js";
-import { registerServer } from "./lib/serve/registry.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, awaitServerUp } from "./lib/serve/process.js";
+import { registerServer, readRegistry, verifyRecord, unregisterPort } from "./lib/serve/registry.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
@@ -311,12 +311,21 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		let startPort = 8080;
 		const startedPorts: number[] = [];
+		// #307: the child handles, so the summary can ask "did it come up?" instead of sleeping.
+		const started: { port: number; child: ReturnType<typeof spawn>; dir: string }[] = [];
 		const ip = await resolveIp();
 
 		// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill before
 		// publishing new state (stale allow-list live at the edge = security drift).
+		// #306: reap needs a second fact besides a silent port — the registry's verdict on the
+		// process serve spawned for it. Silent + no record → left published and said out loud.
 		try {
-			const reaped = await reapOrphans();
+			const evidence = readRegistry().map(r => ({ port: r.port, verdict: verifyRecord(r) }));
+			const reaped = await reapOrphans({
+				evidence,
+				onReaped: (_hostname, port) => unregisterPort(port),
+				onUnverified: (hostname, port) => ctx.ui.notify(`⚠️ ${hostname} → 127.0.0.1:${port} is not answering, but serve has no record of spawning it — left published (a service tenant mid-restart looks like this). Use --unpub if it is gone.`, "warning"),
+			});
 			if (reaped.length) ctx.ui.notify(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`, "info");
 		} catch (err) {
 			ctx.ui.notify(`⚠️ Orphan reap skipped: ${(err as Error).message}`, "warning");
@@ -409,6 +418,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 			startedPorts.push(port);
+			started.push({ port, child: serverProcess, dir: rawDir });
 
 			// #181: record identity NOW, while this PID is unambiguously ours. Discovery reads
 			// this instead of guessing from a `ps` substring, and `--kill` targets only what is
@@ -440,10 +450,25 @@ export default function serveExtension(pi: ExtensionAPI) {
 			}
 		}
 
-		await new Promise(r => setTimeout(r, 1200));
+		// #307: no fixed sleep. Ask each spawn whether it came up — port answers, child exited,
+		// or still pending at the ceiling — and say which. A dead child is retired from the
+		// registry here.
+		const SERVER_START_CEILING_MS = 10_000;
+		const pendingPorts: number[] = [];
+		for (const s of started) {
+			const r = await awaitServerUp({ port: s.port, child: s.child, ceilingMs: SERVER_START_CEILING_MS });
+			if (r.state === "exited") {
+				const how = r.signalCode ? `on ${r.signalCode}` : `with code ${r.exitCode}`;
+				ctx.ui.notify(`❌ Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).`, "error");
+				unregisterPort(s.port);
+			} else if (r.state === "pending") {
+				pendingPorts.push(s.port);
+				ctx.ui.notify(`⏳ Server for "${s.dir}" started but is not answering on 127.0.0.1:${s.port} yet (${r.elapsedMs} ms) — it may still be booting; check with --list.`, "warning");
+			}
+		}
 
 		const allActiveServers = await discoverServers();
-		const newServers = allActiveServers.filter(s => startedPorts.includes(s.port));
+		const newServers = allActiveServers.filter(s => startedPorts.includes(s.port) && !pendingPorts.includes(s.port));
 
 		if (allActiveServers.length === 0) {
 			ctx.ui.notify("No active directories are currently being served.", "warning");

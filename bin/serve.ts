@@ -14,8 +14,8 @@ import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
 import { type KilledServerInstance } from "../extensions/lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort } from "../extensions/lib/serve/process.js";
-import { registerServer } from "../extensions/lib/serve/registry.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, awaitServerUp } from "../extensions/lib/serve/process.js";
+import { registerServer, readRegistry, verifyRecord, unregisterPort } from "../extensions/lib/serve/registry.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
 // --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
@@ -298,12 +298,21 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 
 	let startPort = 8080;
 	const startedPorts: number[] = [];
+	// #307: the child handles, so the summary can ask "did it come up?" instead of sleeping.
+	const started: { port: number; child: ReturnType<typeof spawn>; dir: string }[] = [];
 
 	// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill (stale allow-
 	// list live at the edge = security drift) before publishing new state. Best-effort:
 	// no token / API failure must not block serving.
+	// #306: reap needs a second fact besides a silent port — the registry's verdict on the
+	// process serve spawned for it. Silent + no record → left published and said out loud.
 	try {
-		const reaped = await reapOrphans();
+		const evidence = readRegistry().map(r => ({ port: r.port, verdict: verifyRecord(r) }));
+		const reaped = await reapOrphans({
+			evidence,
+			onReaped: (_hostname, port) => unregisterPort(port),
+			onUnverified: (hostname, port) => console.warn(`⚠️ ${hostname} → 127.0.0.1:${port} is not answering, but serve has no record of spawning it — left published (a service tenant mid-restart looks like this). Use --unpublish if it is gone.`),
+		});
 		if (reaped.length) console.log(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`);
 	} catch (err) {
 		console.warn(`⚠️ Orphan reap skipped: ${(err as Error).message}`);
@@ -374,6 +383,7 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
 		serverProcess.unref();
 		startedPorts.push(port);
+		started.push({ port, child: serverProcess, dir: rawDir });
 
 		// #181: record identity NOW, while this PID is unambiguously ours. Discovery reads
 		// this instead of guessing from a `ps` substring, and `--kill` targets only what is
@@ -406,10 +416,25 @@ async function handleStart(trimmedArgs: string): Promise<void> {
 		}
 	}
 
-	await new Promise((r) => setTimeout(r, 1200));
+	// #307: no fixed sleep. Ask each spawn whether it came up — port answers, child exited,
+	// or still pending at the ceiling — and say which. A dead child is retired from the
+	// registry here (its record would otherwise be a live-looking entry until pruned).
+	const SERVER_START_CEILING_MS = 10_000;
+	const pendingPorts: number[] = [];
+	for (const s of started) {
+		const r = await awaitServerUp({ port: s.port, child: s.child, ceilingMs: SERVER_START_CEILING_MS });
+		if (r.state === "exited") {
+			const how = r.signalCode ? `on ${r.signalCode}` : `with code ${r.exitCode}`;
+			console.error(`❌ Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).`);
+			unregisterPort(s.port);
+		} else if (r.state === "pending") {
+			pendingPorts.push(s.port);
+			console.warn(`⏳ Server for "${s.dir}" started but is not answering on 127.0.0.1:${s.port} yet (${r.elapsedMs} ms) — it may still be booting; check with --list.`);
+		}
+	}
 
 	const allActiveServers = await discoverServers();
-	const newServers = allActiveServers.filter(s => startedPorts.includes(s.port));
+	const newServers = allActiveServers.filter(s => startedPorts.includes(s.port) && !pendingPorts.includes(s.port));
 	if (allActiveServers.length === 0) {
 		console.warn("No active directories are currently being served.");
 		return;

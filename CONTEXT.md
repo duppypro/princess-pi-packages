@@ -44,7 +44,7 @@ Persistence file at `~/.config/princess-pi-packages/serve/subdomains.json` mappi
 _Avoid_: Port registry, sub-domain cache
 
 **Orphan**:
-A Cloudflare Tunnel ingress rule pointing at a loopback port that nothing is listening on. Created by crash-without-kill. Reaped on every `serve` invocation by `reapOrphans()`. Note the definition is about the **port**, not about any process identity — reap asks "does anything answer here", never "is this one of ours".
+A Cloudflare Tunnel ingress rule pointing at a loopback port that nothing is listening on **and** whose process — the one `serve` spawned for that port, per the #181 registry — is verifiably gone. Created by crash-without-kill. Reaped on every `serve` invocation by `reapOrphans()`. Since #306 the definition needs both halves: a silent port alone is a *candidate*, and one with no registry record is `keep-unverified` (a service tenant mid-restart looks exactly like that) — left published and reported, never reaped on a probe.
 _Avoid_: Stale rule, dangling ingress, zombie
 
 **Reap**:
@@ -145,9 +145,12 @@ prose say "loopback service"** and reserve bare *origin* for CORS.
 >    registry** above (#181).
 > 2. *Liveness timing* — reap's port probe was a single 500 ms attempt, so a service tenant that
 >    is momentarily down (a `systemctl restart`, a deploy swap) looked dead for that instant and
->    could be unpublished. Narrowed to three probes over ~1.5 s (#181 §4.4). Not eliminated:
->    correct liveness for a `kind = "service"` tenant is a systemd question answered from the
->    manifest's `unit` key, which stays a **princess-pi-brain** concern.
+>    could be unpublished. Narrowed to three probes over ~1.5 s (#181 §4.4), then **removed as
+>    a sufficient condition (#306)**: reap now also needs the registry's verdict that the process
+>    `serve` spawned for that port is dead/recycled; a port with no registry record is left
+>    published and reported as unverified. Correct liveness for a `kind = "service"` tenant is
+>    still a systemd question answered from the manifest's `unit` key, which stays a
+>    **princess-pi-brain** concern — but reap can no longer unpublish one on a clock.
 >
 > Tracked as **princess-pi-brain #9**, re-scoped accordingly; the other three tenancy gaps are
 > **#10**. Getting this right matters beyond the wording — #9 is filed as *"the highest-severity

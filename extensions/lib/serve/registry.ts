@@ -218,15 +218,25 @@ export function unregisterPort(port: number): void {
 }
 
 /**
- * The servers that are ours AND running, with dead/recycled records pruned from disk.
+ * The servers that are ours AND running, with dead/recycled records pruned from disk —
+ * EXCEPT a dead record that was published (`subdomain` set), which is kept (#306).
  *
  * This is the single source of truth for discovery. It answers the identity question from
  * what we declared at spawn, and the liveness question from the kernel — neither from text
  * written for humans.
+ *
+ * WHY the published exception: a dead published record is exactly the evidence
+ * `reapOrphans()` needs to prove that the ingress rule for that port belongs to a server
+ * serve spawned and which is now gone — the crash-without-kill the reaper exists for. The
+ * widget calls this every 4 s, so an unconditional prune erased that evidence before reap
+ * (which runs on the next `serve` invocation) ever saw it, leaving the reaper only a port
+ * probe — a clock — to decide with. Reap `unregisterPort`s the record once it acts on it;
+ * `registerServer` drops it on port reuse; unpublished dead records prune as before.
  */
 export function liveServers(): ServerRecord[] {
 	const all = readRaw();
 	const live = all.filter(r => verifyRecord(r) === "live");
-	if (live.length !== all.length) writeRaw(live);
+	const kept = all.filter(r => verifyRecord(r) === "live" || (r.subdomain != null && r.subdomain !== ""));
+	if (kept.length !== all.length) writeRaw(kept);
 	return live;
 }

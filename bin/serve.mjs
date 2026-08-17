@@ -474,8 +474,9 @@ function unregisterPid(pid) {
 function liveServers() {
   const all = readRaw();
   const live = all.filter((r) => verifyRecord(r) === "live");
-  if (live.length !== all.length)
-    writeRaw(live);
+  const kept = all.filter((r) => verifyRecord(r) === "live" || r.subdomain != null && r.subdomain !== "");
+  if (kept.length !== all.length)
+    writeRaw(kept);
   return live;
 }
 
@@ -604,6 +605,36 @@ async function confirmProcessKilled(pid, retries = 10, delayMs = 100) {
   }
   return !isProcessAlive(pid);
 }
+function probePortOnce(port, timeoutMs = 500) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: "127.0.0.1", port }, () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.on("error", () => resolve(false));
+    sock.setTimeout(timeoutMs, () => {
+      sock.destroy();
+      resolve(false);
+    });
+  });
+}
+async function awaitServerUp(opts) {
+  const { port, child, ceilingMs } = opts;
+  const pollMs = opts.pollMs ?? 100;
+  const start = Date.now();
+  for (;; ) {
+    if (await probePortOnce(port, Math.min(500, pollMs * 5))) {
+      return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+    }
+    if (child && (child.exitCode !== null || child.signalCode !== null)) {
+      return { state: "exited", exitCode: child.exitCode, signalCode: child.signalCode, elapsedMs: Date.now() - start };
+    }
+    if (Date.now() - start >= ceilingMs) {
+      return { state: "pending", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
 async function killServerInstance(server) {
   const pid = server.pid ?? await findPidByPort(server.port);
   if (!pid)
@@ -678,6 +709,24 @@ function readProcessStartTicks2(pid) {
     return null;
   }
 }
+function pidExists2(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+function verifyRecord2(record) {
+  if (!pidExists2(record.pid))
+    return "dead";
+  if (record.startTicks === null)
+    return "live";
+  const current = readProcessStartTicks2(record.pid);
+  if (current === null)
+    return "recycled";
+  return current === record.startTicks ? "live" : "recycled";
+}
 function readRaw2() {
   try {
     const parsed = JSON.parse(fs3.readFileSync(REGISTRY_PATH2, "utf8"));
@@ -696,6 +745,9 @@ function writeRaw2(servers) {
     fs3.renameSync(tmp, REGISTRY_PATH2);
   } catch {}
 }
+function readRegistry2() {
+  return readRaw2();
+}
 function registerServer(entry) {
   const record = {
     pid: entry.pid,
@@ -709,6 +761,12 @@ function registerServer(entry) {
   const kept = readRaw2().filter((r) => r.pid !== record.pid && r.port !== record.port);
   writeRaw2([...kept, record]);
   return record;
+}
+function unregisterPort(port) {
+  const all = readRaw2();
+  const kept = all.filter((r) => r.port !== port);
+  if (kept.length !== all.length)
+    writeRaw2(kept);
 }
 
 // extensions/lib/session-path-shortener.ts
@@ -1085,7 +1143,7 @@ async function withLock(fn) {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-function probePortOnce(port) {
+function probePortOnce2(port) {
   return new Promise((resolve) => {
     const sock = net2.connect({ host: "127.0.0.1", port }, () => {
       sock.destroy();
@@ -1100,12 +1158,22 @@ function probePortOnce(port) {
 }
 async function isPortLive(port, attempts = 3, delayMs = 500) {
   for (let i = 0;i < attempts; i++) {
-    if (await probePortOnce(port))
+    if (await probePortOnce2(port))
       return true;
     if (i < attempts - 1)
       await new Promise((r) => setTimeout(r, delayMs));
   }
   return false;
+}
+function classifyReapCandidate({ port, probeLive, evidence }) {
+  if (probeLive)
+    return "keep-live";
+  const records = Array.isArray(evidence) ? evidence.filter((e) => e && e.port === port) : [];
+  if (records.length === 0)
+    return "keep-unverified";
+  if (records.some((e) => e.verdict === "live"))
+    return "keep-starting";
+  return "reap";
 }
 async function checkLabelAvailable(cf, label, activeLabels) {
   if (activeLabels && activeLabels.has(label)) {
@@ -1246,7 +1314,7 @@ async function unpublishSubdomain({ subdomain }) {
     removeSubdomainFromMap(subdomain);
   });
 }
-async function reapOrphans() {
+async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
   let cf;
   try {
     cf = loadCfEnv();
@@ -1287,8 +1355,18 @@ async function reapOrphans() {
       if (!ownedHosts.has(rule.hostname))
         continue;
       const port = parseInt(rule.service.split(":").pop(), 10);
-      if (await isPortLive(port))
+      const probeLive = await isPortLive(port);
+      const verdict = classifyReapCandidate({ port, probeLive, evidence });
+      if (verdict === "keep-live" || verdict === "keep-starting")
         continue;
+      if (verdict === "keep-unverified") {
+        if (typeof onUnverified === "function") {
+          try {
+            onUnverified(rule.hostname, port);
+          } catch {}
+        }
+        continue;
+      }
       next = next.filter((r) => r.hostname !== rule.hostname);
       deadPorts.add(port);
       const label = rule.hostname.endsWith(`.${ZONE_SUFFIX}`) ? rule.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
@@ -1298,6 +1376,11 @@ async function reapOrphans() {
         } catch {}
       }
       reaped.push(rule.hostname);
+      if (typeof onReaped === "function") {
+        try {
+          onReaped(rule.hostname, port);
+        } catch {}
+      }
     }
     if (deadPorts.size > 0) {
       const map = readSubdomainMap2();
@@ -1567,8 +1650,14 @@ async function handleStart(trimmedArgs) {
   }
   let startPort = 8080;
   const startedPorts = [];
+  const started = [];
   try {
-    const reaped = await reapOrphans();
+    const evidence = readRegistry2().map((r) => ({ port: r.port, verdict: verifyRecord2(r) }));
+    const reaped = await reapOrphans({
+      evidence,
+      onReaped: (_hostname, port) => unregisterPort(port),
+      onUnverified: (hostname, port) => console.warn(`\u26A0\uFE0F ${hostname} \u2192 127.0.0.1:${port} is not answering, but serve has no record of spawning it \u2014 left published (a service tenant mid-restart looks like this). Use --unpublish if it is gone.`)
+    });
     if (reaped.length)
       console.log(`\uD83E\uDDF9 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`);
   } catch (err) {
@@ -1618,6 +1707,7 @@ async function handleStart(trimmedArgs) {
     const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
     serverProcess.unref();
     startedPorts.push(port);
+    started.push({ port, child: serverProcess, dir: rawDir });
     if (serverProcess.pid) {
       registerServer({
         pid: serverProcess.pid,
@@ -1640,9 +1730,21 @@ async function handleStart(trimmedArgs) {
       console.log(`\u2139\uFE0F Serving "${rawDir}" locally on 127.0.0.1:${port}. Pass --pub <name> to publish a gated preview at <name>.princess-pi.dev.`);
     }
   }
-  await new Promise((r) => setTimeout(r, 1200));
+  const SERVER_START_CEILING_MS = 1e4;
+  const pendingPorts = [];
+  for (const s of started) {
+    const r = await awaitServerUp({ port: s.port, child: s.child, ceilingMs: SERVER_START_CEILING_MS });
+    if (r.state === "exited") {
+      const how = r.signalCode ? `on ${r.signalCode}` : `with code ${r.exitCode}`;
+      console.error(`\u274C Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).`);
+      unregisterPort(s.port);
+    } else if (r.state === "pending") {
+      pendingPorts.push(s.port);
+      console.warn(`\u23F3 Server for "${s.dir}" started but is not answering on 127.0.0.1:${s.port} yet (${r.elapsedMs} ms) \u2014 it may still be booting; check with --list.`);
+    }
+  }
   const allActiveServers = await discoverServers();
-  const newServers = allActiveServers.filter((s) => startedPorts.includes(s.port));
+  const newServers = allActiveServers.filter((s) => startedPorts.includes(s.port) && !pendingPorts.includes(s.port));
   if (allActiveServers.length === 0) {
     console.warn("No active directories are currently being served.");
     return;

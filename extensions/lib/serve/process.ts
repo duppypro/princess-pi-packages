@@ -2,7 +2,7 @@ import * as https from "node:https";
 import * as http from "node:http";
 import * as path from "node:path";
 import * as net from "node:net";
-import { exec, execFile } from "node:child_process";
+import { exec, execFile, type ChildProcess } from "node:child_process";
 import { ServerInstance } from "./domain.js";
 import { flattenSubdomainToLabel, readSubdomainMap } from "./cloudflare.js";
 import { liveServers, readRegistry, unregisterPid, type UnclaimedProcess } from "./registry.js";
@@ -218,6 +218,69 @@ export async function confirmProcessKilled(pid: number, retries = 10, delayMs = 
 		await new Promise(r => setTimeout(r, delayMs));
 	}
 	return !isProcessAlive(pid);
+}
+
+// ---
+// Startup liveness (#307) — state, not a stopwatch.
+// ---
+
+/** One loopback connect attempt: is anything accepting on 127.0.0.1:port right now? */
+export function probePortOnce(port: number, timeoutMs = 500): Promise<boolean> {
+	return new Promise((resolve) => {
+		const sock = net.connect({ host: "127.0.0.1", port }, () => { sock.destroy(); resolve(true); });
+		sock.on("error", () => resolve(false));
+		sock.setTimeout(timeoutMs, () => { sock.destroy(); resolve(false); });
+	});
+}
+
+export type ServerStartupState = "up" | "exited" | "pending";
+export interface ServerStartupResult {
+	state: ServerStartupState;
+	exitCode: number | null;
+	signalCode: NodeJS.Signals | null;
+	/** How long the wait actually took — reported, so a slow start is a number, not a guess. */
+	elapsedMs: number;
+}
+
+/**
+ * Wait until a server we just spawned proves it is up — or proves it is not.
+ *
+ * WHY (#307): `serve` used to `sleep(1200)` after `spawn()` and then read the registry to
+ * print its summary. That is a guess about how long `npx http-server` takes to bind. Cold
+ * `npx` or a loaded box → the summary said "No active directories are currently being
+ * served" while the server came up two seconds later; a spawn that died at 1.3 s (port
+ * stolen between `isPortFree` and bind — that probe is TOCTOU by nature) was reported as
+ * running.
+ *
+ * Three answers, each a fact:
+ *   - `up`      — the port accepts a connection (asked, not assumed).
+ *   - `exited`  — the child is gone; exit code or signal attached. Never "running".
+ *   - `pending` — ceiling hit with the child alive and the port silent. Reported as
+ *                 exactly that: started, not answering yet. Not a failure, not a success.
+ * A healthy static server resolves in a few 100 ms polls; the ceiling bounds only the
+ * ambiguous case, and the ceiling's answer is `pending`, never a verdict.
+ */
+export async function awaitServerUp(opts: {
+	port: number;
+	child: ChildProcess | null;
+	ceilingMs: number;
+	pollMs?: number;
+}): Promise<ServerStartupResult> {
+	const { port, child, ceilingMs } = opts;
+	const pollMs = opts.pollMs ?? 100;
+	const start = Date.now();
+	for (;;) {
+		if (await probePortOnce(port, Math.min(500, pollMs * 5))) {
+			return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+		}
+		if (child && (child.exitCode !== null || child.signalCode !== null)) {
+			return { state: "exited", exitCode: child.exitCode, signalCode: child.signalCode, elapsedMs: Date.now() - start };
+		}
+		if (Date.now() - start >= ceilingMs) {
+			return { state: "pending", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+		}
+		await new Promise(r => setTimeout(r, pollMs));
+	}
 }
 
 // Single, reliable kill path for a discovered server (#39). Uses the PID captured at

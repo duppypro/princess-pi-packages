@@ -315,12 +315,50 @@ function probePortOnce(port) {
 // port-probe-based since 8ae6fde, Phase 6B). Correct liveness for a `kind = "service"` tenant
 // is a systemd question answered from its manifest `unit`; that stays a brain concern. This
 // only narrows the timing window, which is the real residual risk.
+//
+// #306 closed the residual risk from the other side: the probe is still asked, but it is no
+// longer the SOLE reason to delete anything — see classifyReapCandidate below.
 async function isPortLive(port, attempts = 3, delayMs = 500) {
 	for (let i = 0; i < attempts; i++) {
 		if (await probePortOnce(port)) return true;
 		if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
 	}
 	return false;
+}
+
+// ---
+// Reap decision (#306) — a silent port is necessary, never sufficient.
+//
+// WHY: reap deletes a tunnel ingress rule and its Access app. Before #306 that fired on one
+// fact — 3 TCP probes over ~1.5 s failed — which is a clock standing in for the question
+// "is the thing behind this port gone?". A systemd service tenant mid-`restart`, or a
+// server that takes >1.5 s to bind, was unpublished; and the loss was outward-facing, on a
+// tenant other than the one running `serve`.
+//
+// The second fact comes from the #181 registry — the record `serve` wrote at spawn for
+// every process it owns, verified against the kernel by (pid, startTicks):
+//   dead / recycled  → our process is verifiably gone: this is the crash-without-kill the
+//                      reaper exists for → reap.
+//   live             → our process is alive and simply not answering yet (starting, or
+//                      wedged — either way not "gone") → keep.
+//   no record        → serve never spawned it. A service tenant published through serve,
+//                      or a pre-#181 orphan. Not ours to delete on a probe → keep, and
+//                      REPORT it as unverified so it is not silent; `--unpublish` is the
+//                      deliberate path.
+//
+// Pure and exported: the decision is testable without Cloudflare, and `reapOrphans` receives
+// the evidence by injection because this file must stay plain-node importable
+// (run-live-server.js loads it under node; the registry module is TypeScript).
+//
+// @param {{port:number, probeLive:boolean, evidence?:Array<{port:number, verdict:"live"|"dead"|"recycled"}>}} args
+// @returns {"keep-live"|"keep-starting"|"reap"|"keep-unverified"}
+// ---
+export function classifyReapCandidate({ port, probeLive, evidence }) {
+	if (probeLive) return "keep-live";
+	const records = Array.isArray(evidence) ? evidence.filter((e) => e && e.port === port) : [];
+	if (records.length === 0) return "keep-unverified";
+	if (records.some((e) => e.verdict === "live")) return "keep-starting";
+	return "reap"; // every record for this port is dead or recycled — our process is gone
 }
 
 // ---
@@ -520,15 +558,29 @@ export async function updateSubdomainAllowlist({ subdomain, emails }) {
 }
 
 /**
- * Reap-on-start: delete any serve-owned edge entry whose loopback port is dead. Runs before
- * publishing new state so a crash-without-kill can't leave a stale allow-list live at the
- * edge. Only touches ingress rules pointing at 127.0.0.1 and Access apps named `serve <..>`.
- * Also cleans the local subdomain map for dead ports and removes any stale tunnel lockfile.
+ * Reap-on-start: delete any serve-owned edge entry whose loopback port is dead AND whose
+ * process the #181 registry says is gone (#306). Runs before publishing new state so a
+ * crash-without-kill can't leave a stale allow-list live at the edge. Only touches ingress
+ * rules pointing at 127.0.0.1 and Access apps named `serve <..>`. Also cleans the local
+ * subdomain map for reaped ports and removes any stale tunnel lockfile.
+ *
+ * `evidence` is the registry read by the caller (`readRegistry().map(r => ({port, verdict:
+ * verifyRecord(r)}))`) — injected, see classifyReapCandidate. Omit it and nothing is
+ * reaped (every silent port is unverified): the fail-safe reading for a caller that has no
+ * registry to offer.
+ *
+ * `onUnverified(hostname, port)` is called for each serve-owned rule whose port is silent
+ * but which the registry cannot vouch for — so "left published, could not verify" is said
+ * out loud instead of being the silent no-op it would otherwise be. `onReaped(hostname,
+ * port)` is called for each rule actually removed, so the caller can retire the registry
+ * record that served as evidence (this module cannot import the registry — see above).
+ *
  * KNOWN GAP (deferred, follow-up issue): nothing reaps between a crash and the next serve
  * run — no periodic/TTL GC yet.
+ * @param {{evidence?:Array<{port:number, verdict:"live"|"dead"|"recycled"}>, onUnverified?:(hostname:string, port:number)=>void, onReaped?:(hostname:string, port:number)=>void}} [opts]
  * @returns {Promise<string[]>} hostnames reaped
  */
-export async function reapOrphans() {
+export async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
 	let cf;
 	try { cf = loadCfEnv(); } catch { return []; } // no token → nothing to reap, stay quiet
 
@@ -565,12 +617,19 @@ export async function reapOrphans() {
 			if (!rule.hostname || !rule.service?.startsWith("http://127.0.0.1:")) continue;
 			if (!ownedHosts.has(rule.hostname)) continue; // not serve-owned → leave it alone
 			const port = parseInt(rule.service.split(":").pop(), 10);
-			if (await isPortLive(port)) continue; // still serving — keep it
+			const probeLive = await isPortLive(port);
+			const verdict = classifyReapCandidate({ port, probeLive, evidence });
+			if (verdict === "keep-live" || verdict === "keep-starting") continue;
+			if (verdict === "keep-unverified") {
+				if (typeof onUnverified === "function") { try { onUnverified(rule.hostname, port); } catch {} }
+				continue;
+			}
 			next = next.filter((r) => r.hostname !== rule.hostname);
-		deadPorts.add(port);
+			deadPorts.add(port);
 			const label = rule.hostname.endsWith(`.${ZONE_SUFFIX}`) ? rule.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
 			if (label) { try { await deleteAccessApp(cf, label); } catch {} }
 			reaped.push(rule.hostname);
+			if (typeof onReaped === "function") { try { onReaped(rule.hostname, port); } catch {} }
 		}
 
 		// Clean subdomain map — remove entries for every dead port so --list does not
