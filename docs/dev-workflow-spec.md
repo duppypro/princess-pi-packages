@@ -834,9 +834,9 @@ the [#224 table](#exit-codes--the-shared-pr--contract-224) exactly:
 
 ### Exit codes — the shared pr-* contract (#224)
 
-`pr-cleanup`, `pr-open`, `wt-new`, `pr-merge`, and `pr-threads` map every failure to one
-of six codes instead of a bare `exit 1`. The distinction that carries weight is **5 vs
-6**: "I could not check" versus "I checked and it says no." The rows below are
+`pr-cleanup`, `pr-open`, `wt-new`, `pr-merge`, `pr-reject`, and `pr-threads` map every
+failure to one of six codes instead of a bare `exit 1`. The distinction that carries
+weight is **5 vs 6**: "I could not check" versus "I checked and it says no." The rows below are
 deliberately general — each script's own header spells out exactly which of its checks
 lands on which code; a header disagreeing with this table is a bug in the header, not
 license to add a seventh number.
@@ -849,8 +849,6 @@ license to add a seventh number.
 | 4 | not found — a required piece of local git state or a PR is missing (no main/master worktree registered, no local branch by that name, no `origin` remote configured, no such PR, no open PR for the branch) |
 | 5 | remote/API failure — state could **not** be determined (network down, `gh` outage, an incomplete API response, a local check like `merge-base` that could not even run, or a ref the remote named that was never fetched locally) |
 | 6 | safety gate refused — state **was** determined, and it says no (unmerged work, a diverged or moved remote, a dirty or locked worktree refusing removal, a rejected push, a ref that won't delete, a target path or branch that already exists, ambiguous PR selection, `pr-merge`'s pr-threads gate) |
-
-`pr-reject` still exits `0`/`1` only; adopting the table for it is tracked by #224.
 
 **`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
 #232's `--json` already shipped depending on it: `1` means "the check succeeded and
