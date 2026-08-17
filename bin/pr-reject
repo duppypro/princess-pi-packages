@@ -9,7 +9,28 @@ set -euo pipefail
 # `pr-reject some-branch "wrong approach"` closed the CURRENT branch's PR with
 # the comment "some-branch" and dropped the real reason (#209). pr-merge keeps a
 # positional branch — it takes no other argument, so nothing is ambiguous there.
+#
+# Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md):
+#   0  success
+#   2  usage error — `-b`/`--branch` given with no branch name, a protected
+#      branch (main/master) named EXPLICITLY via `-b`, or not run inside a
+#      git repository at all (`git branch --show-current` itself fails)
+#   3  precondition not met — on main/master with nothing to discover
+#      otherwise: the branch was DISCOVERED from cwd, not named via `-b`
+#      (macroscopeapp review, PR #324: the previous cut collapsed this with
+#      code 2 and unconditionally exited 3 for both cases, citing bin/pr-merge
+#      as precedent — pr-merge does the same collapse for its own positional
+#      <branch> argument, so pr-merge disagrees with this same table too;
+#      that is a separate, out-of-scope bug, not license to keep this one)
+#   4  not found — no open PR for the branch in our own repo
+#   5  remote/API failure — `gh repo view`, `gh pr list`, or `gh pr close`
+#      could not determine state / complete the action (network, auth,
+#      permission — gh does not distinguish these by exit code, so all such
+#      failures land here rather than guessing at 6's "determined refusal")
+#   6  safety gate refused — ambiguous PR selection (more than one of our own
+#      open PRs share the branch's head)
 BRANCH=""
+BRANCH_SOURCE=""   # "explicit" (via -b/--branch) or "cwd" (discovered) — #224
 REASON=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -21,38 +42,61 @@ Human-only: close the open PR for <branch> (default: current branch) without
 merging, leaving <reason> as a comment. Use `--` before a reason that starts
 with '-'.
 
-exit codes: 0 ok · 1 error (pr-reject predates the shared #224 table)
+exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
       exit 0 ;;
     -b|--branch)
       BRANCH="${2:-}"
       if [ -z "$BRANCH" ]; then
         echo "pr-reject: -b needs a branch name." >&2
-        exit 1
+        exit 2
       fi
+      BRANCH_SOURCE="explicit"
       shift 2 ;;
     --) shift; REASON="${1:-}"; break ;;
     *)  REASON="$1"; shift ;;
   esac
 done
-[ -n "$BRANCH" ] || BRANCH=$(git branch --show-current)
+if [ -z "$BRANCH" ]; then
+  BRANCH_SOURCE="cwd"
+  # Failure here (not run inside a git repository at all) must not leak git's
+  # raw exit status (128) through `set -e` — map it onto the usage-error code
+  # the table already reserves for "not run inside a git repository at all".
+  if ! BRANCH=$(git branch --show-current 2>&1); then
+    echo "pr-reject: not inside a git repository — cannot discover the current branch." >&2
+    echo "  $BRANCH" >&2
+    exit 2
+  fi
+fi
 
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  if [ "$BRANCH_SOURCE" = "explicit" ]; then
+    # #224 code 2: a protected branch named EXPLICITLY is a usage error, not
+    # a precondition failure — the caller typed the wrong thing.
+    echo "pr-reject: '$BRANCH' is a protected branch — refusing to close its PR via -b." >&2
+    echo "  pr-reject -b <branch> [reason]" >&2
+    exit 2
+  fi
   echo "pr-reject: on main — pass a branch name or switch to a feature worktree." >&2
   echo "  pr-reject -b <branch> [reason]" >&2
-  exit 1
+  exit 3
 fi
 
 # --- select the PR ---------------------------------------------------------
 # Same fork guard as pr-merge: `--head` matches by branch name across every
 # fork, so constrain to head branches in OUR OWN repo and refuse to guess.
-OWNER=$(gh repo view --json owner --jq '.owner.login')
-# Same as pr-merge: a failed lookup must not masquerade as "no PR found".
+# Same as pr-merge: a failed lookup must not masquerade as "no PR found" —
+# and must not leak gh's raw exit status through `set -e` either.
+if ! OWNER=$(gh repo view --json owner --jq '.owner.login' 2>&1); then
+  echo "pr-reject: 'gh repo view' failed — cannot determine the repo owner." >&2
+  echo "$OWNER" >&2
+  exit 5
+fi
 if ! CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
   --json number,headRepositoryOwner \
   --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv"); then
   echo "pr-reject: 'gh pr list' failed — cannot determine the PR for '$BRANCH'." >&2
-  exit 1
+  exit 5
 fi
 
 # shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
@@ -60,20 +104,33 @@ PRS=($CANDIDATES)
 
 if [ "${#PRS[@]}" -eq 0 ]; then
   echo "pr-reject: no open PR found for branch '$BRANCH' in $OWNER's repo." >&2
-  exit 1
+  exit 4
 fi
 if [ "${#PRS[@]}" -gt 1 ]; then
   echo "pr-reject: ambiguous — ${#PRS[@]} open PRs share head branch '$BRANCH':" >&2
   for p in "${PRS[@]}"; do echo "  #$p" >&2; done
   echo "  Refusing to guess. Close the intended one via 'gh pr close <N>'." >&2
-  exit 1
+  exit 6
 fi
 PR="${PRS[0]}"
 
+# The final action itself must not leak gh's raw exit status through `set -e`
+# either — a failed close (auth, network, permission; gh does not distinguish
+# these by exit code) is a remote/API failure, same bucket as the lookups above.
 if [ -n "$REASON" ]; then
   echo "❌ Closing PR #$PR with comment: $REASON"
-  gh pr close "$PR" --comment "$REASON"
+  if ! CLOSE_OUT=$(gh pr close "$PR" --comment "$REASON" 2>&1); then
+    echo "pr-reject: 'gh pr close' failed for PR #$PR:" >&2
+    echo "$CLOSE_OUT" >&2
+    exit 5
+  fi
+  echo "$CLOSE_OUT"
 else
   echo "❌ Closing PR #$PR (no comment)"
-  gh pr close "$PR"
+  if ! CLOSE_OUT=$(gh pr close "$PR" 2>&1); then
+    echo "pr-reject: 'gh pr close' failed for PR #$PR:" >&2
+    echo "$CLOSE_OUT" >&2
+    exit 5
+  fi
+  echo "$CLOSE_OUT"
 fi

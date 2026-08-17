@@ -49,6 +49,10 @@ interface SandboxOpts {
 	ownerLogin?: string;
 	/** `gh pr list` fails — a network/auth error, not "no PR found". */
 	failGhList?: boolean;
+	/** `gh repo view` fails — a network/auth error before the PR is even looked up. */
+	failGhRepoView?: boolean;
+	/** `gh pr close` fails — e.g. permission denied, after the PR is selected. */
+	failGhClose?: boolean;
 	/**
 	 * Exit status the stubbed `pr-threads` returns. Its contract (see
 	 * bin/pr-threads' header): 0 = clean, 1 = checked and found a problem,
@@ -70,6 +74,8 @@ function sandbox(branch: string, rows: PrRow[], opts: SandboxOpts = {}) {
 	const {
 		ownerLogin = "duppypro",
 		failGhList = false,
+		failGhRepoView = false,
+		failGhClose = false,
 		threadsStatus = 0,
 		threadsOutput = "✅ 0 unresolved conversations (0 total)",
 		headOids = ["a".repeat(40)],
@@ -128,6 +134,7 @@ for a in "$@"; do
 done
 case "$1 $2" in
   "repo view")
+    ${failGhRepoView ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : ""}
     out='{"owner":{"login":"${ownerLogin}"},"nameWithOwner":"${ownerLogin}/princess-pi-packages"}'
     if [ -n "$jqexpr" ]; then printf '%s' "$out" | jq -r "$jqexpr"; else printf '%s\\n' "$out"; fi
     exit 0 ;;
@@ -135,6 +142,9 @@ case "$1 $2" in
     ${failGhList ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : ":"}
     filtered=$(jq -c --arg h "$head" '[.[] | select($h == "" or .headRefName == $h)]' ${JSON.stringify(path.join(dir, "prlist.json"))})
     if [ -n "$jqexpr" ]; then printf '%s' "$filtered" | jq -r "$jqexpr"; else printf '%s\\n' "$filtered"; fi
+    exit 0 ;;
+  "pr close")
+    ${failGhClose ? 'echo "gh: permission denied closing PR" >&2; exit 1' : ""}
     exit 0 ;;
   "pr view")
     n=$(cat ${JSON.stringify(headOidCounter)} 2>/dev/null || echo 0)
@@ -457,16 +467,74 @@ console.log("\npr-reject:");
 	);
 }
 
-// 10b. pr-reject inherits the same fail-loudly rule.
+// 10b. pr-reject inherits the same fail-loudly rule — and it's a determined
+//      remote/API failure (#224 code 5), not a bare non-zero.
 {
 	const { code, out, argv } = run(PR_REJECT, "fix", [OURS(7, "fix")], ["nope"], { failGhList: true });
-	check(code !== 0, "pr-reject: gh pr list fails → non-zero", `got ${code}`);
+	check(code === 5, "pr-reject: gh pr list fails → exit 5 (remote/API failure)", `got ${code}, out:\n${out}`);
 	check(actedOn(argv, "close") === undefined, "pr-reject: gh pr list fails → closes nothing", argv.join("\n"));
 	check(
 		/failed/i.test(out) && !/no open PR found/i.test(out),
 		"pr-reject: gh pr list fails → reports the failure",
 		out,
 	);
+}
+
+// 11. `-b` with no branch name → usage error (#224 code 2).
+{
+	const { code, out, argv } = run(PR_REJECT, "42-some-feature", [OURS(42, "42-some-feature")], ["-b"]);
+	check(code === 2, "pr-reject -b <nothing> → exit 2 (usage error)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject -b <nothing> → closes nothing", argv.join("\n"));
+	check(/-b needs a branch name/i.test(out), "pr-reject -b <nothing> → says so", out);
+}
+
+// 12. On main/master with nothing to discover otherwise (no -b given, so the
+//     branch was DISCOVERED from cwd) → precondition not met (#224 code 3).
+{
+	const { code, out, argv } = run(PR_REJECT, "main", [OURS(42, "42-some-feature")], []);
+	check(code === 3, "pr-reject on main (no -b) → exit 3 (precondition not met)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject on main → closes nothing", argv.join("\n"));
+	check(/on main/i.test(out), "pr-reject on main → says so", out);
+}
+
+// 12b. `-b main` NAMES the protected branch explicitly (#224 code 2 — usage
+//      error, per the shared table: "a protected branch named explicitly" is
+//      2, distinct from 3's "nothing to discover from cwd"). Run from a
+//      feature branch so a bare code-3 fallback (checking only cwd) cannot
+//      accidentally produce the right-looking number.
+{
+	const { code, out, argv } = run(PR_REJECT, "42-some-feature", [OURS(42, "42-some-feature")], [
+		"-b",
+		"main",
+		"wrong branch",
+	]);
+	check(code === 2, "pr-reject -b main → exit 2 (usage error, named explicitly)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject -b main → closes nothing", argv.join("\n"));
+	check(/main/i.test(out), "pr-reject -b main → says so", out);
+}
+
+// 12c. `-b master` — same explicit-naming path, other protected name.
+{
+	const { code, argv } = run(PR_REJECT, "42-some-feature", [OURS(42, "42-some-feature")], ["-b", "master"]);
+	check(code === 2, "pr-reject -b master → exit 2 (usage error, named explicitly)", `got ${code}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject -b master → closes nothing", argv.join("\n"));
+}
+
+// 13. No open PR at all for the branch → not found (#224 code 4).
+{
+	const { code, out, argv } = run(PR_REJECT, "fix", [FORK(99, "fix")], ["nope"]);
+	check(code === 4, "pr-reject: no open PR for branch → exit 4 (not found)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject: no open PR → closes nothing", argv.join("\n"));
+	check(/no open PR found/i.test(out), "pr-reject: no open PR → says so", out);
+}
+
+// 14. Two of OUR OWN open PRs share the branch name → ambiguous, refuse
+//     rather than guess (#224 code 6 — safety gate refused).
+{
+	const { code, out, argv } = run(PR_REJECT, "fix", [OURS(7, "fix"), OURS(8, "fix")], ["nope"]);
+	check(code === 6, "pr-reject: ambiguous PR selection → exit 6 (safety gate refused)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject: ambiguous → closes nothing", argv.join("\n"));
+	check(/\b7\b/.test(out) && /\b8\b/.test(out), "pr-reject: ambiguous → names both candidates", out);
 }
 
 // 10. pr-reject inherits the same fork guard.
@@ -478,6 +546,54 @@ console.log("\npr-reject:");
 		"pr-reject with a fork twin → closes OUR PR (#7), not the fork's (#99)",
 		argv.join("\n"),
 	);
+}
+
+// ---
+// pr-reject: no code should ever leak `set -e`'s raw underlying exit status.
+// Every external command whose failure is reachable must be mapped onto the
+// #224 table (2/3/4/5/6) explicitly — never let bash's default propagate.
+// ---
+
+// 15. `gh repo view` fails (auth/network) before the PR is even looked up →
+//     remote/API failure (#224 code 5), same treatment pr-merge already gives
+//     this exact call. Before the fix this leaked gh's raw status (1).
+{
+	const { code, out, argv } = run(PR_REJECT, "fix", [OURS(7, "fix")], ["nope"], { failGhRepoView: true });
+	check(code === 5, "pr-reject: gh repo view fails → exit 5 (remote/API failure)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject: gh repo view fails → closes nothing", argv.join("\n"));
+	check(/failed/i.test(out), "pr-reject: gh repo view fails → reports the failure", out);
+}
+
+// 16. `gh pr close` itself fails (e.g. permission denied) after the PR was
+//     already selected → remote/API failure (#224 code 5). Before the fix
+//     this leaked gh's raw status (1) straight out of `set -e`.
+{
+	const { code, out } = run(PR_REJECT, "fix", [OURS(7, "fix")], ["nope"], { failGhClose: true });
+	check(code === 5, "pr-reject: gh pr close fails → exit 5 (remote/API failure)", `got ${code}, out:\n${out}`);
+	check(/failed/i.test(out), "pr-reject: gh pr close fails → reports the failure", out);
+}
+
+// 17. Run outside any git repository at all — `git branch --show-current`
+//     itself fails (fatal: not a git repository, real exit 128) before a
+//     branch can even be discovered from cwd. #224 code 2 covers this case
+//     by name ("not run inside a git repository at all"). Before the fix
+//     this leaked git's raw status (128) straight out of `set -e`.
+{
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-reject-nogit-"));
+	let code = 0;
+	let out = "";
+	try {
+		out = execFileSync("bash", [PR_REJECT, "nope"], {
+			cwd: dir,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+	} catch (err: any) {
+		code = err?.status ?? -1;
+		out = `${err?.stdout || ""}${err?.stderr || ""}`;
+	}
+	check(code === 2, "pr-reject outside a git repo → exit 2 (usage error)", `got ${code}, out:\n${out}`);
+	fs.rmSync(dir, { recursive: true, force: true });
 }
 
 // ---
