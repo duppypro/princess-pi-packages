@@ -246,13 +246,19 @@ produce a fresh challenge for them — measured 2026-08-17, where an identity mi
 the sub-domain's Access application existed** opened it silently (#329). The per-sub-domain isolation
 this standard relies on is real, but it is the *allow-list* that provides it, never the login prompt.
 
-8.8 A login prompt **MUST NOT** be read as evidence about the gate. Only its **absence** carries
-information. *Why:* Cloudflare re-shows the same login page for "no session" **and** for "session
-whose identity is not on this list" — it doubles as an identity chooser — so the prompt cannot
-distinguish the two, and its absence means precisely one thing: a live session whose identity is on
-*that* tenant's allow-list. Observed states, same browser, same minute (2026-08-17):
+8.8 A login prompt **MUST NOT** be read as evidence about the gate, and its **absence** proves only
+that the visitor holds a valid token **for that hostname** — never that a gate is missing, and never,
+on its own, that an account session is live. *Why:* Cloudflare re-shows the same login page for
+"no session" **and** for "session whose identity is not on this list" — it doubles as an identity
+chooser — so the prompt cannot distinguish the two. Silence is narrower than it looks in the other
+direction: the application token is issued per hostname with its **own** lifetime (`session_duration`,
+24h, set by `upsertAccessApp()`), independent of the account-scoped identity session, so a **revisit**
+can be silent on a token issued earlier even after that account session has lapsed. Only on a **first**
+visit to a newly published sub-domain — where no such token can yet exist — does silence imply a live
+identity session that is *also* on that tenant's allow-list. Observed states for that first-visit case,
+same browser, same minute (2026-08-17):
 
-| Identity session | On that tenant's `.serve-acl` | What the visitor sees |
+| Identity session | On that tenant's `.serve-acl` | What the visitor sees on a **first** visit |
 |---|---|---|
 | live | yes | content, no prompt |
 | live | no | login page; submitting that address sends **no code** |

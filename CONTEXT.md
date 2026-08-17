@@ -52,11 +52,11 @@ Scanning Cloudflare Tunnel ingress rules and deleting those that are **serve-own
 _Avoid_: Cleanup, sweep, GC
 
 **Access application**:
-A Cloudflare Access resource created per sub-domain. Carries the email allow-list from the served directory's `.serve-acl` file, and **authorizes** visitors against it before they reach the origin. It does *not* authenticate them — that happens once per account, at the Identity session (below). A visitor who already holds a session opens a brand-new sub-domain with no prompt at all; what the application decides is whether that identity is on *this* sub-domain's list. `serve-standard.md` §8.7.
+A Cloudflare Access resource created per sub-domain. Carries the email allow-list from the served directory's `.serve-acl` file, and **authorizes** visitors against it before they reach the origin. It does *not* authenticate them — that happens once per account, at the Identity session (below). What the application decides is whether an identity is on *this* sub-domain's list: if it is, a visitor already holding a session opens a brand-new sub-domain with no prompt at all; if it is not, they get the login page and are sent no code. `serve-standard.md` §8.7.
 _Avoid_: Auth app, OAuth app, gate
 
 **Identity session**:
-The proof of *who a visitor is*, established once by email One-Time-PIN and held on the Cloudflare team domain (`princess-pi.cloudflareaccess.com`) as a `CF_AppSession` cookie, ~24h. **Account-scoped, not per-sub-domain** — it is what makes the first visit to a newly published sub-domain silent for someone already signed in. One browser profile holds exactly one at a time: signing in as a second address replaces it rather than adding to it. Read it with `https://<host>/cdn-cgi/access/get-identity`; clear it with `https://princess-pi.cloudflareaccess.com/cdn-cgi/access/logout`.
+The proof of *who a visitor is*, established once by email One-Time-PIN and held on the Cloudflare team domain (`princess-pi.cloudflareaccess.com`) as a `CF_AppSession` cookie, ~24h. **Account-scoped, not per-sub-domain** — it is what makes the first visit to a newly published sub-domain silent for someone already signed in *and* on that sub-domain's `.serve-acl`. It carries identity, never access. One browser profile holds exactly one at a time: signing in as a second address replaces it rather than adding to it. Read it with `https://<host>/cdn-cgi/access/get-identity`; clear it with `https://princess-pi.cloudflareaccess.com/cdn-cgi/access/logout`.
 _Avoid_: Login, cookie, OTP session, auth token
 
 **Serve ACL**:

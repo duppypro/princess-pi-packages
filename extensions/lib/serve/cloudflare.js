@@ -10,9 +10,10 @@
  *
  * WHAT THE ISOLATION IS AND IS NOT (#329): the allow-list isolates; the login prompt does not.
  * Cloudflare authenticates ONCE PER ACCOUNT — the identity session lives on the team domain
- * (`princess-pi.cloudflareaccess.com`, ~24h), not on the hostname — so a visitor already signed
- * in to ANY preview opens a brand-new one with no challenge, and only the per-app policy below
- * decides whether they get in. Consequence for anyone testing this code: a gate can never be
+ * (`princess-pi.cloudflareaccess.com`, ~24h), not on the hostname — so the per-app policy below is
+ * the ONLY thing deciding who gets in: an identity on it opens a brand-new preview with no challenge
+ * at all, one absent from it gets the login page and is sent no code, in the same browser and minute.
+ * Consequence for anyone testing this code: a gate can never be
  * verified from a signed-in browser. Use `curl -sI https://<label>.princess-pi.dev/` and expect
  * a 302 to cloudflareaccess.com. See `docs/serve-standard.md` §7.6 / §8.7 / §8.8.
  *

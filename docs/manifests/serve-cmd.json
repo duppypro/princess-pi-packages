@@ -122,7 +122,7 @@
     },
     {
       "flags": "-P, --pub <subdomain>",
-      "desc": "Publish the target dir as a gated preview at <subdomain>.princess-pi.dev, admitting only the emails in the directory's .serve-acl. Without --pub, serve runs local-loopback only. Note the gate authorizes per sub-domain but authenticates once per Cloudflare account: anyone already signed in to another princess-pi.dev preview opens this one with no login prompt, so verify the gate with `curl -sI https://<subdomain>.princess-pi.dev/` (expect 302 to cloudflareaccess.com), never from a signed-in browser."
+      "desc": "Publish the target dir as a gated preview at <subdomain>.princess-pi.dev, admitting only the emails in the directory's .serve-acl. Without --pub, serve runs local-loopback only. Note the gate authorizes per sub-domain but authenticates once per Cloudflare account: someone already signed in to another princess-pi.dev preview AND listed in this .serve-acl opens this one with no login prompt at all, while someone signed in but not listed here gets the login page and is sent no code. Since a first visit can therefore be silent, verify the gate with `curl -sI https://<subdomain>.princess-pi.dev/` (expect 302 to cloudflareaccess.com), never from a signed-in browser."
     },
     {
       "flags": "--as <subdomain>",
