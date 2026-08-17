@@ -276,7 +276,26 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
       echo "   ❌ ERROR: local branch is behind PR #$PR_NUM's merged head — not unmerged work." >&2
       echo "      local tip:      $LOCAL_TIP" >&2
       echo "      PR headRefOid:  $PR_HEAD_OID" >&2
-      echo "   Run 'git pull --ff-only' to catch up, then re-run pr-cleanup." >&2
+      # This runs while cwd is $MAIN_CLONE (pr-cleanup's documented entry
+      # point), which has $PRIMARY_REF checked out — never $BRANCH. A bare
+      # 'git pull --ff-only' here fast-forwards $PRIMARY_REF, leaves
+      # refs/heads/$BRANCH untouched, and the next pr-cleanup run hits this
+      # same refusal (flagged by macroscopeapp on PR #322). $BRANCH is
+      # checked out in its own worktree (TARGET_WT, recorded in step 0) in
+      # the normal case, so the fix has to run THERE — pointing
+      # 'git update-ref' at $BRANCH directly while it's checked out
+      # elsewhere would desync that worktree's index/working tree from the
+      # ref, which looks like a spontaneous mass deletion. Only when no
+      # worktree holds $BRANCH (TARGET_WT empty) is moving the ref directly
+      # in $MAIN_CLONE safe, since nothing has it checked out.
+      if [ -n "$TARGET_WT" ]; then
+        echo "   Run 'git pull --ff-only' in the worktree, then re-run pr-cleanup:" >&2
+        echo "     cd $TARGET_WT && git pull --ff-only" >&2
+      else
+        echo "   '$BRANCH' has no worktree — its ref lives only in $MAIN_CLONE." >&2
+        echo "   Run this, then re-run pr-cleanup:" >&2
+        echo "     git -C $MAIN_CLONE update-ref refs/heads/$BRANCH $PR_HEAD_OID" >&2
+      fi
       exit 6
     fi
     # Not behind. Check the other direction: LOCAL_TIP a descendant of

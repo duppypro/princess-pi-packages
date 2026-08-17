@@ -508,6 +508,32 @@ console.log("\nlocal branch behind the merged PR head (routine Update-branch):")
 	check(remoteBranchExists(sb), "behind → remote branch survives", out);
 	check(/git pull --ff-only/.test(out), "behind → names git pull --ff-only", out);
 	check(!/Open a new PR for the extra commits/i.test(out), "behind → does not suggest opening a new PR", out);
+	// macroscopeapp review of #317 (PR #322): the old message just said
+	// "Run 'git pull --ff-only'" with no directory — since pr-cleanup runs
+	// FROM mainClone (which has the primary branch checked out, never
+	// $BRANCH), following it literally there fast-forwards the wrong ref
+	// and the next pr-cleanup run hits the identical refusal. The branch is
+	// checked out in its own worktree here, so the remedy must name that
+	// worktree path, not the main clone.
+	check(out.includes(sb.worktree), "behind → names the worktree the fix must run in", out);
+	check(!/git update-ref/.test(out), "behind (worktree checked out) → does not suggest update-ref, which would desync the worktree", out);
+}
+
+// --- #317/PR #322 follow-up: BEHIND, but the branch's worktree was already
+// removed (post ExitWorktree{action:"remove"}) — refs/heads/$BRANCH lives
+// only in mainClone with nothing checked out on it. Here a direct ref move
+// is safe (no worktree to desync), so the remedy must say so instead of
+// naming a worktree path that no longer exists. ---
+console.log("\nlocal branch behind the merged PR head, worktree already removed:");
+{
+	const sb = makeSandbox("42-feature", { updateBranchBeforeMerge: true });
+	git(sb.mainClone, ["worktree", "remove", "--force", sb.worktree]);
+	const { code, out } = runCleanup(sb);
+	check(code === 6, "behind, no worktree → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
+	check(localBranchExists(sb), "behind, no worktree → local branch survives", out);
+	check(remoteBranchExists(sb), "behind, no worktree → remote branch survives", out);
+	check(out.includes(sb.mainClone), "behind, no worktree → names the main clone", out);
+	check(/update-ref refs\/heads\/42-feature/.test(out), "behind, no worktree → names the update-ref remedy", out);
 }
 
 // --- #317: local and PR head have DIVERGED — neither is an ancestor of the
