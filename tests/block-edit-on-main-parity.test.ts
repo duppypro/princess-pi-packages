@@ -80,6 +80,38 @@ function assertBoth(filePath: string, cwd: string, verdict: "allow" | "block", w
   expect(shVerdict(filePath, cwd), `sh: ${why}`).toBe(verdict);
 }
 
+// Same assertion, but with the PROCESS cwd pinned to `processCwd` for both
+// halves. Needed only for the relative-path cases: `cwd` in the hook payload
+// and the process's own cwd are two different inputs, and a relative path with
+// an empty payload cwd falls through to the process one. shVerdict/tsVerdict
+// both leave the process cwd alone, so they cannot express that case.
+function assertBothFromCwd(
+  filePath: string,
+  cwd: string,
+  processCwd: string,
+  verdict: "allow" | "block",
+  why: string,
+) {
+  const input = JSON.stringify({ tool_input: { file_path: filePath }, cwd });
+  const res = spawnSync("bash", [SH_HOOK], { input, encoding: "utf8", cwd: processCwd });
+  if (res.status !== 0 && res.status !== 2) {
+    throw new Error(`sh hook exited ${res.status} (expected 0 or 2): ${res.stderr || res.stdout}`);
+  }
+  const sh = res.status === 0 ? "allow" : "block";
+
+  const previous = process.cwd();
+  process.chdir(processCwd);
+  let ts: "allow" | "block";
+  try {
+    ts = tsVerdict(filePath, cwd);
+  } finally {
+    process.chdir(previous);
+  }
+
+  expect(ts, `ts: ${why}`).toBe(verdict);
+  expect(sh, `sh: ${why}`).toBe(verdict);
+}
+
 describe("block-edit-on-main parity (#303)", () => {
   test("blocks an edit inside a repo on 'main'", () => {
     const repo = repoOnBranch("main");
@@ -240,6 +272,26 @@ describe("block-edit-on-main parity (#303)", () => {
   test("blocks creating a brand-new file whose parent directory doesn't exist yet, in a repo on main", () => {
     const repo = repoOnBranch("main");
     assertBoth(path.join(repo, "new", "subdir", "f.txt"), repo, "block", "new nested file, main");
+  });
+
+  // Relative path + empty cwd (#316, second fail-open in the same function).
+  // The shell walker starts at "/", so a relative input has to be anchored to
+  // the PROCESS cwd first — exactly what edit-on-main-core.ts:91 does before
+  // walking. The hop-cap rewrite dropped that anchor, so "sub/f.txt" resolved
+  // to "/sub/f.txt", DIR became "/", `git -C /` answered "not a repo", and the
+  // hook returned ALLOW inside a repo on main. `realpath -m` never had this
+  // gap, which is why the original code survived it: the regression arrived
+  // WITH the fix for the ELOOP fail-open, and is the identical failure mode.
+  test("blocks a relative path with an empty cwd, in a repo on main (anchors to process cwd)", () => {
+    const repo = repoOnBranch("main");
+    fs.mkdirSync(path.join(repo, "sub"), { recursive: true });
+    assertBothFromCwd("sub/f.txt", "", repo, "block", "relative path anchors to the process cwd");
+  });
+
+  test("allows a relative path with an empty cwd, in a repo on a feature branch", () => {
+    const repo = repoOnBranch("42-slug");
+    fs.mkdirSync(path.join(repo, "sub"), { recursive: true });
+    assertBothFromCwd("sub/f.txt", "", repo, "allow", "relative path, feature branch");
   });
 
   // Deep-symlink fail-closed (#303 review finding, macroscopeapp on PR #313,

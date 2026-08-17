@@ -47,6 +47,13 @@ realpath_tolerant() {
   local -a queue parts
   local part real="/" candidate target hops=0
 
+  # A relative input hangs off the process cwd, exactly as the TS twin does
+  # (`edit-on-main-core.ts:91` prefixes process.cwd() before walking). The walk
+  # below starts at "/", so without this a caller that reached us with an empty
+  # CWD — "./foo" — would resolve to "/foo" and DIR would land at "/", silently
+  # putting the git query in the wrong place. `realpath -m` never had this gap.
+  [ "${input:0:1}" = "/" ] || input="$PWD/$input"
+
   IFS='/' read -ra queue <<< "$input"
 
   while [ "${#queue[@]}" -gt 0 ]; do
