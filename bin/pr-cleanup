@@ -425,6 +425,34 @@ if ! git -C "$MAIN_CLONE" branch -D "$BRANCH" 2>/dev/null; then
   echo "   ℹ️  Local branch already gone."
 fi
 
+# --- 6. close any herdr tab left pointing at a directory that no longer exists
+# Step 3 removed the worktree; a herdr bookmark tab opened by `wt-new` is still
+# sitting at that path, and nothing else tracks it. Observed live 2026-08-16:
+# PR #305 merged, `pr-cleanup 301-block-commit-on-main` ran, and the tab was
+# still in `herdr tab list` with its cwd now pointing at the deleted path
+# (#277). Same family as #233 — things rooted in a worktree need teardown.
+#
+# herdr-reap is deliberately NOT told which worktree died. Once a directory is
+# removed herdr reports that pane's cwd as "<path> (deleted)", so the reported
+# path no longer equals the path just removed, and any match-by-path design
+# silently stops matching at the exact moment it matters. It asks only "does
+# each pane's cwd still exist", which is why it is correct whenever it runs and
+# why it is a standalone tool this merely calls rather than logic embedded here.
+#
+# Best-effort in both directions, and that is the whole contract: herdr is
+# decoration and must never be load-bearing. Cleanup has already succeeded by
+# this point, so a missing herdr, a missing herdr-reap, or a refused tab close
+# must not turn a completed cleanup into a failure — hence `|| true`. Callers
+# that need the outcome run `herdr-reap --json` themselves; this one does not.
+# The sibling copy is preferred over PATH so a repo checkout exercises the
+# version it ships with rather than whatever ~/bin last installed.
+REAP="$(cd "$(dirname "$0")" && pwd)/herdr-reap"
+if [ -x "$REAP" ]; then
+  "$REAP" >/dev/null 2>&1 || true
+elif command -v herdr-reap >/dev/null 2>&1; then
+  herdr-reap >/dev/null 2>&1 || true
+fi
+
 # A script cannot change its caller's shell — a trailing `cd` here only moves
 # this process, which then exits, and claiming otherwise is simply false
 # (#220). The containment gate above also means, on every documented path,
