@@ -216,7 +216,15 @@ if [ -n "$STACKED_ON" ]; then
   echo "   This repo squash-merges, so those commits will land under a NEW sha and" >&2
   echo "   this PR will conflict until it is rebased past them:" >&2
   for s in $STACKED_ON; do
-    echo "     git rebase --onto origin/main origin/$s $BRANCH" >&2
+    # Resolve the parent's tip to a sha NOW, at warn time (#265/#248). By the
+    # time anyone actually needs this recipe, `pr-cleanup` has usually already
+    # deleted `origin/$s` — the recipe exists precisely for the
+    # after-the-parent-merged case, so printing the branch name alone hands
+    # back a ref that is gone by design. A sha is a concrete object and
+    # survives the branch's deletion; the branch name stays in a trailing
+    # comment purely so the line still reads clearly in scrollback.
+    sha="$(git rev-parse "origin/$s")"
+    echo "     git rebase --onto origin/main $sha $BRANCH   # $s" >&2
   done
   echo "   Proceeding — stacking is sometimes right. See docs/dev-workflow-spec.md" >&2
   echo "   → 'A stacked PR conflicts after its parent merges'." >&2

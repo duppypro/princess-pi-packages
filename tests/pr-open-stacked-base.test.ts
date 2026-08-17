@@ -195,6 +195,70 @@ console.log("\nunrelated sibling in flight:");
 	check(!/stacked/i.test(out), "no warning for an unrelated branch off main", out);
 }
 
+// 5. The bug this test was extended for (#265/#248): the recipe must survive
+//    `pr-cleanup` deleting the parent branch — the exact thing that has
+//    already happened by the time anyone actually runs the recipe.
+console.log("\nparent branch already deleted (pr-cleanup ran) when the printed recipe is used:");
+{
+	const sb = makeSandbox();
+	git(sb.clone, ["checkout", "-q", "-b", "42-parent"]);
+	commit(sb.clone, "a.txt", "a\n", "parent work");
+	git(sb.clone, ["push", "-q", "-u", "origin", "42-parent"]);
+
+	git(sb.clone, ["checkout", "-q", "-b", "43-child"]);
+	commit(sb.clone, "b.txt", "b\n", "child work");
+	git(sb.clone, ["push", "-q", "-u", "origin", "43-child"]);
+
+	const { code, out, createdPr } = runPrOpen(sb);
+	check(code === 0, "exits 0", `got ${code}, output:\n${out}`);
+	check(createdPr, "still creates the PR", out);
+
+	const match = out.match(/git rebase --onto origin\/main (\S+) 43-child/);
+	check(!!match, "prints a rebase recipe", out);
+	const recordedRef = match ? match[1] : "";
+	check(
+		recordedRef !== "" && !recordedRef.startsWith("origin/"),
+		"the recipe's parent anchor is a sha, not the branch ref pr-cleanup deletes",
+		out,
+	);
+	check(out.includes("42-parent"), "keeps the parent's branch name visible alongside the sha", out);
+
+	// Simulate pr-cleanup: delete the parent branch, remote and local.
+	git(sb.clone, ["push", "-q", "origin", "--delete", "42-parent"]);
+	git(sb.clone, ["fetch", "-q", "--prune", "origin"]);
+	const remoteBranches = git(sb.clone, ["branch", "-r"]);
+	check(!remoteBranches.includes("42-parent"), "parent ref is really gone (sandbox mirrors pr-cleanup)", remoteBranches);
+
+	// The regression under test: does the recorded anchor still resolve now
+	// that the parent branch is gone?
+	let stillResolves = false;
+	if (recordedRef) {
+		try {
+			git(sb.clone, ["rev-parse", "--verify", `${recordedRef}^{commit}`]);
+			stillResolves = true;
+		} catch {
+			stillResolves = false;
+		}
+	}
+	check(stillResolves, "the recorded anchor still resolves to a commit after the parent branch is deleted");
+
+	// Prove it end-to-end: the exact printed command still runs (no "unknown
+	// revision" / "bad object" — the failure mode #265 exists to fix).
+	git(sb.clone, ["checkout", "-q", "43-child"]);
+	const rebaseResult = spawnSync("git", ["rebase", "--onto", "origin/main", recordedRef, "43-child"], {
+		cwd: sb.clone,
+		encoding: "utf8",
+		env: { ...process.env, ...GIT_ENV },
+	});
+	const rebaseOut = `${rebaseResult.stdout || ""}${rebaseResult.stderr || ""}`;
+	check(
+		!/unknown revision|bad revision|fatal: bad object/i.test(rebaseOut),
+		"the printed rebase command resolves its anchor and runs, rather than failing on a missing ref",
+		rebaseOut,
+	);
+	spawnSync("git", ["rebase", "--abort"], { cwd: sb.clone, env: { ...process.env, ...GIT_ENV } });
+}
+
 // ---
 
 console.log(
