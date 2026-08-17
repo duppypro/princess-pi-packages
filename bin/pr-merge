@@ -103,6 +103,11 @@
 #   refresh <pr#> skipped draft
 #   refresh <pr#> skipped different-base
 #   refresh <pr#> failed <reason>
+#   refresh - warning list-truncated-at-<n>   (the open-PR listing came back
+#                                              full, so PRs beyond it were
+#                                              never considered — `-` in the
+#                                              pr# slot means "not about one
+#                                              specific PR")
 # ---
 set -euo pipefail
 
@@ -129,7 +134,18 @@ EOF
     --no-refresh) NO_REFRESH=1; shift ;;
     -*) echo "pr-merge: unknown flag: $1" >&2; exit 2 ;;
     *)
-      if [ -z "$BRANCH" ]; then BRANCH="$1"; fi
+      # A second positional is a typo, never a second branch — `pr-merge` acts
+      # on exactly one PR. Silently shifting it past made `pr-merge feature
+      # typo` merge `feature` while the user's actual intent was unknowable
+      # (macroscopeapp on PR #333). Refuse rather than guess: this is a
+      # human-only command whose effect is irreversible, and `pr-cleanup`
+      # already takes the same hard line with `[ $# -ne 1 ]`.
+      if [ -n "$BRANCH" ]; then
+        echo "pr-merge: unexpected argument: $1" >&2
+        echo "usage: pr-merge [--no-refresh] [<branch>]" >&2
+        exit 2
+      fi
+      BRANCH="$1"
       shift
       ;;
   esac
@@ -263,12 +279,26 @@ refresh_other_open_prs() {
     return 0
   fi
 
+  # `gh pr list` defaults to 30 results, so PRs past the 30th were never
+  # refreshed and stayed stale with nothing said about it (macroscopeapp on
+  # PR #333). A cap that nobody is told about is the failure mode this repo's
+  # Agent-First standard calls out by name — "no silent caps: if a workflow
+  # bounds coverage, log what was dropped" — so raise the limit AND report
+  # when the listing came back full, since at that point the set may be
+  # incomplete and this run cannot know which PRs it never saw.
+  local REFRESH_LIST_LIMIT=200
   local others_json
-  others_json=$(gh pr list --state open --json number,baseRefName,isDraft 2>/dev/null)
+  others_json=$(gh pr list --state open --limit "$REFRESH_LIST_LIMIT" --json number,baseRefName,isDraft 2>/dev/null)
   if [ -z "$others_json" ]; then
     echo "refresh - failed could-not-list-open-prs"
     set -e
     return 0
+  fi
+
+  local listed
+  listed=$(printf '%s' "$others_json" | jq 'length' 2>/dev/null) || listed=0
+  if [ "${listed:-0}" -ge "$REFRESH_LIST_LIMIT" ]; then
+    echo "refresh - warning list-truncated-at-$REFRESH_LIST_LIMIT"
   fi
 
   local nums n

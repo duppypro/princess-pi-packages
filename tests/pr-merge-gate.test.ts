@@ -179,11 +179,13 @@ fi
 # generic --jq extractor, mirroring tests/pr-scripts-args.test.ts's stub
 jqexpr=""
 head=""
+limit=""
 prev=""
 for a in "$@"; do
   case "$prev" in
     --jq|-q) jqexpr="$a" ;;
     --head) head="$a" ;;
+    --limit) limit="$a" ;;
   esac
   prev="$a"
 done
@@ -199,7 +201,9 @@ case "$1 $2" in
     if [ -n "$head" ]; then
       ${opts.failGhList ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : `emit ${JSON.stringify(prJson)}`}
     else
-      emit ${JSON.stringify(otherPrsJson)}
+      # Real gh pr list caps at 30 unless --limit says otherwise (#333).
+      lim="\${limit:-30}"
+      emit "\$(printf '%s' ${JSON.stringify(otherPrsJson)} | jq -c --argjson lim "\$lim" '.[0:\$lim]')"
     fi
     ;;
   "pr view")
@@ -547,6 +551,44 @@ console.log("\ngh pr merge itself fails → non-zero exit, and nothing is refres
 		apiCalls(sb).join(","),
 	);
 	check(!out.includes("refresh 50 ok"), "failed merge → no 'refresh … ok' record emitted", out);
+}
+
+// --- A second positional argument is a typo, not a second branch (#333
+// review). `pr-merge feature typo` used to shift the extra word past and merge
+// `feature` — acting on a guess, from a human-only command whose effect cannot
+// be undone. ---
+console.log("\nextra positional argument is refused, not silently ignored:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean" });
+	const { code, out } = runPrMerge(sb, ["42-feature", "typo"]);
+	check(code === 2, "second positional → exit 2 (usage)", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "second positional → gh pr merge never called", out);
+	check(/unexpected argument/i.test(out), "second positional → says which argument was unexpected", out);
+}
+
+// --- The open-PR listing must not cap silently (#333 review). `gh pr list`
+// defaults to 30; anything past that was never refreshed and nothing said so.
+// The Agent-First standard forbids exactly that, so a full listing emits a
+// truncation record. ---
+console.log("\nopen-PR listing reports truncation instead of capping silently:");
+{
+	const many = Array.from({ length: 200 }, (_, i) => ({ number: 100 + i, base: "main", draft: false }));
+	const sb = makeSandbox("42-feature", { threadState: "clean", otherOpenPRs: many });
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "truncated listing → still exits 0", `got ${code}, output:\n${out}`);
+	check(
+		out.includes("refresh - warning list-truncated-at-200"),
+		"truncated listing → emits the truncation record",
+		out,
+	);
+	// The record is secondary; the property that matters is that PRs past
+	// gh's default 30 were actually refreshed at all.
+	const calls = apiCalls(sb);
+	check(
+		calls.length === 200,
+		"every listed PR past gh's default 30 was refreshed (not silently capped)",
+		`refreshed ${calls.length} of 200`,
+	);
 }
 
 // ---
