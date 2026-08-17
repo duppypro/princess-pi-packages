@@ -136,6 +136,16 @@ SCRIPTS=(
   git-checkpoint
   git-overview
   wt-new
+  # herdr decoration (#277). Both are deployed even though neither is required
+  # for any workflow: `wt-new` and `pr-cleanup` SOURCE / exec `herdr-tab` and
+  # `herdr-reap` from beside themselves, so on a host that has one but not the
+  # other the tab half silently stops working while everything still exits 0 —
+  # the failure mode hardest to notice. Deploying them together is what keeps
+  # "herdr is decoration" true rather than "herdr is decoration, sometimes".
+  # herdr-tab is a sourceable library that also runs as a one-shot CLI; it
+  # needs the executable bit either way, which deploy() sets.
+  herdr-tab
+  herdr-reap
   pr-open
   pr-merge
   pr-reject

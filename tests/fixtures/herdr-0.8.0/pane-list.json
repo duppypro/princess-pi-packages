@@ -1,0 +1,139 @@
+{
+  "id": "cli:pane:list",
+  "result": {
+    "panes": [
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi",
+        "pane_id": "wD:p1",
+        "tab_id": "wD:t1",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi",
+        "pane_id": "wD:p3",
+        "tab_id": "wD:t1",
+        "workspace_id": "wD"
+      },
+      {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "<session-id>"
+        },
+        "agent_status": "working",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages",
+        "pane_id": "wD:p4",
+        "tab_id": "wD:t2",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages",
+        "focused": true,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages",
+        "pane_id": "wD:p5",
+        "tab_id": "wD:t2",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/btw/.claude/worktrees/21-commit-on-branch (deleted)",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/btw/.claude/worktrees/21-commit-on-branch (deleted)",
+        "pane_id": "wD:p6",
+        "tab_id": "wD:t3",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/btw/.claude/worktrees/21-commit-on-branch (deleted)",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/btw/.claude/worktrees/21-commit-on-branch (deleted)",
+        "pane_id": "wD:p7",
+        "tab_id": "wD:t3",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/301-block-commit-on-main (deleted)",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/301-block-commit-on-main (deleted)",
+        "pane_id": "wD:p8",
+        "tab_id": "wD:t4",
+        "workspace_id": "wD"
+      },
+      {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "<session-id>"
+        },
+        "agent_status": "done",
+        "cwd": "/home/princess-pi/git-projects/btw",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/btw",
+        "pane_id": "wD:p9",
+        "tab_id": "wD:t5",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/308-wtft-lagging-session",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/308-wtft-lagging-session",
+        "pane_id": "wD:pA",
+        "tab_id": "wD:t6",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/277-herdr-tabs",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/277-herdr-tabs",
+        "pane_id": "wD:pB",
+        "tab_id": "wD:t7",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/279-pr-scripts-args-stub",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/279-pr-scripts-args-stub",
+        "pane_id": "wD:pC",
+        "tab_id": "wD:t8",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/303-pi-block-edit-on-main",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/303-pi-block-edit-on-main",
+        "pane_id": "wD:pD",
+        "tab_id": "wD:t9",
+        "workspace_id": "wD"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/246-stale-tool-path-collision",
+        "focused": false,
+        "foreground_cwd": "/home/princess-pi/git-projects/princess-pi-packages/.claude/worktrees/246-stale-tool-path-collision",
+        "pane_id": "wD:pE",
+        "tab_id": "wD:tA",
+        "workspace_id": "wD"
+      }
+    ],
+    "type": "pane_list"
+  }
+}
