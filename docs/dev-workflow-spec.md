@@ -265,6 +265,24 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   actual guard logic with `extensions/lib/git-guardrails-core.ts` — one file deeper than
   the issue number alone suggests; `hooks/block-dangerous-git.sh` carries the same checks
   written as inline bash.
+- **Commits on `main` are blocked, not just pushes (#301, btw#21).** `git commit`, `merge`,
+  `rebase`, `cherry-pick`, `am`, and `pull` are refused when the sub-command's repo is on
+  `main`/`master`. Allowed on `main`: `pull --ff-only`, `merge --ff-only`, every
+  `--abort`/`--quit`, and `checkout -b` / `switch -c` (the escape — nothing here can
+  deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
+  every enforced check concentrates on PR review; `git-checkpoint` already refuses on `main`
+  (#225) and this closes the raw-git path an agent reaches through Bash. **What the hook
+  cannot see it fails safe on:** the branch is resolved *before* the line runs, so a
+  compound line is judged per sub-command with two pieces of line-state — `cd`/`pushd`
+  move the effective cwd for the rest of the line (`cd -`/`popd` reset it), and
+  `checkout -b|-B|--orphan` / `switch -c|-C|--orphan` mark the target repo as off `main`
+  for the rest of the line, so `git checkout -b 123-slug && git commit` is allowed while
+  `git checkout main && git commit` stays blocked. A plain `checkout <existing>` /
+  `switch <existing>` does **not** lift the gate (a positional may be a path, and guessing
+  fails open) — run it as its own command. `( … )` groups split like `;`. Detached HEAD
+  is not `main`, so a rebase in progress is untouched. Uncommitted Bash-authored *edits* on
+  `main` (mode 1 in #301) are out of scope here — that is #303's territory. Pi twin gets the
+  same rule through `git-guardrails-core.ts`; the parity fixture pins both.
 - **`block-edit-on-main.sh`** (#237) — blocks `Edit`/`Write`/`MultiEdit` when the target
   file's repo is on `main`/`master` or detached HEAD, enforcing this repo's CLAUDE.md HARD
   GATE technically instead of only by convention. Matcher **must** be
