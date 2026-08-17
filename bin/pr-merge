@@ -58,7 +58,9 @@
 #   3  precondition not met — on main/master
 #   4  not found — no open PR for this branch
 #   5  remote/API failure — `gh pr list`/`gh pr view` (or pr-threads itself)
-#      could not determine state
+#      could not determine state, or `gh pr merge` itself failed and the merge
+#      did NOT happen (#332: that case used to escape as gh's own status under
+#      `set -e`, and briefly as a bare 0 — see the merge call at the bottom)
 #   6  safety gate refused — pr-threads found unresolved threads and/or an
 #      uncovered review head (the merge is refused before the network call);
 #      PR selection was ambiguous (more than one open PR shares the branch's
@@ -84,10 +86,15 @@
 # exit code. The merge already happened and is irreversible; a refresh
 # failure reported as a merge failure would be actively misleading. Every
 # call in refresh_other_open_prs() is individually guarded (explicit status
-# capture under `set +e`, restored before returning) and the function itself
-# is only ever invoked from inside an `if gh pr merge ...; then` branch whose
-# own success already latched EXIT_CODE=0 beforehand — nothing after that
-# point is allowed to touch EXIT_CODE again.
+# capture under `set +e`, restored before returning) and the function always
+# returns 0. It is reached only after MERGE_STATUS has been checked and found
+# zero, and the path it sits on ends in a hardcoded `exit 0`.
+#
+# The mirror-image rule, learned the hard way: a merge that did NOT happen
+# must never exit 0 either. The first cut of this refactor wrapped the merge
+# as `if gh pr merge …; then … fi` with `exit $?` after the `fi` — and an `if`
+# whose condition fails with no `else` returns 0, so a failed merge reported
+# success. See the merge call at the bottom for the shape that replaced it.
 #
 # Output is machine-readable per this repo's Agent-First Output standard: one
 # `refresh <pr#> <status> [<detail>]` line per PR, flat, stable keys —
@@ -298,10 +305,24 @@ refresh_other_open_prs() {
 }
 
 echo "🔀 Squash-merging PR #$PR (branch: $BRANCH)..."
-if gh pr merge "$PR" --squash; then
-  if [ "$NO_REFRESH" -eq 0 ]; then
-    refresh_other_open_prs "$PR" "$BASE"
-  fi
-  exit 0
+# Capture the merge status explicitly instead of `if gh pr merge …; then … fi`
+# followed by `exit $?`. An `if` whose condition FAILS and which has no `else`
+# returns **0**, so that shape reported a failed merge as success — verified:
+# `if bash -c "exit 7"; then exit 0; fi; exit $?` exits 0. Before #332 this
+# was the script's last line under `set -e`, so a failure aborted with gh's own
+# status; the refresh refactor is what put a compound command in between.
+# Whatever else changes here, a merge that did not happen must never exit 0.
+set +e
+gh pr merge "$PR" --squash
+MERGE_STATUS=$?
+set -e
+if [ "$MERGE_STATUS" -ne 0 ]; then
+  echo "   ❌ ERROR: 'gh pr merge' failed for PR #$PR (gh exit $MERGE_STATUS) — the merge did NOT happen." >&2
+  echo "   No other PR was refreshed: refresh runs only after a merge succeeds." >&2
+  exit 5
 fi
-exit $?
+
+if [ "$NO_REFRESH" -eq 0 ]; then
+  refresh_other_open_prs "$PR" "$BASE"
+fi
+exit 0

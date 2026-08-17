@@ -102,6 +102,8 @@ interface SandboxOpts {
 	otherOpenPRs?: OtherPr[];
 	/** #332: per-PR-number outcome for `gh api -X PUT .../update-branch`. Default "ok" for any PR not listed. */
 	updateBranchOutcome?: Record<number, "ok" | "conflict" | "hardfail">;
+	/** #332 review: make `gh pr merge` itself fail, so the merge does NOT happen. */
+	failGhMerge?: boolean;
 }
 
 /** A real git repo with a feature branch — pr-merge only needs `git branch --show-current` to work. */
@@ -209,7 +211,7 @@ case "$1 $2" in
 					: 'echo "sha0000head"'
 		}
     ;;
-  "pr merge") touch ${JSON.stringify(mergedFlag)} ;;
+  "pr merge") ${opts.failGhMerge ? 'echo "gh: pull request is not mergeable" >&2; exit 1' : `touch ${JSON.stringify(mergedFlag)}`} ;;
   *) exit 0 ;;
 esac
 `;
@@ -519,6 +521,32 @@ console.log("\ndraft PR and different-base PR are both skipped:");
 	check(!calls.includes("51"), "different-base PR → update-branch never called for it", calls.join(","));
 	check(calls.includes("52"), "eligible PR (same base, not draft) → update-branch WAS called", calls.join(","));
 	check(out.includes("refresh 52 ok"), "output: refresh 52 ok", out);
+}
+
+// --- A merge that did NOT happen must never exit 0 (#332 review).
+// The refresh refactor wrapped the merge as `if gh pr merge …; then … fi`
+// followed by `exit $?`. An `if` whose condition fails and has no `else`
+// returns 0, so a failed merge reported success — strictly worse than the
+// pre-#332 behaviour, where the merge was the last line under `set -e` and a
+// failure aborted with gh's own status. This is the inverse of the property
+// #332 set out to protect, so it gets its own case rather than living inside
+// the best-effort-refresh ones. ---
+console.log("\ngh pr merge itself fails → non-zero exit, and nothing is refreshed:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		failGhMerge: true,
+		otherOpenPRs: [{ number: 50, base: "main", draft: false }],
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code !== 0, "failed merge → does NOT exit 0", `got ${code}, output:\n${out}`);
+	check(code === 5, "failed merge → exit 5 (remote/API failure per the #224 table)", `got ${code}, output:\n${out}`);
+	check(
+		apiCalls(sb).length === 0,
+		"failed merge → no PR refreshed (refresh runs only after success)",
+		apiCalls(sb).join(","),
+	);
+	check(!out.includes("refresh 50 ok"), "failed merge → no 'refresh … ok' record emitted", out);
 }
 
 // ---
