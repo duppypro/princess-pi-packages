@@ -189,4 +189,13 @@ async function main() {
   console.log("\n🎉 All session-name-display tests passed successfully!");
 }
 
-main();
+// Top-level `await` (not a bare, fire-and-forget `main();`) matters here:
+// under `bun test <file>`, a suite with zero test()/describe() registrations
+// tears the process down as soon as the module's synchronous evaluation
+// finishes — an un-awaited main() can truncate mid-flight and still exit 0
+// (#326). Each test block above already exits on its own failure, so this
+// only needs to catch an error main() itself doesn't.
+await main().catch(err => {
+  console.error("❌ Test error:", err);
+  process.exit(1);
+});
