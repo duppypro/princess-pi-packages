@@ -158,12 +158,19 @@ or tag file — entries are in-memory, not on disk. Uses shared classifier
 functions from `wtft-shared.ts` directly.
 
 ### CLI `wtft` (non-watch, one-shot)
-Auto-spawns daemon. Polls up to 3s for the tag file to contain classified
+Auto-spawns daemon. If the session `.jsonl` itself does not exist yet (Claude
+Code writes it after the first real prompt completes — #308), prints that fact
+and exits 0 without waiting; the daemon stays parked on the path. Otherwise
+polls up to ~1.4s (two daemon beats) for the tag file to contain classified
 data. Reads all entries via `readClassifiedTagFile()`. Renders via
-`buildWtftLines()`.
+`buildWtftLines()`. A spawned daemon that already exited non-zero is reported
+with its exit code, not as "no data yet".
 
 ### CLI `wtft --watch` (live mode)
-Auto-spawns daemon. Polls up to 5s for the tag file to exist. Opens `fs.watch`
+Auto-spawns daemon. Waits for the tag file on daemon *state*, not a clock
+(#308): tag present → watch; lease held by a live daemon → keep waiting; the
+child it spawned exited and nobody holds the lease → error with the exit
+code. While the session `.jsonl` is unwritten the view says so. Opens `fs.watch`
 (inotify) on the tag file via `watchTagFile()`. On every change event, reads
 new bytes by offset, converts to Interactions, merges into accumulator,
 re-renders. No polling, no debounce — daemon guarantees complete atomic lines.
