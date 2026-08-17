@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# ---
+# herdr-tab — the one place the "are we actually inside herdr?" predicate lives
+# (#277). Sourceable library first, tiny CLI second.
+#
+#   . herdr-tab            defines herdr_available() and herdr_tab()
+#   herdr-tab <cwd> <label>  opens one best-effort bookmark tab, always exit 0
+#
+# --- why this is a separate file, not three inlined copies -------------------
+# `wt-new` and `herdr-reap` both need the same guard, and the guard is subtle
+# enough that three copies would drift the first time one of them was "fixed".
+#
+# --- THE DETECTION CONTRACT (the finding that determines the whole design) ---
+# herdr compiles in a DEFAULT socket path. So `herdr <cmd>` answers exit 0 from
+# ANY shell on this host — cron, CI, a plain SSH login — even with
+# HERDR_SOCKET_PATH, HERDR_ENV and HERDR_PANE_ID all unset. It silently targets
+# whatever session is running for that uid, and every pane/workspace-scoped
+# command then resolves against the FOCUSED pane or workspace, i.e. "whatever
+# Duppy happens to be looking at". Verified on 0.8.0:
+#
+#   $ env -u HERDR_SOCKET_PATH -u HERDR_ENV -u HERDR_PANE_ID herdr tab list >/dev/null; echo $?
+#   0
+#   $ env -u HERDR_PANE_ID herdr pane current     # answered with a pane in a DIFFERENT repo
+#
+# ⇒ Neither `command -v herdr`, nor socket reachability, nor exit status tells
+# you whether THIS shell is inside herdr. Only the pane id does. herdr's own
+# installed integration hook (~/.claude/hooks/herdr-agent-state.sh, v7) guards
+# on exactly the same thing, with exit 0 on every bail.
+#
+# Corollary, and the reason --workspace is always passed explicitly below:
+# implicit resolution means "the focused workspace", not "ours".
+#
+# --- herdr is decoration, never load-bearing --------------------------------
+# Vanilla git owns the worktree lifecycle. Every call here is best-effort and
+# silent when herdr is absent, and every path `return 0` so a caller's `set -e`
+# cannot promote a missing convenience into a failed worktree.
+#
+# Observed against herdr 0.8.0 / protocol 19. `herdr tab create` takes
+# --workspace/--cwd/--label/--focus/--no-focus; confirmed live, not read from
+# release notes.
+# ---
+
+# ---
+# True when this shell is inside a live herdr pane AND herdr is runnable.
+# The ONLY correct form of the question — see the detection contract above.
+# ---
+herdr_available() {
+	[ -n "${HERDR_PANE_ID:-}" ] || return 1
+	[ -n "${HERDR_WORKSPACE_ID:-}" ] || return 1
+	command -v herdr >/dev/null 2>&1 || return 1
+	return 0
+}
+
+# ---
+# Open a bookmark tab at $1 labelled $2. Never fails, never focuses.
+#
+# --no-focus ALWAYS: `wt-new` runs mid-turn while the human is reading
+# something else, and yanking the cursor into a bare shell is a worse outcome
+# than no tab at all.
+#
+# Returns 0 on every path — a caller's `set -e` must never see decoration fail.
+# What actually happened is reported OUT OF BAND in $HERDR_TAB_RESULT, one of
+# `created` / `skipped` / `failed`, so a caller can still tell the human the
+# truth without being able to abort on it. (Losing that distinction into an
+# always-cheerful message is the prose/reality gap #224 exists about; losing it
+# into an exit code would make herdr load-bearing. This is the seam between
+# those two.)
+# ---
+herdr_tab() { # $1 = cwd, $2 = label
+	HERDR_TAB_RESULT=skipped
+	herdr_available || return 0
+	if herdr tab create --workspace "$HERDR_WORKSPACE_ID" \
+		--cwd "$1" --label "$2" --no-focus >/dev/null 2>&1; then
+		HERDR_TAB_RESULT=created
+	else
+		HERDR_TAB_RESULT=failed
+	fi
+	return 0
+}
+
+# ---
+# CLI mode. `${BASH_SOURCE[0]}` equals `$0` only when this file was EXECUTED;
+# when sourced, BASH_SOURCE[0] is this path while $0 is the caller's. So the
+# block below is skipped on `. herdr-tab`, which is what keeps `set -euo
+# pipefail` — correct for a script, hostile to a caller's interactive shell —
+# out of a sourcing caller's environment.
+# ---
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	set -euo pipefail
+	case "${1:-}" in
+	-h | --help)
+		# Header IS the help text.
+		sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+		exit 0
+		;;
+	esac
+	if [ $# -ne 2 ]; then
+		echo "usage: herdr-tab <cwd> <label>   (or: . herdr-tab, then herdr_tab <cwd> <label>)" >&2
+		exit 2
+	fi
+	herdr_tab "$1" "$2"
+	exit 0
+fi

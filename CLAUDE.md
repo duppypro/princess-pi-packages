@@ -45,6 +45,8 @@ Full spec: `docs/dev-workflow-spec.md`.
 | `pr-cleanup <branch>` | Deletes branch + remote + worktree after the PR is merged; `<branch>` is required, run from the main clone |
 | `repo-gate [<repo>...]` | Reports how each repo's live branch protection differs from `docs/repo-policy.json` (exit 6 = drift). Report-only; `--remedy <repo>` prints the fix, `docs/repo-gate-apply.md` teaches an agent to run it |
 | `pr-threads <pr#> [--json]` | Review state for a PR — unresolved conversations AND whether a review covers the current head (exit 0 = clean; scriptable merge gate; full exit-code table in the spec). `--json` adds thread ids, every comment body, a `trusted` flag, and head/reviewedHead/latestReviewCommit |
+| `herdr-tab` | Sourceable guard for every herdr call: `. herdr-tab` then `herdr_tab <cwd> <label>`. The predicate is `$HERDR_PANE_ID` — an installed herdr answers exit 0 from *any* shell on this host, so `command -v herdr` proves nothing (#277) |
+| `herdr-reap [--dry-run] [--json]` | Closes herdr tabs whose panes all point at a deleted directory; spares its own tab, live-agent tabs, and unknown cwds. Called by `pr-cleanup`; correct standalone after any `git worktree remove`/`prune` (#277) |
 
 Retired-tool history (what replaced what, and why) lives in `docs/dev-workflow-spec.md`.
 `install-workflow-tools` reports any stale copy it finds on `PATH` at install time — that's

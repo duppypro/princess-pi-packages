@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+# ---
+# herdr-reap — close herdr tabs whose panes all point at a directory that no
+# longer exists (#277).
+#
+# Usage:
+#   herdr-reap                close stale tabs
+#   herdr-reap --dry-run      report what WOULD be closed, close nothing
+#   herdr-reap --json         one machine-readable document on stdout
+#
+# The rule, in full:
+#
+#   group panes by tab_id
+#   reap tab T  iff  every pane in T has a cwd that does not exist
+#   spare T if tab_id == $HERDR_TAB_ID          # never reap ourselves
+#   spare T if any pane in T has a live agent   # never kill an agent mid-turn
+#   spare T if any pane's cwd is unknown        # never act on a blank
+#
+# --- why "does this exist", never "is this the one I killed" ----------------
+# Verified on herdr 0.8.0 / protocol 19: once a pane's directory is removed,
+# herdr reports `cwd` (and `foreground_cwd`) as the literal string
+# "/path/to/thing (deleted)" — the Linux /proc/<pid>/cwd suffix passed through
+# verbatim inside a SUCCESS payload, with no structured `cwd_exists: false`
+# beside it (filed upstream as herdrdev/herdr#2799, still open).
+#
+# Two consequences this script is built around:
+#
+#   1. After deletion the reported path NO LONGER EQUALS the path that was
+#      removed. Any design that matches panes against a known worktree path
+#      silently stops matching at the exact moment it needs to. So this script
+#      is never told which worktree died — it asks only whether each pane's cwd
+#      still exists.
+#   2. The predicate is `! -d "$cwd"` on the RAW value, never a `(deleted)`
+#      suffix match. The suffix is kernel prose leaking through a JSON field;
+#      treat it as corroboration only. A directory genuinely named
+#      "foo (deleted)" would false-positive on a suffix match and correctly
+#      pass a stat.
+#
+# --- KNOWN LIMITATION: a shell that never reached the directory -------------
+# The whole predicate rests on a pane's shell HOLDING the deleted directory as
+# its cwd — that is what makes /proc report it, suffix and all. If the shell
+# never got there, there is nothing to hold and nothing to detect.
+#
+# Measured on 0.8.0, 2026-08-16, by deleting a directory immediately after
+# `herdr tab create --cwd` and before the pane's shell had started:
+#
+#   {"pane_id":"wD:pK","tab_id":"wD:tF","cwd":"/","foreground_cwd":"/",
+#    "terminal_title":"p-pi@overcity: /tmp/.../lv.M0y8ZX"}
+#
+# The shell could not chdir into a directory that no longer existed, fell back
+# to `/`, and `/` exists — so the tab reads as perfectly healthy and lingers
+# forever. Reaping it needs a human.
+#
+# Not worked around, deliberately. The only surviving trace of the intended
+# directory is `terminal_title`, which is a human-facing string this repo's
+# Agent-First rule forbids parsing for state — and it would be a bad signal
+# anyway, since it is whatever the shell's prompt last wrote there.
+#
+# The narrow trigger is why this is a footnote and not a defect: it needs the
+# directory to vanish inside the tab-creation window. The real sequence —
+# `wt-new` opens a tab, the shell starts in a live worktree, `pr-cleanup`
+# removes it much later — puts the shell inside the directory first, which is
+# the case that works and the one this tool was built for.
+#
+# --- why standalone, and why no retry loop ----------------------------------
+# Because "all panes point at nothing" never names WHICH worktree died,
+# reaping is correct whenever it runs — after a manual `git worktree remove`,
+# after `git worktree prune`, after `pr-cleanup` (which calls this). That
+# idempotence is also the whole reason there is no retry: a miss self-heals on
+# the next invocation.
+#
+# And NO `sleep` anywhere, in this script or its tests. An earlier draft
+# asserted that herdr's cwd "tracks /proc and lags — the probe needed ~1s" and
+# put a `sleep 1` in the tests on that basis. The claim was never measured:
+# every probe had the sleep baked in, so its necessity was never falsified.
+# Measured afterwards (btw research/herdr-cwd-propagation-latency.py, two runs
+# of 12 trials on 0.8.0): the filesystem was consistent when `rm -rf` returned
+# 24/24, herdr reported the deleted cwd on the FIRST poll 24/24, latency
+# 5.5-20.5 ms — the API round trip itself. `rm -rf` is synchronous and herdr
+# resolves cwd at read time rather than serving a polled snapshot.
+# Generalised rule: do not encode a delay without a measurement that falsifies
+# its absence. An unmeasured sleep is indistinguishable from a correct one
+# until the day it isn't.
+#
+# --- blast radius: closing the last tab in a workspace closes the workspace --
+# New in herdr 0.8.0 (upstream herdrdev/herdr#1760/#1899), verified live. For a
+# worktree-backed workspace whose worktree was just removed that is arguably
+# the right outcome, but it is strictly larger than "close a tab", so the
+# summary reports workspaces closed as well as tabs. Reporting "closed 1 tab"
+# while a workspace silently vanished is exactly the prose/reality gap #224
+# exists about. Workspaces are counted by diffing `workspace list` before and
+# after — observed, never predicted.
+#
+# --- the live-agent guard -------------------------------------------------
+# The self-tab guard protects only the reaper. A DIFFERENT agent, live in a tab
+# whose worktree was removed, matches the cwd rule and would be closed
+# mid-turn. `~/git-projects/CLAUDE.md` already requires every live session to
+# leave via ExitWorktree before `git worktree remove`, so that can only happen
+# when the precondition was already violated — but what reaping would change is
+# the SEVERITY of that violation, from "an agent is working in a deleted
+# directory" (survivable; its file descriptors still resolve) to "an agent was
+# killed mid-turn" (not). The check costs one comparison and no extra round
+# trip — `agent` already rides along in the `pane list` payload this script
+# already reads — so it is on. It fails toward "a stale tab lingers", the
+# harmless direction, and `herdr tab close <id>` remains available by hand.
+#
+# The predicate is `.agent != null` and deliberately NOT `.agent_status`.
+# Raised on PR #312 and declined there: the proposal was to spare only panes
+# reporting `agent_status == "working"`, on the grounds that a tab whose agent
+# shows `done` is then spared forever. The gap is real — leftover agent
+# metadata does keep a stale tab alive indefinitely — but it is the direction
+# this script chooses everywhere else, and the remedy inverts a safe failure
+# into an unsafe one. herdr's agent states are idle / working / blocked / done,
+# and a Claude or Pi session sitting between turns reports `done` or `idle`
+# while being entirely alive. Narrowing to `working` would close tabs out from
+# under live-but-momentarily-idle agents — the exact mid-turn kill the guard
+# exists to prevent, reintroduced through the guard itself. A status is not a
+# liveness proof; herdr exposes no signal that is one (`agent_session` carries
+# an id, not a reachability check). So the tab lingers, and a human closes it.
+#
+# --- exit codes (shared pr-* contract, #224) -------------------------------
+#   0  success — including "not inside herdr" and "nothing was stale". Both are
+#      normal outcomes for a decoration tool that must never be load-bearing;
+#      `--json` tells the two apart via `status`, so the distinction is
+#      available without making callers handle a failure that isn't one.
+#   2  usage error — unknown flag or extra argument
+#   3  precondition not met — jq is not installed
+#   5  state could NOT be determined — `herdr pane list` failed, or returned
+#      something this script could not parse
+#   6  determined, and a close was refused — at least one `herdr tab close`
+#      failed
+#
+# Observed against herdr 0.8.0 / protocol 19 on 2026-08-16. Fixtures in
+# tests/fixtures/herdr-0.8.0/ pin that payload shape; tests/herdr-reap.test.ts
+# drives this script against a stub `herdr` built from them.
+# ---
+set -euo pipefail
+
+# --- the herdr guard lives in exactly one file ------------------------------
+# Next to $0 covers both invocation shapes: from the repo (bin/herdr-reap) and
+# from ~/bin after install-workflow-tools has deployed both. If it is missing,
+# fall back to an inline copy of the predicate rather than dying: this script's
+# whole contract is that it is never load-bearing.
+#
+# The source runs INSIDE the `if` condition, not inside its body, and that is
+# load-bearing under `set -e`: a `herdr-tab` that exists but is unreadable or
+# has a syntax error makes `.` return nonzero, which in the body would kill
+# this script outright — a broken decoration file taking down the tool that
+# merely borrows a predicate from it. As a condition, the failure simply falls
+# through to the inline copy below. `-r` rather than `-f` for the same reason:
+# existing and being readable are different facts, and only the second one is
+# the precondition for sourcing.
+HERDR_TAB_LIB="$(cd "$(dirname "$0")" && pwd)/herdr-tab"
+# shellcheck source=bin/herdr-tab
+if [ -r "$HERDR_TAB_LIB" ] && . "$HERDR_TAB_LIB"; then
+	:
+else
+	herdr_available() {
+		[ -n "${HERDR_PANE_ID:-}" ] || return 1
+		[ -n "${HERDR_WORKSPACE_ID:-}" ] || return 1
+		command -v herdr >/dev/null 2>&1 || return 1
+		return 0
+	}
+fi
+
+JSON=0
+DRY_RUN=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--json) JSON=1 ;;
+	--dry-run) DRY_RUN=1 ;;
+	-h | --help)
+		# Header IS the help text — keep the range covering Usage + the rule.
+		sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+		exit 0
+		;;
+	*)
+		echo "herdr-reap: unknown argument '$1' (try --help)" >&2
+		exit 2
+		;;
+	esac
+	shift
+done
+
+# ---
+# One JSON document, emitted once, from wherever this script ends. Flat keys,
+# arrays of small records, no decoration — a caller answering "did anything
+# close?" reads `tabs_closed` in zero reasoning steps (#224, Agent-First
+# Output). `status` carries what the exit code deliberately does not: whether
+# this host was even inside herdr.
+# ---
+#
+# `workspaces_closed` is a number when it was actually counted and JSON `null`
+# when it could not be — never 0 standing in for "I did not find out". Those
+# are different facts, and 0 is the one a caller would act on. It is emitted
+# with %s rather than %d for exactly that reason.
+# ---
+emit_json() { # $1 = status, $2 = reaped array body, $3 = spared array body
+	local ws
+	if [ "$WORKSPACES_KNOWN" -eq 1 ]; then ws="$WORKSPACES_CLOSED"; else ws="null"; fi
+	printf '{"tool":"herdr-reap","schema":1,"status":"%s","dry_run":%s,"tabs_closed":%d,"workspaces_closed":%s,"tabs_failed":%d,"reaped":[%s],"spared":[%s]}\n' \
+		"$1" "$([ "$DRY_RUN" -eq 1 ] && echo true || echo false)" \
+		"$TABS_CLOSED" "$ws" "$TABS_FAILED" "$2" "$3"
+}
+
+TABS_CLOSED=0
+WORKSPACES_CLOSED=0
+# Known by default: when nothing is closed, nothing can have taken a workspace
+# with it, and 0 is a real answer rather than an unasked question.
+WORKSPACES_KNOWN=1
+TABS_FAILED=0
+REAPED_JSON=""
+SPARED_JSON=""
+
+# JSON string escaping for the two values this script ever interpolates: a
+# herdr tab id (safe by construction) and a filesystem path (not).
+#
+# Encoded BY jq, not by hand. The hand-rolled sed version this replaces escaped
+# backslash, quote and tab, then deleted CR/LF — which got two things wrong at
+# once. It emitted bytes like 0x01 raw, and JSON forbids unescaped control
+# characters below 0x20, so a single such byte in a path made the whole
+# document unparsable — a machine-readable mode that is only sometimes
+# machine-readable is worse than none, because callers stop checking. And
+# *deleting* CR/LF silently reported a different path than the one that was
+# reaped. A path is every byte except NUL and '/', so the encoder has to be a
+# real one; jq is already a hard precondition by the time this is reachable
+# (the no-jq and no-herdr exits both emit empty arrays and never call this).
+# `-Rs` reads stdin as one raw string — `printf '%s'` adds no trailing newline —
+# and the sed strips only jq's outer quotes, since callers interpolate this
+# inside quotes they supply.
+json_str() {
+	printf '%s' "$1" | jq -Rs . | sed -e 's/^"//' -e 's/"$//'
+}
+
+# ---
+# live | gone | unknown for one pane's cwd.
+#
+# `[ -d "$cwd" ]` alone is NOT the predicate, despite being the obvious one:
+# it answers false both for "the directory is gone" and for "the directory is
+# there but cannot be statted" — a parent without +x, an unmounted automount,
+# a permissions change. Closing a tab on the second reading would close a tab
+# whose directory very much exists, which is the one outcome this tool must
+# never produce.
+#
+# So when the stat says no, climb to the nearest ancestor that actually
+# answers. If THAT directory is readable and searchable, then the absence
+# below it is a real ENOENT and the tab is stale. If it is not, we genuinely
+# cannot tell — and "cannot tell" is spared, never reaped, the same rule the
+# null-cwd case already follows. Fails toward a lingering tab, the harmless
+# direction, which is the whole disposition of this script.
+# ---
+dir_state() { # $1 = cwd
+	if [ -d "$1" ]; then
+		printf 'live'
+		return 0
+	fi
+	local ancestor
+	ancestor=$(dirname "$1")
+	while [ "$ancestor" != "/" ] && [ "$ancestor" != "." ] && [ ! -e "$ancestor" ]; do
+		ancestor=$(dirname "$ancestor")
+	done
+	if [ -d "$ancestor" ] && [ -r "$ancestor" ] && [ -x "$ancestor" ]; then
+		printf 'gone'
+	else
+		printf 'unknown'
+	fi
+}
+
+# ---
+# Re-verify one tab immediately before closing it. 0 = still reapable.
+#
+# `pane list` is a snapshot, and a snapshot is a claim about the past. Between
+# the read that selected this tab and the close that acts on it, a directory
+# can be recreated (`git worktree add` at the same path, `wt-new` re-run) and
+# an agent can attach to the pane. Acting on the older read is a TOCTOU whose
+# worst outcome is precisely the one this script exists not to cause.
+#
+# This NARROWS the window; it does not close it, and it cannot. herdr exposes
+# no atomic compare-and-close, so a gap between the last read and the write is
+# unavoidable. What the recheck buys is proportion: the exposure shrinks from
+# "the whole run, including however many round trips other tabs took first" to
+# "one round trip", and — the part that actually matters — every reason to
+# spare is re-applied against current state rather than remembered from old
+# state.
+#
+# Every failure path returns 1. A `pane list` that fails, a tab that has
+# vanished, a cwd that reappeared, an agent that attached, a jq that could not
+# parse: all of them mean "do not close", because not-knowing spares. That is
+# the same disposition as the rest of this script, applied at the one moment
+# where being wrong is destructive.
+# ---
+still_reapable() { # $1 = tab_id
+	local snapshot tmp agent_n unknown_n cwd_n live
+	snapshot=$(herdr pane list 2>/dev/null) || return 1
+	agent_n=$(printf '%s' "$snapshot" |
+		jq --arg t "$1" '[.result.panes[]? | select(.tab_id == $t and .agent != null)] | length' 2>/dev/null) || return 1
+	unknown_n=$(printf '%s' "$snapshot" |
+		jq --arg t "$1" '[.result.panes[]? | select(.tab_id == $t and (.cwd == null or .cwd == ""))] | length' 2>/dev/null) || return 1
+	[ "$agent_n" = "0" ] || return 1
+	[ "$unknown_n" = "0" ] || return 1
+
+	tmp=$(mktemp "${TMPDIR:-/tmp}/herdr-reap-recheck.XXXXXX")
+	if ! printf '%s' "$snapshot" |
+		jq -j --arg t "$1" '.result.panes[]? | select(.tab_id == $t and .cwd != null and .cwd != "") | .cwd + "\u0000"' \
+			>"$tmp" 2>/dev/null; then
+		rm -f "$tmp"
+		return 1
+	fi
+	cwd_n=0
+	live=0
+	while IFS= read -r -d '' c; do
+		cwd_n=$((cwd_n + 1))
+		[ "$(dir_state "$c")" = gone ] || live=1
+	done <"$tmp"
+	rm -f "$tmp"
+
+	# No panes at all means the tab is already gone — nothing to close, and
+	# nothing proven either way.
+	[ "$cwd_n" -gt 0 ] || return 1
+	[ "$live" -eq 0 ] || return 1
+	return 0
+}
+
+# --- not inside herdr: the normal case for a plain shell, not a failure -----
+if ! herdr_available; then
+	if [ "$JSON" -eq 1 ]; then emit_json no_herdr "" ""; fi
+	exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+	echo "herdr-reap: jq is required to parse 'herdr pane list' and is not on PATH." >&2
+	echo "   Install it (e.g. 'apt install jq' / 'brew install jq') and re-run." >&2
+	if [ "$JSON" -eq 1 ]; then emit_json no_jq "" ""; fi
+	exit 3
+fi
+
+# --- read the live pane table ----------------------------------------------
+# `pane list` is ~1 KB. NEVER `herdr api snapshot` — that is 248 KB and this
+# script may be called from an agent's turn.
+if ! PANES=$(herdr pane list 2>/dev/null); then
+	echo "herdr-reap: 'herdr pane list' failed — cannot determine which tabs are stale." >&2
+	if [ "$JSON" -eq 1 ]; then emit_json undetermined "" ""; fi
+	exit 5
+fi
+
+# --- workspaces BEFORE, so the count below is observed rather than predicted -
+# Success is tracked, not inferred from emptiness. A failed query and a host
+# with no workspaces both yield an empty string, and only one of them licenses
+# a diff. `set -o pipefail` (top of file) makes the assignment carry the
+# failure of `herdr` or `jq`, not just `sort`.
+WS_BEFORE_OK=0
+if WS_BEFORE=$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[]?.workspace_id' 2>/dev/null | sort); then
+	WS_BEFORE_OK=1
+else
+	WS_BEFORE=""
+fi
+
+# ---
+# Group panes by tab in jq, and hand bash one NUL-delimited record per tab:
+#
+#   tab_id NUL agent_count NUL unknown_cwd_count NUL cwd_count NUL cwd... NUL
+#
+# NUL and nothing else. A path may contain spaces, newlines, tabs, quotes —
+# every byte except NUL and '/' — so any printable delimiter is a latent bug,
+# the same reason pr-cleanup reads `git worktree list --porcelain -z`.
+#
+# `.agent` (not `.agent_status`): a bare shell reports agent_status "unknown"
+# while a live Claude/Pi pane carries an `agent` key plus an `agent_session`
+# object. Panes with a null cwd are counted separately rather than folded into
+# "gone" — an unknown cwd is not evidence of anything, and acting on a blank is
+# how a decoration tool closes something real.
+#
+# Via a temp FILE, not `RECORDS=$(...)`: bash cannot hold a NUL byte in a
+# variable and drops it silently from a command substitution, which would
+# concatenate every field of every record into one string with no error
+# anywhere. The file also lets jq's exit status be checked separately from the
+# read loop — a jq failure must be exit 5 ("could not determine"), never an
+# empty record set read as "nothing is stale".
+# ---
+RECORDS_FILE=$(mktemp "${TMPDIR:-/tmp}/herdr-reap.XXXXXX")
+trap 'rm -f "$RECORDS_FILE"' EXIT
+if ! printf '%s' "$PANES" | jq -j '
+	if (.result.panes | type) != "array" then error("no pane array") else . end
+	| .result.panes
+	| group_by(.tab_id)
+	| .[]
+	| ( .[0].tab_id | tostring ) + "\u0000"
+	+ ( (map(select(.agent != null)) | length) | tostring ) + "\u0000"
+	+ ( (map(select(.cwd == null or .cwd == "")) | length) | tostring ) + "\u0000"
+	+ ( (map(select(.cwd != null and .cwd != "")) | length) | tostring ) + "\u0000"
+	+ ( map(select(.cwd != null and .cwd != "") | .cwd + "\u0000") | join("") )
+' >"$RECORDS_FILE" 2>/dev/null; then
+	echo "herdr-reap: could not parse 'herdr pane list' output — refusing to guess." >&2
+	if [ "$JSON" -eq 1 ]; then emit_json undetermined "" ""; fi
+	exit 5
+fi
+
+# --- decide, then act -------------------------------------------------------
+malformed=0
+CLOSE_LIST=()
+while IFS= read -r -d '' tab_id; do
+	IFS= read -r -d '' agent_count || { malformed=1; break; }
+	IFS= read -r -d '' unknown_count || { malformed=1; break; }
+	IFS= read -r -d '' cwd_count || { malformed=1; break; }
+	case "$cwd_count" in
+	'' | *[!0-9]*) malformed=1; break ;;
+	esac
+
+	all_gone=1
+	[ "$cwd_count" -gt 0 ] || all_gone=0 # a tab with no readable cwd at all proves nothing
+	first_gone_cwd=""
+	unstattable=0
+	i=0
+	while [ "$i" -lt "$cwd_count" ]; do
+		IFS= read -r -d '' cwd || { malformed=1; break 2; }
+		case "$(dir_state "$cwd")" in
+		live) all_gone=0 ;;
+		unknown) unstattable=1 ;;
+		gone) [ -n "$first_gone_cwd" ] || first_gone_cwd="$cwd" ;;
+		esac
+		i=$((i + 1))
+	done
+
+	[ "$all_gone" -eq 1 ] || continue
+
+	reason=""
+	if [ "$tab_id" = "${HERDR_TAB_ID:-}" ]; then
+		reason="self"
+	elif [ "$unknown_count" != "0" ] || [ "$unstattable" -eq 1 ]; then
+		# Two different ways of not knowing, one verdict. `unknown_count` is
+		# herdr declining to report a cwd (null or empty); `unstattable` is the
+		# filesystem declining to answer for one it did report. Neither is
+		# evidence that anything is stale, and a decoration tool that acts on
+		# an absence of evidence closes something real.
+		reason="cwd_unknown"
+	elif [ "$agent_count" != "0" ]; then
+		reason="live_agent"
+	fi
+
+	if [ -n "$reason" ]; then
+		SPARED_JSON="${SPARED_JSON:+$SPARED_JSON,}{\"tab_id\":\"$(json_str "$tab_id")\",\"reason\":\"$reason\"}"
+		continue
+	fi
+	CLOSE_LIST+=("$tab_id" "$first_gone_cwd")
+done <"$RECORDS_FILE"
+
+if [ "$malformed" -eq 1 ]; then
+	echo "herdr-reap: 'herdr pane list' produced a record this script could not read — refusing to guess." >&2
+	if [ "$JSON" -eq 1 ]; then emit_json undetermined "" ""; fi
+	exit 5
+fi
+
+idx=0
+while [ "$idx" -lt "${#CLOSE_LIST[@]}" ]; do
+	tab_id="${CLOSE_LIST[$idx]}"
+	cwd="${CLOSE_LIST[$((idx + 1))]}"
+	idx=$((idx + 2))
+	if [ "$DRY_RUN" -eq 1 ]; then
+		TABS_CLOSED=$((TABS_CLOSED + 1))
+		REAPED_JSON="${REAPED_JSON:+$REAPED_JSON,}{\"tab_id\":\"$(json_str "$tab_id")\",\"cwd\":\"$(json_str "$cwd")\"}"
+		[ "$JSON" -eq 1 ] || echo "would close $tab_id — $cwd"
+		continue
+	fi
+	# Last look before the destructive call — see still_reapable() for why the
+	# snapshot alone is not enough, and for what this does and does not buy.
+	if ! still_reapable "$tab_id"; then
+		SPARED_JSON="${SPARED_JSON:+$SPARED_JSON,}{\"tab_id\":\"$(json_str "$tab_id")\",\"reason\":\"changed\"}"
+		[ "$JSON" -eq 1 ] || echo "herdr-reap: $tab_id changed since the snapshot — left as-is." >&2
+		continue
+	fi
+	if herdr tab close "$tab_id" >/dev/null 2>&1; then
+		TABS_CLOSED=$((TABS_CLOSED + 1))
+		REAPED_JSON="${REAPED_JSON:+$REAPED_JSON,}{\"tab_id\":\"$(json_str "$tab_id")\",\"cwd\":\"$(json_str "$cwd")\"}"
+		[ "$JSON" -eq 1 ] || echo "closed $tab_id — $cwd"
+	else
+		TABS_FAILED=$((TABS_FAILED + 1))
+		[ "$JSON" -eq 1 ] || echo "herdr-reap: 'herdr tab close $tab_id' failed — left as-is." >&2
+	fi
+done
+
+# --- workspaces AFTER: report what happened, not what was expected ----------
+# The diff is computed ONLY when both reads succeeded. A failed post-close
+# query used to fall back to an empty WS_AFTER, which made `comm` report every
+# workspace that existed beforehand as closed — a maximally wrong number,
+# published confidently in the notification and the JSON. That is the exact
+# inversion of this section's own claim: "observed, never predicted" has to
+# include observing that the observation failed (PR #312 review).
+if [ "$TABS_CLOSED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+	WS_AFTER_OK=0
+	if WS_AFTER=$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[]?.workspace_id' 2>/dev/null | sort); then
+		WS_AFTER_OK=1
+	fi
+	if [ "$WS_BEFORE_OK" -eq 1 ] && [ "$WS_AFTER_OK" -eq 1 ]; then
+		WORKSPACES_CLOSED=$(comm -23 <(printf '%s\n' "$WS_BEFORE") <(printf '%s\n' "$WS_AFTER") | grep -c . || true)
+	else
+		WORKSPACES_KNOWN=0
+	fi
+fi
+
+if [ "$TABS_CLOSED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+	body="closed $TABS_CLOSED stale tab$([ "$TABS_CLOSED" -eq 1 ] || echo s)"
+	if [ "$WORKSPACES_KNOWN" -eq 0 ]; then
+		# Say so rather than omit it. Silence here reads as "no workspaces were
+		# closed", and since 0.8.0 a last-tab close takes its workspace with it —
+		# the one outcome the human most needs to not be quietly wrong about.
+		body="$body (workspace count unavailable)"
+	elif [ "$WORKSPACES_CLOSED" -gt 0 ]; then
+		body="$body ($WORKSPACES_CLOSED workspace$([ "$WORKSPACES_CLOSED" -eq 1 ] || echo s))"
+	fi
+	herdr notification show "herdr-reap" --body "$body" --sound done >/dev/null 2>&1 || true
+fi
+
+if [ "$JSON" -eq 1 ]; then emit_json ok "$REAPED_JSON" "$SPARED_JSON"; fi
+
+# A refused close is a determined "no", not an undetermined one: herdr answered.
+[ "$TABS_FAILED" -eq 0 ] || exit 6
+exit 0
