@@ -241,4 +241,36 @@ describe("block-edit-on-main parity (#303)", () => {
     const repo = repoOnBranch("main");
     assertBoth(path.join(repo, "new", "subdir", "f.txt"), repo, "block", "new nested file, main");
   });
+
+  // Deep-symlink fail-closed (#303 review finding, macroscopeapp on PR #313,
+  // thread PRRT_kwDOS37--c6Zr6MV): edit-on-main-core.ts's tolerant realpath
+  // walker capped a single component's symlink chain at 40 hops, but on
+  // hitting the cap while STILL a symlink it silently assigned the
+  // unresolved value to `real` — treating an unproven path as resolved. A
+  // symlink chain sitting in a feature worktree but longer than 40 hops,
+  // whose final target lives in a repo on main, made checkEditOnMain inspect
+  // the feature repo (ALLOW) while the OS's own unbounded resolution — used
+  // by realpath -m in the shell hook, and by the eventual fs write — lands
+  // the bytes on main. Confirmed empirically before the fix: this exact case
+  // returned ALLOW from checkEditOnMain and BLOCK from the shell hook.
+  test("fails closed on a symlink chain longer than 40 hops whose real target is a repo on main", () => {
+    const mainRepo = repoOnBranch("main");
+    fs.writeFileSync(path.join(mainRepo, "f.txt"), "base\n");
+    const featRepo = repoOnBranch("42-slug");
+
+    let prev = path.join(mainRepo, "f.txt");
+    for (let i = 1; i <= 45; i++) {
+      const linkPath = path.join(featRepo, `link${i}`);
+      fs.symlinkSync(prev, linkPath);
+      prev = linkPath;
+    }
+    const targetFile = prev; // featRepo/link45 -> ... -> link1 -> mainRepo/f.txt
+
+    assertBoth(
+      targetFile,
+      featRepo,
+      "block",
+      "chain exceeds the 40-hop cap; guard must refuse rather than assume the safe (feature-branch) case",
+    );
+  });
 });

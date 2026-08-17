@@ -30,6 +30,25 @@ function gitOut(dir: string, args: string[]): string {
   return (res.stdout ?? "").trim();
 }
 
+// Thrown by realpathTolerant when a single path component's symlink chain
+// exceeds the hop cap without resolving to a non-symlink (#303 review finding,
+// macroscopeapp on PR #313, thread PRRT_kwDOS37--c6Zr6MV). Before this type
+// existed the loop below simply assigned the still-unresolved `candidate` to
+// `real` once the cap was hit — silently treating an UNRESOLVED symlink as
+// resolved. That let checkEditOnMain inspect the wrong repo (e.g. the feature
+// worktree a deep symlink sits in) while the write's real target — reached by
+// the OS's own unbounded symlink resolution during the later fs write — landed
+// somewhere else entirely, including a repo on main. Confirmed empirically: a
+// 45-hop chain inside a feature-branch repo whose final target lives in a
+// repo on main made checkEditOnMain return ALLOW. #210 governs: a check that
+// cannot prove its precondition must refuse, not assume the safe case.
+export class SymlinkDepthExceededError extends Error {
+  constructor(public readonly candidate: string) {
+    super(`symlink chain exceeds 40 hops while resolving '${candidate}'`);
+    this.name = "SymlinkDepthExceededError";
+  }
+}
+
 // ---
 // realpath -m equivalent (#267 finding, ported from block-edit-on-main.sh):
 // resolve every symlink along an EXISTING prefix of the path, then append any
@@ -46,6 +65,7 @@ function realpathTolerant(inputPath: string): string {
   for (let i = 0; i < parts.length; i++) {
     let candidate = path.join(real, parts[i]);
     let linkDepth = 0;
+    let resolvedComponent = false;
     // Follow a chain of symlinks for this ONE component (bounded — a self-
     // referential symlink must not hang the guard).
     while (linkDepth++ < 40) {
@@ -57,10 +77,18 @@ function realpathTolerant(inputPath: string): string {
         // return what's real so far, joined with the untouched remainder.
         return path.join(candidate, ...parts.slice(i + 1));
       }
-      if (!st.isSymbolicLink()) break;
+      if (!st.isSymbolicLink()) {
+        resolvedComponent = true;
+        break;
+      }
       const target = fs.readlinkSync(candidate);
       candidate = path.isAbsolute(target) ? target : path.resolve(path.dirname(candidate), target);
     }
+    // Cap hit and `candidate` is STILL a symlink: we cannot prove where this
+    // component actually resolves (loop, or a chain genuinely deeper than 40
+    // hops). Fail closed rather than trust the unresolved value — see
+    // SymlinkDepthExceededError above.
+    if (!resolvedComponent) throw new SymlinkDepthExceededError(candidate);
     real = candidate;
   }
   return real;
@@ -86,7 +114,25 @@ export function checkEditOnMain(filePath: string, cwd: string): string | null {
   let dir: string;
   if (filePath) {
     const absInput = path.isAbsolute(filePath) ? filePath : path.resolve(cwd || ".", filePath);
-    const resolved = realpathTolerant(absInput);
+    let resolved: string;
+    try {
+      resolved = realpathTolerant(absInput);
+    } catch (err) {
+      if (err instanceof SymlinkDepthExceededError) {
+        // Fail closed (#210): we cannot prove which repo/branch this edit's
+        // bytes actually land in, so refuse rather than assume the safe case.
+        // This is a guardrail, not a crash path — return a block reason the
+        // human can act on, same as every other branch below.
+        return (
+          `'${filePath}' could not be safely resolved — its symlink chain is longer than 40 hops ` +
+          `(possible symlink loop, or a chain deep enough that this guard cannot prove where the edit ` +
+          `ultimately lands). Refusing to edit until the path resolves within the hop limit:\n` +
+          `  readlink -f '${filePath}'\n` +
+          `(CLAUDE.md HARD GATE / #210 — a check that cannot prove its precondition must refuse.)`
+        );
+      }
+      throw err;
+    }
     dir = path.dirname(resolved);
   } else {
     dir = cwd || ".";
