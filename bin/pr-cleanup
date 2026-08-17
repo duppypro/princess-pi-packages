@@ -60,6 +60,7 @@ case "${1:-}" in
   -h|--help)
     cat <<'EOF'
 usage: pr-cleanup <branch>
+       pr-cleanup --version
 
 After the PR is MERGED: remove the branch's worktree, delete the remote and
 local branch. Run from the main clone. Refuses if the branch tip is not what
@@ -69,6 +70,12 @@ or diverged — or if the PR was rejected/never opened.
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
     exit 0 ;;
+  # #178: resolved absolute path of the running copy — install-workflow-tools
+  # deploys this script to ~/bin, so a bare `pr-cleanup` from a feature
+  # worktree runs whatever was last installed there. `readlink -f` resolves a
+  # real file OR a symlink to its actual on-disk location. Not built, so no
+  # commit-hash/semver stamp — PATH only.
+  --version) readlink -f "$0"; exit 0 ;;
 esac
 
 # --- argument parsing --------------------------------------------------------

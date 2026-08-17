@@ -37,6 +37,7 @@ while [ $# -gt 0 ]; do
     -h|--help)
       cat <<'EOF'
 usage: pr-reject [-b <branch>] [<reason>]
+       pr-reject --version
 
 Human-only: close the open PR for <branch> (default: current branch) without
 merging, leaving <reason> as a comment. Use `--` before a reason that starts
@@ -45,6 +46,12 @@ with '-'.
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
       exit 0 ;;
+    # #178: resolved absolute path of the running copy — install-workflow-tools
+    # deploys this script to ~/bin, so a bare `pr-reject` from a feature
+    # worktree runs whatever was last installed there. `readlink -f` resolves
+    # a real file OR a symlink to its actual on-disk location. Not built, so
+    # no commit-hash/semver stamp — PATH only.
+    --version) readlink -f "$0"; exit 0 ;;
     -b|--branch)
       BRANCH="${2:-}"
       if [ -z "$BRANCH" ]; then

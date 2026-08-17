@@ -64,6 +64,7 @@ FLAGS
   --policy <path>    policy file to read (default: search order below)
   --remedy <repo>    print the fix for one repo and exit; writes nothing
   --why              why you would run this
+  --version          resolved absolute path of the running copy
   -h, --help         this text
 
 POLICY SEARCH ORDER
@@ -128,6 +129,13 @@ EOF
 
 while [ $# -gt 0 ]; do
 	case "$1" in
+		# #178: resolved absolute path of the running copy — install-workflow-tools
+		# deploys this script to ~/bin, so a bare `repo-gate` from a feature
+		# worktree runs whatever was last installed there. `readlink -f` resolves
+		# a real file OR a symlink to its actual on-disk location. Not built, so
+		# no commit-hash/semver stamp — PATH only. Checked before the gh/jq
+		# preconditions below, so --version works even without them on PATH.
+		--version) readlink -f "$0"; exit 0 ;;
 		--json) JSON=1; shift ;;
 		--policy) POLICY="${2:-}"; [ -n "$POLICY" ] || { echo "$SELF: --policy needs a path" >&2; exit 2; }; shift 2 ;;
 		--remedy) REMEDY="${2:-}"; [ -n "$REMEDY" ] || { echo "$SELF: --remedy needs a repo name" >&2; exit 2; }; shift 2 ;;

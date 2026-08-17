@@ -2,7 +2,19 @@
 # git-overview — one-command repo status snapshot.
 # Shows: branch + status, diff stat, recent commits.
 # Equivalent to the 3-command cluster agents repeat constantly.
+#
+# Usage: git-overview
+#        git-overview --version
 set -euo pipefail
+
+# #178: resolved absolute path of the running copy — install-workflow-tools
+# deploys this script to ~/bin, so a bare `git-overview` from a feature
+# worktree runs whatever was last installed there, not the worktree's own
+# copy. `readlink -f` resolves both a real file and a symlink to its actual
+# on-disk location. Not built, so no commit-hash/semver stamp — PATH only.
+case "${1:-}" in
+  --version) readlink -f "$0"; exit 0 ;;
+esac
 
 echo "=== branch ==="
 git branch --show-current

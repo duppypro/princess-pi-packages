@@ -3,9 +3,10 @@
 # Usage: git-checkpoint "your commit message"
 #        git-checkpoint -- "-a message that starts with a dash"
 #        git-checkpoint -h | --help
+#        git-checkpoint --version
 #
 # --- Exit codes ---
-#   0  success — committed and pushed (or usage printed for -h/--help)
+#   0  success — committed and pushed (or usage/version printed)
 #   1  usage error — no message given, or a flag-shaped argument that is not
 #      -h/--help/-- (#310: `git-checkpoint --help` used to commit AND push
 #      with the message "--help"; a flag is never a message)
@@ -19,6 +20,7 @@ usage() {
 usage: git-checkpoint "<commit message>"
        git-checkpoint -- "<message that starts with ->"
        git-checkpoint -h | --help
+       git-checkpoint --version
 
 Adds ALL changes (git add -A), commits with the message + 👑π🐱, and pushes.
 Refuses on main/master, on a detached HEAD, and on a branch with no upstream.
@@ -27,11 +29,20 @@ exit codes: 0 ok · 1 usage · 3 precondition (protected branch / no upstream)
 EOF
 }
 
-# A flag is never a commit message (#310). Only -h/--help and the `--` terminator
-# are recognised; any other leading '-' is refused rather than committed, because
-# the cost of guessing wrong is a staged, committed AND pushed "--typo".
+# A flag is never a commit message (#310). Only -h/--help, --version, and the
+# `--` terminator are recognised; any other leading '-' is refused rather than
+# committed, because the cost of guessing wrong is a staged, committed AND
+# pushed "--typo".
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
+  # #178: this is the whole answer to "am I running the worktree copy or
+  # ~/bin's?" — install-workflow-tools deploys this script to ~/bin, so a bare
+  # `git-checkpoint` from a feature worktree runs whatever was last installed,
+  # not the worktree's own copy. `readlink -f` resolves both a real file and a
+  # symlink to its actual on-disk location. Not built (no .mjs step for shell
+  # scripts), so there is no commit-hash/semver stamp to print alongside it —
+  # this is the PATH half only.
+  --version) readlink -f "$0"; exit 0 ;;
   --) shift ;;
   -*)
     echo "git-checkpoint: '$1' looks like a flag, not a commit message — refusing to commit it." >&2
