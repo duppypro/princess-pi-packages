@@ -82,9 +82,15 @@ console.log("shell workflow scripts: --version reports the resolved running path
 // missing --version fails by name — but only if the manifest itself cannot
 // silently fall behind bin/. Assert the two stay in sync.
 {
+	// Truly extensionless — no dot anywhere in the name — not merely "not .mjs
+	// and not .ts". The denylist form broke the moment #178's other half landed
+	// `bin/build-stamp.json` beside these scripts: a data sidecar was read as an
+	// undeclared shell script and this check failed on main, though both halves
+	// were green on their own branches. An allowlist of shapes we mean cannot be
+	// broken by a file shape nobody anticipated.
 	const actual = fs
 		.readdirSync(BIN_DIR)
-		.filter((f) => !f.endsWith(".mjs") && !f.endsWith(".ts"))
+		.filter((f) => !f.includes("."))
 		.sort();
 	const declared = [...SCRIPTS].sort();
 	check(
