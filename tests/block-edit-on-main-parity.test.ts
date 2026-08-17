@@ -314,4 +314,20 @@ describe("block-edit-on-main parity (#303)", () => {
       "chain exceeds the 40-hop cap; guard must refuse rather than assume the safe (feature-branch) case",
     );
   });
+
+  // Self-referential symlink (#316): GNU `realpath -m` hits ELOOP internally
+  // resolving a symlink that points at itself, but -m mode SWALLOWS that
+  // failure and returns the unresolved input path with rc=0 — the shell
+  // hook then treated an unproven path as resolved and ALLOWED the edit,
+  // even on a feature branch where nothing else about this case would be
+  // blocked. The TS twin already fails closed here: the walker keeps
+  // re-expanding the same self-target forever, so the existing 40-hop cap
+  // trips and SymlinkDepthExceededError converts to BLOCK. This pins the
+  // two twins in agreement on the case the issue reports as diverging.
+  test("blocks a self-referential symlink (realpath -m returns rc=0 unresolved)", () => {
+    const repo = repoOnBranch("42-slug");
+    const selfLink = path.join(repo, "selfLink");
+    fs.symlinkSync("selfLink", selfLink);
+    assertBoth(selfLink, repo, "block", "self-referential symlink cannot be resolved — fail closed, not fail open");
+  });
 });

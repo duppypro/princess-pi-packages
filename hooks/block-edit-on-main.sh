@@ -22,6 +22,71 @@ INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
+# realpath_tolerant: mirrors extensions/lib/edit-on-main-core.ts's
+# realpathTolerant() — walk the path component by component, resolving each
+# symlink found along the way and tolerating components that don't exist yet
+# (new-file creation), but cap the WHOLE walk at 40 symlink hops, same as the
+# TS twin's SymlinkDepthExceededError budget (#303 review finding, #316).
+#
+# Why not just `realpath -m` (#267's original choice): -m resolves symlinks
+# and tolerates missing components, which is exactly what new-file creation
+# needs — but on an actual symlink LOOP (e.g. `ln -s selfLink selfLink`) GNU
+# realpath hits ELOOP internally and in -m mode SWALLOWS that error, printing
+# the unresolved input path with rc=0. This hook trusted that rc, so an
+# unresolvable path was treated as resolved and the edit was ALLOWED — a
+# guardrail failing open. Plain `realpath` (no -m) DOES report ELOOP as a
+# real failure, but it also refuses any path with a not-yet-existing
+# ancestor directory, which breaks new-file creation. Reimplementing the walk
+# here (same as the TS twin already does) is what lets both cases be told
+# apart: hitting the hop cap while still looking at a symlink is a loop (or a
+# chain deep enough this guard cannot prove where it lands either way) → fail
+# closed (#210: a check that cannot prove its precondition must refuse).
+# Sets RESOLVED_TOLERANT on success; returns 1 (unset) once the cap trips.
+realpath_tolerant() {
+  local input="$1"
+  local -a queue parts
+  local part real="/" candidate target hops=0
+
+  IFS='/' read -ra queue <<< "$input"
+
+  while [ "${#queue[@]}" -gt 0 ]; do
+    part="${queue[0]}"
+    queue=("${queue[@]:1}")
+    [ -z "$part" ] && continue
+    [ "$part" = "." ] && continue
+    if [ "$part" = ".." ]; then
+      real=$(dirname "$real")
+      continue
+    fi
+    if [ "$real" = "/" ]; then
+      candidate="/$part"
+    else
+      candidate="$real/$part"
+    fi
+
+    if [ ! -L "$candidate" ]; then
+      # Not a symlink — either a real node, or missing entirely. Either way
+      # it is already resolved as far as it can be; keep walking (a later
+      # `..` may still pop back onto an earlier symlink).
+      real="$candidate"
+      continue
+    fi
+
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+      return 1
+    fi
+
+    target=$(readlink "$candidate")
+    IFS='/' read -ra parts <<< "$target"
+    [ "${target:0:1}" = "/" ] && real="/"
+    queue=("${parts[@]}" "${queue[@]}")
+  done
+
+  RESOLVED_TOLERANT="$real"
+  return 0
+}
+
 # Resolve the directory that holds the target file (relative paths hang off cwd).
 #
 # Canonicalize BEFORE taking dirname (#267 finding, macroscopeapp on PR #267):
@@ -30,16 +95,25 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 # the main clone this hook exists to protect) used to resolve DIR to the
 # worktree — `git -C "$DIR" branch --show-current` then reported the feature
 # branch and allowed the edit, while the bytes actually written landed in the
-# other clone, on whatever branch IT is on. `realpath -m` resolves every
-# symlink in the path (including ancestor directories) while still tolerating
-# a FILE that doesn't exist yet (new-file creation, handled by the
-# nearest-existing-parent walk below) — a plain `realpath` would error on that
-# case instead of normalizing it.
+# other clone, on whatever branch IT is on. realpath_tolerant() resolves
+# every symlink in the path (including ancestor directories) while still
+# tolerating a FILE that doesn't exist yet (new-file creation, handled by the
+# nearest-existing-parent walk below), while ALSO failing closed on a
+# symlink chain that cannot be resolved within the 40-hop cap (#316).
 if [ -n "$FILE" ]; then
   case "$FILE" in
-    /*) RESOLVED=$(realpath -m "$FILE") ;;
-    *)  RESOLVED=$(realpath -m "${CWD:-.}/$FILE") ;;
+    /*) INPUT_PATH="$FILE" ;;
+    *)  INPUT_PATH="${CWD:-.}/$FILE" ;;
   esac
+  if ! realpath_tolerant "$INPUT_PATH"; then
+    echo "BLOCKED: '$FILE' could not be safely resolved — its symlink chain is longer than 40 hops" >&2
+    echo "(possible symlink loop, or a chain deep enough this guard cannot prove where the edit lands)." >&2
+    echo "Refusing to edit until the path resolves within the hop limit:" >&2
+    echo "  readlink -f '$FILE'" >&2
+    echo "(CLAUDE.md HARD GATE / #210 — a check that cannot prove its precondition must refuse.)" >&2
+    exit 2
+  fi
+  RESOLVED="$RESOLVED_TOLERANT"
   DIR=$(dirname "$RESOLVED")
 else
   DIR="${CWD:-.}"
