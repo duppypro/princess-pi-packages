@@ -101,10 +101,19 @@ set -euo pipefail
 # from ~/bin after install-workflow-tools has deployed both. If it is missing,
 # fall back to an inline copy of the predicate rather than dying: this script's
 # whole contract is that it is never load-bearing.
+#
+# The source runs INSIDE the `if` condition, not inside its body, and that is
+# load-bearing under `set -e`: a `herdr-tab` that exists but is unreadable or
+# has a syntax error makes `.` return nonzero, which in the body would kill
+# this script outright — a broken decoration file taking down the tool that
+# merely borrows a predicate from it. As a condition, the failure simply falls
+# through to the inline copy below. `-r` rather than `-f` for the same reason:
+# existing and being readable are different facts, and only the second one is
+# the precondition for sourcing.
 HERDR_TAB_LIB="$(cd "$(dirname "$0")" && pwd)/herdr-tab"
-if [ -f "$HERDR_TAB_LIB" ]; then
-	# shellcheck source=bin/herdr-tab
-	. "$HERDR_TAB_LIB"
+# shellcheck source=bin/herdr-tab
+if [ -r "$HERDR_TAB_LIB" ] && . "$HERDR_TAB_LIB"; then
+	:
 else
 	herdr_available() {
 		[ -n "${HERDR_PANE_ID:-}" ] || return 1
@@ -153,11 +162,57 @@ REAPED_JSON=""
 SPARED_JSON=""
 
 # JSON string escaping for the two values this script ever interpolates: a
-# herdr tab id (safe by construction) and a filesystem path (not — it may
-# contain quotes or backslashes). Done here rather than by shelling out to jq
-# again, so the emit path stays independent of the parse path.
+# herdr tab id (safe by construction) and a filesystem path (not).
+#
+# Encoded BY jq, not by hand. The hand-rolled sed version this replaces escaped
+# backslash, quote and tab, then deleted CR/LF — which got two things wrong at
+# once. It emitted bytes like 0x01 raw, and JSON forbids unescaped control
+# characters below 0x20, so a single such byte in a path made the whole
+# document unparsable — a machine-readable mode that is only sometimes
+# machine-readable is worse than none, because callers stop checking. And
+# *deleting* CR/LF silently reported a different path than the one that was
+# reaped. A path is every byte except NUL and '/', so the encoder has to be a
+# real one; jq is already a hard precondition by the time this is reachable
+# (the no-jq and no-herdr exits both emit empty arrays and never call this).
+# `-Rs` reads stdin as one raw string — `printf '%s'` adds no trailing newline —
+# and the sed strips only jq's outer quotes, since callers interpolate this
+# inside quotes they supply.
 json_str() {
-	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | tr -d '\n\r'
+	printf '%s' "$1" | jq -Rs . | sed -e 's/^"//' -e 's/"$//'
+}
+
+# ---
+# live | gone | unknown for one pane's cwd.
+#
+# `[ -d "$cwd" ]` alone is NOT the predicate, despite being the obvious one:
+# it answers false both for "the directory is gone" and for "the directory is
+# there but cannot be statted" — a parent without +x, an unmounted automount,
+# a permissions change. Closing a tab on the second reading would close a tab
+# whose directory very much exists, which is the one outcome this tool must
+# never produce.
+#
+# So when the stat says no, climb to the nearest ancestor that actually
+# answers. If THAT directory is readable and searchable, then the absence
+# below it is a real ENOENT and the tab is stale. If it is not, we genuinely
+# cannot tell — and "cannot tell" is spared, never reaped, the same rule the
+# null-cwd case already follows. Fails toward a lingering tab, the harmless
+# direction, which is the whole disposition of this script.
+# ---
+dir_state() { # $1 = cwd
+	if [ -d "$1" ]; then
+		printf 'live'
+		return 0
+	fi
+	local ancestor
+	ancestor=$(dirname "$1")
+	while [ "$ancestor" != "/" ] && [ "$ancestor" != "." ] && [ ! -e "$ancestor" ]; do
+		ancestor=$(dirname "$ancestor")
+	done
+	if [ -d "$ancestor" ] && [ -r "$ancestor" ] && [ -x "$ancestor" ]; then
+		printf 'gone'
+	else
+		printf 'unknown'
+	fi
 }
 
 # --- not inside herdr: the normal case for a plain shell, not a failure -----
@@ -216,9 +271,9 @@ if ! printf '%s' "$PANES" | jq -j '
 	| .[]
 	| ( .[0].tab_id | tostring ) + "\u0000"
 	+ ( (map(select(.agent != null)) | length) | tostring ) + "\u0000"
-	+ ( (map(select(.cwd == null)) | length) | tostring ) + "\u0000"
-	+ ( (map(select(.cwd != null)) | length) | tostring ) + "\u0000"
-	+ ( map(select(.cwd != null) | .cwd + "\u0000") | join("") )
+	+ ( (map(select(.cwd == null or .cwd == "")) | length) | tostring ) + "\u0000"
+	+ ( (map(select(.cwd != null and .cwd != "")) | length) | tostring ) + "\u0000"
+	+ ( map(select(.cwd != null and .cwd != "") | .cwd + "\u0000") | join("") )
 ' >"$RECORDS_FILE" 2>/dev/null; then
 	echo "herdr-reap: could not parse 'herdr pane list' output — refusing to guess." >&2
 	if [ "$JSON" -eq 1 ]; then emit_json undetermined "" ""; fi
@@ -239,14 +294,15 @@ while IFS= read -r -d '' tab_id; do
 	all_gone=1
 	[ "$cwd_count" -gt 0 ] || all_gone=0 # a tab with no readable cwd at all proves nothing
 	first_gone_cwd=""
+	unstattable=0
 	i=0
 	while [ "$i" -lt "$cwd_count" ]; do
 		IFS= read -r -d '' cwd || { malformed=1; break 2; }
-		if [ -d "$cwd" ]; then
-			all_gone=0
-		elif [ -z "$first_gone_cwd" ]; then
-			first_gone_cwd="$cwd"
-		fi
+		case "$(dir_state "$cwd")" in
+		live) all_gone=0 ;;
+		unknown) unstattable=1 ;;
+		gone) [ -n "$first_gone_cwd" ] || first_gone_cwd="$cwd" ;;
+		esac
 		i=$((i + 1))
 	done
 
@@ -255,7 +311,12 @@ while IFS= read -r -d '' tab_id; do
 	reason=""
 	if [ "$tab_id" = "${HERDR_TAB_ID:-}" ]; then
 		reason="self"
-	elif [ "$unknown_count" != "0" ]; then
+	elif [ "$unknown_count" != "0" ] || [ "$unstattable" -eq 1 ]; then
+		# Two different ways of not knowing, one verdict. `unknown_count` is
+		# herdr declining to report a cwd (null or empty); `unstattable` is the
+		# filesystem declining to answer for one it did report. Neither is
+		# evidence that anything is stale, and a decoration tool that acts on
+		# an absence of evidence closes something real.
 		reason="cwd_unknown"
 	elif [ "$agent_count" != "0" ]; then
 		reason="live_agent"

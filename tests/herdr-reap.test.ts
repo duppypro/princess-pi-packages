@@ -395,6 +395,70 @@ console.log("herdr-reap (#277)\n");
 }
 
 // ---
+// An EMPTY cwd is not a path, and `[ -d "" ]` is false — so a pane reporting
+// `cwd: ""` would otherwise read as "gone" and take its tab with it. Same
+// verdict as null: we were told nothing, so we know nothing. (Review finding on
+// PR #312, confirmed against the jq grouping, which only excluded null.)
+// ---
+{
+	const stub = makeStub({
+		panes: [
+			{ pane_id: "wS:p2", tab_id: "wS:tEMPTY", cwd: deadCwd() },
+			{ pane_id: "wS:p3", tab_id: "wS:tEMPTY", cwd: "" },
+		],
+	});
+	const r = runReap(stub, ["--json"]);
+	check(stub.closed().length === 0, 'a pane reporting cwd:"" spares its tab', `closed=${JSON.stringify(stub.closed())}`);
+	check(r.json?.spared?.[0]?.reason === "cwd_unknown", "…as cwd_unknown, same as null", JSON.stringify(r.json));
+}
+
+// ---
+// `[ -d ]` answers false for BOTH "gone" and "there, but I cannot stat it".
+// A directory under a parent with the search bit removed is very much present;
+// closing its tab is the one outcome this tool must never produce. (Review
+// finding on PR #312.) Skipped when running as root, which ignores the
+// permission bits this case is entirely about.
+// ---
+{
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-noexec-"));
+	const hidden = path.join(base, "wt");
+	fs.mkdirSync(hidden);
+	fs.chmodSync(base, 0o000);
+	const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+	if (isRoot) {
+		console.log("  ##SKIP## running as root — permission bits do not gate stat, so this case cannot be staged");
+	} else {
+		const stub = makeStub({ panes: [{ pane_id: "wS:p2", tab_id: "wS:tHIDDEN", cwd: hidden }] });
+		const r = runReap(stub, ["--json"]);
+		check(
+			stub.closed().length === 0,
+			"a cwd that exists but cannot be statted spares its tab",
+			`closed=${JSON.stringify(stub.closed())}`,
+		);
+		check(r.json?.spared?.[0]?.reason === "cwd_unknown", "…reported as cwd_unknown, not reaped", JSON.stringify(r.json));
+	}
+	fs.chmodSync(base, 0o700);
+	fs.rmSync(base, { recursive: true, force: true });
+}
+
+// ---
+// A control character in a path must not break the machine-readable document.
+// The hand-rolled escaper this replaced emitted bytes below 0x20 raw — which
+// JSON forbids — and *deleted* CR/LF, silently reporting a different path than
+// the one it reaped. (Review finding on PR #312.)
+// ---
+{
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-ctl-"));
+	const ctl = path.join(base, "ctl\u0001bel\ttab");
+	fs.mkdirSync(ctl);
+	fs.rmSync(ctl, { recursive: true, force: true });
+	const stub = makeStub({ panes: [{ pane_id: "wS:p2", tab_id: "wS:tCTL", cwd: `${ctl} (deleted)` }] });
+	const r = runReap(stub, ["--json"]);
+	check(r.json !== null, "a path with a 0x01 byte still yields PARSABLE JSON", r.stdout);
+	check(r.json?.reaped?.[0]?.cwd === `${ctl} (deleted)`, "…and the path round-trips byte for byte", JSON.stringify(r.json));
+}
+
+// ---
 // A directory GENUINELY named "foo (deleted)" exists, and must be spared. This
 // is the case that forbids matching the suffix instead of stat'ing the path —
 // the suffix is kernel prose leaking through a JSON field, corroboration only.
@@ -459,6 +523,22 @@ console.log("herdr-reap (#277)\n");
 		"herdr-reap never reads `herdr api snapshot` — it is 248 KB and this runs inside an agent's turn",
 	);
 	check(fs.existsSync(HERDR_TAB), "herdr-tab ships beside it (the guard lives in exactly one file)");
+	// Sourcing must happen in an `if` CONDITION, never in its body. In the body,
+	// under `set -e`, a herdr-tab that exists but cannot be sourced takes the
+	// whole caller down — and in wt-new's case that means reporting failure for
+	// a worktree that was fully created, pushed and verified. Checked as source
+	// text because the wt-new half needs a full git sandbox to exercise live,
+	// while the rule itself is one line and easy to undo by accident.
+	for (const [name, file] of [
+		["herdr-reap", HERDR_REAP],
+		["wt-new", path.join(REPO_ROOT, "bin", "wt-new")],
+	] as const) {
+		const text = fs.readFileSync(file, "utf8");
+		check(
+			/if \[ -r "\$HERDR_TAB_LIB" \] && \. "\$HERDR_TAB_LIB"; then/.test(text),
+			`${name} sources herdr-tab as an if-condition, so an unsourceable guard cannot fail the caller`,
+		);
+	}
 	const installer = fs.readFileSync(path.join(REPO_ROOT, "bin", "install-workflow-tools"), "utf8");
 	check(
 		/^\s+herdr-tab\s*$/m.test(installer) && /^\s+herdr-reap\s*$/m.test(installer),
@@ -466,6 +546,36 @@ console.log("herdr-reap (#277)\n");
 	);
 	const cleanup = fs.readFileSync(path.join(REPO_ROOT, "bin", "pr-cleanup"), "utf8");
 	check(/herdr-reap/.test(cleanup), "pr-cleanup calls herdr-reap after removing the worktree (#277)");
+}
+
+// ---
+// …and the same rule proved by execution, not just by grep: a herdr-reap whose
+// sibling herdr-tab is a syntax error must still run to a clean verdict rather
+// than dying on the source. Copied to a temp dir because the sibling is
+// resolved from `dirname $0`.
+// ---
+{
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-brokenlib-"));
+	fs.copyFileSync(HERDR_REAP, path.join(dir, "herdr-reap"));
+	fs.chmodSync(path.join(dir, "herdr-reap"), 0o755);
+	fs.writeFileSync(path.join(dir, "herdr-tab"), "this ( is not ( valid bash\n", { mode: 0o755 });
+	const stub = makeStub({ panes: [{ pane_id: "wS:p2", tab_id: "wS:tSTALE", cwd: deadCwd() }] });
+	const r = spawnSync(path.join(dir, "herdr-reap"), ["--json"], {
+		encoding: "utf8",
+		env: {
+			...process.env,
+			PATH: `${path.join(stub.dir, "bin")}:${process.env.PATH}`,
+			HERDR_PANE_ID: "wS:p1",
+			HERDR_WORKSPACE_ID: "wS",
+			HERDR_TAB_ID: "wS:tSELF",
+		},
+	});
+	check(r.status === 0, "an unsourceable herdr-tab does not kill herdr-reap", `status=${r.status} stderr=${r.stderr}`);
+	check(
+		JSON.stringify(stub.closed()) === JSON.stringify(["wS:tSTALE"]),
+		"…and the inline fallback predicate still does the job",
+		`closed=${JSON.stringify(stub.closed())}`,
+	);
 }
 
 // ---

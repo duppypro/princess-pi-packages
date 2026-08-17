@@ -357,12 +357,22 @@ echo "✅ upstream confirmed: $UPSTREAM" >&2
 # indistinguishable.
 HERDR_TAB_LIB="$(cd "$(dirname "$0")" && pwd)/herdr-tab"
 TAB_LABEL="$(basename "$MAIN_CLONE"):$BRANCH"
-if [ -f "$HERDR_TAB_LIB" ]; then
-  # shellcheck source=bin/herdr-tab
-  . "$HERDR_TAB_LIB"
+# The source runs inside the `if` CONDITION, never in its body. This whole
+# section sits after the worktree has been created, pushed and verified, so a
+# nonzero exit here reports failure for work that fully succeeded. Under
+# `set -e` (top of file) a `.` in the body does exactly that whenever
+# herdr-tab exists but cannot be sourced — unreadable, or carrying a syntax
+# error — because a failed `.` propagates. As a condition it cannot: the
+# failure falls through to the local fallbacks, and the exit code stays the
+# worktree's. `-r`, not `-f`: existing and being readable are different facts,
+# and only the second is the precondition for sourcing.
+# shellcheck source=bin/herdr-tab
+if [ -r "$HERDR_TAB_LIB" ] && . "$HERDR_TAB_LIB"; then
+  :
 else
-  # herdr-tab missing is not fatal: this is decoration, and wt-new's real job
-  # is already done. Degrade to the tmux branch rather than dying.
+  # herdr-tab missing or unsourceable is not fatal: this is decoration, and
+  # wt-new's real job is already done. Degrade to the tmux branch rather than
+  # dying.
   herdr_available() { return 1; }
   herdr_tab() { HERDR_TAB_RESULT=skipped; return 0; }
 fi
