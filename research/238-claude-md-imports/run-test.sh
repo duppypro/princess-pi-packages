@@ -44,18 +44,32 @@ CLAUDE_CONFIG_ISOLATED="$SCRATCH/claude-config"
 PI_CONFIG_ISOLATED="$SCRATCH/pi-agent"
 mkdir -p "$CLAUDE_CONFIG_ISOLATED" "$PI_CONFIG_ISOLATED"
 
+# Resolve the CALLER's own config dirs before the isolation exports below
+# (CLAUDE_CONFIG_DIR at line ~104, PI_CODING_AGENT_DIR at line ~114)
+# reassign those same variables. A developer who already runs with a custom
+# CLAUDE_CONFIG_DIR/PI_CODING_AGENT_DIR keeps their credentials there, not
+# under $HOME — hardcoding the $HOME path would silently find nothing for
+# them and the probe would misreport "not logged in". (#327 review)
+SOURCE_CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SOURCE_PI_CONFIG_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+
 # Carry over only the credential file, never CLAUDE.md/settings.json/memory —
 # redirecting the whole config dir also redirects where each harness looks
 # for its login, so an empty isolated dir can authenticate with nobody
 # logged in. Copying just the credential file keeps the probe runnable
 # without reintroducing the ambient CLAUDE.md/settings this fix isolates
-# against. Skipped (silently) when the developer running this isn't logged
-# in locally — the probe then reports its own "not logged in" outcome.
-if [ -f "$HOME/.claude/.credentials.json" ]; then
-  cp "$HOME/.claude/.credentials.json" "$CLAUDE_CONFIG_ISOLATED/.credentials.json"
+# against. A missing credential file is reported loudly with the exact path
+# looked at, rather than left to surface later as a confusing "not logged
+# in" from the harness itself.
+if [ -f "$SOURCE_CLAUDE_CONFIG_DIR/.credentials.json" ]; then
+  cp "$SOURCE_CLAUDE_CONFIG_DIR/.credentials.json" "$CLAUDE_CONFIG_ISOLATED/.credentials.json"
+else
+  echo "⚠ no Claude Code credentials found at $SOURCE_CLAUDE_CONFIG_DIR/.credentials.json — Claude Code probes below will report 'not logged in'" >&2
 fi
-if [ -f "$HOME/.pi/agent/auth.json" ]; then
-  cp "$HOME/.pi/agent/auth.json" "$PI_CONFIG_ISOLATED/auth.json"
+if [ -f "$SOURCE_PI_CONFIG_DIR/auth.json" ]; then
+  cp "$SOURCE_PI_CONFIG_DIR/auth.json" "$PI_CONFIG_ISOLATED/auth.json"
+else
+  echo "⚠ no Pi credentials found at $SOURCE_PI_CONFIG_DIR/auth.json — the Pi probe below will report 'not logged in'" >&2
 fi
 
 # --- Fixture 1: basic relative @import -------------------------------------
