@@ -69,11 +69,14 @@
 # Duppy's direction (2026-08-13): plain `git worktree add` only for the
 # worktree itself — `herdr worktree` subcommands are NOT used, and herdr is
 # NOT a blocking dependency. The worktree is fully created and this script
-# exits 0 before any tab/window is attempted. If a herdr session is detected
-# (`$HERDR_WORKSPACE_ID` set and `herdr` on PATH), `herdr tab create` opens a
-# tab at the new path. Else if inside tmux (`$TMUX` set), `tmux new-window`
-# does the equivalent. Neither present: a friendly note on stderr, nothing
-# more — absence of a tab is not a failure. (Not implemented: an additional
+# exits 0 before any tab/window is attempted. If this shell is inside a live
+# herdr pane (`$HERDR_PANE_ID` set and `herdr` on PATH — the predicate lives in
+# `herdr-tab`, #277), an unfocused bookmark tab is opened at the new path,
+# labelled `<repo>:<branch>`. Else if inside tmux (`$TMUX` set),
+# `tmux new-window` does the equivalent. Neither present: a friendly note on
+# stderr, nothing more — absence of a tab is not a failure. The tab's other
+# half is `herdr-reap`, which closes it once the worktree is gone; `pr-cleanup`
+# calls it. (Not implemented: an additional
 # monitoring pane running e.g. `wtft --watch`, mentioned as an optional extra
 # in the brief. herdr's `pane split` targets the CURRENTLY FOCUSED pane, not
 # the new tab's pane, with no documented target argument, and guessing wrong
@@ -328,19 +331,66 @@ echo "✅ upstream confirmed: $UPSTREAM" >&2
 # Never affects the exit code — the worktree above is already done and
 # reported. A missing herdr session or tmux is not an error; it's the normal
 # case for a plain terminal.
-if [ -n "${HERDR_WORKSPACE_ID:-}" ] && command -v herdr >/dev/null 2>&1; then
-  if herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$WT_PATH" --label "$BRANCH" >/dev/null 2>&1; then
-    echo "🪟 herdr tab '$BRANCH' opened at $WT_PATH." >&2
+#
+# The guard itself lives in `herdr-tab` (#277), sourced from beside $0 so it
+# works both from the repo and from ~/bin after install-workflow-tools has
+# deployed both. Two things changed when it moved there, and both matter:
+#
+#   * The predicate is now $HERDR_PANE_ID, not $HERDR_WORKSPACE_ID. herdr
+#     compiles in a DEFAULT socket path, so `herdr` answers exit 0 from any
+#     shell on this host — cron included — and resolves pane/workspace-scoped
+#     commands against the FOCUSED pane. Only the pane id proves this shell is
+#     inside a live pane. (HERDR_WORKSPACE_ID happens to be set in the same
+#     places today, so this is belt-and-braces rather than a bug fix — but it
+#     is the predicate that is actually true, and the one herdr's own
+#     integration hook uses.)
+#   * --no-focus, always. wt-new runs mid-turn, and the new tab is a BOOKMARK
+#     nothing ever attaches to: the agent calling wt-new keeps working in its
+#     own pane, and the tab sits at a bare shell until a human walks in.
+#     Yanking the human's cursor into that bare shell mid-read is strictly
+#     worse than no tab at all.
+#
+# The label carries the repo as well as <issue#>-<slug>: labels are not unique
+# (herdr does not enforce it), issue numbers collide across repos, and the tab
+# bar is the entire UX for a bookmark nobody attaches to. Seen live — a
+# `21-commit-on-branch` tab from another repo sitting next to this repo's tabs,
+# indistinguishable.
+HERDR_TAB_LIB="$(cd "$(dirname "$0")" && pwd)/herdr-tab"
+TAB_LABEL="$(basename "$MAIN_CLONE"):$BRANCH"
+# The source runs inside the `if` CONDITION, never in its body. This whole
+# section sits after the worktree has been created, pushed and verified, so a
+# nonzero exit here reports failure for work that fully succeeded. Under
+# `set -e` (top of file) a `.` in the body does exactly that whenever
+# herdr-tab exists but cannot be sourced — unreadable, or carrying a syntax
+# error — because a failed `.` propagates. As a condition it cannot: the
+# failure falls through to the local fallbacks, and the exit code stays the
+# worktree's. `-r`, not `-f`: existing and being readable are different facts,
+# and only the second is the precondition for sourcing.
+# shellcheck source=bin/herdr-tab
+if [ -r "$HERDR_TAB_LIB" ] && . "$HERDR_TAB_LIB"; then
+  :
+else
+  # herdr-tab missing or unsourceable is not fatal: this is decoration, and
+  # wt-new's real job is already done. Degrade to the tmux branch rather than
+  # dying.
+  herdr_available() { return 1; }
+  herdr_tab() { HERDR_TAB_RESULT=skipped; return 0; }
+fi
+
+if herdr_available; then
+  herdr_tab "$WT_PATH" "$TAB_LABEL"
+  if [ "${HERDR_TAB_RESULT:-}" = created ]; then
+    echo "🪟 herdr tab '$TAB_LABEL' opened at $WT_PATH." >&2
   else
     echo "⚠️  wt-new: worktree created, but 'herdr tab create' failed. Open one by hand:" >&2
-    echo "   herdr tab create --workspace $HERDR_WORKSPACE_ID --cwd \"$WT_PATH\" --label $BRANCH" >&2
+    echo "   herdr tab create --workspace $HERDR_WORKSPACE_ID --cwd \"$WT_PATH\" --label \"$TAB_LABEL\" --no-focus" >&2
   fi
 elif [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-  if tmux new-window -n "$BRANCH" -c "$WT_PATH" >/dev/null 2>&1; then
-    echo "🪟 tmux window '$BRANCH' opened at $WT_PATH." >&2
+  if tmux new-window -n "$TAB_LABEL" -c "$WT_PATH" >/dev/null 2>&1; then
+    echo "🪟 tmux window '$TAB_LABEL' opened at $WT_PATH." >&2
   else
     echo "⚠️  wt-new: worktree created, but 'tmux new-window' failed. Open one by hand:" >&2
-    echo "   tmux new-window -n $BRANCH -c \"$WT_PATH\"" >&2
+    echo "   tmux new-window -n \"$TAB_LABEL\" -c \"$WT_PATH\"" >&2
   fi
 else
   echo "ℹ️  wt-new: no herdr session or tmux detected — no tab/window opened." >&2
