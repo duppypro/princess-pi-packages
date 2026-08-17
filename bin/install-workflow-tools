@@ -297,7 +297,21 @@ for entry in "${STALE[@]}"; do
   if [ -f "$INSTALL_DIR/$name" ] || [ -L "$INSTALL_DIR/$name" ]; then
     found="$INSTALL_DIR/$name"
   elif found=$(command -v "$name" 2>/dev/null); then
-    :
+    # A bare-name PATH hit needs a content check the $INSTALL_DIR branch
+    # doesn't: only this repo's installer ever wrote there, but PATH is the
+    # whole system's namespace, and a retired name can coincide with an
+    # unrelated system binary (#246 — /usr/bin/merge, RCS three-way merge,
+    # ships with rcs/diffutils, sharing the retired "merge" name with zero
+    # relation to this repo). Every script this repo has ever shipped — every
+    # current bash entry AND the old merge.ts/merge.mjs before #201 — opens
+    # with a shebang ("#!"); a compiled binary's first two bytes never do.
+    # That invariant, not the path it was found at, is the marker: it holds
+    # for a stale copy in ~/.local/bin just as well as one in ~/bin, and it
+    # rejects /usr/bin/merge without special-casing system directories (which
+    # would just be a different, less-complete version of the same guess).
+    if [ "$(head -c 2 "$found" 2>/dev/null)" != "#!" ]; then
+      found=""
+    fi
   fi
   if [ -n "$found" ]; then
     stale_found=1
