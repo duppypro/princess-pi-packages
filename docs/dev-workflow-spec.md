@@ -265,6 +265,40 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   actual guard logic with `extensions/lib/git-guardrails-core.ts` — one file deeper than
   the issue number alone suggests; `hooks/block-dangerous-git.sh` carries the same checks
   written as inline bash.
+- **Commits on `main` are blocked, not just pushes (#301, btw#21).** `git commit`, `merge`,
+  `rebase`, `cherry-pick`, `am`, and `pull` are refused when the sub-command's repo is on
+  `main`/`master`. Allowed on `main`: `pull --ff-only`, `merge --ff-only`, every
+  `--abort`/`--quit`, and `checkout -b` / `switch -c` (the escape — nothing here can
+  deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
+  every enforced check concentrates on PR review; `git-checkpoint` already refuses on `main`
+  (#225) and this closes the raw-git path an agent reaches through Bash. **What the hook
+  cannot see it fails safe on:** the branch is resolved *before* the line runs, so a
+  compound line is judged per sub-command with two pieces of line-state — `cd`/`pushd`
+  move the effective cwd for the rest of the line (`cd -`/`popd` reset it), and
+  `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan` mark the target repo as off `main`
+  for the rest of the line, so `git checkout -b 123-slug && git commit` is allowed while
+  `git checkout main && git commit` stays blocked. A plain `checkout <existing>` /
+  `switch <existing>` does **not** lift the gate (a positional may be a path, and guessing
+  fails open) — run it as its own command. **Unknown never moves the model (PR #305
+  review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
+  too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`
+  earlier in the same line, then from the environment; an unresolved branch operand never
+  lifts, and an unresolved `cd` operand (or `~user`) makes the effective cwd **unknown** —
+  the real shell may now be in a main checkout — and unknown is protected until a
+  resolvable `cd`, `cd -` or `popd` restores it (`cd a b` is rejected by bash, so it stays
+  put); `checkout -b <existing>` / `switch -c <existing>` do not lift
+  (git refuses and leaves you on `main` — `-B`/`-C`/`--force-create` do); `( … )` groups
+  scope `cd` and assignments; `$( … )` / `bash -c` bodies, pipeline elements and
+  backgrounded jobs are child shells and *nothing* they set carries back — not even a
+  branch switch, because substitutions are inspected before the walk and would otherwise
+  lift a commit that ran earlier; a state change made **after** `&&`/`||` in a chain is
+  reverted when the chain ends at `;` (`false && git checkout -b x; git commit` is judged
+  on `main`) while the chain's *first* command is unconditional (`git checkout -b x && git
+  commit; git push` keeps its lift); lifts are stored per repo; and `--abort`/`--ff-only`
+  count only as options, never as the argument of `-m`/`-F`/`--onto`/… . Detached HEAD
+  is not `main`, so a rebase in progress is untouched. Uncommitted Bash-authored *edits* on
+  `main` (mode 1 in #301) are out of scope here — that is #303's territory. Pi twin gets the
+  same rule through `git-guardrails-core.ts`; the parity fixture pins both.
 - **`block-edit-on-main.sh`** (#237) — blocks `Edit`/`Write`/`MultiEdit` when the target
   file's repo is on `main`/`master` or detached HEAD, enforcing this repo's CLAUDE.md HARD
   GATE technically instead of only by convention. Matcher **must** be
@@ -314,7 +348,13 @@ git push --force-with-lease                            → exit 2  blocked (from
 git push origin main                                   → exit 2  blocked
 git worktree remove --force .claude/worktrees/42-foo   → exit 2  blocked
 git worktree remove .claude/worktrees/42-foo           → exit 0  allowed (git's own dirty-tree refusal is the safeguard)
+git commit -m x                                        → exit 2  blocked (from a repo on main, #301)
+git pull                                               → exit 2  blocked (from a repo on main — use --ff-only)
+git pull --ff-only                                     → exit 0  allowed
+git checkout -b 999-x && git commit -m x               → exit 0  allowed (line-state: the escape lifts the gate)
+cd .claude/worktrees/42-foo && git commit -m x         → exit 0  allowed (line-state: cd moved the cwd)
 ```
+(#301 lines measured 2026-08-16 with the main clone as tool-call cwd — `debug/smoke-301-hook.sh`.)
 
 It blocks by *destination*: a force-push to a named feature branch is allowed, and this
 workflow depends on it (`git-checkpoint`, `pr-open`, the rebase recipes below). **Always

@@ -8,7 +8,13 @@
 #     allowed — git's own refusal on a dirty tree is the safeguard there.)
 #   Block on main/master only: push whose DESTINATION ref is main/master,
 #     bare push / reset --hard when the affected repo is on main/master,
-#     branch -D main/master.
+#     branch -D main/master; and (#301) commit / merge / rebase / cherry-pick /
+#     am / pull when the affected repo is on main/master — main advances only
+#     through PRs. Allowed there: --ff-only (pull/merge), every --abort/--quit,
+#     checkout -b / switch -c (the escape; can never deadlock).
+#   Line-state (#301): the hook runs before the line does, so `cd`/`pushd`
+#     move the effective cwd for later sub-commands and `checkout -b`/`switch -c`
+#     lift the gate for the repo that switched — see repo_key/effective_branch.
 #
 # Why token parsing (#74): the old greedy regex `push\s+.*\b(main|master)\b`
 # spanned the whole command line, so any co-occurrence of the words blocked
@@ -36,6 +42,30 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
+# Line-state (#301): HOOK_CWD is the EFFECTIVE cwd and moves with cd/pushd;
+# ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
+# earlier in the same line for the repo that switched (see effective_branch).
+ORIG_CWD="$HOOK_CWD"
+# Sentinel for "the effective cwd is UNKNOWN" (PR #305 round 4): a cd whose
+# operand cannot be resolved here (`cd "$VAR"` set in an earlier tool call,
+# `cd ~user`) may have moved the real shell into a main checkout, so the model
+# does not stay put — it becomes unknown, and unknown is treated as protected by
+# every branch-scoped check until a resolvable cd (or `cd -`/popd) restores it.
+# A double-slash path is never a real directory, so it rides through the
+# scope/snapshot plumbing as an ordinary cwd value.
+UNKNOWN_CWD="//unknown"
+# LIFTS: newline-separated `<repo key>=<branch>` records, latest wins — one
+# entry per repo, so a two-repo line does not clobber itself (PR #305 review).
+LIFTS=$'\n'
+# LINE_VARS: newline-separated literal `NAME=value` assignments seen earlier in
+# the line, latest wins, so `cd "$WT"` / `checkout -b "$BRANCH"` can be resolved;
+# anything unresolvable is unknown, and unknown never moves the cwd or lifts.
+LINE_VARS=$'\n'
+# Subshell scopes: `(` pushes cwd AND vars, `)` pops them — nothing set inside a
+# group reaches the parent shell (PR #305 review, twice). Lifts are not scoped:
+# a branch switch inside a group happened on disk.
+CWD_STACK=()
+VARS_STACK=()
 
 block() {
   echo "BLOCKED: '$COMMAND' — $1" >&2
@@ -45,6 +75,7 @@ block() {
 is_main_ref() {
   case "$1" in
     main|master|refs/heads/main|refs/heads/master) return 0 ;;
+    //unknown) return 0 ;;   # unknown effective cwd is protected (fail-closed, PR #305 round 4)
   esac
   return 1
 }
@@ -73,6 +104,196 @@ branch_of() {
     git -C "$dir" branch --show-current 2>/dev/null || true
   else
     git branch --show-current 2>/dev/null || true
+  fi
+}
+
+# ---
+# Line-state (#301). The hook runs BEFORE the line executes, so every
+# sub-command would otherwise be judged against the tool-call cwd and the
+# branch that repo is on right now. Two things an earlier sub-command in the
+# same line changes for the later ones:
+#   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
+#          `pushd` reset it to the tool-call cwd; an unresolvable operand makes it
+#          UNKNOWN, which every branch-scoped check treats as protected.
+#   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan <name>` mark
+#          the repo they ran in as being on <name> for the rest of the line
+#          (so `git checkout -b 301-slug && git commit` is allowed on main);
+#          a plain `checkout main` / `switch main` marks it as on main (so
+#          `git checkout main && git commit` is blocked from a feature branch).
+#          A plain `checkout <other>` does NOT lift: the positional may be a
+#          path (file restore) and guessing fails open.
+# The lift is keyed to the repo that switched (-C/--git-dir/cwd resolved), so
+# `git -C other checkout -b x && git commit` still judges the cwd repo.
+# ---
+# realpath -sm: syntactic normalisation only (no symlink resolution), so the key
+# matches the TS twin's path.resolve() byte for byte — a symlinked worktree must
+# not lift the gate on one harness and not the other.
+repo_key() {
+  local dir="$1" gitdir="$2"
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  if [ -n "$gitdir" ] && [ "${gitdir#/}" = "$gitdir" ]; then
+    gitdir="$dir/$gitdir"
+  fi
+  printf '%s|%s' "$(realpath -sm "$dir" 2>/dev/null || printf '%s' "$dir")" "${gitdir:+$(realpath -sm "$gitdir" 2>/dev/null || printf '%s' "$gitdir")}"
+}
+
+# Branch the sub-command acts on, honouring an earlier switch in the same line.
+effective_branch() {
+  local key rest
+  # unknown cwd + a relative (or absent) -C target → the branch is unknowable
+  if [ "$HOOK_CWD" = "$UNKNOWN_CWD" ] && { [ -z "$1" ] || [ "${1#/}" = "$1" ]; }; then
+    printf '%s' "$UNKNOWN_CWD"; return
+  fi
+  key=$(repo_key "$1" "$2")
+  rest="${LIFTS##*$'\n'$key=}"        # ## → LAST record for this key
+  if [ "$rest" != "$LIFTS" ]; then
+    printf '%s' "${rest%%$'\n'*}"; return
+  fi
+  branch_of "$1" "$2"
+}
+
+# Resolve $NAME / ${NAME} in a word from LINE_VARS, then the hook's own
+# environment (HOME, PWD and other exported names are shared with the tool's
+# shell). Prints the expanded word and returns 0; returns 1 when anything is
+# left unresolved — command substitution, an unknown variable, a glob — so the
+# caller can fail closed instead of trusting a literal '$WT'.
+expand_word() {
+  local w="$1" name val rest
+  case "$w" in *'`'*|*'$('*) return 1 ;; esac
+  while [[ "$w" =~ \$\{?([A-Za-z_][A-Za-z0-9_]*)\}? ]]; do
+    name="${BASH_REMATCH[1]}"
+    rest="${LINE_VARS##*$'\n'$name=}"   # ## → LAST assignment wins (PR #305 review)
+    if [ "$rest" != "$LINE_VARS" ]; then
+      val="${rest%%$'\n'*}"
+    elif [ -n "${!name+x}" ]; then
+      val="${!name}"
+    else
+      return 1
+    fi
+    w="${w/"${BASH_REMATCH[0]}"/$val}"
+  done
+  case "$w" in *'$'*) return 1 ;; esac
+  printf '%s' "$w"
+}
+
+# `NAME=value` (or `export NAME=value`) standing alone as a sub-command: remember
+# the literal value for expand_word. Values that themselves expand are skipped —
+# they would need the same resolution recursively, and unknown is the safe state.
+record_assignment() {
+  local w="${TOKENS[0]}" name val n=${#TOKENS[@]}
+  # Only a STANDALONE assignment counts — `VAR=x git commit` is a command with
+  # a prefix and must fall through to the checks below.
+  if [ "$w" = "export" ]; then [ "$n" -eq 2 ] || return 1; w="${TOKENS[1]}"; else [ "$n" -eq 1 ] || return 1; fi
+  [[ "$w" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || return 1
+  name="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+  case "$val" in *'$'*|*'`'*) return 0 ;; esac
+  LINE_VARS+="$name=$val"$'\n'
+  return 0
+}
+
+# A child shell (`bash -c`, `$(…)`, backticks) sees the current cwd but its own
+# cd never comes back — restore HOOK_CWD after the recursive check. A branch
+# switch inside it DID happen on disk, so LIFT_* is left as the child set it.
+check_child_string() {
+  local saved_cwd="$HOOK_CWD" saved_vars="$LINE_VARS" saved_lifts="$LIFTS"
+  check_command_string "$1"
+  HOOK_CWD="$saved_cwd"; LINE_VARS="$saved_vars"; LIFTS="$saved_lifts"
+}
+
+# `cd`/`pushd`/`popd` as the FIRST word of a sub-command moves the effective
+# cwd. Returns 0 (and updates HOOK_CWD) when it consumed the sub-command.
+# The cwd only moves to a directory that EXISTS: a failing `cd /nope; git commit`
+# leaves the real shell where it was, so the model must too (PR #305 review).
+apply_cd() {
+  local w="${TOKENS[0]##*/}" arg="" t npos=0
+  case "$w" in cd|pushd|popd) ;; *) return 1 ;; esac
+  for t in "${TOKENS[@]:1}"; do
+    # `pushd -n <dir>` rotates the stack without changing directory (PR #305 round 3)
+    if [ "$w" = "pushd" ] && [ "$t" = "-n" ]; then return 0; fi
+    if [ "$t" = "-" ] || [ "${t#-}" = "$t" ]; then
+      npos=$((npos + 1)); [ "$npos" -eq 1 ] && arg="$t"
+    fi
+  done
+  # bash rejects `cd a b` ("too many arguments") — the real shell stays put (PR #305 round 4)
+  [ "$npos" -gt 1 ] && return 0
+  local target
+  if [ "$w" = "popd" ] || [ "$arg" = "-" ] || { [ "$w" = "pushd" ] && [ -z "$arg" ]; }; then
+    HOOK_CWD="$ORIG_CWD"   # previous directory is unknowable here — never guess
+    return 0
+  elif [ -z "$arg" ] || [ "$arg" = "~" ]; then
+    target="$HOME"
+  else
+    if ! arg=$(expand_word "$arg"); then
+      HOOK_CWD="$UNKNOWN_CWD"; return 0     # unresolvable → the cwd is UNKNOWN (protected)
+    fi
+    if [ "${arg#\~/}" != "$arg" ]; then
+      target="$HOME/${arg#\~/}"
+    elif [ "${arg#\~}" != "$arg" ]; then
+      HOOK_CWD="$UNKNOWN_CWD"; return 0     # `~user` — not resolved here → unknown
+    elif [ "${arg#/}" != "$arg" ]; then
+      target="$arg"
+    else
+      [ "$HOOK_CWD" = "$UNKNOWN_CWD" ] && return 0   # relative from unknown stays unknown
+      target="${HOOK_CWD:-.}/$arg"
+    fi
+  fi
+  [ -d "$target" ] && HOOK_CWD="$target"   # a cd that would fail moves nothing
+  return 0
+}
+
+# Record a branch switch for the rest of the line (#301 line-state). Only an
+# unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate; a plain
+# positional lowers it when it names main/master and is otherwise ignored (it
+# may be a pathspec — guessing would fail open). A `--` means pathspecs
+# follow: file restore, no switch at all.
+apply_lift() {
+  local cmd="$1" cpath="$2" gitdir="$3"; shift 3
+  local -a rest=("$@")
+  local t target="" i=0 n=${#rest[@]}
+  for t in "${rest[@]}"; do [ "$t" = "--" ] && return 0; done
+  while [ "$i" -lt "$n" ]; do
+    t="${rest[$i]}"
+    if [ "$cmd" = "checkout" ]; then
+      case "$t" in -b|-B|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+    else
+      case "$t" in -c|-C|--create|--force-create|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+    fi
+    case "$t" in -*) i=$((i + 1)); continue ;; esac
+    if is_main_ref "$t"; then target="$t"; break; fi   # moving TO main lowers the gate
+    return 0   # positional that is not main: could be a path — no line-state change
+  done
+  [ -z "$target" ] && return 0
+  target=$(expand_word "$target") || return 0   # '$BRANCH' unresolved → no lift (fail-closed)
+  # `checkout -b` / `switch -c` / `--orphan` FAIL when the branch already exists,
+  # leaving the repo on main — so an existing name must not lift (PR #305 review).
+  # -B / -C / --force-create reset-or-create and always land on the branch.
+  local force=0 t2
+  for t2 in "${rest[@]}"; do
+    case "$t2" in -B|-C|--force-create) force=1 ;; esac
+  done
+  if [ "$force" = 0 ] && ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
+    return 0
+  fi
+  LIFTS+="$(repo_key "$cpath" "$gitdir")=$target"$'\n'
+  return 0
+}
+
+# Does <ref> exist in the repo the sub-command acts on? Same -C/--git-dir
+# resolution as branch_of.
+ref_exists() {
+  local dir="$1" gitdir="$2" ref="$3"
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  if [ -n "$gitdir" ]; then
+    [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
+    GIT_DIR="$gitdir" git show-ref --verify --quiet "$ref" 2>/dev/null
+  else
+    git -C "${dir:-.}" show-ref --verify --quiet "$ref" 2>/dev/null
   fi
 }
 
@@ -218,7 +439,7 @@ extract_and_check_substitutions() {
         done
         body="${s:$start:$((i - start))}"
         i=$((i + 1))
-        check_command_string "$body"
+        check_child_string "$body"
         continue
       fi
     fi
@@ -240,7 +461,7 @@ extract_and_check_substitutions() {
       done
       body="${s:$start:$((i - start))}"
       i=$((i + 1))
-      check_command_string "$body"
+      check_child_string "$body"
       continue
     fi
 
@@ -284,7 +505,7 @@ check_push() {
   if [ ${#refspecs[@]} -eq 0 ]; then
     # Bare push (at most a remote): the affected repo's current branch decides
     local b
-    b=$(branch_of "$cpath" "$gitdir")
+    b=$(effective_branch "$cpath" "$gitdir")
     if is_main_ref "$b"; then
       block "pushes current branch main/master."
     fi
@@ -305,7 +526,7 @@ check_push() {
       # symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       # same-named remote ref — resolve it instead of matching the literal
       # string (#74 review finding 8)
-      b2=$(branch_of "$cpath" "$gitdir")
+      b2=$(effective_branch "$cpath" "$gitdir")
       if is_main_ref "$b2"; then
         block "pushes current branch (HEAD) to main/master."
       fi
@@ -368,8 +589,18 @@ split_subcommands() {
       case "$ch" in
         \\) out+="$ch${s:$((i + 1)):1}"; i=$((i + 1)) ;;
         \'|\") q="$ch"; out+="$ch" ;;
-        $'\n'|';') out+=$'\x1f' ;;
-        '&'|'|') [ "${s:$((i + 1)):1}" = "$ch" ] && i=$((i + 1)); out+=$'\x1f' ;;
+        # '(' / ')' outside quotes open/close a subshell group — split there
+        # so `(cd wt && git commit)` exposes both the cd and the commit
+        # (#301). `$(…)` bodies were already inspected by the substitution walk.
+        # Separators become standalone MARKER entries so the walk can model
+        # control flow (PR #305 review round 2): ';' ends a chain, '&&'/'||'
+        # make what follows conditional, '|' and a single '&' put the adjacent
+        # sub-command in a subshell, '(' / ')' open/close a scope.
+        $'\n'|';') out+=$'\x1f;'$'\x1f' ;;
+        '('|')') out+=$'\x1f'"$ch"$'\x1f' ;;
+        '&'|'|')
+          if [ "${s:$((i + 1)):1}" = "$ch" ]; then i=$((i + 1)); out+=$'\x1f&&'$'\x1f'
+          else out+=$'\x1f'"$ch"$'\x1f'; fi ;;
         *) out+="$ch" ;;
       esac
     fi
@@ -438,7 +669,7 @@ skip_benign_prefix() {
         a="${T[$j]}"
         if [ "$a" = "-c" ] || [[ "$a" =~ ^-[A-Za-z]*c[A-Za-z]*$ ]]; then
           if [ $((j + 1)) -lt "$n" ]; then
-            check_command_string "${T[$((j + 1))]}"
+            check_child_string "${T[$((j + 1))]}"
           fi
           return 1
         fi
@@ -509,7 +740,7 @@ check_git_subcommand() {
       local tok b
       for tok in "${T[@]:$i}"; do
         if [ "$tok" = "--hard" ]; then
-          b=$(branch_of "$cpath" "$gitdir")
+          b=$(effective_branch "$cpath" "$gitdir")
           if is_main_ref "$b"; then
             block "hard-resets on main/master."
           fi
@@ -557,6 +788,48 @@ check_git_subcommand() {
           block "discards uncommitted work ('git $cmd .', always blocked)."
         fi
       done
+      [ "$cmd" = "checkout" ] && apply_lift checkout "$cpath" "$gitdir" "${T[@]:$i}"
+      ;;
+    switch)
+      apply_lift switch "$cpath" "$gitdir" "${T[@]:$i}"
+      ;;
+    # Commits on main are blocked, not just pushes (#301, btw#21): main
+    # advances only through PRs, so every enforced check concentrates on PR
+    # review. `git-checkpoint` already refuses on main (#225); this closes the
+    # raw-git path. --abort/--quit undo (allowed); --ff-only creates no commit
+    # (allowed, Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit
+    # on a diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are
+    # not in this set — the escape from main can never deadlock.
+    commit|merge|rebase|cherry-pick|am|pull)
+      # Option ARGUMENTS are not options: `git commit -m --abort` is a commit
+      # whose message is '--abort' (PR #305 review). Skip the word after any
+      # argument-taking option, stop at `--`, and honour --abort/--quit only
+      # for the sub-commands that have them.
+      local tok6 ffonly=0 b6 skip6=0
+      for tok6 in "${T[@]:$i}"; do
+        if [ "$skip6" = 1 ]; then skip6=0; continue; fi
+        case "$tok6" in
+          --) break ;;
+          -m|-F|-C|-c|-s|-X|-S|-x|--message|--file|--strategy|--strategy-option|--onto|--exec|--author|--date|--template|--fixup|--squash|--reuse-message|--reedit-message|--gpg-sign|--cleanup|--into-name|--patch-format|--whitespace|--directory|--exclude|--include|--mainline)
+            skip6=1 ;;
+          --abort|--quit)
+            case "$cmd" in merge|rebase|cherry-pick|am) return 0 ;; esac ;;
+          --ff-only) ffonly=1 ;;
+        esac
+      done
+      if [ "$ffonly" = 1 ] && { [ "$cmd" = "merge" ] || [ "$cmd" = "pull" ]; }; then
+        return 0
+      fi
+      b6=$(effective_branch "$cpath" "$gitdir")
+      if [ "$b6" = "$UNKNOWN_CWD" ]; then
+        block "${cmd}s with an UNKNOWN effective cwd — an earlier cd in this line could not be resolved (\$VAR from another call, ~user); use a literal path or run the cd on its own line."
+      fi
+      if is_main_ref "$b6"; then
+        if [ "$cmd" = "pull" ] || [ "$cmd" = "merge" ]; then
+          block "${cmd}s on main/master; use --ff-only to sync main, or run 'wt-new <issue#>-<slug>' (or 'git checkout -b') first."
+        fi
+        block "${cmd}s on main/master; main advances only through PRs (#301) — run 'wt-new <issue#>-<slug>' (or 'git checkout -b') first."
+      fi
       ;;
     clean)
       local tok4
@@ -614,24 +887,77 @@ check_gh_command() {
 # command strings (bash -c / eval — #74 review finding 14) and for
 # substitution bodies ($(...) and backticks — #105/finding 16b): block()
 # exits directly, so any nested hit stops everything.
+# One sub-command: line-state changes (assignment, cd, lift) or a check.
+check_one_sub() {
+  tokenize "$1"
+  [ ${#TOKENS[@]} -eq 0 ] && return 0
+  record_assignment && return 0   # NAME=value alone: remembered, nothing to block
+  apply_cd && return 0            # line-state only, nothing to block (#301)
+  # Strip the benign prefix ONCE, then dispatch on what is actually being run.
+  # Once matters: the walk recurses into `bash -c` / `eval` bodies, and running
+  # it per-checker would re-walk every nested string twice.
+  skip_benign_prefix || return 0
+  if [ "${TOKENS[$PREFIX_START]##*/}" = "git" ]; then
+    check_git_subcommand
+  else
+    check_gh_command
+  fi
+  return 0
+}
+
+# Walk the split with control flow modelled fail-closed (PR #305 review round 2):
+#   ';'        ends a &&/|| chain — state changes made under a condition are
+#              REVERTED (`false && git checkout -b x; git commit` is judged on
+#              main). The FIRST sub-command of a chain is unconditional, so
+#              `cd wt && git commit; git push` keeps its cd.
+#   '&&' '||'  everything after the first one in a chain is conditional.
+#   '|' '&'    the adjacent sub-command runs in a subshell: its cd/vars/lifts
+#              are dropped (`cd x | cat; git commit`).
+#   '(' ')'    scope: cwd and vars restored at ')'.
 check_command_string() {
   local stripped subs sub
+  local -a S=()
+  local i n prev next
+  local snap_on=0 snap_cwd="" snap_vars="" snap_lifts=""
+  local sv_cwd sv_vars sv_lifts
   stripped=$(strip_heredocs "$1")
   extract_and_check_substitutions "$stripped"
   subs=$(split_subcommands "$stripped")
-  while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
-    tokenize "$sub"
-    [ ${#TOKENS[@]} -eq 0 ] && continue
-    # Strip the benign prefix ONCE, then dispatch on what is actually being run.
-    # Once matters: the walk recurses into `bash -c` / `eval` bodies, and running
-    # it per-checker would re-walk every nested string twice.
-    skip_benign_prefix || continue
-    if [ "${TOKENS[$PREFIX_START]##*/}" = "git" ]; then
-      check_git_subcommand
+  while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do S+=("$sub"); done <<< "${subs}"$'\x1f'
+  n=${#S[@]}
+  for ((i = 0; i < n; i++)); do
+    sub="${S[$i]}"
+    case "$sub" in
+      "(") CWD_STACK+=("$HOOK_CWD"); VARS_STACK+=("$LINE_VARS"); continue ;;
+      ")")
+        if [ ${#CWD_STACK[@]} -gt 0 ]; then
+          HOOK_CWD="${CWD_STACK[$((${#CWD_STACK[@]} - 1))]}"; unset 'CWD_STACK[${#CWD_STACK[@]}-1]'
+          LINE_VARS="${VARS_STACK[$((${#VARS_STACK[@]} - 1))]}"; unset 'VARS_STACK[${#VARS_STACK[@]}-1]'
+        fi
+        continue ;;
+      ";")
+        if [ "$snap_on" = 1 ]; then
+          HOOK_CWD="$snap_cwd"; LINE_VARS="$snap_vars"; LIFTS="$snap_lifts"; snap_on=0
+        fi
+        continue ;;
+      "&&")
+        if [ "$snap_on" = 0 ]; then
+          snap_on=1; snap_cwd="$HOOK_CWD"; snap_vars="$LINE_VARS"; snap_lifts="$LIFTS"
+        fi
+        continue ;;
+      "|"|"&") continue ;;
+    esac
+    prev="${S[$((i - 1))]:-}"; [ "$i" -eq 0 ] && prev=""
+    next="${S[$((i + 1))]:-}"
+    if [ "$prev" = "|" ] || [ "$next" = "|" ] || [ "$next" = "&" ]; then
+      # pipeline element / background job: a subshell — nothing it sets persists
+      sv_cwd="$HOOK_CWD"; sv_vars="$LINE_VARS"; sv_lifts="$LIFTS"
+      check_one_sub "$sub"
+      HOOK_CWD="$sv_cwd"; LINE_VARS="$sv_vars"; LIFTS="$sv_lifts"
     else
-      check_gh_command
+      check_one_sub "$sub"
     fi
-  done <<< "${subs}"$'\x1f'
+  done
   return 0
 }
 
