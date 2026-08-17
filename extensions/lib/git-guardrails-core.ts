@@ -55,6 +55,59 @@ function branchOf(cPath: string, hookCwd: string, gitDir = ""): string {
 }
 
 // ---
+// Line-state (#301). The hook runs BEFORE the line executes, so every
+// sub-command would otherwise be judged against the tool-call cwd and the
+// branch that repo is on right now. Two things an earlier sub-command in the
+// same line changes for the later ones:
+//   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
+//          `pushd` reset it to the tool-call cwd (fail-safe: never guess).
+//   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--orphan <name>` mark
+//          the repo they ran in as being on <name> for the rest of the line
+//          (so `git checkout -b 301-slug && git commit` is allowed on main);
+//          a plain `checkout main` / `switch main` marks it as on main (so
+//          `git checkout main && git commit` is blocked from a feature branch).
+//          A plain `checkout <other>` does NOT lift: the positional may be a
+//          path (file restore) and guessing fails open.
+// The lift is keyed to the repo that switched (-C/--git-dir/cwd resolved), so
+// `git -C other checkout -b x && git commit` still judges the cwd repo.
+// ---
+export interface LineState {
+  cwd: string;
+  origCwd: string;
+  liftKey: string;
+  liftBranch: string;
+}
+
+function repoKey(cPath: string, cwd: string, gitDir: string): string {
+  const dir = cPath ? resolve(cwd || ".", cPath) : cwd;
+  return `${dir}|${gitDir ? resolve(dir || ".", gitDir) : ""}`;
+}
+
+/** Branch the sub-command acts on, honouring an earlier switch in the same line. */
+function effectiveBranch(cPath: string, st: LineState, gitDir = ""): string {
+  if (st.liftKey && st.liftKey === repoKey(cPath, st.cwd, gitDir)) return st.liftBranch;
+  return branchOf(cPath, st.cwd, gitDir);
+}
+
+/** `cd`/`pushd`/`popd` as the FIRST word of a sub-command moves the effective cwd. */
+function applyCd(T: string[], st: LineState): boolean {
+  const w = T[0]?.slice(T[0].lastIndexOf("/") + 1);
+  if (w !== "cd" && w !== "pushd" && w !== "popd") return false;
+  const home = process.env.HOME || "";
+  const arg = T.slice(1).find((t) => !t.startsWith("-") || t === "-");
+  if (w === "popd" || arg === "-" || (w === "pushd" && arg === undefined)) {
+    st.cwd = st.origCwd; // previous directory is unknowable here — never guess
+  } else if (arg === undefined || arg === "~") {
+    st.cwd = home;
+  } else if (arg.startsWith("~/")) {
+    st.cwd = resolve(home, arg.slice(2));
+  } else {
+    st.cwd = resolve(st.cwd || ".", arg);
+  }
+  return true;
+}
+
+// ---
 // Drop heredoc bodies so quoted text like `<<EOF\ngit push origin main\nEOF`
 // is never mistaken for a command (#74 false-positive class 3).
 // ---
@@ -128,7 +181,7 @@ const PUSH_ARG_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--ex
 // ---
 // Push-target parsing (#74): returns a block reason, or null to allow.
 // ---
-function checkPush(tokens: string[], cPath: string, hookCwd: string, gitDir: string): string | null {
+function checkPush(tokens: string[], cPath: string, st: LineState, gitDir: string): string | null {
   let remote = "";
   const refspecs: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -157,7 +210,7 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string, gitDir: str
 
   if (refspecs.length === 0) {
     // Bare push (at most a remote): the affected repo's current branch decides
-    if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
+    if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
       return "pushes current branch main/master.";
     }
     return null;
@@ -177,7 +230,7 @@ function checkPush(tokens: string[], cPath: string, hookCwd: string, gitDir: str
       // symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       // same-named remote ref — resolve it instead of matching the literal
       // string (#74 review finding 8)
-      if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
+      if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
         return "pushes current branch (HEAD) to main/master.";
       }
       continue;
@@ -250,7 +303,10 @@ function splitOutsideQuotes(s: string): string[] {
     } else if (ch === "'" || ch === '"') {
       q = ch;
       cur += ch;
-    } else if (ch === "\n" || ch === ";") {
+    } else if (ch === "\n" || ch === ";" || ch === "(" || ch === ")") {
+      // '(' / ')' outside quotes open/close a subshell group — split there so
+      // `(cd wt && git commit)` exposes both the cd and the commit (#301).
+      // `$(…)` bodies were already inspected by checkSubstitutions.
       subs.push(cur);
       cur = "";
     } else if (ch === "&" || ch === "|") {
@@ -443,11 +499,39 @@ function skipBenignPrefix(T: string[], hookCwd: string): PrefixScan {
   return { kind: "start", i };
 }
 
+// Sub-commands that create or move commits on the current branch (#301).
+const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "pull"]);
+
+/**
+ * Record a branch switch for the rest of the line (#301 line-state).
+ * Only an unambiguous NEW branch (-b/-B/-c/-C/--orphan <name>) lifts the gate;
+ * a plain positional lowers it when it names main/master and is otherwise
+ * ignored (it may be a pathspec — guessing would fail open). A `--` means
+ * pathspecs follow: file restore, no switch at all.
+ */
+function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
+  if (rest.includes("--")) return;
+  const createOpts = cmd === "checkout"
+    ? new Set(["-b", "-B", "--orphan"])
+    : new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
+  let target = "";
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (createOpts.has(t)) { target = rest[i + 1] ?? ""; break; }
+    if (t.startsWith("-")) continue;
+    if (isMainRef(t)) { target = t; break; } // moving TO main lowers the gate
+    return; // positional that is not main: could be a path — no line-state change
+  }
+  if (!target) return;
+  st.liftKey = repoKey(cPath, st.cwd, gitDir);
+  st.liftBranch = target;
+}
+
 /**
  * Inspect a git invocation. `start` indexes the `git` word itself — the benign
  * prefix before it has already been consumed by skipBenignPrefix.
  */
-function checkGitSubcommand(T: string[], start: number, hookCwd: string): string | null {
+function checkGitSubcommand(T: string[], start: number, st: LineState): string | null {
   let i = start + 1;
 
   // git global options before the subcommand; capture -C <path> and
@@ -482,10 +566,10 @@ function checkGitSubcommand(T: string[], start: number, hookCwd: string): string
   const rest = T.slice(i + 1);
 
   if (cmd === "push") {
-    return checkPush(rest, cPath, hookCwd, gitDir);
+    return checkPush(rest, cPath, st, gitDir);
   }
   if (cmd === "reset" && rest.includes("--hard")) {
-    if (isMainRef(branchOf(cPath, hookCwd, gitDir))) {
+    if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
       return "hard-resets on main/master.";
     }
     return null;
@@ -526,6 +610,29 @@ function checkGitSubcommand(T: string[], start: number, hookCwd: string): string
     if (rest.includes(".")) {
       return `discards uncommitted work ('git ${cmd} .', always blocked).`;
     }
+    if (cmd === "checkout") applyLift(cmd, rest, cPath, gitDir, st);
+    return null;
+  }
+  if (cmd === "switch") {
+    applyLift(cmd, rest, cPath, gitDir, st);
+    return null;
+  }
+  // Commits on main are blocked, not just pushes (#301, btw#21): main advances
+  // only through PRs, so every enforced check concentrates on PR review.
+  // `git-checkpoint` already refuses on main (#225); this closes the raw-git
+  // path. --abort/--quit undo (allowed); --ff-only creates no commit (allowed,
+  // Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit on a
+  // diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are not in
+  // this set — the escape from main can never deadlock.
+  if (COMMIT_LIKE.has(cmd)) {
+    if (rest.includes("--abort") || rest.includes("--quit")) return null;
+    if ((cmd === "merge" || cmd === "pull") && rest.includes("--ff-only")) return null;
+    if (isMainRef(effectiveBranch(cPath, st, gitDir))) {
+      const hint = cmd === "pull" || cmd === "merge"
+        ? "use --ff-only to sync main, or"
+        : "main advances only through PRs (#301) —";
+      return `${cmd}s on main/master; ${hint} run 'wt-new <issue#>-<slug>' (or 'git checkout -b') first.`;
+    }
     return null;
   }
   if (cmd === "clean") {
@@ -559,6 +666,7 @@ function checkGitSubcommand(T: string[], start: number, hookCwd: string): string
  * fixture against this implementation directly.
  */
 export function checkGitCommand(command: string, hookCwd: string): string | null {
+  const st: LineState = { cwd: hookCwd, origCwd: hookCwd, liftKey: "", liftBranch: "" };
   const stripped = stripHeredocs(command);
 
   // Substitution bodies execute — inspect them before the main token walk
@@ -571,16 +679,17 @@ export function checkGitCommand(command: string, hookCwd: string): string | null
   for (const sub of subs) {
     const toks = tokenize(sub);
     if (toks.length === 0) continue;
+    if (applyCd(toks, st)) continue; // line-state only, nothing to block (#301)
     // Strip the benign prefix ONCE, then dispatch on what is actually being run.
     // Doing it once matters: the walk recurses into `bash -c` / `eval` bodies,
     // and running it per-checker would re-walk every nested string twice.
-    const scan = skipBenignPrefix(toks, hookCwd);
+    const scan = skipBenignPrefix(toks, st.cwd);
     if (scan.kind === "verdict") {
       if (scan.reason) return scan.reason;
       continue;
     }
     const reason = isGitWord(toks[scan.i])
-      ? checkGitSubcommand(toks, scan.i, hookCwd)
+      ? checkGitSubcommand(toks, scan.i, st)
       : checkGhSubcommand(toks, scan.i);
     if (reason) return reason;
   }

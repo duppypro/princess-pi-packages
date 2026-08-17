@@ -36,6 +36,12 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
+# Line-state (#301): HOOK_CWD is the EFFECTIVE cwd and moves with cd/pushd;
+# ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
+# earlier in the same line for the repo that switched (see effective_branch).
+ORIG_CWD="$HOOK_CWD"
+LIFT_KEY=""
+LIFT_BRANCH=""
 
 block() {
   echo "BLOCKED: '$COMMAND' — $1" >&2
@@ -74,6 +80,92 @@ branch_of() {
   else
     git branch --show-current 2>/dev/null || true
   fi
+}
+
+# ---
+# Line-state (#301). The hook runs BEFORE the line executes, so every
+# sub-command would otherwise be judged against the tool-call cwd and the
+# branch that repo is on right now. Two things an earlier sub-command in the
+# same line changes for the later ones:
+#   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
+#          `pushd` reset it to the tool-call cwd (fail-safe: never guess).
+#   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--orphan <name>` mark
+#          the repo they ran in as being on <name> for the rest of the line
+#          (so `git checkout -b 301-slug && git commit` is allowed on main);
+#          a plain `checkout main` / `switch main` marks it as on main (so
+#          `git checkout main && git commit` is blocked from a feature branch).
+#          A plain `checkout <other>` does NOT lift: the positional may be a
+#          path (file restore) and guessing fails open.
+# The lift is keyed to the repo that switched (-C/--git-dir/cwd resolved), so
+# `git -C other checkout -b x && git commit` still judges the cwd repo.
+# ---
+repo_key() {
+  local dir="$1" gitdir="$2"
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  if [ -n "$gitdir" ] && [ "${gitdir#/}" = "$gitdir" ]; then
+    gitdir="$dir/$gitdir"
+  fi
+  printf '%s|%s' "$(realpath -m "$dir" 2>/dev/null || printf '%s' "$dir")" "${gitdir:+$(realpath -m "$gitdir" 2>/dev/null || printf '%s' "$gitdir")}"
+}
+
+# Branch the sub-command acts on, honouring an earlier switch in the same line.
+effective_branch() {
+  if [ -n "$LIFT_KEY" ] && [ "$LIFT_KEY" = "$(repo_key "$1" "$2")" ]; then
+    printf '%s' "$LIFT_BRANCH"; return
+  fi
+  branch_of "$1" "$2"
+}
+
+# `cd`/`pushd`/`popd` as the FIRST word of a sub-command moves the effective
+# cwd. Returns 0 (and updates HOOK_CWD) when it consumed the sub-command.
+apply_cd() {
+  local w="${TOKENS[0]##*/}" arg="" t
+  case "$w" in cd|pushd|popd) ;; *) return 1 ;; esac
+  for t in "${TOKENS[@]:1}"; do
+    if [ "$t" = "-" ] || [ "${t#-}" = "$t" ]; then arg="$t"; break; fi
+  done
+  if [ "$w" = "popd" ] || [ "$arg" = "-" ] || { [ "$w" = "pushd" ] && [ -z "$arg" ]; }; then
+    HOOK_CWD="$ORIG_CWD"   # previous directory is unknowable here — never guess
+  elif [ -z "$arg" ] || [ "$arg" = "~" ]; then
+    HOOK_CWD="$HOME"
+  elif [ "${arg#\~/}" != "$arg" ]; then
+    HOOK_CWD="$HOME/${arg#\~/}"
+  elif [ "${arg#/}" != "$arg" ]; then
+    HOOK_CWD="$arg"
+  else
+    HOOK_CWD="${HOOK_CWD:-.}/$arg"
+  fi
+  return 0
+}
+
+# Record a branch switch for the rest of the line (#301 line-state). Only an
+# unambiguous NEW branch (-b/-B/-c/-C/--orphan <name>) lifts the gate; a plain
+# positional lowers it when it names main/master and is otherwise ignored (it
+# may be a pathspec — guessing would fail open). A `--` means pathspecs
+# follow: file restore, no switch at all.
+apply_lift() {
+  local cmd="$1" cpath="$2" gitdir="$3"; shift 3
+  local -a rest=("$@")
+  local t target="" i=0 n=${#rest[@]}
+  for t in "${rest[@]}"; do [ "$t" = "--" ] && return 0; done
+  while [ "$i" -lt "$n" ]; do
+    t="${rest[$i]}"
+    if [ "$cmd" = "checkout" ]; then
+      case "$t" in -b|-B|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+    else
+      case "$t" in -c|-C|--create|--force-create|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+    fi
+    case "$t" in -*) i=$((i + 1)); continue ;; esac
+    if is_main_ref "$t"; then target="$t"; break; fi   # moving TO main lowers the gate
+    return 0   # positional that is not main: could be a path — no line-state change
+  done
+  [ -z "$target" ] && return 0
+  LIFT_KEY=$(repo_key "$cpath" "$gitdir")
+  LIFT_BRANCH="$target"
+  return 0
 }
 
 # ---
@@ -284,7 +376,7 @@ check_push() {
   if [ ${#refspecs[@]} -eq 0 ]; then
     # Bare push (at most a remote): the affected repo's current branch decides
     local b
-    b=$(branch_of "$cpath" "$gitdir")
+    b=$(effective_branch "$cpath" "$gitdir")
     if is_main_ref "$b"; then
       block "pushes current branch main/master."
     fi
@@ -305,7 +397,7 @@ check_push() {
       # symbolic ref: 'git push origin HEAD' pushes the CURRENT branch to its
       # same-named remote ref — resolve it instead of matching the literal
       # string (#74 review finding 8)
-      b2=$(branch_of "$cpath" "$gitdir")
+      b2=$(effective_branch "$cpath" "$gitdir")
       if is_main_ref "$b2"; then
         block "pushes current branch (HEAD) to main/master."
       fi
@@ -368,7 +460,10 @@ split_subcommands() {
       case "$ch" in
         \\) out+="$ch${s:$((i + 1)):1}"; i=$((i + 1)) ;;
         \'|\") q="$ch"; out+="$ch" ;;
-        $'\n'|';') out+=$'\x1f' ;;
+        # '(' / ')' outside quotes open/close a subshell group — split there
+        # so `(cd wt && git commit)` exposes both the cd and the commit
+        # (#301). `$(…)` bodies were already inspected by the substitution walk.
+        $'\n'|';'|'('|')') out+=$'\x1f' ;;
         '&'|'|') [ "${s:$((i + 1)):1}" = "$ch" ] && i=$((i + 1)); out+=$'\x1f' ;;
         *) out+="$ch" ;;
       esac
@@ -509,7 +604,7 @@ check_git_subcommand() {
       local tok b
       for tok in "${T[@]:$i}"; do
         if [ "$tok" = "--hard" ]; then
-          b=$(branch_of "$cpath" "$gitdir")
+          b=$(effective_branch "$cpath" "$gitdir")
           if is_main_ref "$b"; then
             block "hard-resets on main/master."
           fi
@@ -557,6 +652,36 @@ check_git_subcommand() {
           block "discards uncommitted work ('git $cmd .', always blocked)."
         fi
       done
+      [ "$cmd" = "checkout" ] && apply_lift checkout "$cpath" "$gitdir" "${T[@]:$i}"
+      ;;
+    switch)
+      apply_lift switch "$cpath" "$gitdir" "${T[@]:$i}"
+      ;;
+    # Commits on main are blocked, not just pushes (#301, btw#21): main
+    # advances only through PRs, so every enforced check concentrates on PR
+    # review. `git-checkpoint` already refuses on main (#225); this closes the
+    # raw-git path. --abort/--quit undo (allowed); --ff-only creates no commit
+    # (allowed, Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit
+    # on a diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are
+    # not in this set — the escape from main can never deadlock.
+    commit|merge|rebase|cherry-pick|am|pull)
+      local tok6 ffonly=0 b6
+      for tok6 in "${T[@]:$i}"; do
+        case "$tok6" in
+          --abort|--quit) return 0 ;;
+          --ff-only) ffonly=1 ;;
+        esac
+      done
+      if [ "$ffonly" = 1 ] && { [ "$cmd" = "merge" ] || [ "$cmd" = "pull" ]; }; then
+        return 0
+      fi
+      b6=$(effective_branch "$cpath" "$gitdir")
+      if is_main_ref "$b6"; then
+        if [ "$cmd" = "pull" ] || [ "$cmd" = "merge" ]; then
+          block "${cmd}s on main/master; use --ff-only to sync main, or run 'wt-new <issue#>-<slug>' (or 'git checkout -b') first."
+        fi
+        block "${cmd}s on main/master; main advances only through PRs (#301) — run 'wt-new <issue#>-<slug>' (or 'git checkout -b') first."
+      fi
       ;;
     clean)
       local tok4
@@ -622,6 +747,7 @@ check_command_string() {
   while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
     tokenize "$sub"
     [ ${#TOKENS[@]} -eq 0 ] && continue
+    apply_cd && continue   # line-state only, nothing to block (#301)
     # Strip the benign prefix ONCE, then dispatch on what is actually being run.
     # Once matters: the walk recurses into `bash -c` / `eval` bodies, and running
     # it per-checker would re-walk every nested string twice.
