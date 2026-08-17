@@ -18,10 +18,12 @@
  *      reach WHICH fixture. Delete one and the skill silently regresses to the version
  *      that scored 2 of 4 — with no test failing, which is the exact landmine the skill
  *      is about.
- *   3. Repo-vs-deploy parity. Two copies of the skill exist and the spec (§5) names the
- *      repo one as the source of truth; without a check they fork silently. Host-state
- *      dependent by design: it SKIPS where no `~/.claude` deploy copy exists (CI, a
- *      fresh clone) — the failure it exists to catch is a fork on a machine with both.
+ *   3. (Retired here, #345.) Repo-vs-deploy parity used to be asserted in this suite
+ *      directly. `~/.claude/skills/` is shared by every worktree, branch, and main, so
+ *      that assertion went red on every OTHER worktree the moment any one branch
+ *      legitimately deployed an edit — a host-drift question has no correct answer
+ *      inside a per-branch suite. It now lives in `bin/install-workflow-tools --check`
+ *      (gated by tests/skills-deploy.test.ts), whose job is host drift.
  *   4. The two drifts this branch fixed, so they cannot rot back.
  *   5. The harness files the record points at, so the re-run instructions stay truthful.
  *
@@ -31,11 +33,8 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-
-import { skip } from "./lib/skips.ts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const CORPUS_SHA = "9b2a16e";
@@ -174,23 +173,17 @@ check(
 );
 
 // ---
-// 3. The vendored copy is the source of truth; the deploy copy must not have forked.
-//    Skipped where the dotfile does not exist (CI, a fresh clone) — this gate is about
-//    catching a fork on a machine that has both, not about requiring the deploy.
-// ---
-console.log("\n— repo copy vs deploy copy");
-
-const deployed = path.join(os.homedir(), ".claude", "skills", "spec-reconcile", "SKILL.md");
-if (fs.existsSync(deployed)) {
-	check(
-		"~/.claude deploy copy matches the repo source of truth",
-		fs.readFileSync(deployed, "utf8") === skill,
-		"repo copy wins — re-copy skills/spec-reconcile/SKILL.md to ~/.claude/skills/spec-reconcile/",
-	);
-} else {
-	skip("no ~/.claude/skills/spec-reconcile deploy copy on this machine — repo-vs-deployed parity not checked");
-}
-
+// 3. Repo-vs-deploy parity moved out of this suite (#345).
+//
+//    ~/.claude/skills/ is ONE directory shared by every worktree, every branch,
+//    and main — a host-drift assertion inside a per-branch suite has no correct
+//    answer once more than one worktree exists: the moment any branch legitimately
+//    edited spec-reconcile's SKILL.md and deployed it, every OTHER worktree
+//    (including main) would fail THIS check for a reason that had nothing to do
+//    with its own changes. It happened twice before this suite stopped asserting
+//    it. That question now belongs to `bin/install-workflow-tools --check`, whose
+//    entire job is host drift and which deploys skills to both harness targets
+//    (tests/skills-deploy.test.ts is its gate).
 // ---
 // 4. The two drifts this branch fixed, gated so they cannot rot back.
 //    Both were surfaced BY the backtest and were still live on main.

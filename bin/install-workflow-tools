@@ -2,10 +2,11 @@
 # install-workflow-tools — make this host match the repo: workflow scripts from
 # p-p-p/bin/ → ~/bin/ (itself included, #263), Claude Code PreToolUse hooks
 # from p-p-p/hooks/ → ~/.claude/hooks/, statusline scripts from
-# p-p-p/statusline/ → ~/.claude/ (#227).
+# p-p-p/statusline/ → ~/.claude/ (#227), and skills from p-p-p/skills/ →
+# ~/.claude/skills/ AND ~/.pi/agent/skills/ (#345).
 #
 # Usage:
-#   install-workflow-tools           install/refresh all three sets
+#   install-workflow-tools           install/refresh all four sets
 #   install-workflow-tools --check   report drift, write nothing (doctor mode)
 #   install-workflow-tools --version print the resolved absolute path of this copy
 #
@@ -26,6 +27,20 @@
 # in this repo. `subagent-statusline.sh` reached this point tracked by NO repo
 # at all while `settings.json` invoked it by path, so a fresh host got a
 # statusline command pointing at a file that did not exist.
+#
+# Why skills too, and why to BOTH harness targets in one manifest entry
+# (#345): ADR 0001 already assigned ~/.claude/skills/* to this repo, but
+# nothing deployed it — CLAUDE.md told a human to hand-copy skills/<name>/
+# SKILL.md to ~/.claude/skills/ and ~/.pi/agent/skills/ after editing. That
+# hand-copy is the machine-global side effect: ~/.claude/skills/ is ONE
+# directory shared by every worktree, every branch, and main, so the moment
+# any branch legitimately edited a skill and copied it out, every OTHER
+# worktree's tests asserting repo-vs-deployed parity went red for a reason
+# that had nothing to do with that worktree's own changes — it happened
+# twice. Pi and Claude Code read different roots, so a skill deployed to one
+# target and not the other is the exact same kind of drift, just narrower;
+# one manifest entry fanning out to both destinations is what keeps that from
+# being possible to forget.
 #
 # What this installer must NEVER write: ~/.claude/settings.json (it holds a
 # live credential — princess-pi-brain#12), ~/.claude/CLAUDE.md, and
@@ -120,6 +135,11 @@ HOOKS_DIR="$HOME/.claude/hooks"
 # this installer must never touch; deploys are per-file from the STATUSLINES
 # manifest, never a directory sync, and that is what keeps the two apart.
 STATUSLINE_DIR="$HOME/.claude"
+# Two harness roots, not one — Pi and Claude Code each read their own (#345).
+# Every skill fans out to both; see the SKILLS comment below for why that is
+# one manifest entry rather than two.
+SKILLS_CLAUDE_DIR="$HOME/.claude/skills"
+SKILLS_PI_DIR="$HOME/.pi/agent/skills"
 
 # This installer no longer needs jq itself (see is_this_repo() above), but
 # most of what it DEPLOYS does: pr-threads, pr-merge, and pr-cleanup all lean
@@ -193,6 +213,23 @@ STATUSLINES=(
   subagent-statusline.sh
 )
 
+# Every repo-sourced skill (#345). Each name deploys ONE file — skills/<name>/
+# SKILL.md — to BOTH harness roots (SKILLS_CLAUDE_DIR and SKILLS_PI_DIR
+# above), never a directory sync: ~/.claude/skills/ holds 60+ skills from
+# other sources and ~/.pi/agent/skills/ holds ~50, and this installer's job is
+# the six files below, nothing else in either directory.
+#
+# cross-harness-tool is deployed even though its content is stale — it still
+# names the `merge` CLI deleted in #201 (tracked in #230) — because this
+# installer's job is parity, not curation. A tracked skill it skips recreates
+# the exact "which copy is authoritative" gap #345 closes, just for a
+# different skill; the content fix belongs to #230, not here.
+SKILLS=(
+  cross-harness-tool
+  prose-as-api
+  spec-reconcile
+)
+
 # Tools this installer used to delete from ~/bin on every run (#235 — an
 # installer that also deletes is doing two jobs, and this list only grows
 # staler). Discovery, not mutation: report a stale copy on PATH instead of
@@ -213,7 +250,11 @@ drift_found=0
 # it found, which is exactly how #249 stayed invisible.
 # ---
 deploy() {
-  local src="$1" dest="$2" label="$3"
+  local src="$1" dest="$2" label="$3" mode="${4:-exec}"
+  # mode defaults to "exec" (scripts/hooks/statuslines: chmod +x, and --check
+  # treats non-executable as drift). Skills pass mode="plain" (#345): they are
+  # Markdown a harness reads, not something exec'd, so neither chmod +x nor
+  # the executable-bit drift check applies to them.
   # A managed file that is gone from SOURCE is drift, not a footnote. This used
   # to warn and return with drift_found untouched, so `--check` printed
   # "In sync" for a hook that no longer existed and install still exited 0 —
@@ -229,7 +270,7 @@ deploy() {
     if [ ! -f "$dest" ]; then
       drift_found=1
       echo "   ❌ $label MISSING at $dest"
-    elif [ ! -x "$dest" ]; then
+    elif [ "$mode" = exec ] && [ ! -x "$dest" ]; then
       # settings.json wires hooks by path and Claude Code execs them. A hook it
       # cannot exec gates nothing, so identical bytes are not enough.
       drift_found=1
@@ -251,10 +292,17 @@ deploy() {
   # descriptor keep reading the old (complete) inode until they close it: no
   # reader ever observes a half-written file. Applied to every deploy, not
   # just the installer, since it costs nothing and the guarantee is free.
+  # Per-skill parent dir (~/.claude/skills/<name>/, ~/.pi/agent/skills/<name>/)
+  # may not exist yet — SCRIPTS/HOOKS/STATUSLINES dests are all flat, so this
+  # was never needed before SKILLS (#345). `mkdir -p` on an existing dir is a
+  # no-op, so this is free for every other manifest too.
+  mkdir -p "$(dirname "$dest")"
   local tmp
   tmp=$(mktemp "$dest.XXXXXX")
   cp "$src" "$tmp"
-  chmod +x "$tmp"
+  if [ "$mode" = exec ]; then
+    chmod +x "$tmp"
+  fi
   mv -f "$tmp" "$dest"
   echo "   ✅ $label"
 }
@@ -291,6 +339,17 @@ for sl in "${STATUSLINES[@]}"; do
 done
 
 if [ "$MODE" = check ]; then
+  echo "🔎 Checking skills against $SKILLS_CLAUDE_DIR and $SKILLS_PI_DIR..."
+else
+  echo "🧠 Installing skills to $SKILLS_CLAUDE_DIR and $SKILLS_PI_DIR..."
+fi
+
+for skill in "${SKILLS[@]}"; do
+  deploy "$REPO_DIR/skills/$skill/SKILL.md" "$SKILLS_CLAUDE_DIR/$skill/SKILL.md" "$skill (Claude)" plain
+  deploy "$REPO_DIR/skills/$skill/SKILL.md" "$SKILLS_PI_DIR/$skill/SKILL.md" "$skill (Pi)" plain
+done
+
+if [ "$MODE" = check ]; then
   if [ "$drift_found" -eq 1 ]; then
     echo "❌ Drift found — this host is not running the tracked versions. Fix: $0"
     exit 1
@@ -301,7 +360,7 @@ fi
 
 if [ "$drift_found" -eq 1 ]; then
   echo "❌ One or more managed files are missing from source — this host was NOT fully synced." >&2
-  echo "   Fix the SCRIPTS/HOOKS/STATUSLINES manifest in $0, or restore the file, then re-run." >&2
+  echo "   Fix the SCRIPTS/HOOKS/STATUSLINES/SKILLS manifest in $0, or restore the file, then re-run." >&2
   exit 1
 fi
 

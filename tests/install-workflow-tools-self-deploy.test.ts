@@ -49,6 +49,17 @@ const FIXTURE_SCRIPTS = (() => {
 		.filter((l) => l.length > 0 && !l.startsWith("#"));
 })();
 
+// Same derivation, for skills/ (#345 — the fourth managed set, same gap the
+// comment above describes for statusline/).
+const FIXTURE_SKILLS = (() => {
+	const m = INSTALLER_SRC.match(/(?:^|\n)SKILLS=\(([\s\S]*?)\n\)/);
+	if (!m) throw new Error("SKILLS array not found in bin/install-workflow-tools");
+	return m[1]
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0 && !l.startsWith("#"));
+})();
+
 function freshHome(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "iwt-self-home-"));
 }
@@ -64,7 +75,7 @@ function freshHome(): string {
  * reason that has nothing to do with what these tests assert.
  */
 function seedFixtureRepo(dir: string): string {
-	for (const sub of ["bin", "hooks", "statusline"]) {
+	for (const sub of ["bin", "hooks", "statusline", "skills"]) {
 		fs.mkdirSync(path.join(dir, sub), { recursive: true });
 	}
 	// resolve_repo_dir's identity check (#267 finding) requires package.json's
@@ -80,6 +91,13 @@ function seedFixtureRepo(dir: string): string {
 	}
 	for (const s of fs.readdirSync(path.join(REPO_ROOT, "statusline")).filter((f) => f.endsWith(".sh"))) {
 		fs.copyFileSync(path.join(REPO_ROOT, "statusline", s), path.join(dir, "statusline", s));
+	}
+	for (const skill of FIXTURE_SKILLS) {
+		fs.mkdirSync(path.join(dir, "skills", skill), { recursive: true });
+		fs.copyFileSync(
+			path.join(REPO_ROOT, "skills", skill, "SKILL.md"),
+			path.join(dir, "skills", skill, "SKILL.md"),
+		);
 	}
 	return dir;
 }

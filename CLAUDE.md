@@ -28,7 +28,8 @@ exits 0. `bun run test` runs each suite in its own process. See
 ## Shipped scripts
 
 Run `bin/install-workflow-tools` to sync this host: scripts → `~/bin/`, guardrail hooks
-(`hooks/`) → `~/.claude/hooks/`, statusline scripts (`statusline/`) → `~/.claude/`.
+(`hooks/`) → `~/.claude/hooks/`, statusline scripts (`statusline/`) → `~/.claude/`, skills
+(`skills/`) → `~/.claude/skills/` AND `~/.pi/agent/skills/`.
 `--check` reports drift and writes nothing. It never writes configuration or prose —
 `settings.json` and the `CLAUDE.md` files belong to `dotfiles-doctor` under
 [ADR 0001](docs/adr/0001-princess-pi-packages-owns-harness-tooling.md).
@@ -65,13 +66,12 @@ Skills in `skills/` are **repo-sourced** and deployed to two harness targets:
 | Claude Code | `~/.claude/skills/<skill-name>/SKILL.md` |
 | Pi | `~/.pi/agent/skills/<skill-name>/SKILL.md` |
 
-**Rule:** edit only the repo copy (`skills/<skill>/SKILL.md`). Copy it out to **both**
-harness targets after changing. Never edit the dotfile copies — they have no git history.
+**Rule:** edit only the repo copy (`skills/<skill>/SKILL.md`), then run
+`bin/install-workflow-tools` to deploy it to both harness targets (`--check` reports drift
+without writing). Never edit the dotfile copies — they have no git history, and
+`install-workflow-tools` overwrites them from the repo copy on every run.
 
 Every skill's SKILL.md should state this rule in its header (see `skills/spec-reconcile/SKILL.md`
-for the canonical wording). When adding a new skill, include the header and deploy to both
-harnesses.
-
-To verify both harnesses see a skill:
-- Claude: check `~/.claude/skills/<name>/SKILL.md` exists
-- Pi: check `~/.pi/agent/skills/<name>/SKILL.md` exists, restart Pi session to reload
+for the canonical wording). When adding a new skill, include the header and add it to the
+`SKILLS` manifest in `bin/install-workflow-tools` — `tests/skills-deploy.test.ts` fails if a
+tracked skill is missing from that manifest.

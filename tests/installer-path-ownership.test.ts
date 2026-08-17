@@ -78,6 +78,13 @@ const CLAIMED: Array<{ rel: string; manifest: string }> = [
 	...bashArray("SCRIPTS").map((s) => ({ rel: `bin/${s}`, manifest: "SCRIPTS" })),
 	...bashArray("HOOKS").map((h) => ({ rel: `.claude/hooks/${h}`, manifest: "HOOKS" })),
 	...bashArray("STATUSLINES").map((s) => ({ rel: `.claude/${s}`, manifest: "STATUSLINES" })),
+	// Each SKILLS entry fans out to BOTH harness roots (#345) — one manifest
+	// name, two claimed paths — unlike every other manifest here, which is
+	// one name to one path.
+	...bashArray("SKILLS").flatMap((s) => [
+		{ rel: `.claude/skills/${s}/SKILL.md`, manifest: "SKILLS" },
+		{ rel: `.pi/agent/skills/${s}/SKILL.md`, manifest: "SKILLS" },
+	]),
 ];
 const CLAIMED_PATHS = new Set(CLAIMED.map((c) => c.rel));
 
