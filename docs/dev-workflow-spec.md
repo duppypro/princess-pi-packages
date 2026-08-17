@@ -471,8 +471,14 @@ bare form, since the bare form's safety depends on which branch you happen to be
 standing on.
 
 **`git worktree remove --force`/`-f` is blocked unconditionally**, same class as
-`clean -f` (#225 gap 2) — teardown is meant to be confirm-first, per the [Worktree
-Teardown](#why-this-reverses-the-out-of-tree-rule-257) sequence above. Plain
+`clean -f` (#225 gap 2) — this is a **safety precondition, not a permission question**.
+`--force` overrides git's own dirty-tree refusal, and that refusal is what would
+otherwise catch a live session still inside the worktree and strand its transcript
+under a path that no longer exists (princess-pi-packages#158, #221). Per the [Worktree
+Teardown](#why-this-reverses-the-out-of-tree-rule-257) sequence above, merging a
+branch's PRs is already the authorization to remove its worktree — no separate
+confirmation is asked for that — but this block stands regardless, because it is
+guarding against a different failure than the one the merge settles. Plain
 `git worktree remove` (no force) stays allowed: git's own refusal on a dirty tree is the
 existing safeguard there, unchanged.
 

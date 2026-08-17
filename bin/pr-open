@@ -216,8 +216,28 @@ if [ -n "$STACKED_ON" ]; then
   echo "   This repo squash-merges, so those commits will land under a NEW sha and" >&2
   echo "   this PR will conflict until it is rebased past them:" >&2
   for s in $STACKED_ON; do
-    echo "     git rebase --onto origin/main origin/$s $BRANCH" >&2
+    # Resolve the boundary to a sha NOW, at warn time (#265/#248). By the time
+    # anyone actually needs this recipe, `pr-cleanup` has usually already
+    # deleted `origin/$s` — the recipe exists precisely for the
+    # after-the-parent-merged case, so printing the branch name alone hands
+    # back a ref that is gone by design. A sha is a concrete object and
+    # survives the branch's deletion; the branch name stays in a trailing
+    # comment purely so the line still reads clearly in scrollback.
+    #
+    # The boundary is the FORK POINT, not the parent's tip (macroscopeapp on
+    # PR #323). Today the two are the same sha — the detection above only
+    # reaches here when `origin/$s` is already an ancestor of HEAD, which makes
+    # merge-base(origin/$s, HEAD) equal to its tip. They stop being the same
+    # the moment the parent advances past what we contain, and then the tip
+    # would replay the parent's newer commits onto main as if they were ours.
+    # merge-base is the definition we actually mean, so use it and the case
+    # never arises.
+    sha="$(git merge-base "origin/$s" HEAD)"
+    echo "     git rebase --onto origin/main $sha $BRANCH   # $s" >&2
   done
+  echo "   The boundary sha is frozen as of now. If '$BRANCH' later pulls in newer" >&2
+  echo "   commits from a parent, recompute with 'git merge-base <parent> $BRANCH'" >&2
+  echo "   while that parent still exists — a stale boundary replays its commits." >&2
   echo "   Proceeding — stacking is sometimes right. See docs/dev-workflow-spec.md" >&2
   echo "   → 'A stacked PR conflicts after its parent merges'." >&2
 fi
