@@ -9,6 +9,17 @@ set -euo pipefail
 # `pr-reject some-branch "wrong approach"` closed the CURRENT branch's PR with
 # the comment "some-branch" and dropped the real reason (#209). pr-merge keeps a
 # positional branch — it takes no other argument, so nothing is ambiguous there.
+#
+# Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md):
+#   0  success
+#   2  usage error — `-b`/`--branch` given with no branch name
+#   3  precondition not met — on main/master, whether named via `-b main` or
+#      discovered from cwd (same convention as bin/pr-merge: this check does
+#      not split explicit-vs-cwd, see that script's own header)
+#   4  not found — no open PR for the branch in our own repo
+#   5  remote/API failure — `gh pr list` could not determine state
+#   6  safety gate refused — ambiguous PR selection (more than one of our own
+#      open PRs share the branch's head)
 BRANCH=""
 REASON=""
 while [ $# -gt 0 ]; do
@@ -21,14 +32,14 @@ Human-only: close the open PR for <branch> (default: current branch) without
 merging, leaving <reason> as a comment. Use `--` before a reason that starts
 with '-'.
 
-exit codes: 0 ok · 1 error (pr-reject predates the shared #224 table)
+exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
       exit 0 ;;
     -b|--branch)
       BRANCH="${2:-}"
       if [ -z "$BRANCH" ]; then
         echo "pr-reject: -b needs a branch name." >&2
-        exit 1
+        exit 2
       fi
       shift 2 ;;
     --) shift; REASON="${1:-}"; break ;;
@@ -40,7 +51,7 @@ done
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-reject: on main — pass a branch name or switch to a feature worktree." >&2
   echo "  pr-reject -b <branch> [reason]" >&2
-  exit 1
+  exit 3
 fi
 
 # --- select the PR ---------------------------------------------------------
@@ -52,7 +63,7 @@ if ! CANDIDATES=$(gh pr list --head "$BRANCH" --state open \
   --json number,headRepositoryOwner \
   --jq "[.[] | select(.headRepositoryOwner.login == \"$OWNER\") | .number] | @tsv"); then
   echo "pr-reject: 'gh pr list' failed — cannot determine the PR for '$BRANCH'." >&2
-  exit 1
+  exit 5
 fi
 
 # shellcheck disable=SC2206  # deliberate word-split: @tsv output, numbers only
@@ -60,13 +71,13 @@ PRS=($CANDIDATES)
 
 if [ "${#PRS[@]}" -eq 0 ]; then
   echo "pr-reject: no open PR found for branch '$BRANCH' in $OWNER's repo." >&2
-  exit 1
+  exit 4
 fi
 if [ "${#PRS[@]}" -gt 1 ]; then
   echo "pr-reject: ambiguous — ${#PRS[@]} open PRs share head branch '$BRANCH':" >&2
   for p in "${PRS[@]}"; do echo "  #$p" >&2; done
   echo "  Refusing to guess. Close the intended one via 'gh pr close <N>'." >&2
-  exit 1
+  exit 6
 fi
 PR="${PRS[0]}"
 

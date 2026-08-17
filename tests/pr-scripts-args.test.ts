@@ -457,16 +457,52 @@ console.log("\npr-reject:");
 	);
 }
 
-// 10b. pr-reject inherits the same fail-loudly rule.
+// 10b. pr-reject inherits the same fail-loudly rule — and it's a determined
+//      remote/API failure (#224 code 5), not a bare non-zero.
 {
 	const { code, out, argv } = run(PR_REJECT, "fix", [OURS(7, "fix")], ["nope"], { failGhList: true });
-	check(code !== 0, "pr-reject: gh pr list fails → non-zero", `got ${code}`);
+	check(code === 5, "pr-reject: gh pr list fails → exit 5 (remote/API failure)", `got ${code}, out:\n${out}`);
 	check(actedOn(argv, "close") === undefined, "pr-reject: gh pr list fails → closes nothing", argv.join("\n"));
 	check(
 		/failed/i.test(out) && !/no open PR found/i.test(out),
 		"pr-reject: gh pr list fails → reports the failure",
 		out,
 	);
+}
+
+// 11. `-b` with no branch name → usage error (#224 code 2).
+{
+	const { code, out, argv } = run(PR_REJECT, "42-some-feature", [OURS(42, "42-some-feature")], ["-b"]);
+	check(code === 2, "pr-reject -b <nothing> → exit 2 (usage error)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject -b <nothing> → closes nothing", argv.join("\n"));
+	check(/-b needs a branch name/i.test(out), "pr-reject -b <nothing> → says so", out);
+}
+
+// 12. On main/master with nothing to discover otherwise → precondition not
+//     met (#224 code 3), matching pr-merge's own convention of not splitting
+//     explicit-vs-cwd for this check (see bin/pr-merge header).
+{
+	const { code, out, argv } = run(PR_REJECT, "main", [OURS(42, "42-some-feature")], []);
+	check(code === 3, "pr-reject on main (no -b) → exit 3 (precondition not met)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject on main → closes nothing", argv.join("\n"));
+	check(/on main/i.test(out), "pr-reject on main → says so", out);
+}
+
+// 13. No open PR at all for the branch → not found (#224 code 4).
+{
+	const { code, out, argv } = run(PR_REJECT, "fix", [FORK(99, "fix")], ["nope"]);
+	check(code === 4, "pr-reject: no open PR for branch → exit 4 (not found)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject: no open PR → closes nothing", argv.join("\n"));
+	check(/no open PR found/i.test(out), "pr-reject: no open PR → says so", out);
+}
+
+// 14. Two of OUR OWN open PRs share the branch name → ambiguous, refuse
+//     rather than guess (#224 code 6 — safety gate refused).
+{
+	const { code, out, argv } = run(PR_REJECT, "fix", [OURS(7, "fix"), OURS(8, "fix")], ["nope"]);
+	check(code === 6, "pr-reject: ambiguous PR selection → exit 6 (safety gate refused)", `got ${code}, out:\n${out}`);
+	check(actedOn(argv, "close") === undefined, "pr-reject: ambiguous → closes nothing", argv.join("\n"));
+	check(/\b7\b/.test(out) && /\b8\b/.test(out), "pr-reject: ambiguous → names both candidates", out);
 }
 
 // 10. pr-reject inherits the same fork guard.
