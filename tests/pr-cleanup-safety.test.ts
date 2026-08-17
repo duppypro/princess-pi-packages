@@ -692,6 +692,29 @@ console.log("\nno merged PR, branch still on origin:");
 	check(code === 6, "no merged PR → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "no merged PR → worktree survives", out);
 	check(localBranchExists(sb), "no merged PR → local branch survives", out);
+	check(remoteBranchExists(sb), "no merged PR → remote branch survives (the guard #266 must not regress)", out);
+}
+
+// --- #266: wt-new's eager push means an abandoned branch that never got a PR
+// is ALWAYS "present on origin" — the old code refused this unconditionally,
+// with no ancestry check at all. A branch whose tip (local AND remote) is
+// already contained in origin/$PRIMARY_REF carries no unique work and must be
+// self-serviceable, exactly like the already-absent-from-origin case below. ---
+console.log("\nabandoned branch (wt-new's eager push): exists on origin, zero own commits (#266):");
+{
+	const sb = makeSandbox("42-feature", { prMerged: false });
+	// Simulate what wt-new actually produces: a branch pushed at creation time
+	// with nothing of its own since — reset BOTH the local tip and the remote
+	// ref back to origin/main, discarding the sandbox's default "feature work"
+	// commit so the tip is provably empty on both sides.
+	git(sb.worktree, ["fetch", "-q", "origin"]);
+	git(sb.worktree, ["reset", "-q", "--hard", "origin/main"]);
+	git(sb.worktree, ["push", "-q", "-f", "origin", sb.branch]);
+	const { code, out } = runCleanup(sb);
+	check(code === 0, "abandoned branch, exists on origin, zero own commits → exits 0", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(sb.worktree), "abandoned branch → worktree removed", out);
+	check(!localBranchExists(sb), "abandoned branch → local branch deleted", out);
+	check(!remoteBranchExists(sb), "abandoned branch → remote ref is REALLY gone, not just refused-then-ignored", out);
 }
 
 // ---

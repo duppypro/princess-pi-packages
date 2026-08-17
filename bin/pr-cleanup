@@ -353,9 +353,64 @@ else
   # and deleted local work on the strength of it (#210).
   if LS_REMOTE_OUT=$(git -C "$MAIN_CLONE" ls-remote --heads origin "$BRANCH" 2>/dev/null); then
     if [ -n "$LS_REMOTE_OUT" ]; then
-      echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR was found." >&2
-      exit 6
-    fi
+      # #266: `wt-new` pushes a brand-new branch with upstream at creation
+      # time, so an abandoned branch that never got a PR is ALWAYS "present on
+      # origin" — before this, that made this arm refuse UNCONDITIONALLY, with
+      # no ancestry check at all, a permanent dead-end requiring a hand-run
+      # `git push origin --delete`. The absent-from-origin arm below already
+      # has the right proof for "no PR, but nothing unique to lose": the tip
+      # is already an ancestor of origin/$PRIMARY_REF. Mirror it here.
+      #
+      # Both the LOCAL tip and the REMOTE tip must be proven contained in
+      # origin/$PRIMARY_REF — checking only one is not enough. Step 4 below
+      # deletes BOTH refs, and they can diverge: the remote could hold a push
+      # this clone never fetched (the #266-remoteAdvanced-shaped risk), or the
+      # local branch could hold commits that were never pushed. Either one
+      # failing the check means real work is on the table — refuse.
+      REMOTE_TIP=$(printf '%s' "$LS_REMOTE_OUT" | awk 'NR==1 {print $1}')
+
+      # `-C "$MAIN_CLONE"` alone is sufficient — worktrees share refs/heads, so
+      # a cwd-first attempt buys nothing. Not wrapped in an `if`/`||` fallback:
+      # its own stderr used to leak and its failure went uncaught under
+      # `set -e`, so a missing local branch crashed with git's raw text at
+      # exit 128 — a code outside this script's table (#264/adversarial
+      # review of #221).
+      if ! LOCAL_TIP=$(git -C "$MAIN_CLONE" rev-parse --verify -q "refs/heads/$BRANCH"); then
+        echo "   ❌ ERROR: no local branch '$BRANCH' in $MAIN_CLONE." >&2
+        exit 4
+      fi
+
+      # `merge-base --is-ancestor` exits 1 for "not an ancestor" (a real,
+      # checked "no") but 128 for a bad/absent object (could not even run the
+      # check). 128 maps to exit 5 ("could not check"); 1 stays exit 6
+      # ("checked, and it says no") — same care as every other ancestry check
+      # in this script.
+      mb_status=0
+      git -C "$MAIN_CLONE" merge-base --is-ancestor "$LOCAL_TIP" origin/"$PRIMARY_REF" 2>/dev/null || mb_status=$?
+      if [ "$mb_status" -eq 128 ]; then
+        echo "   ❌ ERROR: could not check whether '$BRANCH' (local tip) is contained in origin/$PRIMARY_REF (merge-base failed)." >&2
+        exit 5
+      fi
+      if [ "$mb_status" -ne 0 ]; then
+        echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR was found." >&2
+        echo "   Its local commits are not in origin/$PRIMARY_REF — refusing to delete." >&2
+        exit 6
+      fi
+
+      remote_mb_status=0
+      git -C "$MAIN_CLONE" merge-base --is-ancestor "$REMOTE_TIP" origin/"$PRIMARY_REF" 2>/dev/null || remote_mb_status=$?
+      if [ "$remote_mb_status" -eq 128 ]; then
+        echo "   ❌ ERROR: could not check whether origin/$BRANCH is contained in origin/$PRIMARY_REF (merge-base failed)." >&2
+        exit 5
+      fi
+      if [ "$remote_mb_status" -ne 0 ]; then
+        echo "   ❌ ERROR: '$BRANCH' exists on origin but no merged PR was found." >&2
+        echo "   origin/$BRANCH carries commits not in origin/$PRIMARY_REF — refusing to delete." >&2
+        exit 6
+      fi
+
+      echo "   ℹ️  '$BRANCH' has no merged PR, but its local tip and origin/$BRANCH are both already in origin/$PRIMARY_REF — safe to delete."
+    else
     # Absence from origin is NOT authorization. A branch that was never pushed,
     # or whose remote ref was deleted without merging, has no PR and no remote
     # ref — and its commits exist nowhere else. With no PR to appeal to, the
@@ -392,6 +447,7 @@ else
       exit 6
     fi
     echo "   ℹ️  '$BRANCH' not on origin, and its tip is already in origin/$PRIMARY_REF — safe to delete."
+    fi
   else
     echo "   ❌ ERROR: 'git ls-remote' failed — cannot verify '$BRANCH' on origin." >&2
     echo "   Refusing to delete on an unverified remote state." >&2
@@ -453,13 +509,22 @@ echo "🗑  Deleting remote branch origin/$BRANCH..."
 LEASE=()
 if [ -n "${PR_HEAD_OID:-}" ]; then
   LEASE=(--force-with-lease="refs/heads/$BRANCH:$PR_HEAD_OID")
+elif [ -n "${REMOTE_TIP:-}" ]; then
+  # #266 abandoned-branch arm: origin/$BRANCH existed and its tip was just
+  # proven contained in origin/$PRIMARY_REF. Pin the lease to that exact tip —
+  # NOT the must-not-exist form below, which would assert the ref is absent
+  # when it is not and get rejected outright — so a push landing between the
+  # check and here is REJECTED rather than silently swept up, the same
+  # race-closing shape as the PR_HEAD_OID lease above (#264/E-3).
+  LEASE=(--force-with-lease="refs/heads/$BRANCH:$REMOTE_TIP")
 else
-  # No-merged-PR arm: PR_HEAD_OID is never set here, so this used to push a
-  # bare `--delete` with no lease at all. The gate above proved
-  # origin/$BRANCH was absent at ls-remote time, so pin the delete to exactly
-  # that with the must-not-exist lease form (empty expected value) — a branch
-  # pushed by someone else in the race window between that check and this
-  # push is then REJECTED, not silently swept up (#264/E-3).
+  # No-merged-PR, absent-from-origin arm: neither PR_HEAD_OID nor REMOTE_TIP
+  # is set here, so this used to push a bare `--delete` with no lease at all.
+  # The gate above proved origin/$BRANCH was absent at ls-remote time, so pin
+  # the delete to exactly that with the must-not-exist lease form (empty
+  # expected value) — a branch pushed by someone else in the race window
+  # between that check and this push is then REJECTED, not silently swept up
+  # (#264/E-3).
   LEASE=(--force-with-lease="refs/heads/$BRANCH:")
 fi
 if git -C "$MAIN_CLONE" push "${LEASE[@]}" origin --delete "$BRANCH" 2>/dev/null; then
