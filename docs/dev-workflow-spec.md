@@ -297,14 +297,24 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   commit; git push` keeps its lift); lifts are stored per repo; and `--abort`/`--ff-only`
   count only as options, never as the argument of `-m`/`-F`/`--onto`/… . Detached HEAD
   is not `main`, so a rebase in progress is untouched. Uncommitted Bash-authored *edits* on
-  `main` (mode 1 in #301) are out of scope here — that is #303's territory. Pi twin gets the
-  same rule through `git-guardrails-core.ts`; the parity fixture pins both.
+  `main` (`sed -i`, heredoc redirects, `>` — mode 1 in #301, a command string this hook
+  inspects but that never names `git`/`gh`) stay out of scope here on purpose: #303 closed
+  the *tool-call* path (`Edit`/`Write`, both harnesses — see `block-edit-on-main.sh` below),
+  not the Bash-mutation path, matching the Claude Code hook's `Edit|Write|MultiEdit` matcher
+  scope exactly. Pi twin gets the same commit-blocking rule through `git-guardrails-core.ts`;
+  the parity fixture pins both.
 - **`block-edit-on-main.sh`** (#237) — blocks `Edit`/`Write`/`MultiEdit` when the target
   file's repo is on `main`/`master` or detached HEAD, enforcing this repo's CLAUDE.md HARD
   GATE technically instead of only by convention. Matcher **must** be
   `Edit|Write|MultiEdit`, never `Bash` — a `Bash` matcher would also catch
   `git checkout -b <branch>`, the very command used to escape main, and deadlock the gate
-  it exists to enforce. Claude-Code-only; no Pi twin yet.
+  it exists to enforce. **Pi twin (#303):** `extensions/git-guardrails.ts` registers a
+  `tool_call` handler — the event Pi fires before a tool executes, which `return { block:
+  true, reason }` can refuse — scoped to `toolName === "edit" || "write"` (Pi has no
+  `MultiEdit` tool, so that's the full matcher-equivalent scope). It wraps the same decision
+  logic, ported to `extensions/lib/edit-on-main-core.ts` (no Pi imports, so the parity test
+  can call it directly, same relationship as `git-guardrails-core.ts` to
+  `block-dangerous-git.sh`). Parity: `tests/block-edit-on-main-parity.test.ts`.
   - **Paths inside the git dir are not gated (dotfiles-doctor#15, ported under ADR 0001).**
     `.git/config`, `.git/info/exclude`, `.git/hooks/*`, `.git/worktrees/*` are allowed even
     on `main`. Nothing under `.git/` lives in a branch, so the stash/checkout hazard cannot
@@ -431,9 +441,12 @@ guard logic with `extensions/lib/git-guardrails-core.ts`) needs no deploy step: 
 it from the globally linked package, which is a symlink to the clone, so it cannot lag the
 way a copied file can. Copying is what drifts; linking is what doesn't. This also means
 the `worktree remove --force` guard reaches the Pi side automatically, with no separate
-deploy. `block-edit-on-main.sh` and `preedit-reread-check.py` have no Pi twin yet — they
-are Claude-Code-only, deployed and drift-checked the same copy-based way as
-`block-dangerous-git.sh`.
+deploy. The same is true of the `block-edit-on-main.sh` Pi twin added by #303 — it lives in
+the same file (`extensions/git-guardrails.ts`, sharing logic with
+`extensions/lib/edit-on-main-core.ts`) and loads from the same symlinked source, so it needs
+no deploy step either. `preedit-reread-check.py` is the one hook still Claude-Code-only with
+no Pi twin, deployed and drift-checked the copy-based way `block-dangerous-git.sh` used to
+need.
 
 ### Getting the statusline scripts onto the host
 
