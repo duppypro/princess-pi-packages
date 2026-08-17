@@ -3912,14 +3912,16 @@ function checkDaemonHealth(sessionPath, tagPath) {
 }
 async function awaitDaemonUp(sessionPath, child, ceilingMs, pollMs = 50) {
   const start = Date.now();
+  const leaseAlive = () => checkDaemonHealth(sessionPath, getCurrentVersionTagPath(sessionPath)).alive;
   for (;; ) {
-    const tagPath = getCurrentVersionTagPath(sessionPath);
-    if (checkDaemonHealth(sessionPath, tagPath).alive || fs8.existsSync(tagPath)) {
+    if (leaseAlive()) {
       return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null };
     }
     const exitCode = child ? child.exitCode : null;
     const signalCode = child ? child.signalCode : null;
     if (child && (exitCode !== null || signalCode !== null)) {
+      if (leaseAlive())
+        return { state: "up", exitCode, signalCode };
       return { state: "dead", exitCode, signalCode };
     }
     if (Date.now() - start >= ceilingMs) {
@@ -5050,8 +5052,10 @@ async function main() {
   }
   if (interactions.length === 0) {
     const sessionName = path11.basename(finalSessionPath).replace(/.jsonl$/, "");
-    if (daemonChild.exitCode !== null && daemonChild.exitCode !== 0) {
-      console.error(`\x1B[31m❌ wtft-daemon exited with code ${daemonChild.exitCode} before writing any classified data for session ${sessionName.slice(0, 12)}….\x1B[0m`);
+    const startup = await awaitDaemonUp(finalSessionPath, daemonChild, 0);
+    if (startup.state === "dead") {
+      const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
+      console.error(`\x1B[31m❌ wtft-daemon exited ${how} before writing any classified data for session ${sessionName.slice(0, 12)}….\x1B[0m`);
       process.exit(1);
     }
     console.log(`\x1B[33mDaemon started on session ${sessionName.slice(0, 12)}… — no data yet. Try again in a moment.\x1B[0m`);

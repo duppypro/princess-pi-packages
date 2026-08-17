@@ -496,9 +496,15 @@ async function main() {
 	}
 	if (interactions.length === 0) {
 		const sessionName = path.basename(finalSessionPath).replace(/.jsonl$/, "");
-		// A daemon we spawned that already died is a fact worth more than "try again" (#308).
-		if (daemonChild.exitCode !== null && daemonChild.exitCode !== 0) {
-			console.error(`\x1b[31m❌ wtft-daemon exited with code ${daemonChild.exitCode} before writing any classified data for session ${sessionName.slice(0, 12)}….\x1b[0m`);
+		// A daemon we spawned that already died is a fact worth more than "try again"
+		// (#308). Same proof rule as the pending branch (#309 review): the child gone
+		// by exit code OR signal, and no live lease — a child that exited 0 because an
+		// older daemon owns the session is up, not dead. Ceiling 0: the tag wait above
+		// already spent the time; this is a one-shot read of the state.
+		const startup = await awaitDaemonUp(finalSessionPath, daemonChild, 0);
+		if (startup.state === "dead") {
+			const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
+			console.error(`\x1b[31m❌ wtft-daemon exited ${how} before writing any classified data for session ${sessionName.slice(0, 12)}….\x1b[0m`);
 			process.exit(1);
 		}
 		console.log(`\x1b[33mDaemon started on session ${sessionName.slice(0, 12)}… — no data yet. Try again in a moment.\x1b[0m`);

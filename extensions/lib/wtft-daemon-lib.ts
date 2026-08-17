@@ -762,14 +762,21 @@ export interface DaemonStartupResult {
  * is running owes them this check first (#309 review), or a dead daemon reads as
  * success.
  *
- * "Up" is either half of what a started daemon does: claims the singleton lease,
- * or has a tag file on disk. The lease alone is enough because the daemon writes
- * its PID file before `initClassified()`, and it covers the singleton case too —
- * the child exits 0 immediately because an *older* daemon already owns the
- * session, which is up, not dead.
+ * "Up" means exactly one thing: a live process holds the singleton lease
+ * (`checkDaemonHealth().alive`). The daemon writes its PID file before
+ * `initClassified()`, so the lease is the earliest and only proof — and it covers
+ * the singleton case too: the child exits 0 immediately because an *older* daemon
+ * already owns the session, which is up, not dead.
  *
- * "Dead" needs all three: the child is gone, no lease is held, and no tag file
- * exists. Anything less is a live daemon we simply have not seen work yet.
+ * A tag file on disk is NOT proof (#309 review, round 2). Tags outlive daemons —
+ * a previous run's file, or a sibling-dir file the #155 lookup adopts — so "tag
+ * exists" was reporting a dead daemon as up. Measured: a stale tag one directory
+ * over under /tmp made a SIGKILLed stand-in read as "up".
+ *
+ * "Dead" needs both: the child is gone AND no lease is held — re-checked *after*
+ * the exit is observed, because the lease can be claimed by a concurrent daemon in
+ * the gap between our health check and the child's own singleton check (it then
+ * exits 0 having found an owner: up, not dead).
  *
  * The ceiling bounds the ambiguous case only — a healthy daemon resolves in one
  * or two polls, so a one-shot CLI does not sit here. Hitting the ceiling returns
@@ -782,14 +789,16 @@ export async function awaitDaemonUp(
 	pollMs = 50
 ): Promise<DaemonStartupResult> {
 	const start = Date.now();
+	const leaseAlive = () => checkDaemonHealth(sessionPath, getCurrentVersionTagPath(sessionPath)).alive;
 	for (;;) {
-		const tagPath = getCurrentVersionTagPath(sessionPath);
-		if (checkDaemonHealth(sessionPath, tagPath).alive || fs.existsSync(tagPath)) {
+		if (leaseAlive()) {
 			return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null };
 		}
 		const exitCode = child ? child.exitCode : null;
 		const signalCode = child ? child.signalCode : null;
 		if (child && (exitCode !== null || signalCode !== null)) {
+			// Exit observed — but was the lease claimed between our check and its exit?
+			if (leaseAlive()) return { state: "up", exitCode, signalCode };
 			return { state: "dead", exitCode, signalCode };
 		}
 		if (Date.now() - start >= ceilingMs) {

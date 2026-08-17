@@ -45,7 +45,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync, spawn } from "node:child_process";
-import { getDaemonPidPath, WTFT_TAGGER_VERSION } from "../extensions/lib/wtft-daemon-lib.ts";
+import { getDaemonPidPath, WTFT_TAGGER_VERSION, awaitDaemonUp } from "../extensions/lib/wtft-daemon-lib.ts";
 
 const SCRIPT = path.resolve(import.meta.dirname, "..", "wtft");
 const RED = "\x1b[31m", GREEN = "\x1b[32m", RESET = "\x1b[0m";
@@ -379,6 +379,92 @@ console.log("\n6. Pending session + a daemon that dies during startup");
 	try { fs.unlinkSync(pidPath6); } catch {}
 	try { fs.rmSync(fakeBin, { recursive: true, force: true }); } catch {}
 	try { fs.rmSync(dir6, { recursive: true, force: true }); } catch {}
+}
+
+// ---
+// 7. awaitDaemonUp: the lease is the proof; a tag file is not (#309 review, round 2).
+//
+// Three unit cases with the child stood in by a bare node process, so exit
+// codes and signals are chosen, not raced:
+//   a. leftover current-version tag file + child that exits 1 + no lease → dead
+//      (a stale tag from a previous run must not read as "up")
+//   b. child killed by SIGKILL, no lease, no tag → dead, with the signal named
+//   c. child exits 0 while another process holds the lease → up (singleton)
+// ---
+console.log("\n7. awaitDaemonUp proof rules");
+{
+	const mk = (id: string) => {
+		const d = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-308u-"));
+		const sp = path.join(d, `${id}.jsonl`);
+		const pp = getDaemonPidPath(sp);
+		try { fs.unlinkSync(pp); } catch {}
+		return { d, sp, pp };
+	};
+	const waitExit = (c: ReturnType<typeof spawn>) => new Promise<void>(res => { if (c.exitCode !== null || c.signalCode !== null) res(); else c.once("exit", () => res()); });
+
+	// a. leftover tag file, child dies with code 1, nobody holds the lease
+	{
+		const { d, sp, pp } = mk("308c0de0-1a9b-4c3d-9e8f-000000000311");
+		const tagsDir = path.join(d, "wtft-tags"); fs.mkdirSync(tagsDir);
+		fs.writeFileSync(path.join(tagsDir, `${path.basename(sp)}.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`), JSON.stringify({ _hb: "stop" }) + "\n");
+		const c = spawn(process.execPath, ["-e", "process.exit(1)"], { stdio: "ignore" });
+		await waitExit(c);
+		const r = await awaitDaemonUp(sp, c, 1_000);
+		assert("a. leftover tag + dead child + no lease → dead, not up", r.state === "dead", JSON.stringify(r));
+		assert("a. …carrying the exit code", r.exitCode === 1, JSON.stringify(r));
+		try { fs.unlinkSync(pp); } catch {} try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+	}
+	// b. child killed by signal
+	{
+		const { d, sp, pp } = mk("308c0de0-1a9b-4c3d-9e8f-000000000312");
+		const c = spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)"], { stdio: "ignore" });
+		c.kill("SIGKILL");
+		await waitExit(c);
+		const r = await awaitDaemonUp(sp, c, 1_000);
+		assert("b. signal-killed child, no lease → dead", r.state === "dead", JSON.stringify(r));
+		assert("b. …naming the signal", r.signalCode === "SIGKILL", JSON.stringify(r));
+		try { fs.unlinkSync(pp); } catch {} try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+	}
+	// c. child exits 0 because another daemon (stood in by this test process) owns the lease
+	{
+		const { d, sp, pp } = mk("308c0de0-1a9b-4c3d-9e8f-000000000313");
+		fs.writeFileSync(pp, String(process.pid));
+		const c = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+		await waitExit(c);
+		const r = await awaitDaemonUp(sp, c, 1_000);
+		assert("c. child exit 0 + live lease held elsewhere → up", r.state === "up", JSON.stringify(r));
+		try { fs.unlinkSync(pp); } catch {} try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+	}
+}
+
+// ---
+// 8. Non-watch, existing session, daemon killed by a signal before any data → exit 1.
+// Same structural injection as §6 (a wtft.mjs with no daemon beside it), but the
+// session EXISTS, so this exercises the "no data yet" branch — which used to test
+// exitCode only and let a signal-killed or missing daemon read as success.
+// ---
+console.log("\n8. Existing session, daemon dead before data → not 'no data yet'");
+{
+	const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-308d2-"));
+	fs.copyFileSync(path.resolve(import.meta.dirname, "..", "bin", "wtft.mjs"), path.join(fakeBin, "wtft.mjs"));
+	const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-308e-"));
+	const path8 = path.join(dir8, "308c0de0-1a9b-4c3d-9e8f-000000000314.jsonl");
+	fs.writeFileSync(path8, sessionLines());
+	const pidPath8 = getDaemonPidPath(path8);
+	try { fs.unlinkSync(pidPath8); } catch {}
+	let out = "", code = 0;
+	try {
+		out = execSync(`${process.execPath} '${path.join(fakeBin, "wtft.mjs")}' -s '${path8}' -l 5 --no-emoji 2>&1`, { encoding: "utf8", timeout: 20_000 });
+	} catch (err: any) {
+		out = `${err.stdout || ""}${err.stderr || ""}`;
+		code = err.status ?? 1;
+	}
+	const clean = stripAnsi(out).trim();
+	assert("exits nonzero when the daemon died before writing data", code !== 0, `exit ${code}: ${clean}`);
+	assert("does not say 'no data yet. Try again'", !/no data yet/i.test(clean), clean);
+	try { fs.unlinkSync(pidPath8); } catch {}
+	try { fs.rmSync(fakeBin, { recursive: true, force: true }); } catch {}
+	try { fs.rmSync(dir8, { recursive: true, force: true }); } catch {}
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

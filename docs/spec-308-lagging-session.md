@@ -34,14 +34,42 @@ a statusline, `wtft -s <path>` fired at launch) was told the session did not exi
 4. **Reaper (`sessionIsGone`):** "gone" now requires evidence the session once existed — a classified line or a `_meta` offset in its tag file. Never reaps its own PID. `--cleanup` shares the predicate.
 5. **Daemon:** `SESSION_WAIT_MAX_MS = 1 h` — a never-seen session parks the daemon for at most an hour (matches `ZERO_INTERACTIONS_AGE`); shutdown reason `session never written`. A session seen once and then removed still exits on the daemon's own `sessionExisted` knowledge. A later `wtft` run respawns for free.
 
+## 3b. PR #309 review — what changed after the first cut
+
+Two review rounds (macroscopeapp; every finding verified against the code before adoption):
+
+- **Reader resolves the tag path, never assembles it.** `bin/wtft.ts` hand-built
+  `<dir>/wtft-tags/<base>.wtft-tag.v<N>.jsonl`; after a #155 move the daemon adopts the
+  *sibling* file, so the assembled path is one nobody writes — `--watch` sat on
+  "Waiting for session data…" forever with a full tag one directory over. Non-watch now
+  uses `getTagPath` (a stale-version tag is still data worth charting); `--watch` uses
+  `getCurrentVersionTagPath`, the same resolver the daemon uses to pick its *writer*
+  path, and re-resolves inside the wait loop, re-seeding both `allInteractions` and
+  `lastReadOffset` from whichever file won.
+- **"The daemon is running and waiting on it" is checked before it is said.**
+  `awaitDaemonUp(sessionPath, child, ceilingMs)` polls state (no fixed delay):
+  `up` ⇔ a live process holds the lease (`checkDaemonHealth().alive`) — the daemon writes
+  its PID file before `initClassified()`, and this covers the singleton case where the
+  child exits 0 because an older daemon owns the session; `dead` ⇔ child gone (exit code
+  **or signal**) AND no lease, re-checked *after* the exit is observed (a concurrent daemon
+  can claim the lease in the gap); `unknown` ⇔ ceiling hit with the child alive and
+  nothing claimed — still exit 0, a slow box is not a failure. **A tag file is not
+  proof:** tags outlive daemons (previous run, or a sibling-dir file the #155 lookup
+  adopts) — measured: a stale tag under `/tmp` made a SIGKILLed stand-in read as "up".
+  Both the pending-session branch and the "no data yet" branch route through it.
+
 ## 4. Verification
 
-`tests/wtft-308-lagging-session.test.ts` (22 assertions, every wait a poll on a predicate):
+`tests/wtft-308-lagging-session.test.ts` (41 assertions, every wait a poll on a predicate):
 
 1. non-watch on an absent path: exit 0, no `not found` / `does not exist` / `invalid`, states "not written yet", names the path, daemon holds the lease, file not created by the CLI
 2. session written afterwards: the **same** daemon classifies it, second run renders bars
 3. `--watch` on an absent path: waiting line renders, still running past the retired 5 s ceiling, no failure copy, chart renders once the file appears, `q` exits 0
 4. reaper: daemon A (never written) survives daemon C's startup reap; daemon B (written, then removed) is reaped; A never SIGTERMed itself
+5. #155 move: daemon classifies in `proj-a`, transcript moves to `proj-b`, tag left behind — non-watch charts it, `--watch` renders instead of hanging
+6. pending session + a daemon that dies during startup (structural injection: `wtft.mjs` copied next to no `wtft-daemon.mjs`) → exit ≠ 0, names the daemon, never claims "running and waiting"
+7. `awaitDaemonUp` proof rules, child stood in by bare node processes: (a) leftover tag + child exit 1 + no lease → `dead`; (b) SIGKILLed child → `dead` naming the signal; (c) child exit 0 while another process holds the lease → `up`
+8. existing session, daemon dead before any data → exit ≠ 0, never "no data yet"
 
 `bun run test wtft`: 32/32 suites green. `tests/wtft-daemon.test.sh`: green.
 
