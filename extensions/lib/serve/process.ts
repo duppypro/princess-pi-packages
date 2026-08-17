@@ -2,10 +2,10 @@ import * as https from "node:https";
 import * as http from "node:http";
 import * as path from "node:path";
 import * as net from "node:net";
-import { exec, execFile } from "node:child_process";
+import { exec, execFile, type ChildProcess } from "node:child_process";
 import { ServerInstance } from "./domain.js";
-import { flattenSubdomainToLabel, readSubdomainMap } from "./cloudflare.js";
-import { liveServers, readRegistry, unregisterPid, type UnclaimedProcess } from "./registry.js";
+import { flattenSubdomainToLabel, readSubdomainMap, unpublishSubdomain } from "./cloudflare.js";
+import { liveServers, readRegistry, unregisterPid, unregisterPort, type UnclaimedProcess } from "./registry.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -218,6 +218,133 @@ export async function confirmProcessKilled(pid: number, retries = 10, delayMs = 
 		await new Promise(r => setTimeout(r, delayMs));
 	}
 	return !isProcessAlive(pid);
+}
+
+// ---
+// Startup liveness (#307) — state, not a stopwatch.
+// ---
+
+/** One loopback connect attempt: is anything accepting on 127.0.0.1:port right now? */
+export function probePortOnce(port: number, timeoutMs = 500): Promise<boolean> {
+	return new Promise((resolve) => {
+		const sock = net.connect({ host: "127.0.0.1", port }, () => { sock.destroy(); resolve(true); });
+		sock.on("error", () => resolve(false));
+		sock.setTimeout(timeoutMs, () => { sock.destroy(); resolve(false); });
+	});
+}
+
+export type ServerStartupState = "up" | "exited" | "pending";
+export interface ServerStartupResult {
+	state: ServerStartupState;
+	exitCode: number | null;
+	signalCode: NodeJS.Signals | null;
+	/** How long the wait actually took — reported, so a slow start is a number, not a guess. */
+	elapsedMs: number;
+}
+
+/**
+ * Wait until a server we just spawned proves it is up — or proves it is not.
+ *
+ * WHY (#307): `serve` used to `sleep(1200)` after `spawn()` and then read the registry to
+ * print its summary. That is a guess about how long `npx http-server` takes to bind. Cold
+ * `npx` or a loaded box → the summary said "No active directories are currently being
+ * served" while the server came up two seconds later; a spawn that died at 1.3 s (port
+ * stolen between `isPortFree` and bind — that probe is TOCTOU by nature) was reported as
+ * running.
+ *
+ * Three answers, each a fact:
+ *   - `up`      — the port accepts a connection (asked, not assumed).
+ *   - `exited`  — the child is gone; exit code or signal attached. Never "running".
+ *   - `pending` — ceiling hit with the child alive and the port silent. Reported as
+ *                 exactly that: started, not answering yet. Not a failure, not a success.
+ * A healthy static server resolves in a few 100 ms polls; the ceiling bounds only the
+ * ambiguous case, and the ceiling's answer is `pending`, never a verdict.
+ */
+export async function awaitServerUp(opts: {
+	port: number;
+	child: ChildProcess | null;
+	ceilingMs: number;
+	pollMs?: number;
+}): Promise<ServerStartupResult> {
+	const { port, child, ceilingMs } = opts;
+	const pollMs = opts.pollMs ?? 100;
+	const start = Date.now();
+	const exited = () => !!child && (child.exitCode !== null || child.signalCode !== null);
+	for (;;) {
+		// Child state is read BEFORE and AFTER the probe (PR #318 review). A port that answers
+		// is only "our server is up" if our child is still alive: a child that lost the bind
+		// race to a foreign listener, or died during the probe, must read `exited` — the
+		// answering port belongs to someone else and its record must not survive as ours.
+		if (exited()) {
+			return { state: "exited", exitCode: child!.exitCode, signalCode: child!.signalCode, elapsedMs: Date.now() - start };
+		}
+		const portUp = await probePortOnce(port, Math.min(500, pollMs * 5));
+		if (exited()) {
+			return { state: "exited", exitCode: child!.exitCode, signalCode: child!.signalCode, elapsedMs: Date.now() - start };
+		}
+		if (portUp) {
+			return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+		}
+		if (Date.now() - start >= ceilingMs) {
+			return { state: "pending", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+		}
+		await new Promise(r => setTimeout(r, pollMs));
+	}
+}
+
+/** A server `serve` just spawned, as the start path knows it. `subdomain` is set only when the edge publish succeeded. */
+export interface StartedServer {
+	port: number;
+	child: ChildProcess | null;
+	dir: string;
+	subdomain: string | null;
+}
+
+export interface StartupOutcome {
+	server: StartedServer;
+	result: ServerStartupResult;
+	/** For an `exited` server that was published: was the edge entry taken back down? */
+	unpublish: "done" | "failed" | "not-published";
+	unpublishError?: string;
+}
+
+/**
+ * Settle every spawn of one start operation — concurrently, so the ceiling bounds the whole
+ * wait, not each directory in turn (PR #318 review: serial awaits made `serve a b c` block
+ * for ceiling × N).
+ *
+ * An `exited` server is retired from the registry — but a PUBLISHED one is first unpublished
+ * (PR #318 review). Retiring the record while its ingress rule and Access app stay live would
+ * throw away exactly the hostname-bound evidence `reapOrphans` needs to clean it up later, and
+ * a future process on that port would receive traffic through the stale hostname. If the
+ * unpublish itself fails, the record is KEPT: with its `subdomain` it survives pruning and the
+ * next reap can act on it. Nothing else here formats or prints — callers own the wording.
+ */
+export async function settleStartedServers(started: StartedServer[], ceilingMs: number): Promise<StartupOutcome[]> {
+	const results = await Promise.all(started.map(s => awaitServerUp({ port: s.port, child: s.child, ceilingMs })));
+	const outcomes: StartupOutcome[] = [];
+	for (let i = 0; i < started.length; i++) {
+		const server = started[i], result = results[i];
+		let unpublish: StartupOutcome["unpublish"] = "not-published";
+		let unpublishError: string | undefined;
+		if (result.state === "exited") {
+			if (server.subdomain) {
+				try {
+					await unpublishSubdomain({ subdomain: server.subdomain });
+					unpublish = "done";
+					unregisterPort(server.port);
+				} catch (err) {
+					unpublish = "failed";
+					unpublishError = (err as Error).message;
+					// keep the record — it is reap's evidence for this hostname+port
+				}
+			} else {
+				unregisterPort(server.port);
+			}
+		}
+		outcomes.push({ server, result, unpublish, unpublishError });
+	}
+	return outcomes;
 }
 
 // Single, reliable kill path for a discovered server (#39). Uses the PID captured at

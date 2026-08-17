@@ -388,6 +388,8 @@ import * as os from "node:os";
 var CONFIG_DIR = path.join(os.homedir(), ".config", "princess-pi");
 var CF_ENV_PATH = path.join(CONFIG_DIR, "cf.env");
 var LOCK_PATH = path.join(CONFIG_DIR, "tunnel-config.lock");
+var CF_API = "https://api.cloudflare.com/client/v4";
+var ZONE_SUFFIX = "princess-pi.dev";
 var SERVE_CONFIG_DIR = path.join(os.homedir(), ".config", "princess-pi-packages", "serve");
 var SUBDOMAIN_MAP_PATH = path.join(SERVE_CONFIG_DIR, "subdomains.json");
 function readSubdomainMap() {
@@ -398,12 +400,146 @@ function readSubdomainMap() {
   } catch {}
   return {};
 }
+function removeSubdomainFromMap(subdomain) {
+  const map = readSubdomainMap();
+  for (const [port, subdomains] of Object.entries(map)) {
+    const arr = subdomains.filter((s) => s !== subdomain);
+    if (arr.length === 0)
+      delete map[port];
+    else
+      map[port] = arr;
+  }
+  fs.writeFileSync(SUBDOMAIN_MAP_PATH, JSON.stringify(map), "utf8");
+}
+var APP_PREFIX = "serve ";
 var FALLBACK_RESERVED = new Set(["www", "mail", "logger", "preview", "apex", "ns1", "ns2", "_dmarc", "_domainkey"]);
+var LOCK_TIMEOUT_MS = 15000;
+var LOCK_STALE_MS = 60000;
 function flattenSubdomainToLabel(subdomain) {
   let label = String(subdomain).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, "");
   if (!label)
     throw new Error(`Sub-domain "${subdomain}" flattens to an empty DNS label.`);
   return label;
+}
+function loadCfEnv(envPath = CF_ENV_PATH) {
+  let raw;
+  try {
+    raw = fs.readFileSync(envPath, "utf8");
+  } catch (err) {
+    throw new Error(`Cloudflare token file not found or unreadable at ${envPath} (${err.code || err.message}). ` + `Create it (0600) with CF_API_TOKEN / CF_ACCOUNT_ID / CF_ZONE_ID / CF_TUNNEL_ID — see the runbook 6B.0.`);
+  }
+  const env = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (!m)
+      continue;
+    env[m[1]] = m[2].replace(/^["']|["']$/g, "").trim();
+  }
+  const { CF_API_TOKEN: token, CF_ACCOUNT_ID: accountId, CF_ZONE_ID: zoneId, CF_TUNNEL_ID: tunnelId } = env;
+  const missing = ["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_ZONE_ID", "CF_TUNNEL_ID"].filter((k) => !env[k]);
+  if (missing.length)
+    throw new Error(`${envPath} is missing required key(s): ${missing.join(", ")}.`);
+  return { token, accountId, zoneId, tunnelId };
+}
+async function cfFetch(cf, urlPath, { method = "GET", body } = {}) {
+  const res = await fetch(`${CF_API}${urlPath}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${cf.token}`,
+      "Content-Type": "application/json"
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
+  if (!res.ok || !json || json.success === false) {
+    const apiErrs = json && json.errors ? json.errors.map((e) => `${e.code} ${e.message}`).join("; ") : "";
+    throw new Error(`Cloudflare API ${method} ${urlPath} failed (HTTP ${res.status})${apiErrs ? ": " + apiErrs : ""}`);
+  }
+  return json.result;
+}
+async function acquireLock() {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  } catch {}
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;; ) {
+    try {
+      const fd = fs.openSync(LOCK_PATH, "wx");
+      fs.writeSync(fd, `${process.pid} ${new Date().toISOString()}
+`);
+      fs.closeSync(fd);
+      return;
+    } catch (err) {
+      if (err.code !== "EEXIST")
+        throw err;
+      try {
+        const st = fs.statSync(LOCK_PATH);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          fs.unlinkSync(LOCK_PATH);
+          continue;
+        }
+      } catch {}
+      if (Date.now() > deadline)
+        throw new Error(`Timed out acquiring ${LOCK_PATH} (another serve is publishing).`);
+      await sleep(80 + Math.floor(Math.random() * 120));
+    }
+  }
+}
+function releaseLock() {
+  try {
+    fs.unlinkSync(LOCK_PATH);
+  } catch {}
+}
+async function withLock(fn) {
+  await acquireLock();
+  try {
+    return await fn();
+  } finally {
+    releaseLock();
+  }
+}
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+function removeIngressRule(config, hostname) {
+  const ingress = Array.isArray(config?.ingress) ? config.ingress.filter((r) => r.hostname !== hostname) : [];
+  if (!ingress.some((r) => !r.hostname))
+    ingress.push({ service: "http_status:404" });
+  return { ...config, ingress };
+}
+async function getTunnelConfig(cf) {
+  const result = await cfFetch(cf, `/accounts/${cf.accountId}/cfd_tunnel/${cf.tunnelId}/configurations`);
+  return result?.config || { ingress: [{ service: "http_status:404" }] };
+}
+async function putTunnelConfig(cf, config) {
+  await cfFetch(cf, `/accounts/${cf.accountId}/cfd_tunnel/${cf.tunnelId}/configurations`, { method: "PUT", body: { config } });
+}
+async function findAccessApp(cf, hostname) {
+  const apps = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
+  return apps.find((a) => a.domain === hostname || (a.self_hosted_domains || []).includes(hostname));
+}
+async function deleteAccessApp(cf, label) {
+  const hostname = `${label}.${ZONE_SUFFIX}`;
+  const existing = await findAccessApp(cf, hostname);
+  if (existing && String(existing.name || "").startsWith(APP_PREFIX)) {
+    await cfFetch(cf, `/accounts/${cf.accountId}/access/apps/${existing.id}`, { method: "DELETE" });
+  }
+}
+async function unpublishSubdomain({ subdomain }) {
+  const cf = loadCfEnv();
+  const label = flattenSubdomainToLabel(subdomain);
+  const hostname = `${label}.${ZONE_SUFFIX}`;
+  return withLock(async () => {
+    const config = await getTunnelConfig(cf);
+    await putTunnelConfig(cf, removeIngressRule(config, hostname));
+    await deleteAccessApp(cf, label);
+    removeSubdomainFromMap(subdomain);
+  });
 }
 
 // extensions/lib/serve/registry.ts
@@ -471,11 +607,18 @@ function unregisterPid(pid) {
   if (kept.length !== all.length)
     writeRaw(kept);
 }
+function unregisterPort(port) {
+  const all = readRaw();
+  const kept = all.filter((r) => r.port !== port);
+  if (kept.length !== all.length)
+    writeRaw(kept);
+}
 function liveServers() {
   const all = readRaw();
   const live = all.filter((r) => verifyRecord(r) === "live");
-  if (live.length !== all.length)
-    writeRaw(live);
+  const kept = all.filter((r) => verifyRecord(r) === "live" || r.subdomain != null && r.subdomain !== "");
+  if (kept.length !== all.length)
+    writeRaw(kept);
   return live;
 }
 
@@ -604,6 +747,66 @@ async function confirmProcessKilled(pid, retries = 10, delayMs = 100) {
   }
   return !isProcessAlive(pid);
 }
+function probePortOnce(port, timeoutMs = 500) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: "127.0.0.1", port }, () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.on("error", () => resolve(false));
+    sock.setTimeout(timeoutMs, () => {
+      sock.destroy();
+      resolve(false);
+    });
+  });
+}
+async function awaitServerUp(opts) {
+  const { port, child, ceilingMs } = opts;
+  const pollMs = opts.pollMs ?? 100;
+  const start = Date.now();
+  const exited = () => !!child && (child.exitCode !== null || child.signalCode !== null);
+  for (;; ) {
+    if (exited()) {
+      return { state: "exited", exitCode: child.exitCode, signalCode: child.signalCode, elapsedMs: Date.now() - start };
+    }
+    const portUp = await probePortOnce(port, Math.min(500, pollMs * 5));
+    if (exited()) {
+      return { state: "exited", exitCode: child.exitCode, signalCode: child.signalCode, elapsedMs: Date.now() - start };
+    }
+    if (portUp) {
+      return { state: "up", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+    }
+    if (Date.now() - start >= ceilingMs) {
+      return { state: "pending", exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null, elapsedMs: Date.now() - start };
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
+async function settleStartedServers(started, ceilingMs) {
+  const results = await Promise.all(started.map((s) => awaitServerUp({ port: s.port, child: s.child, ceilingMs })));
+  const outcomes = [];
+  for (let i = 0;i < started.length; i++) {
+    const server = started[i], result = results[i];
+    let unpublish = "not-published";
+    let unpublishError;
+    if (result.state === "exited") {
+      if (server.subdomain) {
+        try {
+          await unpublishSubdomain({ subdomain: server.subdomain });
+          unpublish = "done";
+          unregisterPort(server.port);
+        } catch (err) {
+          unpublish = "failed";
+          unpublishError = err.message;
+        }
+      } else {
+        unregisterPort(server.port);
+      }
+    }
+    outcomes.push({ server, result, unpublish, unpublishError });
+  }
+  return outcomes;
+}
 async function killServerInstance(server) {
   const pid = server.pid ?? await findPidByPort(server.port);
   if (!pid)
@@ -678,6 +881,24 @@ function readProcessStartTicks2(pid) {
     return null;
   }
 }
+function pidExists2(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+function verifyRecord2(record) {
+  if (!pidExists2(record.pid))
+    return "dead";
+  if (record.startTicks === null)
+    return "live";
+  const current = readProcessStartTicks2(record.pid);
+  if (current === null)
+    return "recycled";
+  return current === record.startTicks ? "live" : "recycled";
+}
 function readRaw2() {
   try {
     const parsed = JSON.parse(fs3.readFileSync(REGISTRY_PATH2, "utf8"));
@@ -696,6 +917,9 @@ function writeRaw2(servers) {
     fs3.renameSync(tmp, REGISTRY_PATH2);
   } catch {}
 }
+function readRegistry2() {
+  return readRaw2();
+}
 function registerServer(entry) {
   const record = {
     pid: entry.pid,
@@ -709,6 +933,24 @@ function registerServer(entry) {
   const kept = readRaw2().filter((r) => r.pid !== record.pid && r.port !== record.port);
   writeRaw2([...kept, record]);
   return record;
+}
+function setRecordSubdomain(port, subdomain) {
+  const all = readRaw2();
+  let changed = false;
+  const next = all.map((r) => {
+    if (r.port !== port || r.subdomain === subdomain)
+      return r;
+    changed = true;
+    return { ...r, subdomain };
+  });
+  if (changed)
+    writeRaw2(next);
+}
+function unregisterPort2(port) {
+  const all = readRaw2();
+  const kept = all.filter((r) => r.port !== port);
+  if (kept.length !== all.length)
+    writeRaw2(kept);
 }
 
 // extensions/lib/session-path-shortener.ts
@@ -878,8 +1120,8 @@ import { execSync } from "node:child_process";
 var CONFIG_DIR2 = path6.join(os5.homedir(), ".config", "princess-pi");
 var CF_ENV_PATH2 = path6.join(CONFIG_DIR2, "cf.env");
 var LOCK_PATH2 = path6.join(CONFIG_DIR2, "tunnel-config.lock");
-var CF_API = "https://api.cloudflare.com/client/v4";
-var ZONE_SUFFIX = "princess-pi.dev";
+var CF_API2 = "https://api.cloudflare.com/client/v4";
+var ZONE_SUFFIX2 = "princess-pi.dev";
 var SERVE_CONFIG_DIR4 = path6.join(os5.homedir(), ".config", "princess-pi-packages", "serve");
 var SUBDOMAIN_MAP_PATH2 = path6.join(SERVE_CONFIG_DIR4, "subdomains.json");
 function readSubdomainMap2() {
@@ -899,7 +1141,7 @@ function writeSubdomainMap(port, subdomain) {
   fs5.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
   fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
 }
-function removeSubdomainFromMap(subdomain) {
+function removeSubdomainFromMap2(subdomain) {
   const map = readSubdomainMap2();
   for (const [port, subdomains] of Object.entries(map)) {
     const arr = subdomains.filter((s) => s !== subdomain);
@@ -910,10 +1152,10 @@ function removeSubdomainFromMap(subdomain) {
   }
   fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
 }
-var APP_PREFIX = "serve ";
+var APP_PREFIX2 = "serve ";
 var FALLBACK_RESERVED2 = new Set(["www", "mail", "logger", "preview", "apex", "ns1", "ns2", "_dmarc", "_domainkey"]);
-var LOCK_TIMEOUT_MS = 15000;
-var LOCK_STALE_MS = 60000;
+var LOCK_TIMEOUT_MS2 = 15000;
+var LOCK_STALE_MS2 = 60000;
 function parseAclFile(targetDir) {
   const homeDir = os5.homedir();
   const gitIgnoreDir = path6.join(homeDir, ".config", "git");
@@ -994,13 +1236,16 @@ ${gitEmail}
     throw new Error("The .serve-acl file must contain at least one valid email address or @domain rule.");
   return emails;
 }
+function subdomainToHostname(subdomain) {
+  return `${flattenSubdomainToLabel2(subdomain)}.${ZONE_SUFFIX2}`;
+}
 function flattenSubdomainToLabel2(subdomain) {
   let label = String(subdomain).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, "");
   if (!label)
     throw new Error(`Sub-domain "${subdomain}" flattens to an empty DNS label.`);
   return label;
 }
-function loadCfEnv(envPath = CF_ENV_PATH2) {
+function loadCfEnv2(envPath = CF_ENV_PATH2) {
   let raw;
   try {
     raw = fs5.readFileSync(envPath, "utf8");
@@ -1020,8 +1265,8 @@ function loadCfEnv(envPath = CF_ENV_PATH2) {
     throw new Error(`${envPath} is missing required key(s): ${missing.join(", ")}.`);
   return { token, accountId, zoneId, tunnelId };
 }
-async function cfFetch(cf, urlPath, { method = "GET", body } = {}) {
-  const res = await fetch(`${CF_API}${urlPath}`, {
+async function cfFetch2(cf, urlPath, { method = "GET", body } = {}) {
+  const res = await fetch(`${CF_API2}${urlPath}`, {
     method,
     headers: {
       Authorization: `Bearer ${cf.token}`,
@@ -1041,11 +1286,11 @@ async function cfFetch(cf, urlPath, { method = "GET", body } = {}) {
   }
   return json.result;
 }
-async function acquireLock() {
+async function acquireLock2() {
   try {
     fs5.mkdirSync(CONFIG_DIR2, { recursive: true });
   } catch {}
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS2;
   for (;; ) {
     try {
       const fd = fs5.openSync(LOCK_PATH2, "wx");
@@ -1058,34 +1303,34 @@ async function acquireLock() {
         throw err;
       try {
         const st = fs5.statSync(LOCK_PATH2);
-        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS2) {
           fs5.unlinkSync(LOCK_PATH2);
           continue;
         }
       } catch {}
       if (Date.now() > deadline)
         throw new Error(`Timed out acquiring ${LOCK_PATH2} (another serve is publishing).`);
-      await sleep(80 + Math.floor(Math.random() * 120));
+      await sleep2(80 + Math.floor(Math.random() * 120));
     }
   }
 }
-function releaseLock() {
+function releaseLock2() {
   try {
     fs5.unlinkSync(LOCK_PATH2);
   } catch {}
 }
-async function withLock(fn) {
-  await acquireLock();
+async function withLock2(fn) {
+  await acquireLock2();
   try {
     return await fn();
   } finally {
-    releaseLock();
+    releaseLock2();
   }
 }
-function sleep(ms) {
+function sleep2(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-function probePortOnce(port) {
+function probePortOnce2(port) {
   return new Promise((resolve) => {
     const sock = net2.connect({ host: "127.0.0.1", port }, () => {
       sock.destroy();
@@ -1100,12 +1345,22 @@ function probePortOnce(port) {
 }
 async function isPortLive(port, attempts = 3, delayMs = 500) {
   for (let i = 0;i < attempts; i++) {
-    if (await probePortOnce(port))
+    if (await probePortOnce2(port))
       return true;
     if (i < attempts - 1)
       await new Promise((r) => setTimeout(r, delayMs));
   }
   return false;
+}
+function classifyReapCandidate({ port, hostname, probeLive, evidence }) {
+  if (probeLive)
+    return "keep-live";
+  const records = Array.isArray(evidence) ? evidence.filter((e) => e && e.port === port && !!e.hostname && e.hostname === hostname) : [];
+  if (records.length === 0)
+    return "keep-unverified";
+  if (records.some((e) => e.verdict === "live"))
+    return "keep-starting";
+  return "reap";
 }
 async function checkLabelAvailable(cf, label, activeLabels) {
   if (activeLabels && activeLabels.has(label)) {
@@ -1113,18 +1368,18 @@ async function checkLabelAvailable(cf, label, activeLabels) {
   }
   let zoneLabels;
   try {
-    const records = await cfFetch(cf, `/zones/${cf.zoneId}/dns_records?per_page=1000`);
+    const records = await cfFetch2(cf, `/zones/${cf.zoneId}/dns_records?per_page=1000`);
     zoneLabels = new Set;
     for (const r of records) {
       const name = String(r.name).toLowerCase();
       if (r.type === "CNAME" && String(r.content || "").toLowerCase().endsWith(".cfargotunnel.com"))
         continue;
-      if (name === ZONE_SUFFIX) {
+      if (name === ZONE_SUFFIX2) {
         zoneLabels.add("apex");
         continue;
       }
-      if (name.endsWith(`.${ZONE_SUFFIX}`))
-        zoneLabels.add(name.slice(0, name.length - ZONE_SUFFIX.length - 1).split(".").pop());
+      if (name.endsWith(`.${ZONE_SUFFIX2}`))
+        zoneLabels.add(name.slice(0, name.length - ZONE_SUFFIX2.length - 1).split(".").pop());
     }
   } catch (err) {
     if (FALLBACK_RESERVED2.has(label))
@@ -1134,9 +1389,9 @@ async function checkLabelAvailable(cf, label, activeLabels) {
   if (zoneLabels.has(label))
     return { ok: false, reason: `label "${label}" matches an existing zone DNS record` };
   try {
-    const apps = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
-    const hostname = `${label}.${ZONE_SUFFIX}`;
-    const foreign = apps.find((a) => (a.domain === hostname || (a.self_hosted_domains || []).includes(hostname)) && !String(a.name || "").startsWith(APP_PREFIX));
+    const apps = await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
+    const hostname = `${label}.${ZONE_SUFFIX2}`;
+    const foreign = apps.find((a) => (a.domain === hostname || (a.self_hosted_domains || []).includes(hostname)) && !String(a.name || "").startsWith(APP_PREFIX2));
     if (foreign)
       return { ok: false, reason: `label "${label}" is fronted by a non-serve Access app ("${foreign.name}")` };
   } catch {}
@@ -1153,31 +1408,31 @@ function upsertIngressRule(config, hostname, port) {
   }
   return { ...config, ingress };
 }
-function removeIngressRule(config, hostname) {
+function removeIngressRule2(config, hostname) {
   const ingress = Array.isArray(config?.ingress) ? config.ingress.filter((r) => r.hostname !== hostname) : [];
   if (!ingress.some((r) => !r.hostname))
     ingress.push({ service: "http_status:404" });
   return { ...config, ingress };
 }
-async function getTunnelConfig(cf) {
-  const result = await cfFetch(cf, `/accounts/${cf.accountId}/cfd_tunnel/${cf.tunnelId}/configurations`);
+async function getTunnelConfig2(cf) {
+  const result = await cfFetch2(cf, `/accounts/${cf.accountId}/cfd_tunnel/${cf.tunnelId}/configurations`);
   return result?.config || { ingress: [{ service: "http_status:404" }] };
 }
-async function putTunnelConfig(cf, config) {
-  await cfFetch(cf, `/accounts/${cf.accountId}/cfd_tunnel/${cf.tunnelId}/configurations`, { method: "PUT", body: { config } });
+async function putTunnelConfig2(cf, config) {
+  await cfFetch2(cf, `/accounts/${cf.accountId}/cfd_tunnel/${cf.tunnelId}/configurations`, { method: "PUT", body: { config } });
 }
 function aclEntriesToInclude(entries) {
   return entries.map((entry) => entry.startsWith("@") ? { email_domain: { domain: entry.slice(1) } } : { email: { email: entry } });
 }
-async function findAccessApp(cf, hostname) {
-  const apps = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
+async function findAccessApp2(cf, hostname) {
+  const apps = await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
   return apps.find((a) => a.domain === hostname || (a.self_hosted_domains || []).includes(hostname));
 }
 async function upsertAccessApp(cf, label, emails) {
-  const hostname = `${label}.${ZONE_SUFFIX}`;
-  const existing = await findAccessApp(cf, hostname);
+  const hostname = `${label}.${ZONE_SUFFIX2}`;
+  const existing = await findAccessApp2(cf, hostname);
   const appBody = {
-    name: `${APP_PREFIX}${label}`,
+    name: `${APP_PREFIX2}${label}`,
     domain: hostname,
     type: "self_hosted",
     session_duration: "24h"
@@ -1185,9 +1440,9 @@ async function upsertAccessApp(cf, label, emails) {
   let appId;
   if (existing) {
     appId = existing.id;
-    await cfFetch(cf, `/accounts/${cf.accountId}/access/apps/${appId}`, { method: "PUT", body: appBody });
+    await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps/${appId}`, { method: "PUT", body: appBody });
   } else {
-    const created = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps`, { method: "POST", body: appBody });
+    const created = await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps`, { method: "POST", body: appBody });
     appId = created.id;
   }
   const policyBody = {
@@ -1195,82 +1450,82 @@ async function upsertAccessApp(cf, label, emails) {
     decision: "allow",
     include: aclEntriesToInclude(emails)
   };
-  const policies = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps/${appId}/policies`);
+  const policies = await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps/${appId}/policies`);
   const mine = (policies || []).find((p) => p.name === policyBody.name);
   if (mine)
-    await cfFetch(cf, `/accounts/${cf.accountId}/access/apps/${appId}/policies/${mine.id}`, { method: "PUT", body: policyBody });
+    await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps/${appId}/policies/${mine.id}`, { method: "PUT", body: policyBody });
   else
-    await cfFetch(cf, `/accounts/${cf.accountId}/access/apps/${appId}/policies`, { method: "POST", body: policyBody });
+    await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps/${appId}/policies`, { method: "POST", body: policyBody });
   return appId;
 }
-async function deleteAccessApp(cf, label) {
-  const hostname = `${label}.${ZONE_SUFFIX}`;
-  const existing = await findAccessApp(cf, hostname);
-  if (existing && String(existing.name || "").startsWith(APP_PREFIX)) {
-    await cfFetch(cf, `/accounts/${cf.accountId}/access/apps/${existing.id}`, { method: "DELETE" });
+async function deleteAccessApp2(cf, label) {
+  const hostname = `${label}.${ZONE_SUFFIX2}`;
+  const existing = await findAccessApp2(cf, hostname);
+  if (existing && String(existing.name || "").startsWith(APP_PREFIX2)) {
+    await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps/${existing.id}`, { method: "DELETE" });
   }
 }
 async function publishSubdomain({ subdomain, port, emails, activeLabels }) {
-  const cf = loadCfEnv();
+  const cf = loadCfEnv2();
   const label = flattenSubdomainToLabel2(subdomain);
-  const hostname = `${label}.${ZONE_SUFFIX}`;
-  return withLock(async () => {
+  const hostname = `${label}.${ZONE_SUFFIX2}`;
+  return withLock2(async () => {
     const avail = await checkLabelAvailable(cf, label, activeLabels);
     if (!avail.ok)
       throw new Error(`Refusing to publish: ${avail.reason}.`);
     for (let attempt = 0;attempt < 3; attempt++) {
-      const config = await getTunnelConfig(cf);
-      await putTunnelConfig(cf, upsertIngressRule(config, hostname, port));
-      const verify = await getTunnelConfig(cf);
+      const config = await getTunnelConfig2(cf);
+      await putTunnelConfig2(cf, upsertIngressRule(config, hostname, port));
+      const verify = await getTunnelConfig2(cf);
       const rule = (verify.ingress || []).find((r) => r.hostname === hostname);
       const hasCatchAll = (verify.ingress || []).some((r) => !r.hostname);
       if (rule && rule.service === `http://127.0.0.1:${port}` && hasCatchAll)
         break;
       if (attempt === 2)
         throw new Error(`Ingress verify-GET did not reflect ${hostname} after 3 attempts.`);
-      await sleep(120 + Math.floor(Math.random() * 200));
+      await sleep2(120 + Math.floor(Math.random() * 200));
     }
     await upsertAccessApp(cf, label, emails);
     writeSubdomainMap(port, subdomain);
     return hostname;
   });
 }
-async function unpublishSubdomain({ subdomain }) {
-  const cf = loadCfEnv();
+async function unpublishSubdomain2({ subdomain }) {
+  const cf = loadCfEnv2();
   const label = flattenSubdomainToLabel2(subdomain);
-  const hostname = `${label}.${ZONE_SUFFIX}`;
-  return withLock(async () => {
-    const config = await getTunnelConfig(cf);
-    await putTunnelConfig(cf, removeIngressRule(config, hostname));
-    await deleteAccessApp(cf, label);
-    removeSubdomainFromMap(subdomain);
+  const hostname = `${label}.${ZONE_SUFFIX2}`;
+  return withLock2(async () => {
+    const config = await getTunnelConfig2(cf);
+    await putTunnelConfig2(cf, removeIngressRule2(config, hostname));
+    await deleteAccessApp2(cf, label);
+    removeSubdomainFromMap2(subdomain);
   });
 }
-async function reapOrphans() {
+async function reapOrphans({ evidence, onUnverified, onReaped } = {}) {
   let cf;
   try {
-    cf = loadCfEnv();
+    cf = loadCfEnv2();
   } catch {
     return [];
   }
   try {
     if (fs5.existsSync(LOCK_PATH2)) {
       const st = fs5.statSync(LOCK_PATH2);
-      if (Date.now() - st.mtimeMs > LOCK_STALE_MS)
+      if (Date.now() - st.mtimeMs > LOCK_STALE_MS2)
         fs5.unlinkSync(LOCK_PATH2);
     }
   } catch {}
-  return withLock(async () => {
+  return withLock2(async () => {
     const reaped = [];
     const deadPorts = new Set;
-    const config = await getTunnelConfig(cf);
+    const config = await getTunnelConfig2(cf);
     const ingress = Array.isArray(config.ingress) ? config.ingress : [];
     let ownedHosts;
     try {
-      const apps = await cfFetch(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
+      const apps = await cfFetch2(cf, `/accounts/${cf.accountId}/access/apps?per_page=1000`);
       ownedHosts = new Set;
       for (const a of apps || []) {
-        if (!String(a.name || "").startsWith(APP_PREFIX))
+        if (!String(a.name || "").startsWith(APP_PREFIX2))
           continue;
         if (a.domain)
           ownedHosts.add(a.domain);
@@ -1280,24 +1535,48 @@ async function reapOrphans() {
     } catch {
       return [];
     }
-    let next = ingress;
+    const candidates = [];
     for (const rule of ingress) {
       if (!rule.hostname || !rule.service?.startsWith("http://127.0.0.1:"))
         continue;
       if (!ownedHosts.has(rule.hostname))
         continue;
       const port = parseInt(rule.service.split(":").pop(), 10);
-      if (await isPortLive(port))
+      const probeLive = await isPortLive(port);
+      const verdict = classifyReapCandidate({ port, hostname: rule.hostname, probeLive, evidence });
+      if (verdict === "keep-live" || verdict === "keep-starting")
         continue;
-      next = next.filter((r) => r.hostname !== rule.hostname);
-      deadPorts.add(port);
-      const label = rule.hostname.endsWith(`.${ZONE_SUFFIX}`) ? rule.hostname.slice(0, -(ZONE_SUFFIX.length + 1)) : null;
+      if (verdict === "keep-unverified") {
+        if (typeof onUnverified === "function") {
+          try {
+            onUnverified(rule.hostname, port);
+          } catch {}
+        }
+        continue;
+      }
+      candidates.push({ hostname: rule.hostname, port });
+    }
+    if (candidates.length === 0)
+      return reaped;
+    const reapedHosts = new Set(candidates.map((c) => c.hostname));
+    const next = ingress.filter((r) => !reapedHosts.has(r.hostname));
+    if (!next.some((r) => !r.hostname))
+      next.push({ service: "http_status:404" });
+    await putTunnelConfig2(cf, { ...config, ingress: next });
+    for (const c of candidates) {
+      deadPorts.add(c.port);
+      const label = c.hostname.endsWith(`.${ZONE_SUFFIX2}`) ? c.hostname.slice(0, -(ZONE_SUFFIX2.length + 1)) : null;
       if (label) {
         try {
-          await deleteAccessApp(cf, label);
+          await deleteAccessApp2(cf, label);
         } catch {}
       }
-      reaped.push(rule.hostname);
+      reaped.push(c.hostname);
+      if (typeof onReaped === "function") {
+        try {
+          onReaped(c.hostname, c.port);
+        } catch {}
+      }
     }
     if (deadPorts.size > 0) {
       const map = readSubdomainMap2();
@@ -1312,11 +1591,6 @@ async function reapOrphans() {
         fs5.mkdirSync(SERVE_CONFIG_DIR4, { recursive: true });
         fs5.writeFileSync(SUBDOMAIN_MAP_PATH2, JSON.stringify(map), "utf8");
       }
-    }
-    if (reaped.length) {
-      if (!next.some((r) => !r.hostname))
-        next.push({ service: "http_status:404" });
-      await putTunnelConfig(cf, { ...config, ingress: next });
     }
     return reaped;
   });
@@ -1422,7 +1696,7 @@ Usage:
 }
 async function handleUnpub(subdomain) {
   try {
-    await unpublishSubdomain({ subdomain });
+    await unpublishSubdomain2({ subdomain });
     console.log(`\uD83C\uDF10 Unpublished ${subdomain}.princess-pi.dev`);
   } catch (err) {
     console.warn(`\u26A0\uFE0F Failed to unpublish ${subdomain}: ${err.message}`);
@@ -1501,7 +1775,7 @@ async function handleKill(trimmedArgs) {
   const killedSubdomains = [...new Set(killedList.map((k) => k.subdomain).filter((s) => !!s))];
   for (const subdomain of killedSubdomains) {
     try {
-      await unpublishSubdomain({ subdomain });
+      await unpublishSubdomain2({ subdomain });
     } catch (err) {
       console.warn(`\u26A0\uFE0F Killed local origin for "${subdomain}" but failed to unpublish from Cloudflare: ${err.message}`);
     }
@@ -1567,8 +1841,14 @@ async function handleStart(trimmedArgs) {
   }
   let startPort = 8080;
   const startedPorts = [];
+  const started = [];
   try {
-    const reaped = await reapOrphans();
+    const evidence = readRegistry2().map((r) => ({ port: r.port, hostname: r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord2(r) }));
+    const reaped = await reapOrphans({
+      evidence,
+      onReaped: (_hostname, port) => unregisterPort2(port),
+      onUnverified: (hostname, port) => console.warn(`\u26A0\uFE0F ${hostname} \u2192 127.0.0.1:${port} is not answering, but serve has no record of spawning it \u2014 left published (a service tenant mid-restart looks like this). Use --unpublish if it is gone.`)
+    });
     if (reaped.length)
       console.log(`\uD83E\uDDF9 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`);
   } catch (err) {
@@ -1588,6 +1868,7 @@ async function handleStart(trimmedArgs) {
         try {
           const emails = parseAclFile(targetDir);
           const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
+          setRecordSubdomain(existingServer.port, overrideSubdomain);
           activeLabels.add(hostname.split(".")[0]);
           console.log(`\uD83C\uDF10 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.`);
           console.log(formatServerCard({ ...existingServer, url: `https://${hostname}/` }));
@@ -1618,6 +1899,8 @@ async function handleStart(trimmedArgs) {
     const serverProcess = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
     serverProcess.unref();
     startedPorts.push(port);
+    const startedEntry = { port, child: serverProcess, dir: rawDir, subdomain: null };
+    started.push(startedEntry);
     if (serverProcess.pid) {
       registerServer({
         pid: serverProcess.pid,
@@ -1632,6 +1915,7 @@ async function handleStart(trimmedArgs) {
         const emails = parseAclFile(targetDir);
         const hostname = await publishSubdomain({ subdomain, port, emails, activeLabels });
         activeLabels.add(hostname.split(".")[0]);
+        startedEntry.subdomain = subdomain;
         console.log(`\uD83C\uDF10 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`);
       } catch (err) {
         console.warn(`\u26A0\uFE0F Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${err.message}`);
@@ -1640,9 +1924,23 @@ async function handleStart(trimmedArgs) {
       console.log(`\u2139\uFE0F Serving "${rawDir}" locally on 127.0.0.1:${port}. Pass --pub <name> to publish a gated preview at <name>.princess-pi.dev.`);
     }
   }
-  await new Promise((r) => setTimeout(r, 1200));
+  const SERVER_START_CEILING_MS = 1e4;
+  const pendingPorts = [];
+  for (const { server: s, result: r, unpublish, unpublishError } of await settleStartedServers(started, SERVER_START_CEILING_MS)) {
+    if (r.state === "exited") {
+      const how = r.signalCode ? `on ${r.signalCode}` : `with code ${r.exitCode}`;
+      console.error(`\u274C Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).`);
+      if (unpublish === "done")
+        console.error(`   Unpublished ${s.subdomain}.princess-pi.dev \u2014 nothing is behind it.`);
+      if (unpublish === "failed")
+        console.error(`   \u26A0\uFE0F Could not unpublish ${s.subdomain}.princess-pi.dev (${unpublishError}); left for the next reap.`);
+    } else if (r.state === "pending") {
+      pendingPorts.push(s.port);
+      console.warn(`\u23F3 Server for "${s.dir}" started but is not answering on 127.0.0.1:${s.port} yet (${r.elapsedMs} ms) \u2014 it may still be booting; check with --list.`);
+    }
+  }
   const allActiveServers = await discoverServers();
-  const newServers = allActiveServers.filter((s) => startedPorts.includes(s.port));
+  const newServers = allActiveServers.filter((s) => startedPorts.includes(s.port) && !pendingPorts.includes(s.port));
   if (allActiveServers.length === 0) {
     console.warn("No active directories are currently being served.");
     return;

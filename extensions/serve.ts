@@ -13,14 +13,14 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort } from "./lib/serve/process.js";
-import { registerServer } from "./lib/serve/registry.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, settleStartedServers, type StartedServer } from "./lib/serve/process.js";
+import { registerServer, readRegistry, verifyRecord, unregisterPort, setRecordSubdomain } from "./lib/serve/registry.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
 import { shortenPath } from "./lib/session-path-shortener.js";
 import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable, formatServerCard } from "./lib/serve/tui.js";
 // --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
-import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans } from "./lib/serve/cloudflare.js";
+import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans, subdomainToHostname } from "./lib/serve/cloudflare.js";
 
 // Track widget visibility state locally (persisted across reloads via session log)
 let isWidgetVisible = true;
@@ -311,12 +311,21 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 		let startPort = 8080;
 		const startedPorts: number[] = [];
+		// #307: the child handles, so the summary can ask "did it come up?" instead of sleeping.
+		const started: StartedServer[] = [];
 		const ip = await resolveIp();
 
 		// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill before
 		// publishing new state (stale allow-list live at the edge = security drift).
+		// #306: reap needs a second fact besides a silent port — the registry's verdict on the
+		// process serve spawned for it. Silent + no record → left published and said out loud.
 		try {
-			const reaped = await reapOrphans();
+			const evidence = readRegistry().map(r => ({ port: r.port, hostname: r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord(r) }));
+			const reaped = await reapOrphans({
+				evidence,
+				onReaped: (_hostname, port) => unregisterPort(port),
+				onUnverified: (hostname, port) => ctx.ui.notify(`⚠️ ${hostname} → 127.0.0.1:${port} is not answering, but serve has no record of spawning it — left published (a service tenant mid-restart looks like this). Use --unpub if it is gone.`, "warning"),
+			});
 			if (reaped.length) ctx.ui.notify(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`, "info");
 		} catch (err) {
 			ctx.ui.notify(`⚠️ Orphan reap skipped: ${(err as Error).message}`, "warning");
@@ -345,6 +354,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 					try {
 						const emails = parseAclFile(targetDir);
 						const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
+					setRecordSubdomain(existingServer.port, overrideSubdomain); // reap evidence is hostname-bound (#318)
 						activeLabels.add(hostname.split(".")[0]);
 						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.\n\n${formatServerCard({ ...existingServer, url: `https://${hostname}/` })}`, "info");
 					} catch (err) {
@@ -409,6 +419,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 			startedPorts.push(port);
+			const startedEntry: StartedServer = { port, child: serverProcess, dir: rawDir, subdomain: null };
+			started.push(startedEntry);
 
 			// #181: record identity NOW, while this PID is unambiguously ours. Discovery reads
 			// this instead of guessing from a `ps` substring, and `--kill` targets only what is
@@ -431,6 +443,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 					const emails = parseAclFile(targetDir);
 					const hostname = await publishSubdomain({ subdomain, port, emails, activeLabels });
 					activeLabels.add(hostname.split(".")[0]);
+					startedEntry.subdomain = subdomain; // published — an early exit must take this back down
 					ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
 				} catch (err) {
 					ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
@@ -440,10 +453,24 @@ export default function serveExtension(pi: ExtensionAPI) {
 			}
 		}
 
-		await new Promise(r => setTimeout(r, 1200));
+		// #307: no fixed sleep. Ask each spawn whether it came up — port answers, child exited,
+		// or still pending at the ceiling — and say which. A dead child is retired from the
+		// registry here.
+		const SERVER_START_CEILING_MS = 10_000;
+		const pendingPorts: number[] = [];
+		for (const { server: s, result: r, unpublish, unpublishError } of await settleStartedServers(started, SERVER_START_CEILING_MS)) {
+			if (r.state === "exited") {
+				const how = r.signalCode ? `on ${r.signalCode}` : `with code ${r.exitCode}`;
+				const tail = unpublish === "done" ? ` Unpublished ${s.subdomain}.princess-pi.dev.` : unpublish === "failed" ? ` ⚠️ Could not unpublish ${s.subdomain}.princess-pi.dev (${unpublishError}); left for the next reap.` : "";
+				ctx.ui.notify(`❌ Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).${tail}`, "error");
+			} else if (r.state === "pending") {
+				pendingPorts.push(s.port);
+				ctx.ui.notify(`⏳ Server for "${s.dir}" started but is not answering on 127.0.0.1:${s.port} yet (${r.elapsedMs} ms) — it may still be booting; check with --list.`, "warning");
+			}
+		}
 
 		const allActiveServers = await discoverServers();
-		const newServers = allActiveServers.filter(s => startedPorts.includes(s.port));
+		const newServers = allActiveServers.filter(s => startedPorts.includes(s.port) && !pendingPorts.includes(s.port));
 
 		if (allActiveServers.length === 0) {
 			ctx.ui.notify("No active directories are currently being served.", "warning");
