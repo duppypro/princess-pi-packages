@@ -73,8 +73,10 @@
 #      could not determine state, or `gh pr merge` itself failed and the merge
 #      did NOT happen (#332: that case used to escape as gh's own status under
 #      `set -e`, and briefly as a bare 0 — see the merge call at the bottom)
-#   6  safety gate refused — pr-threads found unresolved threads and/or an
-#      uncovered review head (the merge is refused before the network call);
+#   6  safety gate refused — pr-threads found unresolved threads, or GitHub's
+#      own mergeStateStatus is one this script recognises as refusing
+#      (DIRTY/DRAFT/BLOCKED) or does not recognise at all (#349; an uncovered
+#      review head is NO LONGER in this list — it warns and merges);
 #      PR selection was ambiguous (more than one open PR shares the branch's
 #      head, refusing to guess which one to merge); or the branch's head
 #      moved between the pr-threads gate and the merge call (TOCTOU guard —
@@ -345,11 +347,13 @@ if ! printf '%s' "$UNRESOLVED" | grep -Eq '^[0-9]+$'; then
   exit 5
 fi
 THREAD_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.head // ""' 2>/dev/null || true)
-# reviewedHead is the head sha WHEN a review covers it, and null otherwise —
-# so it cannot report which commit the stale review actually saw.
-# latestReviewCommit carries that, and is what makes the warning below say
-# something useful instead of "(latest review: )".
-REVIEWED_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.reviewedHead // ""' 2>/dev/null || true)
+# reviewedHead is a BOOLEAN — "does some review cover the current head" —
+# NOT the sha that was reviewed (bin/pr-threads:652, `reviewed_head=false` then
+# `jq 'index($h) != null'`, emitted with --argjson). Comparing it to a sha is
+# always unequal, which made the coverage warning below fire on every reviewed
+# PR, including ones whose review covers head exactly. The sha a stale review
+# actually saw lives in latestReviewCommit.
+REVIEWED_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.reviewedHead' 2>/dev/null || true)
 LATEST_REVIEW=$(printf '%s' "$THREAD_JSON" | jq -r '.latestReviewCommit // ""' 2>/dev/null || true)
 
 # Our own policy, not a prediction about the server: an unanswered review
@@ -418,9 +422,11 @@ fi
 # but it is exactly the case #254 was filed over (a bot that reviews once per
 # PR never sees the commits written in response to its own findings), so it
 # stays visible.
-# A PR nobody has reviewed at all has nothing stale about it — LATEST_REVIEW
-# empty is the "never reviewed" case, which #254 deliberately does not gate on.
-if [ -n "$LATEST_REVIEW" ] && [ "$LATEST_REVIEW" != "null" ] && [ "$REVIEWED_HEAD" != "$THREAD_HEAD" ]; then
+# Two conditions, and both are needed. `reviewedHead != true` is "no review
+# covers this head"; a non-null LATEST_REVIEW is "a review exists at all" — a
+# PR nobody has reviewed has nothing stale about it, which is the case #254
+# deliberately does not gate on.
+if [ "$REVIEWED_HEAD" != "true" ] && [ -n "$LATEST_REVIEW" ] && [ "$LATEST_REVIEW" != "null" ]; then
   echo "⚠️  pr-merge: no review covers head ${THREAD_HEAD:0:7} (latest review: ${LATEST_REVIEW:0:7})." >&2
   echo "   Merging anyway — no rule on this repo requires it (mergeStateStatus=$MERGE_STATE)." >&2
 fi

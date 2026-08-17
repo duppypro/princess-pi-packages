@@ -306,7 +306,13 @@ esac
 						totalCount: opts.threadState === "unresolved" ? 2 : 1,
 						unresolvedCount: opts.threadState === "unresolved" ? 2 : 0,
 						head: "sha0000head",
-						reviewedHead: opts.threadState === "clean" ? "sha0000head" : null,
+						// BOOLEAN, not a sha — bin/pr-threads:652 emits `index($h) != null`
+						// via --argjson. This stub previously modelled it as a sha, which is
+						// why the suite could not see pr-merge comparing it to one (a
+						// macroscopeapp finding on PR #354, verified against the real tool's
+						// live output). A fixture that is wrong about the contract tests
+						// nothing about the contract.
+						reviewedHead: opts.threadState === "clean",
 						latestReviewCommit: opts.threadState === "clean" ? "sha0000head" : "sha9999old",
 						nullCommitReviewCount: opts.threadState === "indeterminate" ? 1 : 0,
 						unknownAuthorReviewCount: 0,
@@ -764,6 +770,21 @@ console.log("\nserver says BLOCKED:");
 // state over. The server gets to say no, and only then do we explain how to fix
 // it. Both halves are asserted, because "let it through" is only correct if the
 // guidance survives somewhere.
+// The negative half of the coverage warning, and the one that was missing:
+// nothing asserted that a covered review stays SILENT. Without it, a predicate
+// that always fired looked identical to a correct one (PR #354 finding).
+console.log("\nreview covers head → no coverage warning at all:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", mergeState: "CLEAN" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "covered review → merges", `got ${code}, output:\n${out}`);
+	check(
+		!/no review covers head/i.test(out),
+		"covered review → does NOT warn about coverage",
+		out,
+	);
+}
+
 console.log("\nserver says BEHIND, and the server accepts it:");
 {
 	const sb = makeSandbox("42-feature", { threadState: "clean", mergeState: "BEHIND" });
