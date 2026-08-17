@@ -74,13 +74,15 @@ const CLAIMS: Claim[] = [
 		actual: rs => prRule(rs).required_review_thread_resolution,
 		expected: true,
 	},
-	{
-		claim: "pr-merge has no override flag because the server refuses too",
-		file: "bin/pr-merge",
-		citation: "The server ruleset (required_review_thread_resolution) will refuse this",
-		actual: rs => prRule(rs).required_review_thread_resolution,
-		expected: true,
-	},
+	// WITHDRAWN by #349. pr-merge used to tell the caller that
+	// required_review_thread_resolution "will refuse this merge too" whenever
+	// pr-threads exited 1 — including when zero threads were unresolved and the
+	// only finding was a stale review, which that rule says nothing about. The
+	// claim was true of the ruleset and false of the PR in front of it, which is
+	// the worst kind: it told the caller not to attempt a merge the server would
+	// have accepted. pr-merge now reads mergeStateStatus and quotes the server
+	// instead of predicting it, so there is no such promise left to guard.
+	// The rule itself is still asserted above, via bin/pr-threads.
 	{
 		claim: "merges go through a pull request — 'never merge locally' is enforced, not just written",
 		file: "docs/dev-workflow-spec.md",
