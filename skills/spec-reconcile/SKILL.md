@@ -147,9 +147,11 @@ is done when the contradictions are gone.
 5. **Repeat until a pass finds nothing new.** One clean pass = done.
 
 Step 4 is not ceremony. **Backtested (#163):** #158's reconciliation corrected the stale
-`buildTimelineString` docstring but pasted the corrected text four declarations too early,
-so it bound to `MOON_PHASES` and the function shipped undocumented. A re-audit of the
-artifact just edited catches that class of error; nothing else does.
+`buildTimelineString` docstring text but left it four declarations above the function,
+where it had already been binding to `MOON_PHASES` since before the branch started — so
+the function still shipped undocumented after a reconciliation pass that touched that
+exact docstring. Correcting a doc's words does not re-point it. A re-audit of the artifact
+just edited catches that class of error; nothing else does.
 
 ## 4. The audit pass — fresh context, must quote code
 
@@ -271,7 +273,7 @@ Commit a reconciliation table in the spec (or the PR body):
 | Artifact | Claim | Contradicted by | Covered by a test? | Action |
 |---|---|---|---|---|
 | `docs/manifests/x.json:114` | `--interval <size><m\|h\|d\|w>` | `parseInterval` also accepts `t`/`turn`/`turns` — `wtft-renderer.ts:157` | ✅ `wtft-issue-121.test.ts` | Filed #160 (manifest copy) |
-| `wtft-renderer.ts:694` | timeline renders `(---◆---)` | clock faces, `☀️` at noon, moon bookends — `:744` | ✅ `wtft-title-layout.test.ts` | Fixed in this commit |
+| `wtft-renderer.ts:694` | timeline renders `(---◆---)` | clock faces, `☀️` at noon — `:736`; moon bookends — `:748` | ✅ `wtft-title-layout.test.ts` | Fixed in this commit |
 
 Every row is checkable by a third party. "Reviewed the docs" is not.
 
