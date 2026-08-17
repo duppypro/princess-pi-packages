@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { createHash } from "node:crypto";
 import { execSync, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { Interaction, Category } from "./wtft-parser.js";
 import { getVisualLength, getTerminalWidth } from "./wtft-shared.js";
 import {
@@ -22,6 +23,12 @@ export interface WatchSettings {
 	timezone?: string;
 	unit?: "cost" | "tokens";
 	daemonPath?: string; // path to wtft-daemon.mjs (CLI watch mode only)
+	/**
+	 * The daemon child this watch just spawned, when it did (#308). Lets the
+	 * tag-file wait ask a fact — "did the process we started exit?" — instead of
+	 * running a clock. Without it the wait falls back to a bounded ceiling.
+	 */
+	daemonChild?: ChildProcess | null;
 	/** Padding spaces on each side of output (default 0 = no padding). */
 	pad?: number;
 	/** True when the user explicitly passed the flag from CLI (overrides file-read settings). */
@@ -1009,6 +1016,10 @@ export async function watchTagFile(
 			}
 
 			for (const l of lines) buf.push(l);
+		} else if (!fs.existsSync(sessionPath)) {
+			// #308: the transcript itself is unwritten — a fact, not a fault. Claude
+			// Code writes it after the first real prompt (not a /command) completes.
+			buf.push("\x1b[90mWaiting for session .jsonl to be written (first prompt not completed yet)...\x1b[0m");
 		} else {
 			buf.push("\x1b[90mWaiting for session data...\x1b[0m");
 		}
@@ -1116,19 +1127,49 @@ export async function watchTagFile(
 		});
 	};
 
-	// Poll for the tag file to appear (daemon creates it on first write).
+	// Wait for the tag file on STATE, not the clock (#308). The daemon creates it
+	// at startup (initClassified) — before the session .jsonl even exists — so its
+	// absence means one of three things, each answerable without a stopwatch:
+	//   - the daemon is still starting → its lease is not claimed yet and the child
+	//     we spawned has not exited → keep waiting;
+	//   - another daemon owns the lease (singleton) → alive → keep waiting, its file
+	//     is coming;
+	//   - the child we spawned exited and nobody holds the lease → it is dead → say
+	//     so, with its exit code, and stop.
+	// The retired 5 s ceiling turned "still starting on a slow box" into a false
+	// "did not create tag file". Without a child handle there is no fact to ask,
+	// so that caller keeps a bounded ceiling — documented, not hidden.
+	const child = settings.daemonChild ?? null;
+	const NO_HANDLE_CEILING_MS = 5000;
+	// Leave the terminal sane before an error exit: drop the in-place render,
+	// restore the cursor and cooked stdin. (exitWatch() would exit 0 — wrong here.)
+	const teardownForError = () => {
+		if (daemonWatchdog) clearTimeout(daemonWatchdog);
+		if (lastLineCount > 0) clearPreviousLines(lastLineCount);
+		showCursor();
+		cleanupStdin();
+	};
 	const fileWaitStart = Date.now();
-	while (!fs.existsSync(tagPath) && Date.now() - fileWaitStart < 5000) {
+	for (;;) {
+		if (fs.existsSync(tagPath)) break;
+		const childExited = child ? (child.exitCode !== null || child.signalCode !== null) : false;
+		const leaseAlive = checkDaemonHealth(sessionPath, tagPath).alive;
+		if (child && childExited && !leaseAlive) {
+			teardownForError();
+			const how = child.signalCode ? `on ${child.signalCode}` : `with code ${child.exitCode}`;
+			console.error(`❌ wtft-daemon exited ${how} before creating its tag file.`);
+			console.error(`   Expected: ${tagPath}`);
+			process.exit(1);
+		}
+		if (!child && Date.now() - fileWaitStart > NO_HANDLE_CEILING_MS && !leaseAlive) {
+			teardownForError();
+			console.error(`❌ No wtft-daemon holds the lease for this session and no tag file appeared within ${NO_HANDLE_CEILING_MS / 1000}s. Is wtft-daemon installed?`);
+			console.error(`   Expected: ${tagPath}`);
+			process.exit(1);
+		}
 		await new Promise(r => setTimeout(r, 250));
 	}
-
-	if (fs.existsSync(tagPath)) {
-		startWatching();
-	} else {
-		console.error("❌ Log parser daemon did not create tag file within 5s. Is wtft-daemon installed?");
-		console.error(`   Expected: ${tagPath}`);
-		process.exit(1);
-	}
+	startWatching();
 
 	// Initial daemon health check — run after a short settle (500ms) instead of
 	// 10s so the idle/live status updates quickly when the daemon is already idle.

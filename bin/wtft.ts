@@ -95,6 +95,7 @@ import { findRepoRoot, listWorktreeDirs, fanOutCwd } from "../extensions/lib/har
 import {
 	parseWtftCliArgs,
 	spawnWtftDaemon,
+	isPendingSessionPath,
 	isEmojiDisabled,
 	renderWtftHelp,
 	renderWtftWhy,
@@ -307,10 +308,20 @@ async function main() {
 	const candidates = discoverSessions(opts.harnessOption, opts.cwdOverride);
 	
 	let finalSessionPath = "";
+	// #308: a session .jsonl that does not exist YET is a known-lagging path, not an
+	// error. Claude Code fixes the session id — and so the transcript path — at launch,
+	// but writes the first line only after the first real prompt (not a /command)
+	// completes. The daemon has waited on that file since #124/#129; the CLI must
+	// state that fact instead of "does not exist". Only an absolute *.jsonl path
+	// qualifies — a fuzzy substring that matches nothing is still an error below.
+	let sessionPending = false;
 	if (opts.targetSession) {
 		// Direct path — use as-is if it exists
 		if (fs.existsSync(opts.targetSession)) {
 			finalSessionPath = opts.targetSession;
+		} else if (isPendingSessionPath(opts.targetSession)) {
+			finalSessionPath = opts.targetSession;
+			sessionPending = true;
 		} else {
 			// Fuzzy substring filter against discovered sessions
 			const filter = opts.targetSession.toLowerCase();
@@ -340,7 +351,7 @@ async function main() {
 		}
 	}
 
-	if (!finalSessionPath || !fs.existsSync(finalSessionPath)) {
+	if (!finalSessionPath || (!sessionPending && !fs.existsSync(finalSessionPath))) {
 		console.error("❌ Error: Selected session log file path is invalid or does not exist.");
 		process.exit(1);
 	}
@@ -388,15 +399,18 @@ async function main() {
 
 		// Auto-spawn daemon if not already running (singleton via PID file).
 		const daemonPath = path.join(daemonDir, "wtft-daemon.mjs");
-		if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
+		const daemonChild = spawnWtftDaemon(finalSessionPath, daemonDir);
+		if (!daemonChild) {
 			console.error(`\x1b[31m❌ Failed to start log parser daemon: ${daemonPath}\x1b[0m`);
 			process.exit(1);
 		}
 
-		// Wait briefly for daemon to write the first classified lines, then
-		// enter the inotify-based watch loop.
-		await new Promise(resolve => setTimeout(resolve, 500));
+		// No pre-sleep here (#308): watchTagFile waits for the tag file on daemon
+		// STATE (tag present / lease held / child exited), and its reader catches
+		// up from lastReadOffset, so nothing written before the watch attaches is
+		// lost. A fixed delay was a guess standing in for that check.
 		await watchTagFile(finalSessionPath, tagPath, {
+			daemonChild,
 			interval: opts.hasInterval ? opts.interval : "1h",
 			limit: opts.hasLimit ? opts.limit : 100,
 			mode: opts.hasMode ? opts.mode : "cumulative",
@@ -427,7 +441,8 @@ async function main() {
 	const tagPath = path.join(tagsDir, sessionBase + `.wtft-tag.v${WTFT_TAGGER_VERSION}.jsonl`);
 
 	// Auto-spawn daemon (singleton via PID file).
-	if (!spawnWtftDaemon(finalSessionPath, daemonDir)) {
+	const daemonChild = spawnWtftDaemon(finalSessionPath, daemonDir);
+	if (!daemonChild) {
 		console.error(`\x1b[31m❌ wtft-daemon not found at ${path.join(daemonDir, "wtft-daemon.mjs")}\x1b[0m`);
 		process.exit(1);
 	}
@@ -435,6 +450,17 @@ async function main() {
 	let interactions: Interaction[] = [];
 	if (fs.existsSync(tagPath)) {
 		interactions = readClassifiedTagFile(tagPath);
+	}
+	// #308: nothing to wait for while the session log itself is unwritten — the
+	// daemon is parked on it (heartbeating) and will parse the first line when it
+	// lands. Say so and exit 0: a one-shot CLI must not block, and "not written yet"
+	// is the true state. Only an existing-but-unclassified session earns the short
+	// wait below.
+	if (interactions.length === 0 && !fs.existsSync(finalSessionPath)) {
+		console.log(`\x1b[33mSession log not written yet: ${finalSessionPath}\x1b[0m`);
+		console.log(`\x1b[90mClaude Code writes its first line after the first real prompt (not a /command) completes. ` +
+			`The wtft daemon is running and waiting on it — run again after the first response, or use --watch to stay attached.\x1b[0m`);
+		process.exit(0);
 	}
 	if (interactions.length === 0) {
 		// Wait up to 2 daemon beats for the freshly-spawned daemon to produce the tag file.
@@ -449,6 +475,11 @@ async function main() {
 	}
 	if (interactions.length === 0) {
 		const sessionName = path.basename(finalSessionPath).replace(/.jsonl$/, "");
+		// A daemon we spawned that already died is a fact worth more than "try again" (#308).
+		if (daemonChild.exitCode !== null && daemonChild.exitCode !== 0) {
+			console.error(`\x1b[31m❌ wtft-daemon exited with code ${daemonChild.exitCode} before writing any classified data for session ${sessionName.slice(0, 12)}….\x1b[0m`);
+			process.exit(1);
+		}
 		console.log(`\x1b[33mDaemon started on session ${sessionName.slice(0, 12)}… — no data yet. Try again in a moment.\x1b[0m`);
 		process.exit(0);
 	}
