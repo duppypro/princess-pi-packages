@@ -388,9 +388,9 @@ __export(exports_help, {
   renderWhy: () => renderWhy,
   renderHelp: () => renderHelp
 });
-import * as fs10 from "node:fs";
+import * as fs11 from "node:fs";
 function renderHelp(manifestPath, invokedAs) {
-  const manifestStr = fs10.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs11.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let helpText = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -415,7 +415,7 @@ function renderHelp(manifestPath, invokedAs) {
   return helpText;
 }
 function renderWhy(manifestPath, invokedAs) {
-  const manifestStr = fs10.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs11.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -454,10 +454,10 @@ function renderWhy(manifestPath, invokedAs) {
 var init_help = () => {};
 
 // bin/wtft.ts
-import * as fs12 from "node:fs";
+import * as fs13 from "node:fs";
 import * as os6 from "node:os";
-import * as path11 from "node:path";
-import { fileURLToPath } from "node:url";
+import * as path12 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // extensions/lib/wtft-cost.ts
 var WEB_SEARCH_PRICE = 0.03;
@@ -4579,9 +4579,55 @@ async function selectSessionPrompt(candidates) {
 }
 
 // extensions/lib/wtft-cli-shared.ts
-import * as fs11 from "node:fs";
-import * as path10 from "node:path";
+import * as fs12 from "node:fs";
+import * as path11 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { spawn as spawn2 } from "node:child_process";
+
+// extensions/lib/build-stamp.ts
+import * as fs10 from "node:fs";
+import * as path10 from "node:path";
+import { fileURLToPath } from "node:url";
+var STAMP_BASENAME = "build-stamp.json";
+function readBuildStamp(moduleUrl) {
+  try {
+    const dir = path10.dirname(fileURLToPath(moduleUrl));
+    const raw = fs10.readFileSync(path10.join(dir, STAMP_BASENAME), "utf8");
+    const s = JSON.parse(raw);
+    if (typeof s.sha !== "string" || typeof s.builtFrom !== "string")
+      return null;
+    return s;
+  } catch {
+    return null;
+  }
+}
+function stampSuffix(stamp) {
+  return stamp.dirty ? `+${stamp.sha}-dev-${stamp.dev}` : `+${stamp.sha}`;
+}
+function formatVersion(toolName, semver, moduleUrl) {
+  let self;
+  try {
+    self = fs10.realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    self = fileURLToPath(moduleUrl);
+  }
+  const stamp = readBuildStamp(moduleUrl);
+  const lines = [];
+  if (stamp) {
+    lines.push(`${toolName} ${semver}${stampSuffix(stamp)}`);
+  } else if (self.endsWith(".ts")) {
+    lines.push(`${toolName} ${semver}+source`);
+  } else {
+    lines.push(`${toolName} ${semver}`);
+  }
+  lines.push(`path ${self}`);
+  if (stamp)
+    lines.push(`built-from ${stamp.builtFrom}`);
+  return lines.join(`
+`);
+}
+
+// extensions/lib/wtft-cli-shared.ts
 function parseWtftCliArgs(argv) {
   let showHelp = false;
   let showWhy = false;
@@ -4789,10 +4835,10 @@ function parseWtftCliArgs(argv) {
   };
 }
 function isPendingSessionPath(p) {
-  return path10.isAbsolute(p) && p.endsWith(".jsonl") && !p.includes(".wtft-tag.v");
+  return path11.isAbsolute(p) && p.endsWith(".jsonl") && !p.includes(".wtft-tag.v");
 }
 function spawnWtftDaemon(sessionPath, daemonDir) {
-  const daemonPath = path10.join(daemonDir, "wtft-daemon.mjs");
+  const daemonPath = path11.join(daemonDir, "wtft-daemon.mjs");
   try {
     const child = spawn2(process.execPath, [daemonPath, "--session", sessionPath], {
       detached: true,
@@ -4809,7 +4855,7 @@ function isEmojiDisabled() {
   return typeof config2.disabledEmoji === "boolean" ? config2.disabledEmoji : false;
 }
 function renderWtftHelp(manifestPath, invokedAs) {
-  const manifestStr = fs11.readFileSync(manifestPath, "utf8");
+  const manifestStr = fs12.readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(manifestStr);
   let text = `\x1B[1m\x1B[36m${manifest.name}\x1B[0m - ${manifest.tagline}
 
@@ -4836,27 +4882,32 @@ async function renderWtftWhy(manifestPath, invokedAs) {
   const { renderWhy: renderWhy2 } = await Promise.resolve().then(() => (init_help(), exports_help));
   return renderWhy2(manifestPath, invokedAs);
 }
-function renderWtftVersion(manifestPath) {
-  const manifest = JSON.parse(fs11.readFileSync(manifestPath, "utf8"));
-  return `${manifest.name} ${manifest.version}`;
+function renderWtftVersion(manifestPath, moduleUrl) {
+  const manifest = JSON.parse(fs12.readFileSync(manifestPath, "utf8"));
+  const pkgPath = path11.join(path11.dirname(fileURLToPath2(moduleUrl)), "..", "package.json");
+  let semver = manifest.version;
+  try {
+    semver = JSON.parse(fs12.readFileSync(pkgPath, "utf8")).version ?? semver;
+  } catch {}
+  return formatVersion(manifest.name, semver, moduleUrl);
 }
 
 // bin/wtft.ts
 var cfg = loadConfig("wtft", { interval: "1h", limit: 100, mode: "cumulative" });
-var manifestPath = path11.join(path11.dirname(fileURLToPath(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
-var daemonDir = path11.dirname(fileURLToPath(import.meta.url));
+var manifestPath = path12.join(path12.dirname(fileURLToPath3(import.meta.url)), "..", "docs", "manifests", "wtft-cmd.json");
+var daemonDir = path12.dirname(fileURLToPath3(import.meta.url));
 var opts = parseWtftCliArgs(process.argv.slice(2));
 var unit = cfg.tokens ? "tokens" : "cost";
 if (opts.hasTokens)
   unit = "tokens";
 if (opts.hasCost)
   unit = "cost";
-var WARN_LOG = path11.join(os6.homedir(), ".local", "state", "wtft", "reap.log");
+var WARN_LOG = path12.join(os6.homedir(), ".local", "state", "wtft", "reap.log");
 function showReapWarnings() {
   try {
-    if (!fs12.existsSync(WARN_LOG))
+    if (!fs13.existsSync(WARN_LOG))
       return;
-    const content = fs12.readFileSync(WARN_LOG, "utf8").trim();
+    const content = fs13.readFileSync(WARN_LOG, "utf8").trim();
     if (!content)
       return;
     const lines = content.split(`
@@ -4881,7 +4932,7 @@ function showReapWarnings() {
     console.error(`\x1B[33m└──────────────────────────────────────────────────────\x1B[0m
 `);
     try {
-      fs12.truncateSync(WARN_LOG, 0);
+      fs13.truncateSync(WARN_LOG, 0);
     } catch (_) {}
   } catch (_) {}
 }
@@ -4897,7 +4948,7 @@ async function main() {
     return;
   }
   if (opts.showVersion) {
-    console.log(renderWtftVersion(manifestPath));
+    console.log(renderWtftVersion(manifestPath, import.meta.url));
     return;
   }
   if (opts.pager) {
@@ -4905,7 +4956,7 @@ async function main() {
     process.exit(1);
   }
   if (opts.daemonList || opts.daemonCleanup || opts.daemonRestart || opts.daemonStop) {
-    const daemonPath = path11.join(daemonDir, "wtft-daemon.mjs");
+    const daemonPath = path12.join(daemonDir, "wtft-daemon.mjs");
     const daemonArgs = [daemonPath];
     if (opts.daemonList)
       daemonArgs.push("--list");
@@ -4934,7 +4985,7 @@ async function main() {
   let finalSessionPath = "";
   let sessionPending = false;
   if (opts.targetSession) {
-    if (fs12.existsSync(opts.targetSession)) {
+    if (fs13.existsSync(opts.targetSession)) {
       finalSessionPath = opts.targetSession;
     } else if (isPendingSessionPath(opts.targetSession)) {
       finalSessionPath = opts.targetSession;
@@ -4961,7 +5012,7 @@ async function main() {
       finalSessionPath = await selectSessionPrompt(candidates);
     }
   }
-  if (!finalSessionPath || !sessionPending && !fs12.existsSync(finalSessionPath)) {
+  if (!finalSessionPath || !sessionPending && !fs13.existsSync(finalSessionPath)) {
     console.error("❌ Error: Selected session log file path is invalid or does not exist.");
     process.exit(1);
   }
@@ -4969,30 +5020,30 @@ async function main() {
     const forceTagPath = getTagPath(finalSessionPath);
     const forcePidPath = getDaemonPidPath(finalSessionPath);
     try {
-      const pid = parseInt(fs12.readFileSync(forcePidPath, "utf8").trim(), 10);
+      const pid = parseInt(fs13.readFileSync(forcePidPath, "utf8").trim(), 10);
       if (pid > 0) {
         try {
           process.kill(pid, "SIGTERM");
         } catch {}
       }
       try {
-        fs12.unlinkSync(forcePidPath);
+        fs13.unlinkSync(forcePidPath);
       } catch {}
     } catch {}
-    const forceTagsDir = path11.dirname(forceTagPath);
-    const forceSessionBase = path11.basename(finalSessionPath);
+    const forceTagsDir = path12.dirname(forceTagPath);
+    const forceSessionBase = path12.basename(finalSessionPath);
     try {
-      for (const f of fs12.readdirSync(forceTagsDir)) {
+      for (const f of fs13.readdirSync(forceTagsDir)) {
         if (f.startsWith(forceSessionBase + ".wtft-tag.v") && f.endsWith(".jsonl")) {
-          fs12.unlinkSync(path11.join(forceTagsDir, f));
+          fs13.unlinkSync(path12.join(forceTagsDir, f));
         }
       }
     } catch {}
-    console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path11.basename(finalSessionPath)}\x1B[0m`);
+    console.error(`\x1B[33mForce re-parse: killed daemon + deleted tag files for ${path12.basename(finalSessionPath)}\x1B[0m`);
   }
   if (opts.showWatch) {
     const tagPath2 = getCurrentVersionTagPath(finalSessionPath);
-    const daemonPath = path11.join(daemonDir, "wtft-daemon.mjs");
+    const daemonPath = path12.join(daemonDir, "wtft-daemon.mjs");
     const daemonChild2 = spawnWtftDaemon(finalSessionPath, daemonDir);
     if (!daemonChild2) {
       console.error(`\x1B[31m❌ Failed to start log parser daemon: ${daemonPath}\x1B[0m`);
@@ -5019,20 +5070,20 @@ async function main() {
   const tagPath = getTagPath(finalSessionPath);
   const daemonChild = spawnWtftDaemon(finalSessionPath, daemonDir);
   if (!daemonChild) {
-    console.error(`\x1B[31m❌ wtft-daemon not found at ${path11.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
+    console.error(`\x1B[31m❌ wtft-daemon not found at ${path12.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
     process.exit(1);
   }
   let interactions = [];
-  if (fs12.existsSync(tagPath)) {
+  if (fs13.existsSync(tagPath)) {
     interactions = readClassifiedTagFile(tagPath);
   }
-  if (interactions.length === 0 && !fs12.existsSync(finalSessionPath)) {
+  if (interactions.length === 0 && !fs13.existsSync(finalSessionPath)) {
     const DAEMON_START_CEILING_MS = 5000;
     const startup = await awaitDaemonUp(finalSessionPath, daemonChild, DAEMON_START_CEILING_MS);
     if (startup.state === "dead") {
       const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
       console.error(`\x1B[31m❌ wtft-daemon exited ${how} before claiming this session — nothing is waiting on ${finalSessionPath}\x1B[0m`);
-      console.error(`\x1B[90mExpected the daemon at ${path11.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
+      console.error(`\x1B[90mExpected the daemon at ${path12.join(daemonDir, "wtft-daemon.mjs")}\x1B[0m`);
       process.exit(1);
     }
     console.log(`\x1B[33mSession log not written yet: ${finalSessionPath}\x1B[0m`);
@@ -5042,7 +5093,7 @@ async function main() {
   if (interactions.length === 0) {
     const tagWaitStart = Date.now();
     while (Date.now() - tagWaitStart < 1400) {
-      if (fs12.existsSync(tagPath)) {
+      if (fs13.existsSync(tagPath)) {
         interactions = readClassifiedTagFile(tagPath);
         if (interactions.length > 0)
           break;
@@ -5051,7 +5102,7 @@ async function main() {
     }
   }
   if (interactions.length === 0) {
-    const sessionName = path11.basename(finalSessionPath).replace(/.jsonl$/, "");
+    const sessionName = path12.basename(finalSessionPath).replace(/.jsonl$/, "");
     const startup = await awaitDaemonUp(finalSessionPath, daemonChild, 0);
     if (startup.state === "dead") {
       const how = startup.signalCode ? `on ${startup.signalCode}` : `with code ${startup.exitCode}`;
@@ -5096,7 +5147,7 @@ async function main() {
     mode: finalMode,
     timezone: finalTimezone,
     disabledEmoji,
-    sessionNameSuffix: path11.basename(finalSessionPath),
+    sessionNameSuffix: path12.basename(finalSessionPath),
     unit
   });
   if (!outputLines) {
@@ -5139,7 +5190,7 @@ async function main() {
   }
 }
 if (process.argv[1]) {
-  const entry = fileURLToPath(import.meta.url);
+  const entry = fileURLToPath3(import.meta.url);
   const invoked = process.argv[1];
   if (invoked === entry || invoked.endsWith("/wtft") || invoked.endsWith("/wtft.mjs")) {
     main().catch((err) => {

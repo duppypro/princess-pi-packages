@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../extensions/lib/config.ts";
 import { renderHelp, renderWhy } from "../extensions/lib/merge/help.ts";
+import { formatVersion } from "../extensions/lib/build-stamp.ts";
 
 // --- CLI Option Parsing ---
 interface YadaConfig {
@@ -44,9 +45,13 @@ function invokedAs(): string {
   return path.basename(process.argv[1] ?? "yada", path.extname(process.argv[1] ?? ".mjs")) || "yada";
 }
 
+// #178 + #347: semver comes from package.json (the manifest carried a second,
+// never-bumped copy — it read 1.0.0 while the package was 1.1.0), and the build
+// stamp says WHICH tree produced the artifact answering.
 function printVersion(): void {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  console.log(`${manifest.name} ${manifest.version}`);
+  const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  console.log(formatVersion(invokedAs(), pkg.version, import.meta.url));
 }
 
 // --- CLI argument parser ---

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { runMerge } from "./lib/merge/core.js";
 import { renderHelp, renderWhy } from "./lib/merge/help.js";
+import { formatVersion } from "./lib/build-stamp.ts";
 
 // ---
 // MAIN EXTENSION ENTRY POINT
@@ -17,7 +18,7 @@ export default function mergeExtension(pi: ExtensionAPI) {
 				try {
 					const manifestPath = path.join(process.cwd(), "docs", "manifests", "merge-cmd.json");
 					const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-					ctx.ui.notify(`${manifest.name} ${manifest.version}`, "info");
+					ctx.ui.notify(formatVersion(manifest.name, manifest.version, import.meta.url), "info");
 				} catch (err) {
 					ctx.ui.notify(`\u26A0\uFE0F Failed to load MERGE command manifest: ${err}`, "error");
 				}

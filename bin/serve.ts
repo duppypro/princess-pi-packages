@@ -17,6 +17,7 @@ import { type KilledServerInstance } from "../extensions/lib/serve/domain.js";
 import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, settleStartedServers, type StartedServer } from "../extensions/lib/serve/process.js";
 import { registerServer, readRegistry, verifyRecord, unregisterPort, setRecordSubdomain } from "../extensions/lib/serve/registry.js";
 import { shortenPath } from "../extensions/lib/session-path-shortener.ts";
+import { formatVersion } from "../extensions/lib/build-stamp.ts";
 import { buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerCard } from "../extensions/lib/serve/tui.js";
 // --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
 import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans, subdomainToHostname } from "../extensions/lib/serve/cloudflare.js";
@@ -69,11 +70,14 @@ async function handleList(): Promise<void> {
 // installed build could report 1.0.0 while it was actually running 1.1.0's code.
 // package.json is the one file every release process already bumps, so it's the
 // single source of truth; nothing else in serve reports a version.
+// #178 adds the second half: WHICH build answered. semver alone cannot tell a
+// worktree's build from the main clone's, and those are the two things you are
+// actually trying to distinguish when you ask.
 function handleVersion(): void {
 	try {
 		const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 		const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-		console.log(`serve ${pkg.version}`);
+		console.log(formatVersion("serve", pkg.version, import.meta.url));
 	} catch (err) {
 		console.error(`⚠️ Failed to read package version: ${err}`);
 		process.exitCode = 1;
