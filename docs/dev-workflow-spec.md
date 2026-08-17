@@ -275,7 +275,7 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   cannot see it fails safe on:** the branch is resolved *before* the line runs, so a
   compound line is judged per sub-command with two pieces of line-state — `cd`/`pushd`
   move the effective cwd for the rest of the line (`cd -`/`popd` reset it), and
-  `checkout -b|-B|--orphan` / `switch -c|-C|--orphan` mark the target repo as off `main`
+  `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan` mark the target repo as off `main`
   for the rest of the line, so `git checkout -b 123-slug && git commit` is allowed while
   `git checkout main && git commit` stays blocked. A plain `checkout <existing>` /
   `switch <existing>` does **not** lift the gate (a positional may be a path, and guessing
@@ -332,7 +332,13 @@ git push --force-with-lease                            → exit 2  blocked (from
 git push origin main                                   → exit 2  blocked
 git worktree remove --force .claude/worktrees/42-foo   → exit 2  blocked
 git worktree remove .claude/worktrees/42-foo           → exit 0  allowed (git's own dirty-tree refusal is the safeguard)
+git commit -m x                                        → exit 2  blocked (from a repo on main, #301)
+git pull                                               → exit 2  blocked (from a repo on main — use --ff-only)
+git pull --ff-only                                     → exit 0  allowed
+git checkout -b 999-x && git commit -m x               → exit 0  allowed (line-state: the escape lifts the gate)
+cd .claude/worktrees/42-foo && git commit -m x         → exit 0  allowed (line-state: cd moved the cwd)
 ```
+(#301 lines measured 2026-08-16 with the main clone as tool-call cwd — `debug/smoke-301-hook.sh`.)
 
 It blocks by *destination*: a force-push to a named feature branch is allowed, and this
 workflow depends on it (`git-checkpoint`, `pr-open`, the rebase recipes below). **Always

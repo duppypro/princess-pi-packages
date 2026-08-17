@@ -1,5 +1,5 @@
 /**
- * Git Guardrails core decision logic (#70, #74) — harness-independent.
+ * Git Guardrails core decision logic (#70, #74, #301) — harness-independent.
  *
  * Pure functions, no Pi imports, so tests/git-guardrails-parity.test.ts can
  * exercise this directly. The Pi extension (extensions/git-guardrails.ts)
@@ -61,7 +61,7 @@ function branchOf(cPath: string, hookCwd: string, gitDir = ""): string {
 // same line changes for the later ones:
 //   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
 //          `pushd` reset it to the tool-call cwd (fail-safe: never guess).
-//   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--orphan <name>` mark
+//   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan <name>` mark
 //          the repo they ran in as being on <name> for the rest of the line
 //          (so `git checkout -b 301-slug && git commit` is allowed on main);
 //          a plain `checkout main` / `switch main` marks it as on main (so
@@ -504,7 +504,7 @@ const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "
 
 /**
  * Record a branch switch for the rest of the line (#301 line-state).
- * Only an unambiguous NEW branch (-b/-B/-c/-C/--orphan <name>) lifts the gate;
+ * Only an unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate;
  * a plain positional lowers it when it names main/master and is otherwise
  * ignored (it may be a pathspec — guessing would fail open). A `--` means
  * pathspecs follow: file restore, no switch at all.

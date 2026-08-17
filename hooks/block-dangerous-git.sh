@@ -8,7 +8,13 @@
 #     allowed — git's own refusal on a dirty tree is the safeguard there.)
 #   Block on main/master only: push whose DESTINATION ref is main/master,
 #     bare push / reset --hard when the affected repo is on main/master,
-#     branch -D main/master.
+#     branch -D main/master; and (#301) commit / merge / rebase / cherry-pick /
+#     am / pull when the affected repo is on main/master — main advances only
+#     through PRs. Allowed there: --ff-only (pull/merge), every --abort/--quit,
+#     checkout -b / switch -c (the escape; can never deadlock).
+#   Line-state (#301): the hook runs before the line does, so `cd`/`pushd`
+#     move the effective cwd for later sub-commands and `checkout -b`/`switch -c`
+#     lift the gate for the repo that switched — see repo_key/effective_branch.
 #
 # Why token parsing (#74): the old greedy regex `push\s+.*\b(main|master)\b`
 # spanned the whole command line, so any co-occurrence of the words blocked
@@ -89,7 +95,7 @@ branch_of() {
 # same line changes for the later ones:
 #   cwd  — `cd`/`pushd <path>` moves the effective cwd; `cd -`/`popd`/bare
 #          `pushd` reset it to the tool-call cwd (fail-safe: never guess).
-#   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--orphan <name>` mark
+#   lift — `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan <name>` mark
 #          the repo they ran in as being on <name> for the rest of the line
 #          (so `git checkout -b 301-slug && git commit` is allowed on main);
 #          a plain `checkout main` / `switch main` marks it as on main (so
@@ -99,6 +105,9 @@ branch_of() {
 # The lift is keyed to the repo that switched (-C/--git-dir/cwd resolved), so
 # `git -C other checkout -b x && git commit` still judges the cwd repo.
 # ---
+# realpath -sm: syntactic normalisation only (no symlink resolution), so the key
+# matches the TS twin's path.resolve() byte for byte — a symlinked worktree must
+# not lift the gate on one harness and not the other.
 repo_key() {
   local dir="$1" gitdir="$2"
   if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
@@ -108,7 +117,7 @@ repo_key() {
   if [ -n "$gitdir" ] && [ "${gitdir#/}" = "$gitdir" ]; then
     gitdir="$dir/$gitdir"
   fi
-  printf '%s|%s' "$(realpath -m "$dir" 2>/dev/null || printf '%s' "$dir")" "${gitdir:+$(realpath -m "$gitdir" 2>/dev/null || printf '%s' "$gitdir")}"
+  printf '%s|%s' "$(realpath -sm "$dir" 2>/dev/null || printf '%s' "$dir")" "${gitdir:+$(realpath -sm "$gitdir" 2>/dev/null || printf '%s' "$gitdir")}"
 }
 
 # Branch the sub-command acts on, honouring an earlier switch in the same line.
@@ -142,7 +151,7 @@ apply_cd() {
 }
 
 # Record a branch switch for the rest of the line (#301 line-state). Only an
-# unambiguous NEW branch (-b/-B/-c/-C/--orphan <name>) lifts the gate; a plain
+# unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate; a plain
 # positional lowers it when it names main/master and is otherwise ignored (it
 # may be a pathspec — guessing would fail open). A `--` means pathspecs
 # follow: file restore, no switch at all.

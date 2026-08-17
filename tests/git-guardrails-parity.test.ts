@@ -1,5 +1,5 @@
 /**
- * Parity test for the git guardrails (#74).
+ * Parity test for the git guardrails (#74; #301 commit-on-main + line-state cases).
  *
  * Runs every case in tests/fixtures/git-guardrails-cases.json against BOTH
  * implementations and asserts they agree with the fixture verdict:
