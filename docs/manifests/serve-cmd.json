@@ -2,7 +2,7 @@
   "name": "serve",
   "version": "1.0.0",
   "tagline": "Secure HTTPS Server Utility",
-  "description": "Serves local directories on loopback HTTP. When published with --pub <subdomain>, the directory is gated behind Cloudflare Access at <subdomain>.princess-pi.dev. The Cloudflare account and domain are currently hardcoded — this tool assumes you're running on Princess Pi's VPS with her Cloudflare credentials. Logs HTTP access to ~/.config/princess-pi-packages/serve/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve CLI script from any shell.",
+  "description": "Serves local directories on loopback HTTP. When published with --pub <subdomain>, the directory is gated behind Cloudflare Access at <subdomain>.princess-pi.dev, admitting only the emails listed in that directory's .serve-acl. The allow-list is what isolates one preview from another — the login prompt is not, because Cloudflare authenticates once per account and shares that identity across every preview. The Cloudflare account and domain are currently hardcoded — this tool assumes you're running on Princess Pi's VPS with her Cloudflare credentials. Logs HTTP access to ~/.config/princess-pi-packages/serve/logs/. Available as the /serve command inside Pi Coding Agent, or as the standalone ./serve CLI script from any shell.",
   "examples": [
     {
       "args": "",
@@ -122,7 +122,7 @@
     },
     {
       "flags": "-P, --pub <subdomain>",
-      "desc": "Publish the target dir as a gated preview at <subdomain>.princess-pi.dev. Without --pub, serve runs local-loopback only."
+      "desc": "Publish the target dir as a gated preview at <subdomain>.princess-pi.dev, admitting only the emails in the directory's .serve-acl. Without --pub, serve runs local-loopback only. Note the gate authorizes per sub-domain but authenticates once per Cloudflare account: someone already signed in to another princess-pi.dev preview AND listed in this .serve-acl opens this one with no login prompt at all, while someone signed in but not listed here gets the login page and is sent no code. Since a first visit can therefore be silent, verify the gate with `curl -sI https://<subdomain>.princess-pi.dev/` (expect 302 to cloudflareaccess.com), never from a signed-in browser."
     },
     {
       "flags": "--as <subdomain>",

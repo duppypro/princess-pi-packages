@@ -190,6 +190,13 @@ the check passes — a deploy that reports success while changing nothing.
 probe every datastore it fronts. *Why:* a static `"ok"` reports healthy with a missing or corrupt
 database.
 
+7.6 A `gate = "access"` check **MUST** be made by a client carrying no Access session — `curl -sI`
+from any host, or a browser profile that has never signed in. It **MUST NOT** be inferred from what
+a logged-in browser sees. *Why:* the identity session is held at the **account** scope, not the
+hostname's (§8.7), so the very first visit to a brand-new gated hostname can serve content with no
+challenge. In the browser that is indistinguishable from no gate at all — which is exactly how it
+was reported as a breach (#329).
+
 ---
 
 ## 8. Publishing, gates and zones
@@ -224,6 +231,46 @@ still pointing at `127.0.0.1:<port>`, and when the allocator later hands that po
 tenant — §3.3 being unenforceable — the dead public hostname routes to the new tenant with no gate in
 front of it. Latent only because §8.3 cannot be executed yet (§9); it becomes reachable on the same
 day multi-zone publish does.
+
+8.7 A `gate = "access"` tenant is gated in **two steps at two different scopes**, and any statement
+about the gate **MUST** name which one it means:
+
+| Step | Question | Scope | Where it lives |
+|---|---|---|---|
+| **Authentication** | *who are you?* | the whole Cloudflare account | one identity session on the team domain (`princess-pi.cloudflareaccess.com`), ~24h |
+| **Authorization** | *may you open this one?* | one sub-domain | that tenant's `.serve-acl` → the app's allow policy |
+
+Only the second step is per-sub-domain. *Why:* a visitor who authenticated to **any** tenant in the
+account carries that identity to every other tenant, so publishing a brand-new sub-domain does **not**
+produce a fresh challenge for them — measured 2026-08-17, where an identity minted **7h 44m before
+the sub-domain's Access application existed** opened it silently (#329). The per-sub-domain isolation
+this standard relies on is real, but it is the *allow-list* that provides it, never the login prompt.
+
+8.8 A login prompt **MUST NOT** be read as evidence about the gate, and its **absence** proves only
+that the visitor holds a valid token **for that hostname** — never that a gate is missing, and never,
+on its own, that an account session is live. *Why:* Cloudflare re-shows the same login page for
+"no session" **and** for "session whose identity is not on this list" — it doubles as an identity
+chooser — so the prompt cannot distinguish the two. Silence is narrower than it looks in the other
+direction: the application token is issued per hostname with its **own** lifetime (`session_duration`,
+24h, set by `upsertAccessApp()`), independent of the account-scoped identity session, so a **revisit**
+can be silent on a token issued earlier even after that account session has lapsed. Only on a **first**
+visit to a newly published sub-domain — where no such token can yet exist — does silence imply a live
+identity session that is *also* on that tenant's allow-list. Observed states for that first-visit case,
+same browser, same minute (2026-08-17):
+
+| Identity session | On that tenant's `.serve-acl` | What the visitor sees on a **first** visit |
+|---|---|---|
+| live | yes | content, no prompt |
+| live | no | login page; submitting that address sends **no code** |
+| none | yes | login page → code mailed → content |
+| none | no | login page → **no code** sent |
+
+The deny path (rows 2 and 4) is Cloudflare checking the submitted address against the policy
+**before** mailing a PIN — first measured 2026-07-07 (runbook Phase 5, step 3), re-measured
+2026-08-17 on a `serve`-published tenant whose visitor held a live, allow-listed-elsewhere identity.
+An allow-list is therefore never satisfied by re-authenticating; being on it is the only way through.
+Note that the *same* address (`duppypro@gmail.com`) opens one tenant silently and cannot obtain a
+code for another in the same minute — the allow-list is evaluated per tenant, not per person.
 
 ---
 
