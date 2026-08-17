@@ -159,13 +159,94 @@ guard maps "origin named a primary branch this clone has no local ref for" to **
 
 **`herdr`/tmux tab creation on top is convenience, never a dependency.** Plain
 `git worktree add` creates the worktree itself; `herdr worktree` subcommands are not
-used at all. Once the worktree exists, `wt-new` opens a tab named after the branch —
-`herdr tab create` when run inside a herdr session (`$HERDR_WORKSPACE_ID` set), a
-`tmux new-window` equivalent when inside tmux (`$TMUX` set) — and if neither is
-present, prints a friendly note to stderr and stops there. None of that affects the
-exit code: the worktree having been created (and pushed, with the correct upstream)
-is the only thing that gates success. Exit codes otherwise follow the shared pr-*
-contract below.
+used at all. Once the worktree exists, `wt-new` opens a tab labelled
+`<repo>:<branch>` — `herdr tab create --no-focus` when this shell is inside a live
+herdr pane, a `tmux new-window` equivalent when inside tmux (`$TMUX` set) — and if
+neither is present, prints a friendly note to stderr and stops there. None of that
+affects the exit code: the worktree having been created (and pushed, with the correct
+upstream) is the only thing that gates success. Exit codes otherwise follow the shared
+pr-* contract below.
+
+### The herdr half: `herdr-tab`, and why the guard is `$HERDR_PANE_ID` (#277)
+
+herdr **compiles in a default socket path**, so `herdr <cmd>` answers exit 0 from *any*
+shell on this host — cron, CI, a plain SSH login — with `HERDR_SOCKET_PATH`,
+`HERDR_ENV` and `HERDR_PANE_ID` all unset, and then resolves every pane- or
+workspace-scoped command against the **focused** pane. Verified on 0.8.0:
+`env -u HERDR_SOCKET_PATH -u HERDR_ENV -u HERDR_PANE_ID herdr tab list` exits 0, and
+`env -u HERDR_PANE_ID herdr pane current` answers with a pane in a *different repo*.
+
+⇒ Neither `command -v herdr`, nor socket reachability, nor exit status tells you
+whether the current shell is inside herdr. **Only `$HERDR_PANE_ID` does**, and
+`--workspace "$HERDR_WORKSPACE_ID"` must always be passed explicitly — implicit
+resolution means "whatever Duppy is looking at". Both rules live in one sourceable
+file, `bin/herdr-tab`, because three inlined copies would drift the first time one of
+them was "fixed". `herdr_tab` returns 0 on every path so a caller's `set -e` can never
+promote decoration to a failure, and reports what actually happened out of band in
+`$HERDR_TAB_RESULT` (`created` / `skipped` / `failed`) so the caller can still tell the
+human the truth.
+
+**The tab is a bookmark, not a workspace.** The agent that calls `wt-new` is already
+working in that directory and keeps working in *its own* pane; nothing ever attaches to
+the new tab, which sits at a bare shell until a human walks in. So `--no-focus` is
+mandatory (a background `wt-new` must never yank the cursor mid-turn) and the **label is
+the entire UX** — it carries the repo as well as `<issue#>-<slug>`, because labels are
+not unique, humans rename tabs, and issue numbers collide across repos. Seen live: a
+`21-commit-on-branch` tab from another repo sitting indistinguishably beside this one's.
+
+### `herdr-reap`: the other half of the tab's lifecycle (#277)
+
+A `wt-new` tab outlives its worktree. Observed 2026-08-16: PR #305 merged,
+`pr-cleanup 301-block-commit-on-main` removed the worktree, and the tab was still in
+`herdr tab list` with its cwd pointing at the deleted path. `pr-cleanup` now calls
+`herdr-reap` after step 5, best-effort in both directions.
+
+The rule:
+
+```
+group panes by tab_id
+reap tab T  iff  every pane in T has a cwd that does not exist
+spare T if tab_id == $HERDR_TAB_ID          # never reap ourselves
+spare T if any pane in T has a live agent   # never kill an agent mid-turn
+spare T if any pane's cwd is unknown        # never act on a blank
+```
+
+**Ask "does this exist", never "is this the one I killed".** Once a directory is
+removed, herdr reports that pane's `cwd` as the literal string `"/path/to/thing
+(deleted)"` — the kernel's `/proc/<pid>/cwd` suffix passed through verbatim inside a
+**success** payload, with no structured `cwd_exists: false` beside it (filed upstream as
+herdrdev/herdr#2799, open). Two consequences the script is built around: the reported
+path **no longer equals the path that was removed**, so any match-by-path design
+silently stops matching at the exact moment it matters; and the predicate is `! -d` on
+the raw value, **never a suffix match** — a directory genuinely named `foo (deleted)`
+would false-positive on the suffix and correctly pass a stat. That is also why
+`herdr-reap` is standalone and merely *called* by `pr-cleanup`: because it is never told
+which worktree died, it is correct whenever it runs — after a manual `git worktree
+remove`, after `git worktree prune`, after `pr-cleanup` — and a miss self-heals on the
+next invocation. Hence no retry loop, and **no `sleep`**: an earlier draft asserted
+herdr's cwd "lags ~1s" and put a delay in the tests on that basis, but the claim was
+never measured (every probe had the sleep baked in). Measured afterwards over 24 trials:
+the filesystem was consistent when `rm -rf` returned 24/24 and the deleted cwd was
+visible on the **first** poll 24/24, latency 5.5–20.5 ms — the API round trip itself.
+**Do not encode a delay without a measurement that falsifies its absence.**
+
+**Blast radius, stated rather than discovered in production:** since 0.8.0 (upstream
+herdrdev/herdr#1760/#1899) closing the last tab in a workspace closes the *workspace*.
+For a worktree-backed workspace whose worktree was just removed that is arguably right,
+but it is strictly larger than "close a tab", so the notification and `--json` report
+workspaces closed as well as tabs — counted by diffing `workspace list` before and
+after, observed rather than predicted.
+
+**Roads not taken.** `herdr worktree create/open/remove` would make herdr load-bearing
+for the worktree lifecycle — the disqualifying property — and four further traps
+evaporate by not using it: it defaults the checkout out-of-tree to
+`~/.herdr/worktrees/<repo>/<branch>`, conflicting with the in-tree convention (#257); it
+registers *two* workspaces per call; its subcommands resolve to the **workspace, not the
+shell cwd**; and `herdr worktree remove --force` deletes a checkout without matching any
+`git` token, walking straight past `block-dangerous-git.sh`. Reaping by label or
+tab-name was also set aside: labels are not unique, humans rename tabs, and it would
+weld `wt-new` and `herdr-reap` to a shared label format forever, for a case the cwd rule
+already covers.
 
 ### Why this reverses the out-of-tree rule (#257)
 
@@ -504,6 +585,8 @@ fails and the list drains itself instead of becoming decoration.
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, a `trusted` flag, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. |
+| `herdr-tab` | Sourceable guard (`. herdr-tab` → `herdr_available`, `herdr_tab <cwd> <label>`; also runs as a one-shot CLI). The `$HERDR_PANE_ID` predicate and the `return 0`-on-every-path discipline live here once instead of in three copies — see [the herdr half](#the-herdr-half-herdr-tab-and-why-the-guard-is-herdr_pane_id-277). Reports its outcome in `$HERDR_TAB_RESULT`, never in an exit code. |
+| `herdr-reap [--dry-run] [--json]` | Closes herdr tabs whose panes **all** point at a directory that no longer exists; spares its own tab, any tab with a live agent, and any tab with an unknown cwd. Called by `pr-cleanup`; also correct standalone after `git worktree remove`/`prune`. Exit 0 covers "not inside herdr" and "nothing stale" (`--json`'s `status` tells them apart), 5 = could not determine, 6 = a close was refused. |
 | `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). |
 | `git-overview` | Branch + `git status --short` + diff stat + recent commits in one call |
 | `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249), and the statusline scripts from `statusline/` → `~/.claude/` (#227). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Never writes configuration or prose — `settings.json`, `~/.claude/CLAUDE.md`, `~/git-projects/CLAUDE.md` are dotfiles-doctor's under ADR 0001. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
