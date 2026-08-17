@@ -285,9 +285,14 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   earlier in the same line, then from the environment, and an unresolved operand neither
   moves the cwd nor lifts; `checkout -b <existing>` / `switch -c <existing>` do not lift
   (git refuses and leaves you on `main` — `-B`/`-C`/`--force-create` do); `( … )` groups
-  and `$( … )` / `bash -c` bodies are child scopes whose `cd` never reaches the line after
-  them (their branch switch does — it happened on disk); and `--abort`/`--ff-only` count
-  only as options, never as the argument of `-m`/`-F`/`--onto`/… . Detached HEAD
+  scope `cd` and assignments; `$( … )` / `bash -c` bodies, pipeline elements and
+  backgrounded jobs are child shells and *nothing* they set carries back — not even a
+  branch switch, because substitutions are inspected before the walk and would otherwise
+  lift a commit that ran earlier; a state change made **after** `&&`/`||` in a chain is
+  reverted when the chain ends at `;` (`false && git checkout -b x; git commit` is judged
+  on `main`) while the chain's *first* command is unconditional (`git checkout -b x && git
+  commit; git push` keeps its lift); lifts are stored per repo; and `--abort`/`--ff-only`
+  count only as options, never as the argument of `-m`/`-F`/`--onto`/… . Detached HEAD
   is not `main`, so a rebase in progress is untouched. Uncommitted Bash-authored *edits* on
   `main` (mode 1 in #301) are out of scope here — that is #303's territory. Pi twin gets the
   same rule through `git-guardrails-core.ts`; the parity fixture pins both.

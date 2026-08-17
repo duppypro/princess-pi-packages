@@ -46,15 +46,18 @@ HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
 # ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
 # earlier in the same line for the repo that switched (see effective_branch).
 ORIG_CWD="$HOOK_CWD"
-LIFT_KEY=""
-LIFT_BRANCH=""
-# Subshell scopes: `(` pushes the effective cwd, `)` pops it — a cd inside a
-# group never reaches the parent shell (PR #305 review). LINE_VARS records
-# literal `NAME=value` assignments seen earlier in the line so `cd "$WT"` and
-# `checkout -b "$BRANCH"` can be resolved; anything unresolvable is treated as
-# unknown, and unknown never moves the cwd or lifts the gate (fail-closed).
-CWD_STACK=()
+# LIFTS: newline-separated `<repo key>=<branch>` records, latest wins — one
+# entry per repo, so a two-repo line does not clobber itself (PR #305 review).
+LIFTS=$'\n'
+# LINE_VARS: newline-separated literal `NAME=value` assignments seen earlier in
+# the line, latest wins, so `cd "$WT"` / `checkout -b "$BRANCH"` can be resolved;
+# anything unresolvable is unknown, and unknown never moves the cwd or lifts.
 LINE_VARS=$'\n'
+# Subshell scopes: `(` pushes cwd AND vars, `)` pops them — nothing set inside a
+# group reaches the parent shell (PR #305 review, twice). Lifts are not scoped:
+# a branch switch inside a group happened on disk.
+CWD_STACK=()
+VARS_STACK=()
 
 block() {
   echo "BLOCKED: '$COMMAND' — $1" >&2
@@ -129,8 +132,11 @@ repo_key() {
 
 # Branch the sub-command acts on, honouring an earlier switch in the same line.
 effective_branch() {
-  if [ -n "$LIFT_KEY" ] && [ "$LIFT_KEY" = "$(repo_key "$1" "$2")" ]; then
-    printf '%s' "$LIFT_BRANCH"; return
+  local key rest
+  key=$(repo_key "$1" "$2")
+  rest="${LIFTS##*$'\n'$key=}"        # ## → LAST record for this key
+  if [ "$rest" != "$LIFTS" ]; then
+    printf '%s' "${rest%%$'\n'*}"; return
   fi
   branch_of "$1" "$2"
 }
@@ -145,7 +151,7 @@ expand_word() {
   case "$w" in *'`'*|*'$('*) return 1 ;; esac
   while [[ "$w" =~ \$\{?([A-Za-z_][A-Za-z0-9_]*)\}? ]]; do
     name="${BASH_REMATCH[1]}"
-    rest="${LINE_VARS#*$'\n'$name=}"
+    rest="${LINE_VARS##*$'\n'$name=}"   # ## → LAST assignment wins (PR #305 review)
     if [ "$rest" != "$LINE_VARS" ]; then
       val="${rest%%$'\n'*}"
     elif [ -n "${!name+x}" ]; then
@@ -178,9 +184,9 @@ record_assignment() {
 # cd never comes back — restore HOOK_CWD after the recursive check. A branch
 # switch inside it DID happen on disk, so LIFT_* is left as the child set it.
 check_child_string() {
-  local saved="$HOOK_CWD"
+  local saved_cwd="$HOOK_CWD" saved_vars="$LINE_VARS" saved_lifts="$LIFTS"
   check_command_string "$1"
-  HOOK_CWD="$saved"
+  HOOK_CWD="$saved_cwd"; LINE_VARS="$saved_vars"; LIFTS="$saved_lifts"
 }
 
 # `cd`/`pushd`/`popd` as the FIRST word of a sub-command moves the effective
@@ -246,8 +252,7 @@ apply_lift() {
   if [ "$force" = 0 ] && ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
     return 0
   fi
-  LIFT_KEY=$(repo_key "$cpath" "$gitdir")
-  LIFT_BRANCH="$target"
+  LIFTS+="$(repo_key "$cpath" "$gitdir")=$target"$'\n'
   return 0
 }
 
@@ -562,9 +567,15 @@ split_subcommands() {
         # '(' / ')' outside quotes open/close a subshell group — split there
         # so `(cd wt && git commit)` exposes both the cd and the commit
         # (#301). `$(…)` bodies were already inspected by the substitution walk.
-        $'\n'|';') out+=$'\x1f' ;;
-        '('|')') out+=$'\x1f'"$ch"$'\x1f' ;;   # standalone marker: scope push/pop in the walk
-        '&'|'|') [ "${s:$((i + 1)):1}" = "$ch" ] && i=$((i + 1)); out+=$'\x1f' ;;
+        # Separators become standalone MARKER entries so the walk can model
+        # control flow (PR #305 review round 2): ';' ends a chain, '&&'/'||'
+        # make what follows conditional, '|' and a single '&' put the adjacent
+        # sub-command in a subshell, '(' / ')' open/close a scope.
+        $'\n'|';') out+=$'\x1f;'$'\x1f' ;;
+        '('|')') out+=$'\x1f'"$ch"$'\x1f' ;;
+        '&'|'|')
+          if [ "${s:$((i + 1)):1}" = "$ch" ]; then i=$((i + 1)); out+=$'\x1f&&'$'\x1f'
+          else out+=$'\x1f'"$ch"$'\x1f'; fi ;;
         *) out+="$ch" ;;
       esac
     fi
@@ -848,34 +859,77 @@ check_gh_command() {
 # command strings (bash -c / eval — #74 review finding 14) and for
 # substitution bodies ($(...) and backticks — #105/finding 16b): block()
 # exits directly, so any nested hit stops everything.
+# One sub-command: line-state changes (assignment, cd, lift) or a check.
+check_one_sub() {
+  tokenize "$1"
+  [ ${#TOKENS[@]} -eq 0 ] && return 0
+  record_assignment && return 0   # NAME=value alone: remembered, nothing to block
+  apply_cd && return 0            # line-state only, nothing to block (#301)
+  # Strip the benign prefix ONCE, then dispatch on what is actually being run.
+  # Once matters: the walk recurses into `bash -c` / `eval` bodies, and running
+  # it per-checker would re-walk every nested string twice.
+  skip_benign_prefix || return 0
+  if [ "${TOKENS[$PREFIX_START]##*/}" = "git" ]; then
+    check_git_subcommand
+  else
+    check_gh_command
+  fi
+  return 0
+}
+
+# Walk the split with control flow modelled fail-closed (PR #305 review round 2):
+#   ';'        ends a &&/|| chain — state changes made under a condition are
+#              REVERTED (`false && git checkout -b x; git commit` is judged on
+#              main). The FIRST sub-command of a chain is unconditional, so
+#              `cd wt && git commit; git push` keeps its cd.
+#   '&&' '||'  everything after the first one in a chain is conditional.
+#   '|' '&'    the adjacent sub-command runs in a subshell: its cd/vars/lifts
+#              are dropped (`cd x | cat; git commit`).
+#   '(' ')'    scope: cwd and vars restored at ')'.
 check_command_string() {
   local stripped subs sub
+  local -a S=()
+  local i n prev next
+  local snap_on=0 snap_cwd="" snap_vars="" snap_lifts=""
+  local sv_cwd sv_vars sv_lifts
   stripped=$(strip_heredocs "$1")
   extract_and_check_substitutions "$stripped"
   subs=$(split_subcommands "$stripped")
-  while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do
-    if [ "$sub" = "(" ]; then CWD_STACK+=("$HOOK_CWD"); continue; fi
-    if [ "$sub" = ")" ]; then
-      if [ ${#CWD_STACK[@]} -gt 0 ]; then
-        HOOK_CWD="${CWD_STACK[$((${#CWD_STACK[@]} - 1))]}"
-        unset 'CWD_STACK[${#CWD_STACK[@]}-1]'
-      fi
-      continue
-    fi
-    tokenize "$sub"
-    [ ${#TOKENS[@]} -eq 0 ] && continue
-    record_assignment && continue   # NAME=value alone: remembered, nothing to block
-    apply_cd && continue   # line-state only, nothing to block (#301)
-    # Strip the benign prefix ONCE, then dispatch on what is actually being run.
-    # Once matters: the walk recurses into `bash -c` / `eval` bodies, and running
-    # it per-checker would re-walk every nested string twice.
-    skip_benign_prefix || continue
-    if [ "${TOKENS[$PREFIX_START]##*/}" = "git" ]; then
-      check_git_subcommand
+  while IFS= read -r -d $'\x1f' sub || [ -n "$sub" ]; do S+=("$sub"); done <<< "${subs}"$'\x1f'
+  n=${#S[@]}
+  for ((i = 0; i < n; i++)); do
+    sub="${S[$i]}"
+    case "$sub" in
+      "(") CWD_STACK+=("$HOOK_CWD"); VARS_STACK+=("$LINE_VARS"); continue ;;
+      ")")
+        if [ ${#CWD_STACK[@]} -gt 0 ]; then
+          HOOK_CWD="${CWD_STACK[$((${#CWD_STACK[@]} - 1))]}"; unset 'CWD_STACK[${#CWD_STACK[@]}-1]'
+          LINE_VARS="${VARS_STACK[$((${#VARS_STACK[@]} - 1))]}"; unset 'VARS_STACK[${#VARS_STACK[@]}-1]'
+        fi
+        continue ;;
+      ";")
+        if [ "$snap_on" = 1 ]; then
+          HOOK_CWD="$snap_cwd"; LINE_VARS="$snap_vars"; LIFTS="$snap_lifts"; snap_on=0
+        fi
+        continue ;;
+      "&&")
+        if [ "$snap_on" = 0 ]; then
+          snap_on=1; snap_cwd="$HOOK_CWD"; snap_vars="$LINE_VARS"; snap_lifts="$LIFTS"
+        fi
+        continue ;;
+      "|"|"&") continue ;;
+    esac
+    prev="${S[$((i - 1))]:-}"; [ "$i" -eq 0 ] && prev=""
+    next="${S[$((i + 1))]:-}"
+    if [ "$prev" = "|" ] || [ "$next" = "|" ] || [ "$next" = "&" ]; then
+      # pipeline element / background job: a subshell — nothing it sets persists
+      sv_cwd="$HOOK_CWD"; sv_vars="$LINE_VARS"; sv_lifts="$LIFTS"
+      check_one_sub "$sub"
+      HOOK_CWD="$sv_cwd"; LINE_VARS="$sv_vars"; LIFTS="$sv_lifts"
     else
-      check_gh_command
+      check_one_sub "$sub"
     fi
-  done <<< "${subs}"$'\x1f'
+  done
   return 0
 }
 

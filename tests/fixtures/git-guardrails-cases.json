@@ -1310,6 +1310,99 @@
       "c_path_rel": "rel-repo",
       "verdict": "block",
       "why": "same: bash -c is a child shell"
+    },
+    {
+      "id": "block-latest-assignment-wins",
+      "command": "WT=rel-repo; WT=.; cd \"$WT\"; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "PR #305 round 2: the LAST assignment is the live one — WT ends as '.', the main clone"
+    },
+    {
+      "id": "allow-latest-assignment-wins-feature",
+      "command": "WT=.; WT=rel-repo; cd \"$WT\"; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "same, other direction: the last WT points at the feature repo"
+    },
+    {
+      "id": "block-subshell-assignment-does-not-leak",
+      "command": "(WT=rel-repo); cd \"$WT\"; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "PR #305 round 2: a variable set inside '( )' does not exist in the parent — the cd is unresolvable, stays put, commit judged on main"
+    },
+    {
+      "id": "block-substitution-lift-does-not-apply-earlier",
+      "command": "git commit -m x; echo $(git checkout -b 301-x)",
+      "branch": "main",
+      "verdict": "block",
+      "why": "PR #305 round 2: substitutions are inspected before the walk; a lift inside one must not reach a commit that ran BEFORE it — nothing from a child shell carries back"
+    },
+    {
+      "id": "block-conditional-lift-reverted-at-semicolon",
+      "command": "false && git checkout -b 301-x; git commit -m x",
+      "branch": "main",
+      "verdict": "block",
+      "why": "PR #305 round 2: a switch that runs only under a condition is reverted when the chain ends at ';' — the commit is judged on main"
+    },
+    {
+      "id": "allow-unconditional-first-in-chain-persists",
+      "command": "git checkout -b 301-x && git commit -m y; git push",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "the FIRST sub-command of a chain is unconditional, so its lift survives the ';' — the everyday create-commit-push line"
+    },
+    {
+      "id": "allow-cd-first-in-chain-persists",
+      "command": "cd rel-repo && git commit -m x; git push",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "same for cd at the head of a chain"
+    },
+    {
+      "id": "block-conditional-cd-reverted-at-semicolon",
+      "command": "true && cd rel-repo; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "a cd made under a condition is reverted at ';' (fail-closed: the hook cannot know `true` succeeded)"
+    },
+    {
+      "id": "block-pipeline-cd-does-not-persist",
+      "command": "cd rel-repo | cat; git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "PR #305 round 2: a pipeline element runs in a subshell — its cd never reaches the shell"
+    },
+    {
+      "id": "block-background-cd-does-not-persist",
+      "command": "cd rel-repo & git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "a backgrounded sub-command is a subshell too"
+    },
+    {
+      "id": "allow-two-repo-lifts-keyed-per-repo",
+      "command": "git checkout -b 301-a && git -C rel-repo checkout -b 301-b && git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "main",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "PR #305 round 2: lifts are stored per repo — the second repo's switch must not clobber the first's"
     }
   ]
 }
