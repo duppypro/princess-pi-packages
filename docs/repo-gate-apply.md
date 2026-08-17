@@ -10,9 +10,18 @@ told to read this file is not the same as being told to run it — see **Authori
 
 ## What you are doing
 
-Bringing a repo's live branch-protection ruleset into line with the declared baseline
-in `docs/repo-policy.json`. That is one `gh api` call per repo, using a payload the
-tool generates. You are not designing the ruleset; the policy already did.
+Bringing a repo's live state into line with two declared baselines in
+`docs/repo-policy.json`: the branch-protection ruleset, and — since #304 — whether
+`.bot_login` (the account agent sessions push as) has **write** access. Each is one
+`gh api` call per repo, using a payload the tool generates. You are not designing the
+ruleset or picking the permission level; the policy already did.
+
+**The bot-access half is currently a report with no applier.** #304's credential half
+(minting the bot's token, wiring it into harness session env) is blocked on
+`btw#29` — a leaked token that must be revoked first — and is human-only work. Until
+that lands, treat every `bot_access` drift as informational: know which repos are
+missing the grant, do not add the bot as a collaborator on Duppy's say-so alone. See
+**Authorisation** below.
 
 ## Preconditions — check, do not fix
 
@@ -51,7 +60,12 @@ edit the one you are given. The payload is derived from the same tier definition
 check reads, which is the only reason the remedy and the verdict cannot disagree. A
 hand-edited payload breaks that and you will have no way to know.
 
-If the tier is `plan-blocked`, the remedy is `none`. Do not attempt a write.
+If the tier is `plan-blocked`, the ruleset remedy is `none`. Do not attempt a write.
+
+`--remedy <repo>` also prints, on its own line(s) below the ruleset command, the
+`gh api -X PUT .../collaborators/<bot_login>` command that would grant write —
+independently of tier, since a private repo still needs the bot to be able to push
+even while its ruleset is waived. Absent entirely means the bot already has write.
 
 **Step 3 — confirm before the first write.** See **Authorisation**.
 
@@ -89,6 +103,12 @@ These writes are outward-facing and change access control on real repositories.
 - Never widen `bypass_actors`. The declared value is `RepositoryRole 5, always` and it
   is deliberate (see `enforcement_disclosure` in the policy). Narrowing it is a
   separate decision that belongs to Duppy, not to a drift fix.
+- **Never run the collaborator-grant remedy without a separate, explicit go-ahead
+  naming that specific action.** Adding a collaborator changes who can push to a real
+  repository, and — per #304 — the credential half that would let the bot actually
+  use that grant safely (session-scoped token, human-only merge/reject) is not built
+  yet. Printing the command is the whole point of `--remedy`; running it ahead of the
+  credential work is not this runbook's call to make.
 
 ## What is not an apply
 
@@ -122,6 +142,8 @@ turns the file from a policy into a list of things that happened to pass.
 - The plan probe reports `expired` — private-repo rulesets have become available and
   twelve repos need tiering decisions, which is a policy change, not a drift fix.
 - A repo has an `unexpected rule:` you did not expect to be removing.
+- A repo's `bot_access.status` is `none` or `insufficient` — see **Authorisation**
+  above. Report the finding; do not run the collaborator remedy on your own judgment.
 - More than two consecutive writes fail.
 
 ## What this does not achieve

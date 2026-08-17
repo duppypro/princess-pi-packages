@@ -51,6 +51,14 @@ describe("docs/repo-policy.json is internally coherent", () => {
 		assert.strictEqual(policy.schema, "repo-policy@1");
 	});
 
+	it("names the bot login as data, not a script constant (#304)", () => {
+		// repo-gate must source the login it probes for collaborator access from
+		// here, so the policy file stays the one baseline both the ruleset shape
+		// and the bot's push grant are checked against.
+		assert.strictEqual(typeof policy.bot_login, "string");
+		assert.ok(policy.bot_login.length > 0, "bot_login must not be empty");
+	});
+
 	it("every repo maps to a tier that exists", () => {
 		for (const [repo, tier] of Object.entries(policy.repos)) {
 			assert.ok(policy.tiers[tier as string],
@@ -136,6 +144,14 @@ describe("bin/repo-gate honours the contract the policy assumes", () => {
 			"repo-gate must render the disclosure from the policy file");
 	});
 
+	it("reads the bot login from the policy rather than hardcoding it (#304)", () => {
+		// Same citation idiom: the login repo-gate probes for collaborator access
+		// must come from `.bot_login`, not a string literal baked into the script,
+		// or the policy file stops being the single baseline the issue asked for.
+		assert.ok(gateSrc.includes(".bot_login"),
+			"repo-gate must read bot_login out of the policy file, not hardcode it");
+	});
+
 	it("documents the shared pr-* exit codes", () => {
 		for (const code of ["0", "2", "3", "4", "5", "6"]) {
 			assert.ok(new RegExp(`^#\\s+${code}\\s`, "m").test(gateSrc),
@@ -182,6 +198,7 @@ describe("bin/repo-gate honours the contract the policy assumes", () => {
 		"scope.target",
 		"scope.excluded",
 		"enforcement_disclosure.bypass_actors",
+		"bot_login",
 	]) {
 		it(`a policy missing .${key} is exit 3, never a quiet 0`, () => {
 			const broken = structuredClone(policy);
@@ -377,6 +394,19 @@ describe("the live account still matches the policy's coverage claims", () => {
 			`unlisted=${c.unlisted}  gone=${c.gone}  error=${c.error}  plan=${report.plan.status}`);
 		assert.strictEqual(c.ok + c.drift + c.na + c.unlisted + c.gone + c.error, c.total,
 			"every repo must land in exactly one bucket — the accounting IS the test");
+	});
+
+	// Survey, same reasoning (#304): the credential half of #304 is blocked on
+	// btw#29, so the bot login is not expected to hold write everywhere yet. This
+	// prints which repos are still missing the grant rather than failing the suite
+	// over a gap this slice does not close.
+	it("surveys bot write access", () => {
+		if (!report) return;
+		const missing = report.repos
+			.filter((r: any) => r.bot_access && r.bot_access.status !== "ok")
+			.map((r: any) => `${r.repo}:${r.bot_access.status}`);
+		console.log(`  #304-bot-access  login=${report.bot_login}  ` +
+			(missing.length === 0 ? "every declared repo grants write" : `missing on: ${missing.join(", ")}`));
 	});
 });
 
