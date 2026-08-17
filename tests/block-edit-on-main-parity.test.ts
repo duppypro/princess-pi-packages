@@ -253,6 +253,47 @@ describe("block-edit-on-main parity (#303)", () => {
   // by realpath -m in the shell hook, and by the eventual fs write — lands
   // the bytes on main. Confirmed empirically before the fix: this exact case
   // returned ALLOW from checkEditOnMain and BLOCK from the shell hook.
+  // Symlink-then-`..` traversal (#303 review finding, macroscopeapp on PR #313,
+  // thread PRRT_kwDOS37--c6Zr-dX): POSIX resolves `..` AFTER following symlinks,
+  // but `path.resolve`/`path.normalize` collapse it LEXICALLY, before. So
+  // `<feature>/link/../f.txt` — where `link` is a symlink into a repo on main —
+  // collapsed to `<feature>/f.txt` and the guard inspected the feature repo
+  // (ALLOW), while `realpath -m` in the shell twin, and the kernel's own path
+  // walk during the eventual write, both land in the main repo. Reproduced
+  // before the fix: ts ALLOW / sh BLOCK, and `writeFileSync` on that exact
+  // string overwrote the file inside the repo on main.
+  //
+  // Note the fixture builds the path by STRING CONCATENATION: path.join() would
+  // collapse the `..` itself and quietly destroy the case under test.
+  function traversalFixture(): { mainRepo: string; featRepo: string } {
+    const mainRepo = repoOnBranch("main");
+    fs.mkdirSync(path.join(mainRepo, "subdir"));
+    fs.writeFileSync(path.join(mainRepo, "f.txt"), "base\n");
+    const featRepo = repoOnBranch("42-slug");
+    fs.writeFileSync(path.join(featRepo, "f.txt"), "feature\n");
+    fs.symlinkSync(path.join(mainRepo, "subdir"), path.join(featRepo, "link"));
+    return { mainRepo, featRepo };
+  }
+
+  test("blocks an absolute path whose '..' traverses out of a symlink into a repo on main", () => {
+    const { featRepo } = traversalFixture();
+    assertBoth(
+      `${featRepo}/link/../f.txt`,
+      featRepo,
+      "block",
+      "`..` after a symlink resolves into the repo on main, not the feature repo",
+    );
+  });
+
+  // The same bug via a RELATIVE input. Pinned separately because the narrow
+  // patch suggested on the thread (skip normalization for absolute inputs only)
+  // passes the case above and still fails this one: a relative path routed
+  // through path.resolve(cwd, …) is normalized lexically just the same.
+  test("blocks a RELATIVE path whose '..' traverses out of a symlink into a repo on main", () => {
+    const { featRepo } = traversalFixture();
+    assertBoth("link/../f.txt", featRepo, "block", "relative input must not be lexically collapsed either");
+  });
+
   test("fails closed on a symlink chain longer than 40 hops whose real target is a repo on main", () => {
     const mainRepo = repoOnBranch("main");
     fs.writeFileSync(path.join(mainRepo, "f.txt"), "base\n");

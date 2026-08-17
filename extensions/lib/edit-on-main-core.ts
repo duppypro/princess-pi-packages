@@ -30,8 +30,8 @@ function gitOut(dir: string, args: string[]): string {
   return (res.stdout ?? "").trim();
 }
 
-// Thrown by realpathTolerant when a single path component's symlink chain
-// exceeds the hop cap without resolving to a non-symlink (#303 review finding,
+// Thrown by realpathTolerant when resolving a path needs more than 40 symlink
+// hops — a loop, or a chain deeper than the cap (#303 review finding,
 // macroscopeapp on PR #313, thread PRRT_kwDOS37--c6Zr6MV). Before this type
 // existed the loop below simply assigned the still-unresolved `candidate` to
 // `real` once the cap was hit — silently treating an UNRESOLVED symlink as
@@ -51,45 +51,91 @@ export class SymlinkDepthExceededError extends Error {
 
 // ---
 // realpath -m equivalent (#267 finding, ported from block-edit-on-main.sh):
-// resolve every symlink along an EXISTING prefix of the path, then append any
-// non-existent tail lexically. Node's fs.realpathSync throws ENOENT the
-// moment any component — including the final target of a dangling symlink —
-// doesn't exist, which breaks two load-bearing cases: a brand-new file being
-// created by Write, and a symlink whose target doesn't exist yet. Both must
-// still resolve as far as they can, exactly like GNU `realpath -m`.
+// resolve every symlink along the path, tolerating components that don't exist
+// yet. Node's fs.realpathSync throws ENOENT the moment any component —
+// including the final target of a dangling symlink — doesn't exist, which
+// breaks two load-bearing cases: a brand-new file being created by Write, and
+// a symlink whose target doesn't exist yet. Both must still resolve as far as
+// they can, exactly like GNU `realpath -m`.
+//
+// THE ORDERING RULE (#303 review finding, macroscopeapp on PR #313, thread
+// PRRT_kwDOS37--c6Zr-dX): `.` and `..` are resolved DURING the component walk,
+// never before it — because POSIX resolves `..` against the directory a
+// symlink actually points at, while path.resolve()/path.normalize()/path.join()
+// collapse it LEXICALLY, against the directory it is written in. When any
+// component is a symlink the two answers differ, and the lexical one is
+// permissive: `<feature-repo>/link/../f.txt` collapsed to `<feature-repo>/f.txt`
+// (feature branch → ALLOW) while the kernel — and `realpath -m` in the shell
+// twin — walk `link` into a repo on main and land the bytes there. Reproduced
+// before this fix: ts ALLOW, sh BLOCK, and the write overwrote the main repo's
+// file. So: build the absolute string by CONCATENATION only, and handle `..` by
+// popping `real`, which is fully symlink-resolved at that point.
+//
+// The narrower patch suggested on the thread (skip normalization only when the
+// input is already absolute) is not enough: a RELATIVE input containing `..`
+// still goes through path.resolve(cwd, …) and is collapsed exactly the same
+// way. Both shapes are pinned in tests/block-edit-on-main-parity.test.ts.
+//
+// Shape: a single component QUEUE, walked the way the kernel walks a path —
+// `real` is the canonical prefix proven so far, and a symlink target is pushed
+// back onto the FRONT of the queue rather than resolved by a nested call. That
+// keeps the `..`-after-symlink rule applying to link targets too (a target of
+// `../other` is subject to it just as much as the input is), and it terminates
+// on a self-referential relative link (`a -> a`), which a recursive walker
+// would blow the stack on.
 // ---
 function realpathTolerant(inputPath: string): string {
-  const abs = path.resolve(inputPath);
-  const parts = abs.split(path.sep).filter(Boolean);
+  // Concatenate, never normalize — mirrors the shell twin's
+  // `realpath -m "${CWD:-.}/$FILE"`, which hands the raw string to a
+  // symlink-aware resolver rather than pre-collapsing it.
+  const abs = path.isAbsolute(inputPath) ? inputPath : `${process.cwd()}${path.sep}${inputPath}`;
+  const queue = abs.split(path.sep).filter(Boolean);
   let real = path.sep;
-  for (let i = 0; i < parts.length; i++) {
-    let candidate = path.join(real, parts[i]);
-    let linkDepth = 0;
-    let resolvedComponent = false;
-    // Follow a chain of symlinks for this ONE component (bounded — a self-
-    // referential symlink must not hang the guard).
-    while (linkDepth++ < 40) {
-      let st: fs.Stats | undefined;
-      try {
-        st = fs.lstatSync(candidate);
-      } catch {
-        // Component doesn't exist: from here on nothing resolves further —
-        // return what's real so far, joined with the untouched remainder.
-        return path.join(candidate, ...parts.slice(i + 1));
-      }
-      if (!st.isSymbolicLink()) {
-        resolvedComponent = true;
-        break;
-      }
-      const target = fs.readlinkSync(candidate);
-      candidate = path.isAbsolute(target) ? target : path.resolve(path.dirname(candidate), target);
+  // One budget for the WHOLE walk, not per component — the same accounting the
+  // kernel uses before it returns ELOOP, and the only way to bound a path whose
+  // links each resolve fine but collectively never terminate.
+  let hops = 0;
+  while (queue.length > 0) {
+    const part = queue.shift() as string;
+    if (part === ".") continue;
+    // `..` applies to the RESOLVED prefix. `real` has had every symlink in it
+    // dereferenced already, and a canonical path's parent is canonical, so
+    // dirname() here is the POSIX answer. (dirname("/") === "/", matching
+    // `realpath -m /../x` → `/x`.)
+    if (part === "..") {
+      real = path.dirname(real);
+      continue;
     }
-    // Cap hit and `candidate` is STILL a symlink: we cannot prove where this
-    // component actually resolves (loop, or a chain genuinely deeper than 40
-    // hops). Fail closed rather than trust the unresolved value — see
-    // SymlinkDepthExceededError above.
-    if (!resolvedComponent) throw new SymlinkDepthExceededError(candidate);
-    real = candidate;
+    const candidate = real + (real.endsWith(path.sep) ? "" : path.sep) + part;
+
+    let st: fs.Stats | undefined;
+    try {
+      st = fs.lstatSync(candidate);
+    } catch {
+      // Component doesn't exist — so it cannot be a symlink, and it is already
+      // resolved as far as it can ever be. Keep walking rather than appending
+      // the remainder lexically: a later `..` may pop back out of the missing
+      // part onto a component that DOES exist and IS a symlink
+      // (`realpath -m 'nope/../link/x'` resolves `link` — verified against GNU
+      // realpath). Stopping here would skip that symlink.
+      real = candidate;
+      continue;
+    }
+    if (!st.isSymbolicLink()) {
+      real = candidate;
+      continue;
+    }
+
+    // Budget exhausted and we are still looking at a symlink: we cannot prove
+    // where this path resolves. Fail closed rather than trust the unresolved
+    // value — see SymlinkDepthExceededError above.
+    if (++hops > 40) throw new SymlinkDepthExceededError(candidate);
+
+    const target = fs.readlinkSync(candidate);
+    // An absolute target restarts from the root; a relative one continues from
+    // the directory holding the link — which is exactly the current `real`.
+    if (path.isAbsolute(target)) real = path.sep;
+    queue.unshift(...target.split(path.sep).filter(Boolean));
   }
   return real;
 }
@@ -113,7 +159,12 @@ function nearestExistingAncestor(dir: string): string {
 export function checkEditOnMain(filePath: string, cwd: string): string | null {
   let dir: string;
   if (filePath) {
-    const absInput = path.isAbsolute(filePath) ? filePath : path.resolve(cwd || ".", filePath);
+    // Concatenation, NOT path.resolve — see the ordering rule on
+    // realpathTolerant. path.resolve() would collapse `..` lexically here,
+    // before any symlink in `cwd` or in `filePath` had been dereferenced, which
+    // is the exact bypass this guard was found to have. Mirrors the shell
+    // twin's `realpath -m "${CWD:-.}/$FILE"` character for character.
+    const absInput = path.isAbsolute(filePath) ? filePath : `${cwd || "."}${path.sep}${filePath}`;
     let resolved: string;
     try {
       resolved = realpathTolerant(absInput);
