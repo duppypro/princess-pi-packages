@@ -33,7 +33,7 @@ import * as path from "node:path";
 import {
 	getRegistryPath, registerServer, liveServers, readRegistry, verifyRecord, setRecordSubdomain, type ServerRecord,
 } from "../extensions/lib/serve/registry.ts";
-import { awaitServerUp } from "../extensions/lib/serve/process.ts";
+import { awaitServerUp, settleStartedServers } from "../extensions/lib/serve/process.ts";
 import { skip } from "./lib/skips.ts";
 
 const RED = "\x1b[31m", GREEN = "\x1b[32m", RESET = "\x1b[0m";
@@ -249,6 +249,68 @@ console.log("\nC. awaitServerUp resolves on port-up, child-exit, or a bounded pe
 }
 
 // ===========================================================================
+// C2. settleStartedServers — concurrent ceiling; an exited PUBLISHED server is unpublished
+// ===========================================================================
+console.log("\nC2. settleStartedServers: ceiling bounds the whole start; exited+published → unpublish then retire; unpublish failure keeps the record");
+{
+	// Concurrency: three alive-but-silent children with a 600 ms ceiling must settle in ~600 ms, not ~1800.
+	const trio = [59951, 59952, 59953].map(port => ({ port, child: spawnSleeper(), dir: `/tmp/d${port}`, subdomain: null }));
+	const t0 = Date.now();
+	const outs = await settleStartedServers(trio, 600);
+	const took = Date.now() - t0;
+	assert("three pending servers settle in about one ceiling, not three", took < 1_300, `${took}ms`);
+	assert("…each reported pending", outs.every(o => o.result.state === "pending"), JSON.stringify(outs.map(o => o.result.state)));
+
+	const CF_ENV = path.join(os.homedir(), ".config", "princess-pi", "cf.env");
+	if (!fs.existsSync(CF_ENV)) {
+		skip("no cf.env on this host — unpublish-on-exit not exercised");
+	} else {
+		const realFetch = globalThis.fetch;
+		const calls: string[] = [];
+		let unpublishShouldFail = false;
+		const ok = (result: any) => new Response(JSON.stringify({ success: true, result }), { status: 200 });
+		const H = "early-exit.princess-pi.dev";
+		globalThis.fetch = (async (input: any, init: any = {}) => {
+			const url = String(input); const method = init.method || "GET";
+			if (!url.startsWith("https://api.cloudflare.com/")) throw new Error(`test fetch mock: unexpected URL ${url}`);
+			calls.push(`${method} ${url.replace(/^.*\/v4/, "")}`);
+			if (/\/configurations$/.test(url) && method === "GET") return ok({ config: { ingress: [{ hostname: H, service: "http://127.0.0.1:59961" }, { service: "http_status:404" }] } });
+			if (/\/configurations$/.test(url) && method === "PUT") return unpublishShouldFail ? new Response(JSON.stringify({ success: false, errors: [{ code: 1, message: "injected" }] }), { status: 500 }) : ok({});
+			if (/\/access\/apps\?/.test(url) && method === "GET") return ok([{ id: "appX", name: "serve early-exit", domain: H }]);
+			if (/\/access\/apps\/appX$/.test(url) && method === "DELETE") return ok({});
+			throw new Error(`test fetch mock: unhandled ${method} ${url}`);
+		}) as any;
+		try {
+			fs.rmSync(REGISTRY_PATH, { force: true });
+			// (1) published, child dies before binding, unpublish succeeds → record retired
+			const dead1 = spawn(process.execPath, ["-e", "process.exit(7)"], { stdio: "ignore" }); spawned.push(dead1); await sleep(50);
+			registerServer({ pid: dead1.pid!, port: 59961, dir: "/tmp/e1", kind: "static", subdomain: "early-exit" });
+			await waitExit(dead1);
+			const [o1] = await settleStartedServers([{ port: 59961, child: dead1, dir: "/tmp/e1", subdomain: "early-exit" }], 2_000);
+			assert("exited + published + unpublish ok → unpublish 'done'", o1.result.state === "exited" && o1.unpublish === "done", JSON.stringify(o1));
+			assert("…ingress PUT and Access DELETE were issued", calls.some(c => c.startsWith("PUT")) && calls.some(c => c.startsWith("DELETE")), calls.join("\n"));
+			assert("…record retired", !readRegistry().some(r => r.port === 59961), JSON.stringify(readRegistry()));
+			// (2) published, child dies, unpublish FAILS → record kept as reap evidence
+			calls.length = 0; unpublishShouldFail = true;
+			const dead2 = spawn(process.execPath, ["-e", "process.exit(7)"], { stdio: "ignore" }); spawned.push(dead2); await sleep(50);
+			registerServer({ pid: dead2.pid!, port: 59961, dir: "/tmp/e2", kind: "static", subdomain: "early-exit" });
+			await waitExit(dead2);
+			const [o2] = await settleStartedServers([{ port: 59961, child: dead2, dir: "/tmp/e2", subdomain: "early-exit" }], 2_000);
+			assert("exited + published + unpublish FAILS → unpublish 'failed' with the error", o2.unpublish === "failed" && /injected/.test(o2.unpublishError || ""), JSON.stringify(o2));
+			assert("…record KEPT (reap's hostname-bound evidence for the next run)", readRegistry().some(r => r.port === 59961 && r.subdomain === "early-exit"), JSON.stringify(readRegistry()));
+			// (3) unpublished child dies → simply retired, no CF traffic
+			calls.length = 0;
+			const dead3 = spawn(process.execPath, ["-e", "process.exit(7)"], { stdio: "ignore" }); spawned.push(dead3); await sleep(50);
+			registerServer({ pid: dead3.pid!, port: 59962, dir: "/tmp/e3", kind: "static", subdomain: null });
+			await waitExit(dead3);
+			const [o3] = await settleStartedServers([{ port: 59962, child: dead3, dir: "/tmp/e3", subdomain: null }], 2_000);
+			assert("exited + unpublished → retired, no Cloudflare calls", o3.unpublish === "not-published" && calls.length === 0 && !readRegistry().some(r => r.port === 59962), JSON.stringify({ o3, calls }));
+			fs.rmSync(REGISTRY_PATH, { force: true });
+		} finally { globalThis.fetch = realFetch; }
+	}
+}
+
+// ===========================================================================
 // D. Source-level pins — the shipped code carries these shapes
 // ===========================================================================
 console.log("\nD. The shipped code carries the change");
@@ -259,8 +321,8 @@ console.log("\nD. The shipped code carries the change");
 	const cfJs = fs.readFileSync(path.join(REPO_ROOT, "extensions/lib/serve/cloudflare.js"), "utf8");
 	assert("bin/serve.ts no longer sleeps 1200 ms after spawn", !/setTimeout\(r, 1200\)/.test(serveTs));
 	assert("extensions/serve.ts no longer sleeps 1200 ms after spawn", !/setTimeout\(r, 1200\)/.test(extTs));
-	assert("bin/serve.ts awaits server state instead", /awaitServerUp\(/.test(serveTs));
-	assert("extensions/serve.ts awaits server state instead", /awaitServerUp\(/.test(extTs));
+	assert("bin/serve.ts settles server state instead (concurrently)", /settleStartedServers\(/.test(serveTs));
+	assert("extensions/serve.ts settles server state instead (concurrently)", /settleStartedServers\(/.test(extTs));
 	assert("bin/serve.ts hands reap the registry evidence", /reapOrphans\(\{\s*evidence/.test(serveTs));
 	assert("extensions/serve.ts hands reap the registry evidence", /reapOrphans\(\{\s*evidence/.test(extTs));
 	assert("reapOrphans routes the decision through classifyReapCandidate", /classifyReapCandidate\(\{/.test(cfJs) && /export async function reapOrphans\(\{/.test(cfJs));

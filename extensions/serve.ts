@@ -13,7 +13,7 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, exec, execSync } from "node:child_process";
 import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, awaitServerUp } from "./lib/serve/process.js";
+import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, settleStartedServers, type StartedServer } from "./lib/serve/process.js";
 import { registerServer, readRegistry, verifyRecord, unregisterPort, setRecordSubdomain } from "./lib/serve/registry.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
@@ -312,7 +312,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		let startPort = 8080;
 		const startedPorts: number[] = [];
 		// #307: the child handles, so the summary can ask "did it come up?" instead of sleeping.
-		const started: { port: number; child: ReturnType<typeof spawn>; dir: string }[] = [];
+		const started: StartedServer[] = [];
 		const ip = await resolveIp();
 
 		// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill before
@@ -419,7 +419,8 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 			serverProcess.unref();
 			startedPorts.push(port);
-			started.push({ port, child: serverProcess, dir: rawDir });
+			const startedEntry: StartedServer = { port, child: serverProcess, dir: rawDir, subdomain: null };
+			started.push(startedEntry);
 
 			// #181: record identity NOW, while this PID is unambiguously ours. Discovery reads
 			// this instead of guessing from a `ps` substring, and `--kill` targets only what is
@@ -442,6 +443,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 					const emails = parseAclFile(targetDir);
 					const hostname = await publishSubdomain({ subdomain, port, emails, activeLabels });
 					activeLabels.add(hostname.split(".")[0]);
+					startedEntry.subdomain = subdomain; // published — an early exit must take this back down
 					ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
 				} catch (err) {
 					ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
@@ -456,12 +458,11 @@ export default function serveExtension(pi: ExtensionAPI) {
 		// registry here.
 		const SERVER_START_CEILING_MS = 10_000;
 		const pendingPorts: number[] = [];
-		for (const s of started) {
-			const r = await awaitServerUp({ port: s.port, child: s.child, ceilingMs: SERVER_START_CEILING_MS });
+		for (const { server: s, result: r, unpublish, unpublishError } of await settleStartedServers(started, SERVER_START_CEILING_MS)) {
 			if (r.state === "exited") {
 				const how = r.signalCode ? `on ${r.signalCode}` : `with code ${r.exitCode}`;
-				ctx.ui.notify(`❌ Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).`, "error");
-				unregisterPort(s.port);
+				const tail = unpublish === "done" ? ` Unpublished ${s.subdomain}.princess-pi.dev.` : unpublish === "failed" ? ` ⚠️ Could not unpublish ${s.subdomain}.princess-pi.dev (${unpublishError}); left for the next reap.` : "";
+				ctx.ui.notify(`❌ Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).${tail}`, "error");
 			} else if (r.state === "pending") {
 				pendingPorts.push(s.port);
 				ctx.ui.notify(`⏳ Server for "${s.dir}" started but is not answering on 127.0.0.1:${s.port} yet (${r.elapsedMs} ms) — it may still be booting; check with --list.`, "warning");

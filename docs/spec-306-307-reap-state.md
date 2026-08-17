@@ -38,7 +38,7 @@ port is reused, so a record for the same port but another hostname — or with n
 the hostname onto the record at publish-after-start (#119), so that fact exists when needed. `reapOrphans({evidence, onReaped, onUnverified})` takes the
 evidence by **injection**: `cloudflare.js` must stay plain-node importable (`run-live-server.js`
 loads it) and the registry is TypeScript, so callers pass
-`readRegistry().map(r => ({port: r.port, verdict: verifyRecord(r)}))`. Omit `evidence` and every
+`readRegistry().map(r => ({port: r.port, hostname: r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord(r)}))`. Omit `evidence` and every
 silent port is unverified — nothing is reaped (fail-safe for a legacy caller). `onReaped` lets
 the caller `unregisterPort` the record that served as evidence — and is called **only after the
 tunnel-config PUT has succeeded** (PR #318 review): reap is decide → commit ingress → tear down, so
@@ -72,7 +72,12 @@ state (100 ms):
   and after the probe, PR #318 review — a child that lost the bind race to a foreign listener is
   `exited`, not `up`) → in the summary.
 - `exited` — the child is gone → `❌ Server for "<dir>" exited with code N / on SIGNAL before
-  answering on 127.0.0.1:<port> (after N ms).`, and the registry record is retired.
+  answering on 127.0.0.1:<port> (after N ms).` A **published** server is first unpublished
+  (ingress + Access app taken down), then its record retired; if the unpublish fails the record
+  is kept — it is reap's hostname-bound evidence for the next run (PR #318 review). Unpublished
+  servers are simply retired.
+- The per-directory waits run **concurrently** (`settleStartedServers`), so the ceiling bounds
+  the whole start operation, not ceiling × directories (PR #318 review).
 - `pending` — 10 s ceiling with the child alive and the port silent → `⏳ … started but is not
   answering … yet — it may still be booting; check with --list.` Excluded from the summary,
   never called failure or success.
@@ -82,7 +87,7 @@ construction).
 
 ## 4. Verification
 
-`tests/serve-306-307-reap-state.test.ts` (42 assertions):
+`tests/serve-306-307-reap-state.test.ts` (50 assertions):
 
 - A. `classifyReapCandidate` — every cell of the table above, plus: evidence for a different port,
   none at all, same port / different hostname (port reuse), no hostname, and mixed records.
@@ -93,6 +98,10 @@ construction).
   failed PUT → error propagates, no `onReaped`, no Access DELETE, map untouched, the co-ported
   service tenant reported unverified; successful PUT → H1 reaped, PUT ordered before DELETE,
   `onReaped` after commit, map entry gone. Declared `##SKIP##` on a host without `cf.env`.
+- C2. `settleStartedServers` — three pending servers settle in ~one ceiling (concurrent);
+  exited+published → real `unpublishSubdomain` against the fetch mock (PUT + Access DELETE) then
+  record retired; unpublish failure → record kept with its subdomain; unpublished exit → retired
+  with no Cloudflare traffic.
 - C. `awaitServerUp` — late-binding listener (700 ms) → `up` under 1.5 s; child `exit(3)` →
   `exited` with code, promptly; alive child + silent port → `pending` at ceiling; foreign
   listener + dead child → `exited` (bind race lost); SIGKILLed child → `exited` naming the signal.

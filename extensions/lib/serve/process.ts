@@ -4,8 +4,8 @@ import * as path from "node:path";
 import * as net from "node:net";
 import { exec, execFile, type ChildProcess } from "node:child_process";
 import { ServerInstance } from "./domain.js";
-import { flattenSubdomainToLabel, readSubdomainMap } from "./cloudflare.js";
-import { liveServers, readRegistry, unregisterPid, type UnclaimedProcess } from "./registry.js";
+import { flattenSubdomainToLabel, readSubdomainMap, unpublishSubdomain } from "./cloudflare.js";
+import { liveServers, readRegistry, unregisterPid, unregisterPort, type UnclaimedProcess } from "./registry.js";
 
 // Cached public IP address of the VPS
 let cachedPublicIp: string | null = null;
@@ -290,6 +290,61 @@ export async function awaitServerUp(opts: {
 		}
 		await new Promise(r => setTimeout(r, pollMs));
 	}
+}
+
+/** A server `serve` just spawned, as the start path knows it. `subdomain` is set only when the edge publish succeeded. */
+export interface StartedServer {
+	port: number;
+	child: ChildProcess | null;
+	dir: string;
+	subdomain: string | null;
+}
+
+export interface StartupOutcome {
+	server: StartedServer;
+	result: ServerStartupResult;
+	/** For an `exited` server that was published: was the edge entry taken back down? */
+	unpublish: "done" | "failed" | "not-published";
+	unpublishError?: string;
+}
+
+/**
+ * Settle every spawn of one start operation — concurrently, so the ceiling bounds the whole
+ * wait, not each directory in turn (PR #318 review: serial awaits made `serve a b c` block
+ * for ceiling × N).
+ *
+ * An `exited` server is retired from the registry — but a PUBLISHED one is first unpublished
+ * (PR #318 review). Retiring the record while its ingress rule and Access app stay live would
+ * throw away exactly the hostname-bound evidence `reapOrphans` needs to clean it up later, and
+ * a future process on that port would receive traffic through the stale hostname. If the
+ * unpublish itself fails, the record is KEPT: with its `subdomain` it survives pruning and the
+ * next reap can act on it. Nothing else here formats or prints — callers own the wording.
+ */
+export async function settleStartedServers(started: StartedServer[], ceilingMs: number): Promise<StartupOutcome[]> {
+	const results = await Promise.all(started.map(s => awaitServerUp({ port: s.port, child: s.child, ceilingMs })));
+	const outcomes: StartupOutcome[] = [];
+	for (let i = 0; i < started.length; i++) {
+		const server = started[i], result = results[i];
+		let unpublish: StartupOutcome["unpublish"] = "not-published";
+		let unpublishError: string | undefined;
+		if (result.state === "exited") {
+			if (server.subdomain) {
+				try {
+					await unpublishSubdomain({ subdomain: server.subdomain });
+					unpublish = "done";
+					unregisterPort(server.port);
+				} catch (err) {
+					unpublish = "failed";
+					unpublishError = (err as Error).message;
+					// keep the record — it is reap's evidence for this hostname+port
+				}
+			} else {
+				unregisterPort(server.port);
+			}
+		}
+		outcomes.push({ server, result, unpublish, unpublishError });
+	}
+	return outcomes;
 }
 
 // Single, reliable kill path for a discovered server (#39). Uses the PID captured at
