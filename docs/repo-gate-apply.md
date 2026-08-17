@@ -67,6 +67,15 @@ If the tier is `plan-blocked`, the ruleset remedy is `none`. Do not attempt a wr
 independently of tier, since a private repo still needs the bot to be able to push
 even while its ruleset is waived. Absent entirely means the bot already has write.
 
+The exact shape of that PUT depends on whether `.owner` is a personal or an
+organization account (#304 review): GitHub's docs for this endpoint say the
+`permission` body parameter is "Only valid on organization-owned repositories," so
+repo-gate sends `--input - <<< '{"permission":"push"}'` only for an organization
+owner and a bare bodyless PUT for a personal one — sending the body to a personal
+account is rejected outright, not defaulted. If repo-gate cannot determine which kind
+of account `.owner` is, it prints no collaborator command at all rather than guess,
+and exits 6 (the bot-access state is still known; only the write shape is not).
+
 **Step 3 — confirm before the first write.** See **Authorisation**.
 
 **Step 4 — run the command exactly as printed.**

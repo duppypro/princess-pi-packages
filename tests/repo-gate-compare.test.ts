@@ -52,6 +52,12 @@ esac
 for a in "\$@"; do
   case "\$a" in
     user/repos*) cat "\$F/repos.json"; exit 0 ;;
+    users/*)
+      # The owner-type probe (#304 review): GitHub's collaborator-add endpoint only
+      # accepts a \`permission\` body on organization-owned repos, so repo-gate must
+      # know which kind of account \$OWNER is before it can print a safe PUT.
+      [ -f "\$F/ownertypefail" ] && exit 1
+      cat "\$F/ownertype.json"; exit 0 ;;
     repos/*/rulesets\\?per_page=100)
       name="\${a#repos/${OWNER}/}"; name="\${name%/rulesets?per_page=100}"
       [ -f "\$F/listfail-\$name" ] && exit 1
@@ -116,6 +122,14 @@ interface Scenario {
 	botPermission?: Record<string, string>;
 	/** repo names on which the collaborator/permission lookup itself fails */
 	botPermissionFail?: string[];
+	/**
+	 * GitHub account type for `.owner` in the policy — "User" or "Organization".
+	 * Defaults to "Organization" so the pre-existing collaborator-remedy fixtures
+	 * below (written before #304's owner-type fix) keep asserting the org-shaped
+	 * `{"permission":"push"}` body unchanged. `null` makes the `users/{owner}` probe
+	 * itself fail, simulating an owner type that could not be determined.
+	 */
+	ownerType?: "User" | "Organization" | null;
 	args?: string[];
 	/** Run `--remedy <repo>` instead of `--json`. Output is raw text, not parsed. */
 	remedy?: string;
@@ -162,6 +176,11 @@ function run(s: Scenario) {
 			fs.writeFileSync(path.join(dir, `bot-${name}.json`), JSON.stringify({ permission: perm }));
 		}
 		for (const n of s.botPermissionFail ?? []) fs.writeFileSync(path.join(dir, `botfail-${n}`), "");
+		if (s.ownerType === null) {
+			fs.writeFileSync(path.join(dir, "ownertypefail"), "");
+		} else {
+			fs.writeFileSync(path.join(dir, "ownertype.json"), JSON.stringify({ type: s.ownerType ?? "Organization" }));
+		}
 
 		const policy = {
 			...REAL_POLICY,
@@ -593,5 +612,84 @@ describe("repo-gate --remedy — the bot grant is printed, never run (#304)", ()
 		assert.strictEqual(r.status, 0);
 		assert.match(r.stdout!, /^# alpha — tier 'plan-blocked'/m);
 		assert.match(r.stdout!, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+	});
+});
+
+describe("repo-gate — collaborator remedy shape depends on owner type (#304 review)", () => {
+	// GitHub's docs for `PUT /repos/{owner}/{repo}/collaborators/{username}` say the
+	// `permission` body parameter is "Only valid on organization-owned repositories."
+	// Sending it for a personal (User) account is REJECTED, not defaulted — so the
+	// remedy this tool prints must omit the body entirely there and let the endpoint's
+	// documented default (push) apply, while still sending the body for orgs (where a
+	// bare PUT would silently grant whatever GitHub's own default is, not necessarily
+	// what the tier asked for).
+
+	it("an organization owner keeps the permission body", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: "Organization",
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.match(r.stdout!, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+		assert.match(r.stdout!, /"permission":"push"/);
+	});
+
+	it("a personal (User) owner gets a bodyless PUT — GitHub's permission param is org-only", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: "User",
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 0);
+		assert.match(r.stdout!, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+		assert.ok(!/"permission"/.test(r.stdout!), "GitHub rejects a `permission` body on personal-account repos");
+	});
+
+	it("in the full report, a personal-account repo's missing-bot-grant remedy has no permission body", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: "User",
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.match(rec.remedy, /-X PUT repos\/testowner\/alpha\/collaborators\/princess-pi-bot/);
+		assert.ok(!/"permission"/.test(rec.remedy), "personal accounts reject the permission body");
+		assert.strictEqual(r.status, 6);
+	});
+
+	it("--remedy: owner type could not be determined -> exit 6, no guessed remedy printed", () => {
+		// Same class as the ambiguous-ruleset-name case above: the bot-access STATE is
+		// known (drift — no access), only the single safe command shape is not, because
+		// the org shape 422s on a personal account and the personal shape silently
+		// leaves an org repo at GitHub's default instead of what the policy asked for.
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: null,
+			remedy: "alpha",
+		});
+		assert.strictEqual(r.status, 6, "the state is known (drift); guessing the write shape is the unsafe part, not the check");
+		assert.ok(!/-X PUT.*collaborators/.test(r.stdout!), "an unknown owner type must not print a guessed remedy");
+	});
+
+	it("full report: owner type indeterminate keeps status drift but withholds a guessed PUT", () => {
+		const r = run({
+			lists: { alpha: [[compliant(1)]] },
+			rulesets: { 1: compliant(1) },
+			botPermission: { alpha: "none" },
+			ownerType: null,
+		});
+		const rec = r.byRepo("alpha");
+		assert.strictEqual(rec.status, "drift");
+		assert.ok(!/-X PUT/.test(rec.remedy), "no owner type means no safe PUT can be printed");
+		assert.strictEqual(r.status, 6, "the state is known to be drift — not the same as could-not-check (5)");
 	});
 });

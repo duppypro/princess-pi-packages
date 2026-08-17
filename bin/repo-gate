@@ -354,9 +354,45 @@ bot_access_of() {
 	'
 }
 
+# GitHub's docs for this endpoint ("Add a repository collaborator") say of the
+# `permission` body parameter: "Only valid on organization-owned repositories." That is
+# not advisory — sending it for a personal (User) account is REJECTED, not defaulted
+# (#304 review). $OWNER is one fixed account for the whole policy file, so this is
+# probed once, not per repo, the same way PLAN_STATUS is above.
+OWNER_TYPE=""
+if owner_json=$(gh api "users/$OWNER" 2>/dev/null); then
+	ot=$(jq -r '.type // ""' <<<"$owner_json" 2>/dev/null) || ot=""
+	if [ "$ot" = "User" ] || [ "$ot" = "Organization" ]; then
+		OWNER_TYPE="$ot"
+	fi
+fi
+if [ -n "$OWNER_TYPE" ]; then
+	OWNER_TYPE_DETAIL="'$OWNER' is a $OWNER_TYPE account"
+else
+	OWNER_TYPE_DETAIL="could not determine whether '$OWNER' is a User or Organization account — gh api users/$OWNER failed or returned no recognized .type"
+fi
+
+# Returns 1 (and prints nothing) when the owner type is not known, rather than
+# guessing a shape: the org shape 422s on a personal account, and the personal shape
+# would silently leave an org grant at GitHub's bare-PUT default instead of the
+# permission the policy asked for. Callers treat that refusal the same way the
+# ambiguous-ruleset-name case above does — the bot-access STATE is still known and
+# reported as drift, only the single safe write command is not.
 bot_remedy_for() {
 	local repo="$1"
-	echo "gh api -X PUT repos/$OWNER/$repo/collaborators/$BOT_LOGIN --input - <<< '{\"permission\":\"push\"}'"
+	case "$OWNER_TYPE" in
+		Organization)
+			echo "gh api -X PUT repos/$OWNER/$repo/collaborators/$BOT_LOGIN --input - <<< '{\"permission\":\"push\"}'"
+			;;
+		User)
+			# No body: personal accounts have no permission tiers to choose between for
+			# this endpoint, and the documented default when the body is omitted is push.
+			echo "gh api -X PUT repos/$OWNER/$repo/collaborators/$BOT_LOGIN"
+			;;
+		*)
+			return 1
+			;;
+	esac
 }
 
 # ---
@@ -455,7 +491,13 @@ if [ -n "$REMEDY" ]; then
 		*)
 			bdetail=$(jq -r '.detail' <<<"$bot")
 			echo "# $bdetail"
-			bot_remedy_for "$REMEDY"
+			if ! bot_remedy_for "$REMEDY"; then
+				echo "# $OWNER_TYPE_DETAIL — no collaborator remedy printed." >&2
+				echo "# The write shape differs by owner type (org needs a permission body," >&2
+				echo "# a personal account rejects one) and guessing wrong either 422s or" >&2
+				echo "# silently grants the wrong permission." >&2
+				exit 6
+			fi
 			;;
 	esac
 	exit 0
@@ -699,7 +741,12 @@ for repo in "${TARGETS[@]}"; do
 	bstatus=$(jq -r '.status' <<<"$bot")
 	brem=""
 	if [ "$bstatus" != "ok" ] && [ "$bstatus" != "error" ]; then
-		brem=$(bot_remedy_for "$repo")
+		# A definite negative (none/insufficient) is still known even when the owner
+		# type is not: same as the ambiguous-ruleset-name case, the state stays
+		# "drift", the remedy field just becomes prose instead of a guessed command.
+		if ! brem=$(bot_remedy_for "$repo"); then
+			brem="# $OWNER_TYPE_DETAIL — no collaborator remedy printed (org repos need a permission body, personal accounts reject one)"
+		fi
 	fi
 	if [ "$bstatus" = "error" ]; then
 		api_failed=1
