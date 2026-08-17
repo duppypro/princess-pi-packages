@@ -7,9 +7,10 @@
 # Usage:
 #   install-workflow-tools           install/refresh all three sets
 #   install-workflow-tools --check   report drift, write nothing (doctor mode)
+#   install-workflow-tools --version print the resolved absolute path of this copy
 #
 # Exit codes:
-#   0  installed everything, or --check found this host in sync
+#   0  installed everything, or --check found this host in sync (or --version)
 #   1  --check found something missing, drifted, or not executable;
 #      or install could not complete because a managed file is gone from source
 #  64  bad usage
@@ -31,6 +32,18 @@
 # ~/git-projects/CLAUDE.md. Those are configuration and prose, which ADR 0001
 # leaves with dotfiles-doctor. Asserted by tests/installer-path-ownership.test.ts.
 set -euo pipefail
+
+# #178: resolved absolute path of the running copy, checked FIRST — before
+# REPO_DIR resolution below, deliberately. This is the bootstrap tool: the
+# thing that deploys every other script to ~/bin, and the one whose own
+# identity (repo checkout vs. last-installed ~/bin copy) is exactly what #178
+# needs an answer for. Making --version depend on finding the repo first would
+# defeat the point — it must answer even when REPO_DIR resolution would fail.
+# `readlink -f` resolves a real file OR a symlink to its actual on-disk
+# location. Not built, so no commit-hash/semver stamp — PATH only.
+case "${1:-}" in
+  --version) readlink -f "$0"; exit 0 ;;
+esac
 
 # REPO_DIR resolution has to survive two invocation shapes (#263):
 #   1. run from the repo — bin/install-workflow-tools, or the full repo path —

@@ -7,6 +7,7 @@
 #   herdr-reap                close stale tabs
 #   herdr-reap --dry-run      report what WOULD be closed, close nothing
 #   herdr-reap --json         one machine-readable document on stdout
+#   herdr-reap --version      print the resolved absolute path of this copy
 #
 # The rule, in full:
 #
@@ -171,7 +172,16 @@ while [ $# -gt 0 ]; do
 	--dry-run) DRY_RUN=1 ;;
 	-h | --help)
 		# Header IS the help text — keep the range covering Usage + the rule.
-		sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+		exit 0
+		;;
+	# #178: resolved absolute path of the running copy — install-workflow-tools
+	# deploys this script to ~/bin, so a bare `herdr-reap` from a feature
+	# worktree runs whatever was last installed there. `readlink -f` resolves a
+	# real file OR a symlink to its actual on-disk location. Not built, so no
+	# commit-hash/semver stamp — PATH only.
+	--version)
+		readlink -f "$0"
 		exit 0
 		;;
 	*)

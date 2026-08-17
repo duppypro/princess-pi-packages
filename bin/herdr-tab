@@ -5,6 +5,7 @@
 #
 #   . herdr-tab            defines herdr_available() and herdr_tab()
 #   herdr-tab <cwd> <label>  opens one best-effort bookmark tab, always exit 0
+#   herdr-tab --version      prints the resolved absolute path of this copy
 #
 # --- why this is a separate file, not three inlined copies -------------------
 # `wt-new` and `herdr-reap` both need the same guard, and the guard is subtle
@@ -90,7 +91,17 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 	case "${1:-}" in
 	-h | --help)
 		# Header IS the help text.
-		sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+		exit 0
+		;;
+	# #178: resolved absolute path of the running copy. Only meaningful in CLI
+	# mode (this branch) — a sourced `. herdr-tab` never reaches here at all, so
+	# there is no --version for the library half; the guard predicate lives in
+	# herdr_available()/herdr_tab(), unaffected by this case. `readlink -f`
+	# resolves a real file OR a symlink to its actual on-disk location. Not
+	# built, so no commit-hash/semver stamp — PATH only.
+	--version)
+		readlink -f "$0"
 		exit 0
 		;;
 	esac
