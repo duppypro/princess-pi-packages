@@ -966,6 +966,238 @@
       "branch": "main",
       "verdict": "allow",
       "why": "#225 gap 3 (documented, NOT fixed): the hook only inspects the Bash tool's literal command string. `git-checkpoint`'s body (git add -A; git commit; git push) is invisible to it — the guard never even resolves the branch, since the first token isn't 'git' or 'gh'. This is a load-bearing bypass, not a bug: pr-open and git-checkpoint depend on being opaque script names to run at all. A future 'fix' that tries to peek into script files would break the workflow this fixture exists to protect."
+    },
+    {
+      "id": "block-commit-on-main",
+      "command": "git commit -m 'x'",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#301: main advances only through PRs; a raw commit on main is the residual after git-checkpoint's own guard (#225)"
+    },
+    {
+      "id": "block-commit-amend-on-master",
+      "command": "git commit --amend --no-edit",
+      "branch": "master",
+      "verdict": "block",
+      "why": "#301: master is main; amend rewrites a main commit"
+    },
+    {
+      "id": "allow-commit-on-feature",
+      "command": "git commit -m 'x'",
+      "branch": "301-feat",
+      "verdict": "allow",
+      "why": "#301: the rule is branch-scoped, feature branches commit freely"
+    },
+    {
+      "id": "allow-commit-non-repo",
+      "command": "git commit -m 'x'",
+      "branch": "",
+      "verdict": "allow",
+      "why": "#301: no repo -> no branch -> nothing to protect (git itself will refuse)"
+    },
+    {
+      "id": "block-c-path-commit-on-main",
+      "command": "git -C /repo commit -m x",
+      "cwd_branch": "feat",
+      "c_path_branch": "main",
+      "verdict": "block",
+      "why": "#301: -C selects the affected repo (#74 finding 17) - commit into a main repo from a feature cwd is still a commit on main"
+    },
+    {
+      "id": "allow-c-path-commit-on-feature-from-main-cwd",
+      "command": "git -C /repo commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "verdict": "allow",
+      "why": "#301: cwd on main is irrelevant when -C points at a feature repo"
+    },
+    {
+      "id": "block-merge-on-main",
+      "command": "git merge 301-feat",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#301: 'never merge locally' - a local merge into main is a PR bypass"
+    },
+    {
+      "id": "allow-merge-ff-only-on-main",
+      "command": "git merge --ff-only origin/main",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301 (Duppy): fast-forwarding local main to origin creates no new commit; explicitly allowed"
+    },
+    {
+      "id": "allow-merge-abort-on-main",
+      "command": "git merge --abort",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301: --abort undoes; blocking it would strand a repo mid-merge"
+    },
+    {
+      "id": "block-rebase-on-main",
+      "command": "git rebase 301-feat",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#301: rebase moves main's tip without a PR"
+    },
+    {
+      "id": "allow-rebase-abort-on-main",
+      "command": "git rebase --abort",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301: --abort undoes"
+    },
+    {
+      "id": "block-cherry-pick-on-main",
+      "command": "git cherry-pick abc123",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#301: cherry-pick creates a commit on main"
+    },
+    {
+      "id": "block-am-on-main",
+      "command": "git am < patch.mbox",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#301: am creates commits on main"
+    },
+    {
+      "id": "block-pull-on-main",
+      "command": "git pull",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#301: plain pull = fetch + merge, which can create a merge commit on a diverged main; agents use --ff-only"
+    },
+    {
+      "id": "allow-pull-ff-only-on-main",
+      "command": "git pull --ff-only",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301 (Duppy): explicitly allowed - keeps local main current with no new commit"
+    },
+    {
+      "id": "allow-pull-on-feature",
+      "command": "git pull",
+      "branch": "301-feat",
+      "verdict": "allow",
+      "why": "#301: branch-scoped"
+    },
+    {
+      "id": "allow-checkout-b-on-main",
+      "command": "git checkout -b 301-slug",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301 deadlock condition: the escape from main must always work"
+    },
+    {
+      "id": "allow-switch-c-on-main",
+      "command": "git switch -c 301-slug",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301 deadlock condition: switch -c is the other spelling"
+    },
+    {
+      "id": "allow-checkout-b-then-commit-on-main",
+      "command": "git checkout -b 301-slug && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301 compound hard case: the branch is resolved before the line runs, so an earlier checkout -b in the same line must lift the gate for the rest of it"
+    },
+    {
+      "id": "allow-switch-c-then-commit-on-main",
+      "command": "git switch -c 301-slug; git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301: same lift for switch -c, ';' separator"
+    },
+    {
+      "id": "block-checkout-main-then-commit-on-feature",
+      "command": "git checkout main && git commit -m x",
+      "branch": "301-feat",
+      "verdict": "block",
+      "why": "#301: the reverse - a plain checkout TO main marks the rest of the line as on main even though the cwd is on a feature branch now"
+    },
+    {
+      "id": "block-checkout-existing-then-commit-on-main",
+      "command": "git checkout 301-feat && git commit -m x",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#301 fail-safe: a positional to checkout may be a path (file restore), so a plain checkout <name> never lifts the gate - run it as its own command"
+    },
+    {
+      "id": "block-checkout-b-in-c-repo-then-commit-in-cwd",
+      "command": "git -C /repo checkout -b 301-slug && git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "main",
+      "verdict": "block",
+      "why": "#301: the lift is keyed to the repo that switched; the -C repo left main, the cwd repo did not"
+    },
+    {
+      "id": "allow-heredoc-mentions-commit-on-main",
+      "command": "cat <<'EOF' > notes.md\ngit commit -m x on main\nEOF",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301: heredoc bodies are data (#74 class 3) - no git runs"
+    },
+    {
+      "id": "allow-echo-mentions-commit-on-main",
+      "command": "echo 'git commit -m x'",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#301: quoted text is not a command"
+    },
+    {
+      "id": "allow-cd-feature-worktree-then-commit-from-main-cwd",
+      "command": "cd rel-repo && git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "#301: cd moves the effective cwd for the rest of the line - the commit lands in the feature repo, not the main-clone cwd (the 'cd wt &&' habit measured at 10% of bash calls)"
+    },
+    {
+      "id": "block-cd-main-repo-then-commit-from-feature-cwd",
+      "command": "cd rel-repo && git commit -m x",
+      "cwd_branch": "feat",
+      "c_path_branch": "main",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "#301: cd into a main repo, then commit - cd tracking cuts both ways"
+    },
+    {
+      "id": "allow-paren-group-cd-then-commit",
+      "command": "(cd rel-repo && git commit -m x)",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "#301: '( ... )' groups split like ';' so the leading '(' does not hide the cd and the trailing ')' does not hide the subcommand"
+    },
+    {
+      "id": "block-cd-then-cd-dash-then-commit-on-main",
+      "command": "cd rel-repo && cd - && git commit -m x",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "block",
+      "why": "#301 fail-safe: 'cd -' resets the effective cwd to the tool-call cwd (main) rather than guessing"
+    },
+    {
+      "id": "allow-cd-then-checkout-b-then-commit",
+      "command": "cd rel-repo && git checkout -b 301-slug && git commit -m x",
+      "cwd_branch": "feat",
+      "c_path_branch": "main",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "#301: cd into a main repo, escape with checkout -b, commit - both pieces of line-state compose"
+    },
+    {
+      "id": "allow-cd-then-push-feature-from-main-cwd",
+      "command": "cd rel-repo && git push",
+      "cwd_branch": "main",
+      "c_path_branch": "feat",
+      "c_path_rel": "rel-repo",
+      "verdict": "allow",
+      "why": "#301: cd tracking also fixes the pre-existing bare-push false block from a main-clone cwd"
     }
   ]
 }
