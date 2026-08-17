@@ -83,6 +83,12 @@ interface SandboxOpts {
 	staleRefLock?: boolean;
 	/** shim `git` so ONLY ls-remote fails — fetch still succeeds */
 	failLsRemote?: boolean;
+	/** simulate GitHub's "Update branch" button: origin/<branch> gets an extra
+	 *  merge-from-primary commit BEFORE the squash-merge, moving the PR's
+	 *  headRefOid ahead of what this clone's worktree/mainClone has — the
+	 *  routine BEHIND case (#317). Returns the updated tip via headRefOid
+	 *  default unless `headRefOid` overrides it. */
+	updateBranchBeforeMerge?: boolean;
 }
 
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
@@ -108,6 +114,28 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	git(worktree, ["commit", "-q", "-m", "feature work"]);
 	git(worktree, ["push", "-q", "-u", "origin", branch]);
 	const branchTip = git(worktree, ["rev-parse", "HEAD"]);
+
+	// "Update branch" happens server-side, from a clone that never touches our
+	// worktree/mainClone — a merge commit lands on origin/<branch> only, ahead
+	// of branchTip, which stays the local tip until someone pulls.
+	let remoteHeadOid = branchTip;
+	if (opts.updateBranchBeforeMerge) {
+		// Give primary a commit the feature branch doesn't have yet — otherwise
+		// "merge origin/primary into branch" is a no-op fast-forward that mints
+		// no new commit, and the simulated Update-branch tip equals branchTip.
+		git(mainClone, ["fetch", "-q", "origin", primary]);
+		fs.writeFileSync(path.join(mainClone, "PRIMARY_PROGRESS.md"), "primary moved on\n");
+		git(mainClone, ["add", "-A"]);
+		git(mainClone, ["commit", "-q", "-m", "unrelated primary progress"]);
+		git(mainClone, ["push", "-q", "origin", primary]);
+
+		const updater = path.join(root, "update-branch-clone");
+		git(root, ["clone", "-q", "-b", branch, remote, updater]);
+		git(updater, ["fetch", "-q", "origin", primary]);
+		git(updater, ["merge", "-q", "--no-ff", "-m", `Merge branch '${primary}' into ${branch}`, `origin/${primary}`]);
+		git(updater, ["push", "-q", "origin", branch]);
+		remoteHeadOid = git(updater, ["rev-parse", "HEAD"]);
+	}
 
 	fs.writeFileSync(path.join(mainClone, "feature.txt"), "work\n");
 	git(mainClone, ["add", "-A"]);
@@ -153,7 +181,7 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 				{
 					number: 1,
 					mergeCommit: { oid: mergeSha },
-					headRefOid: opts.headRefOid ?? branchTip,
+					headRefOid: opts.headRefOid ?? remoteHeadOid,
 					headRepositoryOwner: { login: "duppypro" },
 				},
 			])
@@ -461,6 +489,44 @@ console.log("\nbranch tip ahead of the merged PR (reused name / later commits):"
 	check(localBranchExists(sb), "tip ahead of headRefOid → local branch survives", out);
 	check(/unmerged|not.*merged|ahead|does not match/i.test(out),
 		"tip ahead of headRefOid → says why", out);
+}
+
+// --- #317: local BEHIND the merged PR head is not unmerged work ---
+//
+// GitHub's "Update branch" button (or PUT .../update-branch) can move the
+// PR's headRefOid forward with no local involvement — routine, not a defect.
+// LOCAL_TIP is an ancestor of PR_HEAD_OID here, the opposite relationship
+// from the "tip ahead" case above. Must still refuse (nothing was verified
+// merged yet), but must name `git pull --ff-only`, never "open a new PR".
+console.log("\nlocal branch behind the merged PR head (routine Update-branch):");
+{
+	const sb = makeSandbox("42-feature", { updateBranchBeforeMerge: true });
+	const { code, out } = runCleanup(sb);
+	check(code === 6, "behind → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "behind → worktree survives", out);
+	check(localBranchExists(sb), "behind → local branch survives", out);
+	check(remoteBranchExists(sb), "behind → remote branch survives", out);
+	check(/git pull --ff-only/.test(out), "behind → names git pull --ff-only", out);
+	check(!/Open a new PR for the extra commits/i.test(out), "behind → does not suggest opening a new PR", out);
+}
+
+// --- #317: local and PR head have DIVERGED — neither is an ancestor of the
+// other. Built by combining an Update-branch move on the remote side with an
+// independent local-only commit off the original branchTip: neither history
+// contains the other, so both --is-ancestor checks must answer "no". ---
+console.log("\nlocal branch and PR head have diverged:");
+{
+	const sb = makeSandbox("42-feature", { updateBranchBeforeMerge: true });
+	fs.writeFileSync(path.join(sb.worktree, "diverged.txt"), "local-only work, never pushed\n");
+	git(sb.worktree, ["add", "-A"]);
+	git(sb.worktree, ["commit", "-q", "-m", "local-only divergent work"]);
+	const { code, out } = runCleanup(sb);
+	check(code === 6, "diverged → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
+	check(fs.existsSync(sb.worktree), "diverged → worktree survives", out);
+	check(localBranchExists(sb), "diverged → local branch survives", out);
+	check(remoteBranchExists(sb), "diverged → remote branch survives", out);
+	check(/diverged/i.test(out), "diverged → says diverged", out);
+	check(!/git pull --ff-only/.test(out), "diverged → does not claim a plain fast-forward fixes it", out);
 }
 
 // --- swallowed push --delete failure reported as success ---

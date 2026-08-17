@@ -45,7 +45,8 @@
 #      outage, an incomplete API response, or a merge-base check that could
 #      not even run)
 #   6  safety gate refused — state WAS determined, and it says no (unmerged
-#      work, remote moved since the merge, a dirty or EnterWorktree-locked
+#      work, a branch behind or diverged from the merged PR head (#317),
+#      remote moved since the merge, a dirty or EnterWorktree-locked
 #      worktree refusing removal, a rejected push, a ref that will not delete)
 # The load-bearing distinction is 5 vs 6: "I could not check" vs "I checked
 # and it says no." Collapsing both into a bare `exit 1` is the same fail-open
@@ -62,7 +63,8 @@ usage: pr-cleanup <branch>
 
 After the PR is MERGED: remove the branch's worktree, delete the remote and
 local branch. Run from the main clone. Refuses if the branch tip is not what
-the PR merged (unmerged work), or if the PR was rejected/never opened.
+the PR merged — behind (names `git pull --ff-only`), ahead (unmerged work),
+or diverged — or if the PR was rejected/never opened.
 
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
@@ -256,10 +258,47 @@ if [ -n "$PR_INFO" ] && [ "$PR_INFO" != "null" ]; then
     exit 5
   fi
   if [ "$LOCAL_TIP" != "$PR_HEAD_OID" ]; then
-    echo "   ❌ ERROR: branch tip does not match what PR #$PR_NUM merged — unmerged work present." >&2
+    # LOCAL_TIP != PR_HEAD_OID collapses three different relationships (#317):
+    # behind (GitHub's "Update branch" moved PR_HEAD_OID forward with no local
+    # involvement — routine, not unmerged work), ahead (genuine unmerged
+    # commits — the original diagnosis), and diverged (neither is an
+    # ancestor of the other). `--is-ancestor` answers "is LOCAL_TIP behind
+    # PR_HEAD_OID" first, using the same 128-vs-1 care as the merge-base gate
+    # above: exit 128 means "could not check" and must stay exit 5, not be
+    # read as "no" (which would misreport behind as ahead/diverged).
+    behind_status=0
+    git -C "$MAIN_CLONE" merge-base --is-ancestor "$LOCAL_TIP" "$PR_HEAD_OID" 2>/dev/null || behind_status=$?
+    if [ "$behind_status" -eq 128 ]; then
+      echo "   ❌ ERROR: could not compare local tip to PR #$PR_NUM's headRefOid (merge-base failed)." >&2
+      exit 5
+    fi
+    if [ "$behind_status" -eq 0 ]; then
+      echo "   ❌ ERROR: local branch is behind PR #$PR_NUM's merged head — not unmerged work." >&2
+      echo "      local tip:      $LOCAL_TIP" >&2
+      echo "      PR headRefOid:  $PR_HEAD_OID" >&2
+      echo "   Run 'git pull --ff-only' to catch up, then re-run pr-cleanup." >&2
+      exit 6
+    fi
+    # Not behind. Check the other direction: LOCAL_TIP a descendant of
+    # PR_HEAD_OID is genuine unmerged work (the original diagnosis). Neither
+    # being an ancestor of the other is a true divergence — same 128-vs-1 care.
+    ahead_status=0
+    git -C "$MAIN_CLONE" merge-base --is-ancestor "$PR_HEAD_OID" "$LOCAL_TIP" 2>/dev/null || ahead_status=$?
+    if [ "$ahead_status" -eq 128 ]; then
+      echo "   ❌ ERROR: could not compare PR #$PR_NUM's headRefOid to the local tip (merge-base failed)." >&2
+      exit 5
+    fi
+    if [ "$ahead_status" -eq 0 ]; then
+      echo "   ❌ ERROR: branch tip does not match what PR #$PR_NUM merged — unmerged work present." >&2
+      echo "      local tip:      $LOCAL_TIP" >&2
+      echo "      PR headRefOid:  $PR_HEAD_OID" >&2
+      echo "   Refusing to delete. Open a new PR for the extra commits, or reset the branch." >&2
+      exit 6
+    fi
+    echo "   ❌ ERROR: local branch and PR #$PR_NUM's headRefOid have diverged." >&2
     echo "      local tip:      $LOCAL_TIP" >&2
     echo "      PR headRefOid:  $PR_HEAD_OID" >&2
-    echo "   Refusing to delete. Open a new PR for the extra commits, or reset the branch." >&2
+    echo "   Refusing to delete. Reconcile the branches (e.g. rebase or merge) before cleaning up." >&2
     exit 6
   fi
   # The local tip matching is not enough. Another clone can push to
