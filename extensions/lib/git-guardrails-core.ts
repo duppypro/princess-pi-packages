@@ -160,6 +160,7 @@ function applyCd(T: string[], st: LineState): boolean {
   const w = T[0]?.slice(T[0].lastIndexOf("/") + 1);
   if (w !== "cd" && w !== "pushd" && w !== "popd") return false;
   const home = process.env.HOME || "";
+  if (w === "pushd" && T.includes("-n")) return true; // rotates the stack, no directory change (PR #305 round 3)
   const rawArg = T.slice(1).find((t) => !t.startsWith("-") || t === "-");
   if (w === "popd" || rawArg === "-" || (w === "pushd" && rawArg === undefined)) {
     st.cwd = st.origCwd; // previous directory is unknowable here — never guess

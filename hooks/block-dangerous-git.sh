@@ -197,6 +197,8 @@ apply_cd() {
   local w="${TOKENS[0]##*/}" arg="" t
   case "$w" in cd|pushd|popd) ;; *) return 1 ;; esac
   for t in "${TOKENS[@]:1}"; do
+    # `pushd -n <dir>` rotates the stack without changing directory (PR #305 round 3)
+    if [ "$w" = "pushd" ] && [ "$t" = "-n" ]; then return 0; fi
     if [ "$t" = "-" ] || [ "${t#-}" = "$t" ]; then arg="$t"; break; fi
   done
   local target
