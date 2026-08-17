@@ -53,7 +53,9 @@ the failure this runner exists to prevent.
 - **Either style works.** Plain assertion scripts and `describe`/`expect` suites both run —
   the driver invokes `bun test <file>`, which handles both. `git-guardrails-parity` imports
   `bun:test` and can only run this way.
-- **`.test.sh` suites are not driven.** They need sudo or a live nginx; run them by hand.
+- **`.test.sh` suites are not driven.** They need sudo, strace, or host state; run them by hand.
+  (`serve-no-sudo-nginx.test.sh` still runs without nginx installed — its `/etc/nginx` hash step
+  degrades to a `no-etc-nginx` sentinel; the VPS has had no nginx since 2026-08-17, btw#51.)
   `tests/run.ts` prints their names at the end of every run so the gap stays visible.
 - **A check that cannot run must say so — `##SKIP## <reason>` (#256).** Twelve suites read
   `~/.claude`, `~/git-projects/dotfiles-doctor`, or the status-line logs. On a machine

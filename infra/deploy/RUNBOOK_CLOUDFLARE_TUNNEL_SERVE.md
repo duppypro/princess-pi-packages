@@ -86,8 +86,8 @@ remains available as an optional Access IdP if ever wanted, but is not configure
 ---
 
 ## Phase 0 — Move princess-pi.dev DNS to Cloudflare (HARD prerequisite)
-Same safe pattern as the email-MTA runbook's Phase 2. princess-pi.dev currently serves the
-live site (nginx on the VPS), so the goal is **change who answers DNS without changing any
+Same safe pattern as the email-MTA runbook's Phase 2. princess-pi.dev at that time served the
+live site (nginx on the VPS — gone since 2026-08-17), so the goal was **change who answers DNS without changing any
 answer**.
 
 1. Cloudflare dashboard → **Add a site** → `princess-pi.dev` → Free plan → let it auto-scan.
@@ -160,7 +160,8 @@ cloudflared tunnel info serve-preview     # expect a healthy/registered connecti
 ```
 **STOP:** confirm `cloudflared tunnel info serve-preview` shows an active connection (4
 edge connections is normal) before continuing. No inbound port was opened — verify with
-`sudo ufw status` (still only 22/80/443).
+`sudo ufw status` (at the time: 22/80/443; since the 2026-08-17 teardown, 22 + mosh 60000:61000/udp —
+see "Host state after teardown" below).
 
 ---
 
@@ -212,6 +213,25 @@ This part is dashboard work — Claude Cowork can drive it, or do it manually.
      Revocable + audited — the sanctioned successor to the shared URL token.
 
 ---
+
+## Host state after teardown (2026-08-17, btw#51) — read this before the Phase 6 narrative
+
+Phases 6A/6B below are kept as history. What is true on the VPS **now**:
+
+- **No nginx, no certbot, no LE cert.** `nginx`, `nginx-common`, `certbot`, `python3-certbot*`
+  purged; `/etc/nginx`, `/etc/letsencrypt`, `/var/log/nginx` gone; `certbot.timer` gone. The
+  `000-honeypot` catch-all (ppp#38) and the `princess-pi.dev` 404 vhost went with them. Archive:
+  `~/archive/nginx-teardown-2026-08-17T09-15-14Z.tgz` on the VPS.
+- **`oauth2-proxy-live-serve.service` unit removed** — the 6A APPLY_RUNBOOK `rm` step, finally applied.
+- **UFW: 22/tcp + 60000:61000/udp (mosh), v4+v6.** 80/443 closed (both the `Nginx Full` profile and
+  the explicit rules). Only `:22` listens on a non-loopback address.
+- **DNS:** `princess-pi.dev` root and `www` were DNS-only A records at the VPS IP; both are now
+  covered by proxied CNAMEs on tunnel `serve-preview` (`@` explicit, `www` via the `*` wildcard).
+  Un-ingressed hostnames get cloudflared's 404 — nothing served, and "on `princess-pi.dev` ⇒
+  through Cloudflare" now holds at the root too. The `serve` API token has no DNS *delete*
+  permission (403), so that record change was a dashboard step, not a `serve` capability.
+- **Perimeter = Cloudflare Tunnel + `serve`, nothing else.** If a local reverse proxy is ever needed
+  again, btw `research/api-perimeter-and-zone-split.md` names the trigger conditions and says Caddy.
 
 ## Phase 6 — Retire the nginx/oauth2-proxy gate + build per-slug automation
 > **Spec status: 6A APPROVED (2e2d626, 2026-07-07) + code reviewed (PR #108) · 6B CODE + SPEC
