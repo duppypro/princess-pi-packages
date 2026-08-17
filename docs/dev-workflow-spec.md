@@ -314,7 +314,12 @@ them would pin worktrees open forever.
 **Still needs an explicit yes:** a branch whose PR was *rejected* or closed unmerged, or
 one that never had a PR at all. That is where real work loss lives, and `pr-cleanup`
 already fails closed on both — with no merged PR it refuses unless the tip is already an
-ancestor of `origin/main`.
+ancestor of `origin/main`. That escape hatch used to apply only to a branch absent from
+origin; `wt-new` pushing every branch at creation time (#250) meant an abandoned branch
+was *always* present on origin and so was refused unconditionally, forever. #266 taught
+the present-on-origin case the same ancestry proof — checking **both** the local tip and,
+since the two can diverge, the remote tip — so an abandoned `wt-new` branch with no work
+of its own is self-serviceable too.
 
 Sequence:
 
@@ -914,7 +919,7 @@ refuse, and tell you why, when:
 | The worktree has uncommitted or untracked changes | `git worktree remove` refusing IS the safeguard. There is no `--force` retry — a merged PR says nothing about local-only edits. Commit, stash, or force it by hand once you are sure. |
 | Your branch tip isn't the commit the PR merged | Proves a PR with this branch *name* merged, but not that *these commits* did. Catches a reused branch name, and commits pushed after the merge. Three distinct relationships get distinguished with `git merge-base --is-ancestor` (#317): **behind** — GitHub's "Update branch" moved the PR's `headRefOid` forward with no local involvement (routine, not unmerged work) — names `git pull --ff-only`; **ahead** — genuine unmerged commits, the original diagnosis; **diverged** — neither is an ancestor of the other. All three still refuse (exit 6); only the prose differs. A `merge-base` that can't even run (exit 128) is exit 5, not 6 — same care as the squash-commit-vs-`origin/main` check below. |
 | `git fetch`, `git ls-remote` or `gh pr list` fails | An unreachable or unauthenticated remote is not proof of anything. |
-| There is no merged PR, the branch is absent from origin, **and** its tip isn't in the primary branch | Absence from origin is not authorization. That is exactly the state of a branch never pushed, or one whose remote ref was deleted *without* merging — its commits exist nowhere else. |
+| There is no merged PR, **and** its local tip (plus, if the branch is on origin, its remote tip too) isn't already an ancestor of the primary branch | No PR to appeal to, so the only proof left is that neither tip carries anything unique. Covers a branch never pushed, or whose remote ref was deleted *without* merging (absent from origin), **and** — since #266 — a branch `wt-new` pushed at creation and that was then abandoned with no commits of its own (present on origin). Both tips must check out clean for either shape to clean up; either one carrying commits not on the primary branch is a refusal, because step 4 deletes both refs. |
 | `origin/<branch>` has moved since the PR merged | Someone pushed after the merge. Your local tip still matches the PR, so nothing local hints at it — those commits live only on the remote. The delete also carries a `--force-with-lease` pinned to the merged sha, so a commit landing mid-run is rejected rather than swept up. |
 | `git push --delete` fails and the ref is still on origin | Includes protected-ref rejections. It exits non-zero instead of printing `✅ Cleanup complete`. |
 | `git branch -D` fails while the branch still exists | A ref lock or a permissions problem — reported as a failure, never as "already gone". |

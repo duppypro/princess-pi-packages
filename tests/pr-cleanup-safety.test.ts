@@ -235,13 +235,19 @@ function runCleanup(
 	sb: Sandbox,
 	cwd: string = sb.mainClone,
 	branchArg: string | null = sb.branch,
+	extraEnv: Record<string, string> = {},
 ): { code: number; out: string } {
 	const args = branchArg === null ? [] : [branchArg];
 	try {
 		const out = execFileSync("bash", [PR_CLEANUP, ...args], {
 			cwd,
 			encoding: "utf8",
-			env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}` },
+			env: {
+				...process.env,
+				...GIT_ENV,
+				PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}`,
+				...extraEnv,
+			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		return { code: 0, out };
@@ -692,6 +698,53 @@ console.log("\nno merged PR, branch still on origin:");
 	check(code === 6, "no merged PR → safety-gate-refused code (6)", `got ${code}, output:\n${out}`);
 	check(fs.existsSync(sb.worktree), "no merged PR → worktree survives", out);
 	check(localBranchExists(sb), "no merged PR → local branch survives", out);
+	check(remoteBranchExists(sb), "no merged PR → remote branch survives (the guard #266 must not regress)", out);
+}
+
+// --- #266: wt-new's eager push means an abandoned branch that never got a PR
+// is ALWAYS "present on origin" — the old code refused this unconditionally,
+// with no ancestry check at all. A branch whose tip (local AND remote) is
+// already contained in origin/$PRIMARY_REF carries no unique work and must be
+// self-serviceable, exactly like the already-absent-from-origin case below. ---
+console.log("\nabandoned branch (wt-new's eager push): exists on origin, zero own commits (#266):");
+{
+	const sb = makeSandbox("42-feature", { prMerged: false });
+	// Simulate what wt-new actually produces: a branch pushed at creation time
+	// with nothing of its own since — reset BOTH the local tip and the remote
+	// ref back to origin/main, discarding the sandbox's default "feature work"
+	// commit so the tip is provably empty on both sides.
+	git(sb.worktree, ["fetch", "-q", "origin"]);
+	git(sb.worktree, ["reset", "-q", "--hard", "origin/main"]);
+	git(sb.worktree, ["push", "-q", "-f", "origin", sb.branch]);
+	const { code, out } = runCleanup(sb);
+	check(code === 0, "abandoned branch, exists on origin, zero own commits → exits 0", `got ${code}, output:\n${out}`);
+	check(!fs.existsSync(sb.worktree), "abandoned branch → worktree removed", out);
+	check(!localBranchExists(sb), "abandoned branch → local branch deleted", out);
+	check(!remoteBranchExists(sb), "abandoned branch → remote ref is REALLY gone, not just refused-then-ignored", out);
+}
+
+// --- Step 4 picks its --force-with-lease shape by testing `${PR_HEAD_OID:-}`
+// then `${REMOTE_TIP:-}`, but neither is assigned on every path that reaches
+// it: PR_HEAD_OID only inside the merged-PR branch, REMOTE_TIP only when
+// origin has the branch. Before the fix, a value INHERITED from the caller's
+// environment therefore decided the lease on the other paths — pinning a
+// delete to an OID this run never verified, or taking the pinned-tip arm where
+// must-not-exist was correct (macroscopeapp on PR #331). Poison both names and
+// require the outcome to be identical to the clean-environment run above. ---
+console.log("\nlease shape ignores inherited PR_HEAD_OID / REMOTE_TIP from the environment (#331):");
+{
+	const sb = makeSandbox("42-feature", { prMerged: false });
+	git(sb.worktree, ["fetch", "-q", "origin"]);
+	git(sb.worktree, ["reset", "-q", "--hard", "origin/main"]);
+	git(sb.worktree, ["push", "-q", "-f", "origin", sb.branch]);
+	const poison = {
+		PR_HEAD_OID: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		REMOTE_TIP: "cafebabecafebabecafebabecafebabecafebabe",
+	};
+	const { code, out } = runCleanup(sb, sb.mainClone, sb.branch, poison);
+	check(code === 0, "poisoned env → still exits 0 (lease chosen from this run's own checks)", `got ${code}, output:\n${out}`);
+	check(!remoteBranchExists(sb), "poisoned env → remote ref still really deleted", out);
+	check(!localBranchExists(sb), "poisoned env → local branch still deleted", out);
 }
 
 // ---
