@@ -147,6 +147,15 @@ case "$1 $2" in
     ${failGhClose ? 'echo "gh: permission denied closing PR" >&2; exit 1' : ""}
     exit 0 ;;
   "pr view")
+    # #349: pr-merge now also asks the server whether it will accept the merge.
+    # That is a different --json request than headRefOid and must NOT consume a
+    # headoid line, or a mergeability query would look like a head that moved.
+    case "$*" in
+      *mergeable*)
+        out='{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}'
+        if [ -n "$jqexpr" ]; then printf '%s' "$out" | jq -r "$jqexpr"; else printf '%s\\n' "$out"; fi
+        exit 0 ;;
+    esac
     n=$(cat ${JSON.stringify(headOidCounter)} 2>/dev/null || echo 0)
     n=$((n + 1))
     printf '%s' "$n" > ${JSON.stringify(headOidCounter)}
@@ -171,8 +180,24 @@ exit 0
 	// was written for, while making a live network call on every run.
 	const threadsLog = path.join(dir, "threads.log");
 	fs.writeFileSync(threadsLog, "");
+	// #349: pr-merge reads pr-threads --json to tell "unresolved threads" apart
+	// from "stale review coverage" — one exit code covers both. The document
+	// mirrors the real `pr-threads/list@1` shape and must follow this suite's
+	// OWN threadsStatus fixture, not report clean unconditionally: exit 1 means
+	// unresolved here, and exit 5 means pr-threads fell over before printing
+	// anything, which is exactly the distinction pr-merge reads.
+	const threadsDoc =
+		threadsStatus === 1
+			? '{"schema":"pr-threads/list@1","unresolvedCount":2,"head":"deadbee","reviewedHead":null,"latestReviewCommit":"0ldc0de","threads":[]}'
+			: '{"schema":"pr-threads/list@1","unresolvedCount":0,"head":"deadbee","reviewedHead":"deadbee","latestReviewCommit":"deadbee","threads":[]}';
 	const threads = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> ${JSON.stringify(threadsLog)}
+for a in "$@"; do
+  if [ "$a" = "--json" ]; then
+    ${threadsStatus === 0 || threadsStatus === 1 ? `printf '%s\\n' ${JSON.stringify(threadsDoc)}` : 'printf "%s\\n" "pr-threads: could not determine review state" >&2'}
+    exit ${threadsStatus}
+  fi
+done
 printf '%s\\n' ${JSON.stringify(threadsOutput)}
 exit ${threadsStatus}
 `;
@@ -196,7 +221,14 @@ function run(
 		out = execFileSync("bash", [script, ...args], {
 			cwd: dir,
 			encoding: "utf8",
-			env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+			// PR_MERGE_RETRY_SLEEP=0 (#349): the mergeability re-query backs off by
+			// seconds in real use. Nothing here exercises the retry, so paying the
+			// wall-clock for it only makes the suite slow.
+			env: {
+				...process.env,
+				PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+				PR_MERGE_RETRY_SLEEP: "0",
+			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 	} catch (err: any) {
@@ -312,7 +344,14 @@ console.log("\npr-merge — the pr-threads gate (#258):");
 {
 	const { threadsArgv } = run(PR_MERGE, "main", [OURS(42, "42-some-feature")], ["42-some-feature"]);
 	check(threadsArgv.length === 1, "pr-merge calls pr-threads exactly once", threadsArgv.join("\n"));
-	check(threadsArgv[0]?.trim() === "42", "pr-merge passes the resolved PR number to pr-threads", threadsArgv.join("\n"));
+	// `--json` since #349: the human-readable exit code cannot separate
+	// "unresolved threads" from "stale review coverage", and only the first
+	// blocks. The PR NUMBER is what this case is really pinning.
+	check(
+		threadsArgv[0]?.trim() === "42 --json",
+		"pr-merge passes the resolved PR number to pr-threads",
+		threadsArgv.join("\n"),
+	);
 }
 
 // 6d. pr-threads exit 1 = "checked, and found a problem". Refuse with 6, and
@@ -324,7 +363,14 @@ console.log("\npr-merge — the pr-threads gate (#258):");
 	});
 	check(code === 6, "unresolved threads → exit 6 (safety gate refused)", `got ${code}, out:\n${out}`);
 	check(actedOn(argv, "merge") === undefined, "unresolved threads → merges nothing", argv.join("\n"));
-	check(/not clear to merge/i.test(out), "unresolved threads → says the PR is not clear to merge", out);
+	// Wording changed with #349: the refusal now names the condition it actually
+	// found (unresolved conversations) instead of the generic "not clear to merge",
+	// which used to cover a stale review too.
+	check(
+		/unresolved review conversation/i.test(out),
+		"unresolved threads → names unresolved conversations as the reason",
+		out,
+	);
 	check(out.includes("2 unresolved conversations"), "unresolved threads → relays pr-threads' own output", out);
 }
 
@@ -341,7 +387,11 @@ console.log("\npr-merge — the pr-threads gate (#258):");
 	check(code === 5, "pr-threads itself fails → exit 5 (state undetermined), not 6", `got ${code}, out:\n${out}`);
 	check(actedOn(argv, "merge") === undefined, "pr-threads itself fails → merges nothing", argv.join("\n"));
 	check(/could not verify/i.test(out), "pr-threads itself fails → says it could not verify, not 'unresolved'", out);
-	check(!/not clear to merge/i.test(out), "pr-threads itself fails → does NOT use the found-a-problem framing", out);
+	check(
+		!/unresolved review conversation/i.test(out),
+		"pr-threads itself fails → does NOT use the found-a-problem framing",
+		out,
+	);
 }
 
 // 6f. TOCTOU guard: the head moves between the gate and the merge call. The

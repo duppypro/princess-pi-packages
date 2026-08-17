@@ -24,7 +24,7 @@
 //
 // Run with: bun run test pr-merge-gate
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -79,8 +79,37 @@ interface OtherPr {
 }
 
 interface SandboxOpts {
-	/** stub `pr-threads`: "clean" (exit 0), "unresolved" (exit 1), "broken" (exit 5), or "missing" (no such command on PATH) */
-	threadState?: "clean" | "unresolved" | "broken" | "missing";
+	/**
+	 * stub `pr-threads`:
+	 *   "clean"        exit 0, 0 unresolved, head covered
+	 *   "unresolved"   exit 1, 2 unresolved
+	 *   "stale-review" exit 1, 0 unresolved but reviewedHead != head — #349's
+	 *                  reported bug. pr-threads collapses this into the SAME
+	 *                  exit 1 as "unresolved", which is why pr-merge has to
+	 *                  read --json to tell them apart.
+	 *   "indeterminate" exit 5 but a VALID document — pr-threads emits the
+	 *                  json BEFORE exiting, so coverage-indeterminate is
+	 *                  distinguishable from a gh failure by whether a
+	 *                  document arrived at all.
+	 *   "broken"       exit 5, no document (gh/API failure)
+	 *   "missing"      no such command on PATH
+	 */
+	threadState?: "clean" | "unresolved" | "stale-review" | "indeterminate" | "broken" | "missing";
+	/** `gh pr view --json mergeable` — GitHub's own verdict (#349). Default "MERGEABLE". */
+	mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+	/**
+	 * `gh pr view --json mergeStateStatus` (#349). Default "CLEAN".
+	 * BLOCKED = a ruleset really does refuse; BEHIND = base moved under a
+	 * strict-status-checks policy; DIRTY = conflicts; UNSTABLE = non-required
+	 * checks failing, which the web UI merges anyway.
+	 */
+	mergeState?: "CLEAN" | "BLOCKED" | "BEHIND" | "DIRTY" | "UNSTABLE" | "DRAFT";
+	/**
+	 * `mergeable` answers UNKNOWN for this many calls before settling on
+	 * `mergeable` above — GitHub computes mergeability lazily (#349). A number
+	 * >= the retry budget means it never settles.
+	 */
+	unknownForCalls?: number;
 	/** stub `gh pr list` finds zero open PRs for the branch */
 	noPr?: boolean;
 	/** stub `gh pr list` itself fails (outage / expired auth) */
@@ -154,6 +183,10 @@ function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
 	const conflictNums = outcomeEntries.filter(([, v]) => v === "conflict").map(([k]) => k);
 	const headCallCounter = path.join(root, "prview-callcount");
 	fs.writeFileSync(headCallCounter, "0");
+	// #349: separate counter — mergeability re-queries must not advance the
+	// TOCTOU head counter, or the retry would look like a push landing.
+	const mergeStateCounter = path.join(root, "mergestate-callcount");
+	fs.writeFileSync(mergeStateCounter, "0");
 	const gh = `#!/usr/bin/env bash
 # --- #332: gh api -X PUT repos/.../pulls/<n>/update-branch ---
 if [ "$1" = "api" ]; then
@@ -180,12 +213,14 @@ fi
 jqexpr=""
 head=""
 limit=""
+jsonfields=""
 prev=""
 for a in "$@"; do
   case "$prev" in
     --jq|-q) jqexpr="$a" ;;
     --head) head="$a" ;;
     --limit) limit="$a" ;;
+    --json) jsonfields="$a" ;;
   esac
   prev="$a"
 done
@@ -207,12 +242,29 @@ case "$1 $2" in
     fi
     ;;
   "pr view")
+    ${opts.failGhView ? 'echo "gh: could not connect to api.github.com" >&2; exit 1' : ""}
+    # #349: mergeability is a DIFFERENT --json request than headRefOid. Branch
+    # on the requested fields so one stub arm can serve both.
+    case "$jsonfields" in
+      *mergeable*|*mergeStateStatus*)
+        n=$(cat ${JSON.stringify(mergeStateCounter)}); echo $((n + 1)) > ${JSON.stringify(mergeStateCounter)}
+        if [ "$n" -lt ${opts.unknownForCalls ?? 0} ]; then
+          emit '{"mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN"}'
+        else
+          emit ${JSON.stringify(
+						JSON.stringify({
+							mergeable: opts.mergeable ?? "MERGEABLE",
+							mergeStateStatus: opts.mergeState ?? "CLEAN",
+						}),
+					)}
+        fi
+        exit 0
+        ;;
+    esac
     ${
-			opts.failGhView
-				? 'echo "gh: could not connect to api.github.com" >&2; exit 1'
-				: opts.headMovesBetweenGateAndMerge
-					? `n=$(cat ${JSON.stringify(headCallCounter)}); echo $((n + 1)) > ${JSON.stringify(headCallCounter)}; if [ "$n" -eq 0 ]; then echo "sha0000head"; else echo "sha1111moved"; fi`
-					: 'echo "sha0000head"'
+			opts.headMovesBetweenGateAndMerge
+				? `n=$(cat ${JSON.stringify(headCallCounter)}); echo $((n + 1)) > ${JSON.stringify(headCallCounter)}; if [ "$n" -eq 0 ]; then echo "sha0000head"; else echo "sha1111moved"; fi`
+				: 'echo "sha0000head"'
 		}
     ;;
   "pr merge") ${opts.failGhMerge ? 'echo "gh: pull request is not mergeable" >&2; exit 1' : `touch ${JSON.stringify(mergedFlag)}`} ;;
@@ -222,16 +274,52 @@ esac
 	fs.writeFileSync(path.join(binDir, "gh"), gh);
 	fs.chmodSync(path.join(binDir, "gh"), 0o755);
 
-	// --- stub pr-threads: the #258 gate under test ---
+	// --- stub pr-threads: the #258 gate, now read via --json (#349) ---
+	// The real pr-threads emits its `pr-threads/list@1` document and THEN
+	// exits 0/1/5, so "exit 5 with a document" (coverage indeterminate) and
+	// "exit 5 with nothing" (gh failed) are different states. The stub
+	// reproduces that ordering exactly — it is what pr-merge now relies on.
 	if (opts.threadState && opts.threadState !== "missing") {
-		const exitCode = { clean: 0, unresolved: 1, broken: 5 }[opts.threadState];
+		const exitCode = { clean: 0, unresolved: 1, "stale-review": 1, indeterminate: 5, broken: 5 }[
+			opts.threadState
+		];
 		const message = {
 			clean: "✅ duppypro/princess-pi-packages #42 — 0 unresolved conversations (2 total, all resolved)",
 			unresolved:
 				"❌ duppypro/princess-pi-packages #42 — 2 unresolved conversation(s):\n  macroscopeapp  bin/pr-merge\n    https://github.com/o/r/pull/42#discussion_r1",
+			"stale-review":
+				"⚠️  duppypro/princess-pi-packages #42 — 0 unresolved conversations (1 total), but no review covers head sha0000head (latest review: sha9999old)",
+			indeterminate:
+				"❓ duppypro/princess-pi-packages #42 — 0 unresolved conversations (1 total, all resolved); could not determine review coverage",
 			broken: "pr-threads: gh api graphql failed for duppypro/princess-pi-packages #42:\ngh: could not connect to api.github.com",
 		}[opts.threadState];
+		// The document — only for the states where the real tool would have
+		// produced one. "broken" fails before printing, which is the whole
+		// distinction pr-merge reads.
+		const doc: Record<string, unknown> | null =
+			opts.threadState === "broken"
+				? null
+				: {
+						schema: "pr-threads/list@1",
+						repo: "duppypro/princess-pi-packages",
+						pr: 42,
+						totalCount: opts.threadState === "unresolved" ? 2 : 1,
+						unresolvedCount: opts.threadState === "unresolved" ? 2 : 0,
+						head: "sha0000head",
+						reviewedHead: opts.threadState === "clean" ? "sha0000head" : null,
+						latestReviewCommit: opts.threadState === "clean" ? "sha0000head" : "sha9999old",
+						nullCommitReviewCount: opts.threadState === "indeterminate" ? 1 : 0,
+						unknownAuthorReviewCount: 0,
+						prAuthor: "duppypro",
+						threads: [],
+					};
 		const prThreads = `#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = "--json" ]; then
+    ${doc === null ? 'echo "gh: could not connect to api.github.com" >&2' : `printf '%s\\n' ${JSON.stringify(JSON.stringify(doc))}`}
+    exit ${exitCode}
+  fi
+done
 echo ${JSON.stringify(message)}
 exit ${exitCode}
 `;
@@ -252,18 +340,26 @@ exit ${exitCode}
 // bin dir gives git/jq/bash without leaking any host-installed workflow tool.
 const ISOLATED_PATH = `${path.dirname(execFileSync("which", ["bash"], { encoding: "utf8" }).trim())}${path.delimiter}/usr/bin${path.delimiter}/bin`;
 
+// spawnSync, not execFileSync: the SUCCESS path emits warnings on stderr too
+// (#349's non-blocking head-coverage notice), and execFileSync returns only
+// stdout when the command exits 0 — so a warning printed alongside a
+// successful merge was invisible to every assertion here.
 function runPrMerge(sb: Sandbox, extraArgs: string[] = []): { code: number; out: string } {
-	try {
-		const out = execFileSync("bash", [PR_MERGE, ...extraArgs], {
-			cwd: sb.worktree,
-			encoding: "utf8",
-			env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${ISOLATED_PATH}` },
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		return { code: 0, out };
-	} catch (err: any) {
-		return { code: err?.status ?? -1, out: `${err?.stdout || ""}${err?.stderr || ""}` };
-	}
+	const r = spawnSync("bash", [PR_MERGE, ...extraArgs], {
+		cwd: sb.worktree,
+		encoding: "utf8",
+			// PR_MERGE_RETRY_SLEEP=0: the mergeability re-query backs off by
+			// seconds in real use (#349); the tests assert the retry COUNT, and
+			// paying the wall-clock for it proves nothing.
+		env: {
+			...process.env,
+			...GIT_ENV,
+			PATH: `${sb.binDir}${path.delimiter}${ISOLATED_PATH}`,
+			PR_MERGE_RETRY_SLEEP: "0",
+		},
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	return { code: r.status ?? -1, out: `${r.stdout || ""}${r.stderr || ""}` };
 }
 
 function merged(sb: Sandbox): boolean {
@@ -607,6 +703,142 @@ console.log("\nopen-PR listing reports truncation instead of capping silently:")
 		"every listed PR past gh's default 30 was refreshed (not silently capped)",
 		`refreshed ${calls.length} of 200`,
 	);
+}
+
+// ---
+// #349: the server decides; pr-threads explains.
+//
+// Reported from live use on duppypro/btw #53 — 0 unresolved threads, a review
+// that predated the last push, mergeStateStatus CLEAN, and a green merge
+// button in the web UI. pr-merge refused it and blamed
+// required_review_thread_resolution, the one rule that was satisfied.
+// ---
+console.log("\n--- #349: the server decides, pr-threads explains ---");
+
+console.log("\nstale review + server says CLEAN (the reported bug):");
+{
+	const sb = makeSandbox("42-feature", { threadState: "stale-review", mergeState: "CLEAN" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "stale review + CLEAN → merges (exit 0)", `got ${code}, output:\n${out}`);
+	check(merged(sb), "stale review + CLEAN → gh pr merge WAS called", out);
+	check(
+		/no review covers head/i.test(out),
+		"stale review + CLEAN → coverage still reported, as a warning",
+		out,
+	);
+	check(
+		!/required_review_thread_resolution/.test(out),
+		"stale review → does NOT blame a rule it never read",
+		out,
+	);
+}
+
+// The other half of the split: unresolved threads still refuse. They are a
+// real question nobody answered, and refusing over them is this tool's own
+// policy — not a prediction about the server.
+console.log("\nunresolved threads + server says CLEAN:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "unresolved", mergeState: "CLEAN" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 6, "unresolved + CLEAN → still exit 6", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "unresolved + CLEAN → gh pr merge never called", out);
+	check(
+		/unresolved/i.test(out) && /--resolve/.test(out),
+		"unresolved → names the unresolved threads and how to resolve them",
+		out,
+	);
+}
+
+console.log("\nserver says BLOCKED:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", mergeState: "BLOCKED" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 6, "BLOCKED → exit 6", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "BLOCKED → gh pr merge never called", out);
+	check(/BLOCKED/.test(out), "BLOCKED → quotes the server's own verdict", out);
+}
+
+console.log("\nserver says BEHIND (base moved under strict status checks):");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", mergeState: "BEHIND" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 6, "BEHIND → exit 6", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "BEHIND → gh pr merge never called", out);
+	check(/update/i.test(out), "BEHIND → says to update the branch", out);
+}
+
+console.log("\nserver says DIRTY / mergeable CONFLICTING:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		mergeable: "CONFLICTING",
+		mergeState: "DIRTY",
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code === 6, "conflicts → exit 6", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "conflicts → gh pr merge never called", out);
+	check(/conflict/i.test(out), "conflicts → names conflicts, not review state", out);
+}
+
+// UNSTABLE = non-required checks red. The web UI merges these, so we do too —
+// the point of #349 is that the server's answer is the answer.
+console.log("\nserver says UNSTABLE (non-required checks failing):");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", mergeState: "UNSTABLE" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "UNSTABLE → merges, as the web UI does", `got ${code}, output:\n${out}`);
+	check(merged(sb), "UNSTABLE → gh pr merge WAS called", out);
+}
+
+// Mergeability is computed lazily. UNKNOWN is "ask again", never an answer.
+console.log("\nmergeability UNKNOWN then settles:");
+{
+	const sb = makeSandbox("42-feature", {
+		threadState: "clean",
+		unknownForCalls: 1,
+		mergeState: "CLEAN",
+	});
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "UNKNOWN once then CLEAN → merges after re-query", `got ${code}, output:\n${out}`);
+	check(merged(sb), "UNKNOWN once → gh pr merge WAS called", out);
+}
+
+console.log("\nmergeability never settles:");
+{
+	const sb = makeSandbox("42-feature", { threadState: "clean", unknownForCalls: 99 });
+	const { code, out } = runPrMerge(sb);
+	check(code === 5, "UNKNOWN forever → exit 5 (indeterminate)", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "UNKNOWN forever → gh pr merge never called", out);
+	check(
+		!/clear to merge|not clear/i.test(out),
+		"UNKNOWN forever → never claims it found a problem",
+		out,
+	);
+}
+
+// pr-threads exit 5 WITH a document means coverage was indeterminate, not that
+// gh fell over. Coverage does not block, so this merges — the distinction only
+// exists because the real tool prints the document before exiting.
+console.log("\npr-threads coverage indeterminate (exit 5, but a document arrived):");
+{
+	const sb = makeSandbox("42-feature", { threadState: "indeterminate", mergeState: "CLEAN" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 0, "indeterminate coverage + CLEAN → merges", `got ${code}, output:\n${out}`);
+	check(merged(sb), "indeterminate coverage → gh pr merge WAS called", out);
+}
+
+// The false-message regression this issue was filed over.
+console.log("\nno refusal asserts an unread server rule:");
+{
+	for (const state of ["unresolved", "stale-review"] as const) {
+		const sb = makeSandbox("42-feature", { threadState: state, mergeState: "CLEAN" });
+		const { out } = runPrMerge(sb);
+		check(
+			!/will refuse this/i.test(out),
+			`${state} → no claim about what the server "will" do`,
+			out,
+		);
+	}
 }
 
 // ---

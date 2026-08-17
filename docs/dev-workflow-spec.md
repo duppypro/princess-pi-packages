@@ -872,20 +872,46 @@ That collision is *why* the #258 gate could not have been built correctly before
 `pr-threads` alone, `pr-merge` could not have told "unresolved threads" apart from "gh
 had a hiccup" by exit code alone.
 
-**`pr-merge` calls `pr-threads` before `gh pr merge`** (#258), reusing the PR number it
-already resolved via its own fork-safe `gh pr list --head` selection — it does not
-re-derive the PR. Three outcomes:
+**`pr-merge` asks GitHub, then explains with `pr-threads`** (#258, corrected by #349),
+reusing the PR number it already resolved via its own fork-safe `gh pr list --head`
+selection — it does not re-derive the PR.
 
-- `pr-threads` exits `0` → proceed, merge as before.
-- `pr-threads` exits `1` → refuse (`pr-merge` exits `6`), print the unresolved threads
-  and/or the review-coverage warning with their URLs, and say the server ruleset
-  (`required_review_thread_resolution`) will refuse it too. **There is no override flag**
-  — the server refuses regardless, so a flag here would only buy a slower failure. Don't
-  go looking for one.
-- `pr-threads` exits anything else, **or isn't found on `PATH` at all** (a missing command
-  surfaces as a non-zero, non-`1` exit too) → `pr-merge` aborts (exit `5`) with wording
-  that says "could not verify", never "found a problem". This is the #210 fail-closed rule
-  applied at this boundary: a broken gate must never read as a passing one.
+#258 originally refused on `pr-threads` exit `1`. That exit collapses **two** conditions —
+unresolved threads, and "no review covers the current head" — and only the first is
+enforced by any ruleset; head coverage is our own #254 invention. So a PR with 0 unresolved
+threads, a review that predated the last push, `mergeStateStatus: CLEAN` and a **green merge
+button in the web UI** was refused here, with a message blaming
+`required_review_thread_resolution` — the one rule it satisfied. A wrong reason in an error
+message is worse than a vague one: it tells the caller not to attempt the thing that would
+have succeeded.
+
+The gate is now the server's own verdict, with `pr-threads --json` read structurally to tell
+the two collapsed conditions apart:
+
+- **`mergeable` is `UNKNOWN`** → re-query (GitHub computes mergeability lazily), up to three
+  times. Still `UNKNOWN` → exit `5`, "could not determine". Never merge, never claim clean.
+- **Unresolved threads** (`unresolvedCount > 0`) → refuse (exit `6`), print the threads with
+  their URLs and the `--resolve` invocation. This is stated as **our** policy, not a
+  prediction about the server: a reviewer asked a question and nobody answered it, and that
+  is worth refusing over even where the ruleset does not require resolution.
+- **`mergeStateStatus`** of `CLEAN`, `HAS_HOOKS`, or `UNSTABLE` → merge. `UNSTABLE` means
+  non-required checks are red, which the web UI merges too.
+- **`BEHIND` / `DIRTY` / `DRAFT` / `BLOCKED`** → refuse (exit `6`), quoting GitHub's verdict
+  verbatim and naming the actionable fix (`gh pr update-branch`, resolve conflicts, mark
+  ready). `BLOCKED` additionally prints `pr-threads` output as context. An **unrecognised**
+  status refuses rather than guesses.
+- **Head coverage** is a warning that never blocks — nothing enforces it, and the human can
+  see the sha. It stays visible because #254's case is real: a bot that reviews once per PR
+  never sees the commits written in response to its own findings.
+- **`pr-threads` produced no readable document**, or isn't found on `PATH` at all → exit `5`,
+  "could not verify", never "found a problem". Note `pr-threads` prints its JSON *before*
+  exiting, so its exit `5` for indeterminate coverage still yields a document — that case
+  merges, because coverage does not block. Only a genuinely absent document is a failure.
+  This is the #210 fail-closed rule applied at this boundary: a broken gate must never read
+  as a passing one.
+
+**No message here asserts that a server rule will refuse without having read that rule.**
+That constraint is asserted directly in `tests/pr-merge-gate.test.ts`.
 
 `pr-open` does **not** get this check — opening a PR with unresolved threads from an
 earlier review is normal and expected.

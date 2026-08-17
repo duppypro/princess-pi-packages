@@ -2,24 +2,30 @@
 # pr-merge [<branch>] — squash-merge the PR for a feature branch.
 # Defaults to the current branch. Human-only command.
 #
-# --- #258: gated on pr-threads before the network call -----------------
+# --- #258 → #349: gated on the SERVER before the network call ----------
 # `pr-threads` has been the documented scriptable merge gate since #232, and
 # nothing called it — pr-merge went straight to `gh pr merge --squash` and let
-# the server's required_review_thread_resolution ruleset be the one to say no.
-# The server is still the enforcement (current_user_can_bypass: never); this
-# gate exists so the human finds out WHAT is blocking and WHERE the unresolved
-# threads are, before a raw "rule violation" API error sends them hunting.
+# the server's ruleset be the one to say no. #258 added a gate so the human
+# finds out WHAT is blocking and WHERE, before a raw "rule violation" API
+# error sends them hunting.
 #
-# No override flag: the server refuses regardless, so a flag here would only
-# buy a slower failure. `pr-open` does not get this check — opening a PR with
+# #349 corrected WHAT that gate asks. #258 refused on pr-threads exit 1, which
+# collapses "unresolved threads" and "no review covers the current head" into
+# one code — and only the first is enforced by any ruleset. The result was a
+# PR with a green merge button in the web UI being refused here, with a
+# message blaming required_review_thread_resolution, the rule it satisfied.
+#
+# Now: GitHub's own mergeable/mergeStateStatus is the gate — the same
+# computation behind the web UI's button — and pr-threads is the explainer.
+# Unresolved threads still refuse (our policy, stated as ours). Head coverage
+# warns and never blocks. `pr-open` gets neither check: opening a PR with
 # unresolved threads from an earlier review is normal.
 #
-# Fails CLOSED (#210's governing rule, applied via pr-threads' own exit
-# contract — see bin/pr-threads header): pr-threads exit 1 means "checked, and
-# it says no" — print the details and refuse to merge. Any OTHER non-zero exit
-# (2/4/5 — usage error, PR not found, gh/API failure) means the check itself
-# could not run, and pr-merge aborts just as hard, but says so differently: it
-# could not verify, not that it found a problem.
+# Fails CLOSED (#210's governing rule) in three distinct ways, so "refused"
+# is never confused with "could not tell": a server verdict we recognise as
+# refusing → 6; unresolved threads → 6; mergeability still UNKNOWN after the
+# retry budget, or pr-threads producing no readable document → 5, could not
+# verify. An unrecognised mergeStateStatus refuses rather than guesses.
 #
 # --- TOCTOU between the gate and the merge (macroscopeapp finding on PR #267,
 # rated High) --------------------------------------------------------------
@@ -242,29 +248,169 @@ resolve_head() {
 
 HEAD_BEFORE_GATE=$(resolve_head "$PR")
 
-# --- #258: pr-threads gate, reusing the PR number resolved above -----------
-# pr-threads' exit codes are documented in its own header: 0 = clean, 1 =
-# checked-and-found-a-problem (unresolved threads and/or an uncovered review
-# head), anything else = the check itself could not run. Only 1 gets the
-# "here is what to fix" framing; everything else gets "could not verify".
+# --- #349: the SERVER decides; pr-threads explains -------------------------
+# #258 gated on `pr-threads` exit 1 and refused. That exit collapses TWO
+# conditions into one signal — unresolved threads, and "no review covers the
+# current head" — so pr-merge could not tell them apart and refused for
+# either. Only the first is enforced anywhere: required_review_thread_
+# resolution is a real ruleset rule, while head coverage is our own #254
+# invention that no server rule mentions. On duppypro/btw #53 the PR had 0
+# unresolved threads, a review that predated the last push, mergeStateStatus
+# CLEAN and a green merge button in the web UI — and pr-merge refused it,
+# citing required_review_thread_resolution, the one rule that was satisfied.
+# A wrong reason in an error message is worse than a vague one: it tells the
+# caller not to attempt the thing that would have succeeded.
+#
+# So ask GitHub whether it will accept the merge (mergeable / mergeStateStatus
+# — the same computation behind the web UI's button) and keep pr-threads as
+# the EXPLAINER for why not. That is this repo's own Agent-First rule pointed
+# inward: never infer a producer's state from something you can read from the
+# producer. It also means this gate stops being repo-dependent — a repo that
+# really does require approvals and last-push approval reports BLOCKED, and we
+# refuse for the reason the server gives rather than one we guessed.
+#
+# Unresolved threads still refuse on OUR side, whatever the server says: a
+# reviewer asked a question and nobody answered it, and that is worth refusing
+# over in a repo whose ruleset happens not to require resolution. Stale head
+# coverage is now a WARNING — printed, never blocking.
+
+# --- the server's verdict --------------------------------------------------
+# Mergeability is computed LAZILY: a fresh or just-pushed PR answers UNKNOWN
+# until GitHub finishes. Re-query rather than read UNKNOWN as either answer;
+# still UNKNOWN after the budget means state could not be determined (5) —
+# never a merge, and never a "clean" claim.
+RETRY_SLEEP="${PR_MERGE_RETRY_SLEEP:-2}"
+MERGE_TRIES=3
+MERGEABLE=UNKNOWN
+MERGE_STATE=UNKNOWN
+try=0
+while [ "$try" -lt "$MERGE_TRIES" ]; do
+  if ! STATE_JSON=$(gh pr view "$PR" --json mergeable,mergeStateStatus 2>&1); then
+    echo "pr-merge: 'gh pr view' failed — cannot determine mergeability for PR #$PR:" >&2
+    echo "$STATE_JSON" >&2
+    exit 5
+  fi
+  MERGEABLE=$(printf '%s' "$STATE_JSON" | jq -r '.mergeable // "UNKNOWN"' 2>/dev/null || echo UNKNOWN)
+  MERGE_STATE=$(printf '%s' "$STATE_JSON" | jq -r '.mergeStateStatus // "UNKNOWN"' 2>/dev/null || echo UNKNOWN)
+  [ "$MERGEABLE" != "UNKNOWN" ] && break
+  try=$((try + 1))
+  if [ "$try" -lt "$MERGE_TRIES" ] && [ "$RETRY_SLEEP" != "0" ]; then
+    sleep "$RETRY_SLEEP"
+  fi
+done
+
+if [ "$MERGEABLE" = "UNKNOWN" ]; then
+  echo "⚠️  pr-merge: GitHub has not finished computing mergeability for PR #$PR" >&2
+  echo "   (mergeable=UNKNOWN after $MERGE_TRIES queries). Aborting rather than merging" >&2
+  echo "   blind — this is 'could not determine', not 'found a problem'. Re-run in a moment." >&2
+  exit 5
+fi
+
+# --- review state, read structurally (#349) --------------------------------
+# `--json` because the human-readable exit code cannot distinguish the two
+# conditions. pr-threads emits its document and THEN exits, so a parseable
+# document means the check ran — even on exit 5, which it also uses for
+# "coverage indeterminate". No document at all is the real failure.
 set +e
-THREAD_OUTPUT=$(pr-threads "$PR" 2>&1)
+THREAD_JSON=$(pr-threads "$PR" --json 2>&1)
 THREAD_STATUS=$?
 set -e
 
-if [ "$THREAD_STATUS" -eq 1 ]; then
-  echo "❌ pr-merge: PR #$PR is not clear to merge — pr-threads found unresolved" >&2
-  echo "   threads and/or a review that doesn't cover the current head:" >&2
-  echo "$THREAD_OUTPUT" | sed 's/^/   /' >&2
-  echo "   The server ruleset (required_review_thread_resolution) will refuse this" >&2
-  echo "   merge too — there is no override flag here." >&2
-  exit 6
-elif [ "$THREAD_STATUS" -ne 0 ]; then
+# Two independent conditions, and BOTH must hold. `0|1|5` are pr-threads' whole
+# read-path vocabulary (clean / not-clean / coverage-indeterminate); 2 and 4 are
+# usage and not-found, and 127 is "no such command" — none of those describe the
+# review, so a document arriving alongside one of them is not evidence about
+# this PR. Checking only for a parseable document would let a `4` (wrong PR
+# number, wrong repo) merge on the strength of JSON that answered a different
+# question.
+UNRESOLVED=""
+case "$THREAD_STATUS" in
+  0|1|5) UNRESOLVED=$(printf '%s' "$THREAD_JSON" | jq -r '.unresolvedCount // empty' 2>/dev/null || true) ;;
+esac
+if ! printf '%s' "$UNRESOLVED" | grep -Eq '^[0-9]+$'; then
   echo "⚠️  pr-merge: could not verify review state for PR #$PR — pr-threads exited" >&2
-  echo "   $THREAD_STATUS (not 'found a problem', the check itself failed). Aborting" >&2
-  echo "   rather than merging blind:" >&2
-  echo "$THREAD_OUTPUT" | sed 's/^/   /' >&2
+  echo "   $THREAD_STATUS with no readable document (the check itself failed, not" >&2
+  echo "   'found a problem'). Aborting rather than merging blind:" >&2
+  echo "$THREAD_JSON" | sed 's/^/   /' >&2
   exit 5
+fi
+THREAD_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.head // ""' 2>/dev/null || true)
+# reviewedHead is the head sha WHEN a review covers it, and null otherwise —
+# so it cannot report which commit the stale review actually saw.
+# latestReviewCommit carries that, and is what makes the warning below say
+# something useful instead of "(latest review: )".
+REVIEWED_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.reviewedHead // ""' 2>/dev/null || true)
+LATEST_REVIEW=$(printf '%s' "$THREAD_JSON" | jq -r '.latestReviewCommit // ""' 2>/dev/null || true)
+
+# Our own policy, not a prediction about the server: an unanswered review
+# question blocks. The human-readable rendering is worth a second call HERE
+# only — on the refusal path, where the thread list is what the caller needs.
+if [ "$UNRESOLVED" -gt 0 ]; then
+  echo "❌ pr-merge: PR #$PR has $UNRESOLVED unresolved review conversation(s)." >&2
+  set +e
+  THREAD_TEXT=$(pr-threads "$PR" 2>&1)
+  set -e
+  echo "$THREAD_TEXT" | sed 's/^/   /' >&2
+  echo "   Resolve them first: pr-threads $PR --resolve <thread-id> --reply <text>" >&2
+  echo "   (server verdict for this PR: mergeStateStatus=$MERGE_STATE)" >&2
+  exit 6
+fi
+
+# --- what the server said, in its own words --------------------------------
+# CLEAN/HAS_HOOKS/UNSTABLE are the states whose merge button is enabled in the
+# web UI — UNSTABLE means non-required checks are red, which GitHub merges.
+# Everything else gets refused for the reason GITHUB gave, quoted verbatim, so
+# no message here asserts a rule this script never read.
+case "$MERGE_STATE" in
+  CLEAN|HAS_HOOKS|UNSTABLE) ;;
+  BEHIND)
+    echo "❌ pr-merge: PR #$PR is BEHIND its base — GitHub refuses the merge until the" >&2
+    echo "   branch is updated (this repo requires branches to be up to date)." >&2
+    echo "   Fix: gh pr update-branch $PR   (or merge from the web UI, which offers it)" >&2
+    exit 6
+    ;;
+  DIRTY)
+    echo "❌ pr-merge: PR #$PR has merge conflicts with its base (mergeStateStatus=DIRTY)." >&2
+    echo "   Resolve them on the branch, then re-run." >&2
+    exit 6
+    ;;
+  DRAFT)
+    echo "❌ pr-merge: PR #$PR is a draft — mark it ready for review first." >&2
+    exit 6
+    ;;
+  BLOCKED)
+    echo "❌ pr-merge: GitHub refuses this merge (mergeStateStatus=BLOCKED) — a branch" >&2
+    echo "   protection rule on this repo is not satisfied. This is the server's own" >&2
+    echo "   verdict, not a prediction: the web UI's merge button is disabled too." >&2
+    echo "   Review state for context:" >&2
+    set +e
+    THREAD_TEXT=$(pr-threads "$PR" 2>&1)
+    set -e
+    echo "$THREAD_TEXT" | sed 's/^/   /' >&2
+    exit 6
+    ;;
+  *)
+    echo "❌ pr-merge: GitHub reports mergeStateStatus=$MERGE_STATE for PR #$PR, which this" >&2
+    echo "   script does not recognise as mergeable. Refusing rather than guessing." >&2
+    exit 6
+    ;;
+esac
+
+if [ "$MERGEABLE" = "CONFLICTING" ]; then
+  echo "❌ pr-merge: PR #$PR has merge conflicts with its base (mergeable=CONFLICTING)." >&2
+  echo "   Resolve them on the branch, then re-run." >&2
+  exit 6
+fi
+
+# Advisory only (#349): nothing enforces head coverage, so it never blocks —
+# but it is exactly the case #254 was filed over (a bot that reviews once per
+# PR never sees the commits written in response to its own findings), so it
+# stays visible.
+# A PR nobody has reviewed at all has nothing stale about it — LATEST_REVIEW
+# empty is the "never reviewed" case, which #254 deliberately does not gate on.
+if [ -n "$LATEST_REVIEW" ] && [ "$LATEST_REVIEW" != "null" ] && [ "$REVIEWED_HEAD" != "$THREAD_HEAD" ]; then
+  echo "⚠️  pr-merge: no review covers head ${THREAD_HEAD:0:7} (latest review: ${LATEST_REVIEW:0:7})." >&2
+  echo "   Merging anyway — no rule on this repo requires it (mergeStateStatus=$MERGE_STATE)." >&2
 fi
 
 # --- TOCTOU guard (see header): re-resolve the head immediately before the
