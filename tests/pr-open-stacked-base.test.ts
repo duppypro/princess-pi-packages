@@ -260,6 +260,54 @@ console.log("\nparent branch already deleted (pr-cleanup ran) when the printed r
 }
 
 // ---
+// 6. The anchor is the FORK POINT, and a parent that has advanced past us
+//    produces no recipe at all (macroscopeapp on PR #323).
+//
+//    The review worried that freezing the parent's TIP would replay the
+//    parent's newer commits onto main as if they were ours. That cannot happen
+//    through this path, and this case pins the reason: the detection only warns
+//    when the parent tip is an ancestor of HEAD, which makes tip and fork point
+//    the same sha by construction. Once the parent advances past what we
+//    contain, it stops being an ancestor and no warning — hence no recipe — is
+//    produced. pr-open now asks merge-base for the boundary regardless, so the
+//    guarantee comes from the definition rather than from that coupling.
+// ---
+console.log("\nanchor is the fork point; a parent advanced past us produces no recipe:");
+{
+	const sb = makeSandbox();
+	git(sb.clone, ["checkout", "-q", "-b", "42-parent"]);
+	commit(sb.clone, "a.txt", "a\n", "parent work");
+	git(sb.clone, ["push", "-q", "-u", "origin", "42-parent"]);
+	const forkPoint = git(sb.clone, ["rev-parse", "HEAD"]).trim();
+
+	git(sb.clone, ["checkout", "-q", "-b", "43-child"]);
+	commit(sb.clone, "b.txt", "b\n", "child work");
+	git(sb.clone, ["push", "-q", "-u", "origin", "43-child"]);
+
+	const first = runPrOpen(sb);
+	const anchor = (first.out.match(/git rebase --onto origin\/main (\S+) 43-child/) || [])[1] || "";
+	check(
+		anchor === forkPoint,
+		"the printed anchor is the fork point (merge-base), not merely some sha",
+		`anchor=${anchor} forkPoint=${forkPoint}`,
+	);
+
+	// Parent advances past what the child contains.
+	git(sb.clone, ["checkout", "-q", "42-parent"]);
+	commit(sb.clone, "a2.txt", "a2\n", "parent moves on");
+	git(sb.clone, ["push", "-q", "origin", "42-parent"]);
+	git(sb.clone, ["checkout", "-q", "43-child"]);
+	git(sb.clone, ["fetch", "-q", "origin"]);
+
+	const second = runPrOpen(sb);
+	check(
+		!/stacked/i.test(second.out),
+		"no stacked warning once the parent has advanced past us — so no stale-boundary recipe can be emitted",
+		second.out,
+	);
+}
+
+// ---
 
 console.log(
 	`\n${failures === 0 ? "✅" : "❌"} pr-open stacked base: ${checks - failures} of ${checks} checks passed.`,
