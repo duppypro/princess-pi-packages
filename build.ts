@@ -142,9 +142,11 @@ const TARGETS: BuildTarget[] = [
   // package layout, not bundled (same as the esbuild config it replaces).
   { name: "serve", external: ["../extensions/lib/serve/run-live-server.js"] },
   { name: "wtft", external: [] },
-  // No `merge` target: bin/merge.ts was removed in #201 (pr-open replaced it).
-  // The Pi `/merge` slash command (extensions/merge.ts) is unaffected — only
-  // bin/ CLIs are bundled here, extensions are loaded from source.
+  // No `merge` target, and no merge tool at all any more: bin/merge.ts went in
+  // #201 (pr-open replaced it) and the Pi `/merge` slash command went in #226.
+  // The shared manifest renderer it used to own survives as
+  // extensions/lib/manifest-help.ts — yada, serve, and wtft all render --help
+  // and --why through it, which is why it outlived the tool it was named after.
   { name: "wtft-daemon", external: [] },
   // yada was a raw .ts bin (needs node ≥ 22.6 type-stripping — unsafe from a global
   // install, #31); building it closes that gap. `dedupwcount` aliases this artifact.

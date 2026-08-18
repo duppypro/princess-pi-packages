@@ -1,9 +1,30 @@
 ---
 name: cross-harness-tool
-description: Recipe for building/porting a tool that works in BOTH Pi (as a /command + optional TUI widget) and Claude Code (as a zero-token CLI), driven by one shared manifest.
+description: "SUPERSEDED by #226 (shell-first) — do not follow as written; awaiting rewrite in #230. Historical recipe for a tool with both a Pi /command face and a Claude CLI face."
 ---
 
 # Skill: Build a Cross-Harness Tool (Pi `/command` + Claude CLI)
+
+> ## ⛔ SUPERSEDED — do not follow this recipe as written
+>
+> **Its premise was reversed.** Duppy's decision on **#226** (2026-08-11) is **shell-first**:
+> workflow tools get **no Pi `/command` face at all**. They are invoked as `!pr-open`, `!serve`.
+> An extension is justified **only** where a tool needs harness state — a live TUI widget or the
+> session — which is `wtft`, and `serve`'s widget. The test to apply first is
+> **"does this need harness state?"**, not "how do I build three faces?".
+>
+> **Its reference implementation no longer exists.** `bin/merge.mjs` went in #201, and
+> `extensions/merge.ts` + `docs/manifests/merge-cmd.json` + `docs/EXT_MERGE.html` went in #226 —
+> the Pi command ran `git checkout main` → merge → `git push` in-process, where no bash-spawn
+> guardrail could see it. Every path below that cites `merge` cites a deleted file.
+>
+> **Still accurate and still worth reading:** the manifest-driven `--help`/`--why` contract, and
+> the shared-logic split under `extensions/lib/`. The renderer moved to
+> `extensions/lib/manifest-help.ts` (it was never merge-specific — `yada`, `serve` and `wtft` all
+> use it, which is why it outlived the tool it was named after).
+>
+> **#230** owns the rewrite. This banner exists because the skill is deployed to both harnesses
+> (#345), so an agent can load it *today* and follow a retired decision.
 
 Use this when adding a **new** tool to `princess-pi-packages`, or **porting** an existing one to the
 cross-harness bar (e.g. issues #9 `wtft`, #10 `serve`). Reference implementation: **`merge`**

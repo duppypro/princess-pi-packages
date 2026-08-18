@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../extensions/lib/config.ts";
-import { renderHelp, renderWhy } from "../extensions/lib/merge/help.ts";
+import { renderHelp, renderWhy } from "../extensions/lib/manifest-help.ts";
 import { formatVersion } from "../extensions/lib/build-stamp.ts";
 
 // --- CLI Option Parsing ---

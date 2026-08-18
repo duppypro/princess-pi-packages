@@ -188,5 +188,41 @@ check(SKILLS.length > 0, "SKILLS manifest is non-empty", "parsed from bin/instal
 	check(fs.readFileSync(decoyPi, "utf8") === decoyPiBody, "decoy skill in ~/.pi/agent/skills/ untouched");
 }
 
+// ---
+// Frontmatter must survive a YAML parse (#226 review finding).
+//
+// A skill's `description` is what a harness shows when an agent PICKS a skill —
+// it is read before the body, and for a retired or superseded skill it is the
+// only warning that arrives in time. In an unquoted YAML scalar a space
+// followed by `#` opens a COMMENT, so `description: SUPERSEDED by #226 …`
+// parses to exactly `SUPERSEDED by` and the rest is discarded silently. That
+// happened here: the banner added to stop agents following a retired recipe was
+// itself truncated to two words.
+//
+// Checked without a YAML dependency, because the hazard is narrow and nameable:
+// an unquoted scalar must not contain " #". Issue references are the common way
+// to hit it, and this repo puts issue numbers in prose constantly.
+// ---
+console.log("\n— skill frontmatter survives a YAML parse");
+
+for (const skill of SKILLS) {
+	const src = fs.readFileSync(path.join(REPO_ROOT, "skills", skill, "SKILL.md"), "utf8");
+	const fm = src.split("---")[1] ?? "";
+	for (const field of ["name", "description"]) {
+		const line = fm.split("\n").find((l) => l.startsWith(`${field}:`));
+		if (!line) {
+			check(false, `${skill}: frontmatter has a ${field}`);
+			continue;
+		}
+		const value = line.slice(field.length + 1).trim();
+		const quoted = /^".*"$|^'.*'$/.test(value);
+		check(
+			quoted || !value.includes(" #"),
+			`${skill}: ${field} is not silently truncated by a YAML comment`,
+			`unquoted value contains " #", so YAML keeps only: ${JSON.stringify(value.split(" #")[0])}`,
+		);
+	}
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} skills deploy + drift: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

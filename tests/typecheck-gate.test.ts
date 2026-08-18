@@ -7,7 +7,7 @@
 // The negative control below (PROBE) is the load-bearing part. A gate that cannot be shown to go
 // red is indistinguishable from no gate — which is exactly the illusion that let #168 happen.
 //
-// Runner: self-contained script (repo convention — see tests/merge-step5-wording.test.ts).
+// Runner: self-contained script (repo convention — see tests/pr-threads-count.test.ts).
 // Run with: bun run test typecheck-gate
 
 import { spawnSync } from "node:child_process";
