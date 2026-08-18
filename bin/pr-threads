@@ -24,7 +24,8 @@
 # behind the URL. #254 added three top-level fields to the SAME document: head,
 # reviewedHead, latestReviewCommit — see docs/dev-workflow-spec.md.
 #
-# Contract, including the trust boundary the `trusted` field exists to serve:
+# Contract, including the trust boundary the `trusted`/`trustLevel` fields exist
+# to serve (#339 split it three ways — issuer / reviewer / untrusted):
 # docs/dev-workflow-spec.md § `pr-threads --json`.
 #
 # --- Exit codes ---
@@ -148,6 +149,33 @@ while [ "$#" -gt 0 ]; do
     # commit-hash/semver stamp — PATH only. Never reserved exit 1 — this exits
     # 0 like every other usage-style flag in this script.
     --version) readlink -f "$0"; exit 0 ;;
+    # #362: this was the ONLY member of the pr-* family without --help. #310 and
+    # #319 added it everywhere else and missed here, which also made --version
+    # above undiscoverable: with no help text there was nowhere to name it.
+    -h|--help)
+      cat <<'USAGE'
+usage: pr-threads <pr#> [owner/repo] [--json]
+       pr-threads <pr#> --resolve <thread-id> [--reply <text>] [--json]
+       pr-threads -h | --help
+       pr-threads --version
+
+Review state for a PR: unresolved-conversation count AND whether any independent
+review covers the current head. Scriptable merge gate — pr-merge reads it.
+
+  --json     one pr-threads/list@1 document on stdout (or pr-threads/resolve@1
+             for --resolve). Adds thread ids, every comment body, trusted and
+             trustLevel flags, head/reviewedHead/latestReviewCommit.
+  --resolve  resolve one thread by id; --reply posts text first.
+  -h, --help this text.
+  --version  resolved path of the running copy.
+
+trustLevel is issuer (may direct the work) | reviewer (read it, verify against
+the code, fix by hand) | untrusted (relay to the human). trusted == issuer.
+
+exit codes: 0 clean · 1 NOT clean but the check succeeded (read-side gate only)
+            2 usage · 4 not found · 5 remote/API indeterminate · 6 refused
+USAGE
+      exit 0 ;;
     --json) json_mode=1; shift ;;
     --resolve)
       shift
@@ -198,6 +226,7 @@ while [ "$#" -gt 0 ]; do
 done
 if [ -z "$pr" ]; then
   echo "usage: pr-threads <pr#> [owner/repo] [--json] [--resolve <thread-id> [--reply <text>]]" >&2
+  echo "       pr-threads -h | --help" >&2
   echo "       pr-threads --version" >&2
   exit 2
 fi
@@ -472,15 +501,18 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
 
   if [ "$head_extracted" -eq 0 ]; then
     jq_or_die head_sha -r '.data.repository.pullRequest.headRefOid // empty'
-    # PENDING (unsubmitted draft) reviews come back in this connection with
-    # submittedAt: null — visible only to their own author, but a bot polling
-    # its own drafts would otherwise cover a head it never actually submitted
-    # a review against. Filter to submitted reviews only.
     # The PR's own author (#269). Needed to tell an INDEPENDENT review from the
     # author answering their own review threads — see the reviews_json filter
     # directly below for why that distinction is the whole gate.
     jq_or_die pr_author -r '.data.repository.pullRequest.author.login // empty'
 
+    # PENDING (unsubmitted draft) reviews come back in this connection with
+    # submittedAt: null — visible only to their own author, but a bot polling
+    # its own drafts would otherwise cover a head it never actually submitted
+    # a review against. Filter to submitted reviews only. (#362: this comment
+    # annotated pr_author above until a spec-reconcile audit caught it — that
+    # extraction does no submittedAt filtering; the select() it describes is
+    # in the reviews_json filter below.)
     # reviews_json holds the commit oids of INDEPENDENT submitted reviews only:
     # submitted, commit resolvable, and authored by someone other than the PR's
     # own author. Everything downstream (reviewed_head, no_reviews,

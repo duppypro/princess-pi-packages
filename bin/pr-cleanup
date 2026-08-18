@@ -34,7 +34,7 @@
 # Exit codes (shared pr-* contract, #224 — full table in
 # docs/dev-workflow-spec.md):
 #   0  success
-#   2  usage error — missing or extra arguments (<branch> is required), a
+#   2  usage error — an unknown flag (#362), missing or extra arguments (<branch> is required), a
 #      protected branch named explicitly, or not run inside a git repository
 #      at all
 #   3  precondition not met — cwd is inside the worktree this run would
@@ -76,6 +76,11 @@ EOF
   # real file OR a symlink to its actual on-disk location. Not built, so no
   # commit-hash/semver stamp — PATH only.
   --version) readlink -f "$0"; exit 0 ;;
+  # #362: an unknown flag used to fall through this case and RUN the script.
+  # On pr-reject that closed a real PR (#364, open for two seconds) because the
+  # flag was taken as the close reason. A flag is never a branch name, a message,
+  # or a reason — refuse it here, exit 2 per the #224 shared table.
+  -*) echo "pr-cleanup: unknown flag: $1 (try --help)" >&2; exit 2 ;;
 esac
 
 # --- argument parsing --------------------------------------------------------

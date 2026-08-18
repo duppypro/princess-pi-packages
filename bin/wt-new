@@ -128,6 +128,12 @@ EOF
   # actual on-disk location. Not built, so no commit-hash/semver stamp — this
   # is the PATH half only.
   --version) readlink -f "$0"; exit 0 ;;
+  # #362: wt-new already refused an unknown flag, but only as a side effect of
+  # the <issue#>-<slug> regex further down rejecting it. That made the
+  # family-wide "refuses an unknown flag" contract true here by ACCIDENT — a
+  # branch-name grammar change would have silently un-refused flags. Guard
+  # explicitly so the contract holds by construction.
+  -*) echo "wt-new: unknown flag: $1 (try --help)" >&2; exit 2 ;;
 esac
 
 if [ $# -ne 1 ]; then

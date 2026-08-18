@@ -12,7 +12,8 @@ set -euo pipefail
 #
 # Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md):
 #   0  success
-#   2  usage error — `-b`/`--branch` given with no branch name, a protected
+#   2  usage error — an unknown flag (#362; a REASON starting with `-` needs
+#      `--` first), `-b`/`--branch` given with no branch name, a protected
 #      branch (main/master) named EXPLICITLY via `-b`, or not run inside a
 #      git repository at all (`git branch --show-current` itself fails)
 #   3  precondition not met — on main/master with nothing to discover
@@ -61,6 +62,10 @@ EOF
       BRANCH_SOURCE="explicit"
       shift 2 ;;
     --) shift; REASON="${1:-}"; break ;;
+    # #362: THIS arm is what closed PR #364. `pr-reject --zzz-unknown` fell in
+    # here, became the close REASON, and the script went on to find the current
+    # branch's PR and close it. A leading dash is never a reason.
+    -*) echo "pr-reject: unknown flag: $1 (try --help)" >&2; exit 2 ;;
     *)  REASON="$1"; shift ;;
   esac
 done

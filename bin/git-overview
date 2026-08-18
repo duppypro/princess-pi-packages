@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # git-overview — one-command repo status snapshot.
-# Shows: branch + status, diff stat, recent commits.
-# Equivalent to the 3-command cluster agents repeat constantly.
+# Equivalent to the 4-command cluster agents repeat constantly.
 #
-# Usage: git-overview
-#        git-overview --version
+# Usage: run `git-overview --help`. Deliberately NOT restated here — this header
+# carried its own Usage block until #362, and it drifted (it omitted -h/--help
+# and miscounted the cluster as 3). One copy, reachable from the command line.
 set -euo pipefail
 
 # #178: resolved absolute path of the running copy — install-workflow-tools
@@ -14,6 +14,36 @@ set -euo pipefail
 # on-disk location. Not built, so no commit-hash/semver stamp — PATH only.
 case "${1:-}" in
   --version) readlink -f "$0"; exit 0 ;;
+  # #362: the usage text above existed only as a header comment — unreachable
+  # from the command line, so --version had nowhere to be discovered either.
+  -h|--help)
+    cat <<'USAGE'
+usage: git-overview
+       git-overview -h | --help
+       git-overview --version
+
+One-command repo status snapshot. Replaces the 4-command cluster agents repeat
+constantly, printing four sections in this order:
+
+  branch    git branch --show-current   (empty line when HEAD is detached)
+  status    git status --short
+  diff stat git diff --stat             (UNSTAGED only — a fully staged change
+                                         prints an empty section)
+  commits   git log --oneline -5        (fixed at 5, not configurable)
+
+Takes no positional arguments. A leading-dash argument is refused (exit 2); a
+non-dash positional is still ignored. Exits 0, 2 for an unknown flag, or 128 if
+git itself fails (e.g. run outside a repository).
+
+  -h, --help  this text.
+  --version   resolved path of the running copy.
+USAGE
+    exit 0 ;;
+  # #362: an unknown flag used to fall through this case and RUN the script.
+  # On pr-reject that closed a real PR (#364, open for two seconds) because the
+  # flag was taken as the close reason. A flag is never a branch name, a message,
+  # or a reason — refuse it here, exit 2 per the #224 shared table.
+  -*) echo "git-overview: unknown flag: $1 (try --help)" >&2; exit 2 ;;
 esac
 
 echo "=== branch ==="

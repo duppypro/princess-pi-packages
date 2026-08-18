@@ -104,6 +104,13 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 		readlink -f "$0"
 		exit 0
 		;;
+	# #362: a leading dash is never a <cwd>. This refused already (the arg count
+	# check below), but with a generic usage line that never named the offending
+	# flag — so a typo'd flag read as "you passed the wrong number of arguments".
+	-*)
+		echo "herdr-tab: unknown flag: $1 (try --help)" >&2
+		exit 2
+		;;
 	esac
 	if [ $# -ne 2 ]; then
 		echo "usage: herdr-tab <cwd> <label>   (or: . herdr-tab, then herdr_tab <cwd> <label>)" >&2

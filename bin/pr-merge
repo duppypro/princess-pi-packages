@@ -348,7 +348,7 @@ if ! printf '%s' "$UNRESOLVED" | grep -Eq '^[0-9]+$'; then
 fi
 THREAD_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.head // ""' 2>/dev/null || true)
 # reviewedHead is a BOOLEAN — "does some review cover the current head" —
-# NOT the sha that was reviewed (bin/pr-threads:652, `reviewed_head=false` then
+# NOT the sha that was reviewed (bin/pr-threads:696-698, `reviewed_head=false` then
 # `jq 'index($h) != null'`, emitted with --argjson). Comparing it to a sha is
 # always unequal, which made the coverage warning below fire on every reviewed
 # PR, including ones whose review covers head exactly. The sha a stale review
