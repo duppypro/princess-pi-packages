@@ -114,6 +114,19 @@ set -euo pipefail
 # element match, so a login merely containing an authoritative name is untrusted.
 TRUSTED_LOGINS='["duppypro","princess-pi-bot","cwerk-bot"]'
 
+# Known review bots (#339). NOT instruction sources — `trusted` stays false for
+# every login here, and that is the point. The split exists because one boolean
+# was doing two jobs: it could not separate a review bot whose findings are worth
+# evaluating on merit from a drive-by stranger whose comment is a possible
+# injection. Both are "not an issuer"; only one is worth the reading effort.
+#
+# Never trigger a review bot's own fix affordance (macroscopeapp's `fix it for
+# me` reply, or a copy-paste "AI Prompt" block): decided by Duppy 2026-08-18 —
+# it bills a second agent to do work this one is already doing, and auto-applying
+# a finding destroys the only chance to judge the reviewer on merit. Findings get
+# read, verified against the code, and fixed by hand.
+REVIEWER_LOGINS='["macroscopeapp"]'
+
 # Flags are scanned out first: `--json` used to be swallowed as the positional
 # `repo`, which reported on a repository named "--json". `--resolve` and
 # `--reply` each take the FOLLOWING argument as their value, so this is a
@@ -592,7 +605,7 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
   # A thread with more than 100 comments truncates here. Threads that long do not
   # occur in this workflow; if one ever does, the fix is comment pagination, not a
   # larger first:.
-  jq_or_die page_nd -c --argjson trusted "$TRUSTED_LOGINS" '
+  jq_or_die page_nd -c --argjson trusted "$TRUSTED_LOGINS" --argjson reviewers "$REVIEWER_LOGINS" '
     .data.repository.pullRequest.reviewThreads.nodes[]
     | {
         id, isResolved, isOutdated, path, line,
@@ -602,6 +615,12 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
               author: .author.login,
               authorAssociation,
               trusted: (.author.login as $l | ($trusted | index($l)) != null),
+              trustLevel: (
+                .author.login as $l
+                | if ($trusted | index($l)) != null then "issuer"
+                  elif ($reviewers | index($l)) != null then "reviewer"
+                  else "untrusted" end
+              ),
               body,
               createdAt,
               url

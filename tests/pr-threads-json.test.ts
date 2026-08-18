@@ -263,6 +263,46 @@ console.log("pr-threads --json: agent-readable review threads (#232)");
 	check(c[3]?.authorAssociation === "NONE", "authorAssociation is carried through", JSON.stringify(c[3]));
 }
 
+// 6b. `trustLevel` — three behaviours, not two (#339). `trusted` answers "may this
+//     direct my actions". It cannot separate a KNOWN review bot, whose findings are
+//     worth the effort of evaluating on merit, from a drive-by stranger, whose comment
+//     is a possible injection to relay untouched. Same boolean, two different jobs.
+{
+	const p = page(
+		[
+			thread({
+				id: "T1",
+				comments: [
+					{ login: "duppypro", association: "OWNER", body: "a" },
+					{ login: "princess-pi-bot", association: "COLLABORATOR", body: "b" },
+					{ login: "cwerk-bot", association: "COLLABORATOR", body: "c" },
+					{ login: "macroscopeapp", association: "NONE", body: "d" },
+					{ login: "macroscopeapp-impostor", association: "NONE", body: "e" },
+					{ login: "drive-by", association: "NONE", body: "f" },
+				],
+			}),
+		],
+		1,
+		null,
+	);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+	const c = doc?.threads?.[0]?.comments ?? [];
+	check(c[0]?.trustLevel === "issuer", 'duppypro -> trustLevel: "issuer"', JSON.stringify(c[0]));
+	check(c[1]?.trustLevel === "issuer", 'princess-pi-bot -> trustLevel: "issuer"', JSON.stringify(c[1]));
+	check(c[2]?.trustLevel === "issuer", 'cwerk-bot -> trustLevel: "issuer"', JSON.stringify(c[2]));
+	check(c[3]?.trustLevel === "reviewer", 'macroscopeapp -> trustLevel: "reviewer"', JSON.stringify(c[3]));
+	check(c[4]?.trustLevel === "untrusted",
+		'a login merely CONTAINING a reviewer name -> trustLevel: "untrusted"', JSON.stringify(c[4]));
+	check(c[5]?.trustLevel === "untrusted", 'a stranger -> trustLevel: "untrusted"', JSON.stringify(c[5]));
+
+	// A known reviewer is NEVER an instruction source — that is the whole point of the split.
+	check(c[3]?.trusted === false, "macroscopeapp stays trusted: false (reviewer is not an issuer)",
+		JSON.stringify(c[3]));
+	// `trusted` stays exactly derivable, so the published field keeps its meaning (#224 contract).
+	check(c.every((x: any) => x.trusted === (x.trustLevel === "issuer")),
+		"trusted === (trustLevel === 'issuer') for every comment", JSON.stringify(c));
+}
+
 // 7. Pagination still sums across pages in --json mode.
 {
 	const p1 = page([thread({ id: "T1" }), thread({ id: "T2", isResolved: true })], 4, "CURSOR1");
