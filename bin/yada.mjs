@@ -90,7 +90,7 @@ function loadConfig(toolName, defaults) {
   return merged;
 }
 
-// extensions/lib/merge/help.ts
+// extensions/lib/manifest-help.ts
 import * as fs from "node:fs";
 function renderHelp(manifestPath, invokedAs) {
   const manifestStr = fs.readFileSync(manifestPath, "utf8");

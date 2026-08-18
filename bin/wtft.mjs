@@ -382,9 +382,9 @@ var require_wcwidth = __commonJS((exports, module) => {
   }
 });
 
-// extensions/lib/merge/help.ts
-var exports_help = {};
-__export(exports_help, {
+// extensions/lib/manifest-help.ts
+var exports_manifest_help = {};
+__export(exports_manifest_help, {
   renderWhy: () => renderWhy,
   renderHelp: () => renderHelp
 });
@@ -451,7 +451,7 @@ function renderWhy(manifestPath, invokedAs) {
   }
   return text;
 }
-var init_help = () => {};
+var init_manifest_help = () => {};
 
 // bin/wtft.ts
 import * as fs13 from "node:fs";
@@ -4879,7 +4879,7 @@ function renderWtftHelp(manifestPath, invokedAs) {
   return text;
 }
 async function renderWtftWhy(manifestPath, invokedAs) {
-  const { renderWhy: renderWhy2 } = await Promise.resolve().then(() => (init_help(), exports_help));
+  const { renderWhy: renderWhy2 } = await Promise.resolve().then(() => (init_manifest_help(), exports_manifest_help));
   return renderWhy2(manifestPath, invokedAs);
 }
 function renderWtftVersion(manifestPath, moduleUrl) {
