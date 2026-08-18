@@ -61,6 +61,10 @@ EOF
       BRANCH_SOURCE="explicit"
       shift 2 ;;
     --) shift; REASON="${1:-}"; break ;;
+    # #362: THIS arm is what closed PR #364. `pr-reject --zzz-unknown` fell in
+    # here, became the close REASON, and the script went on to find the current
+    # branch's PR and close it. A leading dash is never a reason.
+    -*) echo "pr-reject: unknown flag: $1 (try --help)" >&2; exit 2 ;;
     *)  REASON="$1"; shift ;;
   esac
 done

@@ -38,7 +38,7 @@ Full spec: `docs/dev-workflow-spec.md`.
 | Script | Does |
 |---|---|
 | `git-checkpoint "msg"` | Add, commit, and push in one step (exact command in the spec) |
-| `git-overview` | Branch + status + diff stat + recent commits in one call |
+| `git-overview` | Branch + `git status --short` + `git diff --stat` (unstaged only) + last 5 commits in one call |
 | `wt-new <issue#>-<slug>` | Fetches, detects main/master, creates the in-tree worktree, and pushes with the correct upstream in one step (#250) |
 | `pr-open` | Pushes only if needed, refusing a diverged branch → pre-checks → `gh pr create` (the one command to ship) |
 | `pr-merge [--no-refresh] [<branch>]` | Squash-merges that branch's PR; defaults to the current branch (**human-only**). After a successful merge, best-effort refreshes every other open PR targeting the same base (#332 — strict status checks otherwise serialize a merge burst); never changes `pr-merge`'s exit code. `--no-refresh` opts out |
