@@ -2,7 +2,7 @@
 # ---
 # Block Edit/Write/MultiEdit when the target file's repo is on main/master.
 # PreToolUse hook — matcher must be "Edit|Write|MultiEdit" (NOT Bash, or the
-# git-checkout-b escape from main would itself be blocked → deadlock).
+# wt-new escape from main would itself be blocked → deadlock).
 #
 # Fail-closed on main: the CLAUDE.md HARD GATE says feature work starts on a
 # branch. Editing on main leads to lossy stash/checkout-b recovery (ax #3fdda0e7).
@@ -242,7 +242,7 @@ BRANCH=$(git -C "$DIR" branch --show-current 2>/dev/null)
 # Blocking the second case made the tool unusable for an entire rebase (5
 # conflicts across 2 commits when this was found, rebasing a FEATURE branch
 # onto main — not main work at all), and the advice it printed was
-# unfollowable: you cannot `git checkout -b` mid-rebase. Its practical effect
+# unfollowable: you cannot `wt-new` mid-rebase. Its practical effect
 # was not "prevented a dangerous edit" but "moved the edit into a shell
 # heredoc" — the #225 gap-3 opaque-script bypass — with no record that a
 # guarded file was touched. A guard that is trivially and legitimately routed
@@ -272,8 +272,8 @@ fi
 # only the two names let mainline edits through. Fail closed: no identifiable
 # branch is not a licence to edit.
 if [ -z "$BRANCH" ] || [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
-  echo "BLOCKED: '$FILE' is in a repo on '${BRANCH:-detached HEAD}'. Start feature/fix work on a branch first:" >&2
-  echo "  git checkout -b <issue#>-<slug>" >&2
+  echo "BLOCKED: '$FILE' is in a repo on '${BRANCH:-detached HEAD}'. Start feature/fix work in a worktree first:" >&2
+  echo "  wt-new <issue#>-<slug>" >&2
   echo "(CLAUDE.md HARD GATE — editing on main risks lossy stash/checkout recovery.)" >&2
   exit 2
 fi

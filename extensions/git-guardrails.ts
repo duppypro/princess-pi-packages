@@ -91,8 +91,8 @@ export default function (pi: ExtensionAPI) {
         logMainBranchSession(cwd, branch);
         pi.appendEntry("main-branch-warning", { branch, cwd });
         ctx.ui.notify(
-          `⛔ On branch '${branch}' — create a feature branch before editing.\n` +
-          `   git checkout -b <issue#>-<slug>\n` +
+          `⛔ On branch '${branch}' — create a feature worktree before editing.\n` +
+          `   wt-new <issue#>-<slug>\n` +
           `   (CLAUDE.md HARD GATE — editing on main risks lossy stash/checkout recovery.)`,
           "warning"
         );
@@ -106,7 +106,7 @@ export default function (pi: ExtensionAPI) {
   // shipped .d.ts, not assumed (see file header). Only edit/write are gated,
   // matching the Claude Code hook's `Edit|Write|MultiEdit` matcher scope —
   // Pi has no MultiEdit tool, and gating Bash here would deadlock the escape
-  // hatch (`git checkout -b <slug>` is itself a Bash command).
+  // hatch (`wt-new <issue#>-<slug>` is itself a Bash command).
   //
   // ctx.cwd (not the module-load-time `cwd` captured above) is used
   // deliberately: it is Pi's per-call notion of "current working directory"
