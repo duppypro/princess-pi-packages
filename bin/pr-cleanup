@@ -34,7 +34,7 @@
 # Exit codes (shared pr-* contract, #224 — full table in
 # docs/dev-workflow-spec.md):
 #   0  success
-#   2  usage error — missing or extra arguments (<branch> is required), a
+#   2  usage error — an unknown flag (#362), missing or extra arguments (<branch> is required), a
 #      protected branch named explicitly, or not run inside a git repository
 #      at all
 #   3  precondition not met — cwd is inside the worktree this run would

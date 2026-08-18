@@ -27,7 +27,9 @@
 //
 // Assertions are written to be non-vacuous. The earlier version's exit-0 checks
 // passed for `git-overview`, `pr-open` and `pr-reject` even with their flag arms
-// deleted, because those scripts had no `*)` arm and fell through to exit 0. The
+// deleted — `git-overview` and `pr-open` because their `case` had no arm at all
+// for an unmatched argument (it fell through and the script RAN), `pr-reject`
+// because its `*) REASON="$1"` arm swallowed the flag as the close reason. The
 // unknown-flag check is what distinguishes "answers --help" from "ignores every
 // argument"; without it the rest of this file proves nothing for those three.
 //

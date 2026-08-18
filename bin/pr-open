@@ -42,7 +42,7 @@
 #
 # Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md):
 #   0  success
-#   2  usage error — not run inside a git repository
+#   2  usage error — an unknown flag (#362), or not run inside a git repository
 #   3  precondition not met — on a protected branch (main/master), detached
 #      HEAD with no branch to open a PR from, or the worktree isn't clean
 #   4  not found — no `origin` remote configured

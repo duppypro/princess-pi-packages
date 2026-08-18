@@ -613,15 +613,18 @@ fails and the list drains itself instead of becoming decoration.
 
 ## Scripts
 
-**Every shipped script answers `-h`/`--help` and `--version`** (#310, #319, #350/#351, #362).
+**Every shipped script answers `-h`/`--help` (#310), `--version` (#178), and refuses an unknown flag naming it (#362).**
 `--help` prints usage and exits `0`; `--version` prints the **resolved path of the running copy**
 (`readlink -f "$0"`) and exits `0`. The path is the point: `install-workflow-tools` deploys these
 to `~/bin`, so a bare `pr-merge` from a feature worktree runs whatever was last installed there,
 not the worktree's own copy — `--version` is how you tell which tree answered. These are shell
 scripts, so there is no commit-hash or semver stamp; PATH only.
 
-`tests/shipped-script-help.test.ts` asserts this family-wide, including that each script's own
-`--help` names `--version` — the two scripts that lacked `--help` (`pr-threads`, `git-overview`)
+`tests/shipped-script-help.test.ts` asserts all three family-wide — including that each script's own
+`--help` names `--version`, that an unknown flag exits `2` **and is quoted in the message**, and that no
+help/version/usage path invokes `gh` at all (the control that stops this suite from closing a real PR,
+as it once did — #364). Two scripts refuse with a different code and are allowlisted by name so the
+divergence stays countable: `git-checkpoint` → `1`, `install-workflow-tools` → `64` (#366) — the two scripts that lacked `--help` (`pr-threads`, `git-overview`)
 were exactly the two where `--version` was undiscoverable (#362).
 
 | Script | What it does |
@@ -634,8 +637,8 @@ were exactly the two where `--version` was undiscoverable (#362).
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, `trusted`/`trustLevel` flags, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. |
 | `herdr-tab` | Sourceable guard (`. herdr-tab` → `herdr_available`, `herdr_tab <cwd> <label>`; also runs as a one-shot CLI). The `$HERDR_PANE_ID` predicate and the `return 0`-on-every-path discipline live here once instead of in three copies — see [the herdr half](#the-herdr-half-herdr-tab-and-why-the-guard-is-herdr_pane_id-277). Reports its outcome in `$HERDR_TAB_RESULT`, never in an exit code. |
 | `herdr-reap [--dry-run] [--json]` | Closes herdr tabs whose panes **all** point at a directory that no longer exists; spares its own tab, any tab with a live agent, and any tab with an unknown cwd. Called by `pr-cleanup`; also correct standalone after `git worktree remove`/`prune`. Exit 0 covers "not inside herdr" and "nothing stale" (`--json`'s `status` tells them apart), 5 = could not determine, 6 = a close was refused. |
-| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). A flag is never a message (#310): `-h`/`--help` prints usage (exit 0), any other leading `-` is refused (exit 1) — `git-checkpoint --help` once committed *and pushed* the message `--help`; use `git-checkpoint -- "-dash-leading message"` for the rare real case. Every script in this table answers `-h`/`--help` with usage since #310. |
-| `git-overview` | Four sections in one call: `git branch --show-current` (blank when HEAD is detached), `git status --short`, `git diff --stat` (**unstaged only** — a fully staged change prints an empty section), `git log --oneline -5` (fixed at 5). Takes no positional arguments and ignores rather than refuses an unrecognised one; exits 0, or 128 when git itself fails. |
+| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). A flag is never a message (#310): `-h`/`--help` prints usage (exit 0), any other leading `-` is refused (exit 1) — `git-checkpoint --help` once committed *and pushed* the message `--help`; use `git-checkpoint -- "-dash-leading message"` for the rare real case. Every script in this table answers `-h`/`--help` with usage — most since #310, `pr-threads` and `git-overview` since #362. |
+| `git-overview` | Four sections in one call: `git branch --show-current` (blank when HEAD is detached), `git status --short`, `git diff --stat` (**unstaged only** — a fully staged change prints an empty section), `git log --oneline -5` (fixed at 5). Takes no positional arguments; a leading-dash argument is refused (exit 2, #362) while a non-dash positional is still ignored. Exits 0, 2, or 128 when git itself fails. |
 | `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249), and the statusline scripts from `statusline/` → `~/.claude/` (#227). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Never writes configuration or prose — `settings.json`, `~/.claude/CLAUDE.md`, `~/git-projects/CLAUDE.md` are dotfiles-doctor's under ADR 0001. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
 
 This table is the installer's contract: every script it copies must have a row here, and
@@ -887,6 +890,9 @@ license to add a seventh number.
 | 4 | not found — a required piece of local git state or a PR is missing (no main/master worktree registered, no local branch by that name, no `origin` remote configured, no such PR, no open PR for the branch) |
 | 5 | remote/API failure — state could **not** be determined (network down, `gh` outage, an incomplete API response, a local check like `merge-base` that could not even run, or a ref the remote named that was never fetched locally) |
 | 6 | safety gate refused — state **was** determined, and it says no (unmerged work, a diverged or moved remote, a dirty or locked worktree refusing removal, a rejected push, a ref that won't delete, a target path or branch that already exists, ambiguous PR selection, `pr-merge`'s pr-threads gate) |
+
+`git-overview` and `herdr-tab` are not members, but their unknown-flag refusal uses code `2` with
+this table's meaning (#362) — the only code from it they emit.
 
 **`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
 #232's `--json` already shipped depending on it: `1` means "the check succeeded and

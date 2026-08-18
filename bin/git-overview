@@ -31,8 +31,9 @@ constantly, printing four sections in this order:
                                          prints an empty section)
   commits   git log --oneline -5        (fixed at 5, not configurable)
 
-Takes no positional arguments; any unrecognised argument is ignored rather than
-refused. Exits 0, or 128 if git itself fails (e.g. run outside a repository).
+Takes no positional arguments. A leading-dash argument is refused (exit 2); a
+non-dash positional is still ignored. Exits 0, 2 for an unknown flag, or 128 if
+git itself fails (e.g. run outside a repository).
 
   -h, --help  this text.
   --version   resolved path of the running copy.
