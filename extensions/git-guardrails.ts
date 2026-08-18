@@ -93,6 +93,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(
           `⛔ On branch '${branch}' — create a feature worktree before editing.\n` +
           `   wt-new <issue#>-<slug>\n` +
+          `   change_working_directory { path: <path printed by wt-new> }\n` +
           `   (CLAUDE.md HARD GATE — editing on main risks lossy stash/checkout recovery.)`,
           "warning"
         );

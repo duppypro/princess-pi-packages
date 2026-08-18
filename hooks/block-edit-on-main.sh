@@ -274,6 +274,7 @@ fi
 if [ -z "$BRANCH" ] || [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "BLOCKED: '$FILE' is in a repo on '${BRANCH:-detached HEAD}'. Start feature/fix work in a worktree first:" >&2
   echo "  wt-new <issue#>-<slug>" >&2
+  echo "  EnterWorktree { path: <path printed by wt-new> }" >&2
   echo "(CLAUDE.md HARD GATE — editing on main risks lossy stash/checkout recovery.)" >&2
   exit 2
 fi
