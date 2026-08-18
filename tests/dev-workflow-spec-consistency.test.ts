@@ -149,5 +149,44 @@ check(scripts.length > 0, "SCRIPTS array is non-empty", scripts.join(","));
 	check(tracked === "CLAUDE.md", "CLAUDE.md is a tracked file", `git ls-files returned: '${tracked}'`);
 }
 
+// --- markdown tables: every row in a table has the table's cell count ---------
+//
+// A `|` written as prose inside a cell is parsed as a DELIMITER, silently
+// splitting that row into extra cells. It renders as garbage on GitHub and is
+// invisible in the diff, in the editor, and to anyone reading the raw file —
+// which is how `CLAUDE.md`'s pr-threads row shipped with `issuer | reviewer |
+// untrusted` in it and rendered as four unlabeled cells (#362, caught by review
+// rather than by us). The fix is `\\|`; this is the check that counts it.
+{
+	const mdFiles = [
+		{ label: "CLAUDE.md", file: CLAUDE_MD },
+		{ label: "docs/dev-workflow-spec.md", file: SPEC },
+	];
+	for (const { label, file } of mdFiles) {
+		const lines = fs.readFileSync(file, "utf8").split("\n");
+		// Count only UNESCAPED pipes: strip \| first, then count what remains.
+		const cells = (line: string): number => (line.replace(/\\\|/g, "").match(/\|/g) || []).length;
+		let inFence = false;
+		let expected = 0;
+		let headerLine = 0;
+		const bad: string[] = [];
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			if (/^\s*```/.test(line)) { inFence = !inFence; continue; }
+			if (inFence) continue;
+			const isRow = /^\s*\|.*\|\s*$/.test(line);
+			if (!isRow) { expected = 0; continue; }
+			// A delimiter row (|---|---|) sets the table's shape.
+			if (/^\s*\|[\s:|-]+\|\s*$/.test(line)) { expected = cells(line); headerLine = i + 1; continue; }
+			if (expected === 0) continue; // header row, before the delimiter
+			if (cells(line) !== expected) {
+				bad.push(`${label}:${i + 1} has ${cells(line)} unescaped pipes, table (delimiter at :${headerLine}) expects ${expected}`);
+			}
+		}
+		check(bad.length === 0, `${label}: every table row matches its table's cell count`,
+			bad.join("\n") + (bad.length ? "\n(a literal | inside a cell must be written \\|)" : ""));
+	}
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} dev-workflow-spec consistency: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);
