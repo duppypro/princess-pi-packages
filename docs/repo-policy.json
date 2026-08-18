@@ -127,6 +127,7 @@
     "portfolio-api": "protected",
     "princess-pi-agent-workspace": "protected",
     "princess-pi-brain": "protected",
-    "rogue-savvy": "protected"
+    "rogue-savvy": "protected",
+    "iarts-pantograph": "protected"
   }
 }
