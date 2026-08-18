@@ -142,7 +142,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 
 	async function handleWhy(ctx: any): Promise<void> {
 		try {
-			const { renderWhy } = await import("./lib/merge/help.js");
+			const { renderWhy } = await import("./lib/manifest-help.js");
 			const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
 			const whyText = renderWhy(manifestPath, "/serve");
 			ctx.ui.notify(whyText, "info");

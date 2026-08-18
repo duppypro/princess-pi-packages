@@ -1306,7 +1306,8 @@ every other claim in the report *means*.
 | Commit-message regex gate (`isStep5ApprovedMessage`) | Fragile — legitimate commits failed over word order. Process guarantees readiness, not wording. |
 | `merge-checklist` skill | Post-hoc checklist. The same checks now live in `pr-open` itself. |
 | `pre-merge-checklist` skill | Redundant with `merge-checklist`. |
-| `bin/merge` CLI (#201) | Replaced by `pr-open`. The Pi `/merge` slash command (`extensions/merge.ts`) is a separate thing and still exists. |
+| `bin/merge` CLI (#201) | Replaced by `pr-open`. |
+| Pi `/merge` slash command (`extensions/merge.ts`, #226) | Deleted with its manifest and `docs/EXT_MERGE.html`. It ran `git checkout main` → merge → `git push` **in-process**, so the bash-spawn guardrail never saw it — a slash command spawns no shell. Shell-first closes that structurally: every git-touching invocation now goes through bash, where the hook can read it. Gated by `tests/pi-merge-retired.test.ts`. The shared manifest renderer it used to house survives as `extensions/lib/manifest-help.ts`. |
 | `bin/post-merge-cleanup` (#207) | Replaced by `pr-cleanup <branch>`. |
 | `pr-cleanup`'s no-argument (cwd-discovery) mode (#221 finding 2) | Traced and tested empirically: every no-argument path either hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup, by construction (whatever branch cwd has checked out is always the branch checked out in cwd's own worktree, which the containment gate then refuses). `<branch>` is now a required argument. |
 | Local merge to main (`merge --cleanup`) | Replaced by PR merge. LLM runs `pr-open`, human runs `pr-merge`. |

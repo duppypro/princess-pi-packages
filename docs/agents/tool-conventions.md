@@ -18,7 +18,7 @@ Every command backed by a manifest renders `--help` in this fixed order:
 2. **Examples first** — realistic invocations with mock parameters (`examples[].args` + `desc`)
 3. **Full flag enumeration last** (`usage[].flags` + `desc`)
 
-Manifest entries store only trailing arguments/flags — the renderer prepends the invocation name (e.g. `/merge` for Pi, `./merge` for CLI), so the same manifest works under both forms.
+Manifest entries store only trailing arguments/flags — the renderer prepends the invocation name (e.g. `!serve` from Pi, `serve` on the CLI), so the same manifest works under both forms.
 
 ## Manifest-Driven `--why`
 
@@ -37,7 +37,7 @@ Manifest `why` entries have four fields — three required, one optional:
 - `result` — what the end state looks like
 - `demo` *(optional)* — an array of literal output lines printed under `result`, ANSI escapes
   included, written as `\u001b[…m` in the JSON. Rendered by the shared help renderer
-  (`extensions/lib/merge/help.ts`), skipped when absent or empty. Paste real output rather
+  (`extensions/lib/manifest-help.ts`), skipped when absent or empty. Paste real output rather
   than inventing it: a demo is the one part of `--why` a reader will compare against what
   their terminal actually printed.
 
