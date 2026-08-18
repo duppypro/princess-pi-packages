@@ -221,8 +221,9 @@ export function checkEditOnMain(filePath: string, cwd: string): string | null {
   // Fail closed: no identifiable branch is not a licence to edit.
   if (!branch || branch === "main" || branch === "master") {
     return (
-      `'${filePath}' is in a repo on '${branch || "detached HEAD"}'. Start feature/fix work on a branch first:\n` +
-      `  git checkout -b <issue#>-<slug>\n` +
+      `'${filePath}' is in a repo on '${branch || "detached HEAD"}'. Start feature/fix work in a worktree first:\n` +
+      `  wt-new <issue#>-<slug>\n` +
+      `  change_working_directory { path: <path printed by wt-new> }\n` +
       `(CLAUDE.md HARD GATE — editing on main risks lossy stash/checkout recovery.)`
     );
   }
