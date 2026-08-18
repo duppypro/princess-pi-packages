@@ -613,11 +613,22 @@ fails and the list drains itself instead of becoming decoration.
 
 ## Scripts
 
+**Every shipped script answers `-h`/`--help` and `--version`** (#310, #319, #350/#351, #362).
+`--help` prints usage and exits `0`; `--version` prints the **resolved path of the running copy**
+(`readlink -f "$0"`) and exits `0`. The path is the point: `install-workflow-tools` deploys these
+to `~/bin`, so a bare `pr-merge` from a feature worktree runs whatever was last installed there,
+not the worktree's own copy — `--version` is how you tell which tree answered. These are shell
+scripts, so there is no commit-hash or semver stamp; PATH only.
+
+`tests/shipped-script-help.test.ts` asserts this family-wide, including that each script's own
+`--help` names `--version` — the two scripts that lacked `--help` (`pr-threads`, `git-overview`)
+were exactly the two where `--version` was undiscoverable (#362).
+
 | Script | What it does |
 |---|---|
 | `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> <path> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
 | `pr-open` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create` |
-| `pr-merge [--no-refresh] [<branch>]` | Discovers PR from `<branch>`, default current branch → gates on `pr-threads` (unresolved conversations + review coverage of the head, #258) → `gh pr merge --squash` (human command). No override flag — the server ruleset refuses too. On success, best-effort refreshes every other open PR targeting the same base (#332 — the ruleset's `strict_required_status_checks_policy` marks them out of date on every merge, otherwise serializing a merge burst behind a manual "Update branch" click per PR); never changes `pr-merge`'s own exit code. `--no-refresh` opts out. |
+| `pr-merge [--no-refresh] [<branch>]` | Discovers PR from `<branch>`, default current branch → asks GitHub for `mergeable`/`mergeStateStatus` and gates on the server's own verdict (#349, correcting #258), reading `pr-threads --json` structurally for unresolved threads → `gh pr merge --squash` (human command). Refuses `DIRTY`/`DRAFT`/`BLOCKED`, an unrecognised status, or unresolved threads; `BEHIND` is eligible. **Head-coverage warns but does not block** — that condition is enforced by no ruleset here, and the old message blaming `required_review_thread_resolution` was withdrawn as false (#349). `UNKNOWN` re-queries, then exits 5 rather than guessing. On success, best-effort refreshes every other open PR targeting the same base (#332 — the ruleset's `strict_required_status_checks_policy` marks them out of date on every merge, otherwise serializing a merge burst behind a manual "Update branch" click per PR); never changes `pr-merge`'s own exit code. `--no-refresh` opts out. |
 | `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command) |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) |
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, `trusted`/`trustLevel` flags, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. |

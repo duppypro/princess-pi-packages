@@ -14,6 +14,19 @@ set -euo pipefail
 # on-disk location. Not built, so no commit-hash/semver stamp — PATH only.
 case "${1:-}" in
   --version) readlink -f "$0"; exit 0 ;;
+  # #362: the usage text above existed only as a header comment — unreachable
+  # from the command line, so --version had nowhere to be discovered either.
+  -h|--help)
+    cat <<'USAGE'
+usage: git-overview
+       git-overview --version
+
+One-command repo status snapshot: branch + status, diff stat, recent commits.
+Replaces the 3-command cluster agents repeat constantly. Takes no arguments.
+
+  --version  resolved path of the running copy.
+USAGE
+    exit 0 ;;
 esac
 
 echo "=== branch ==="
