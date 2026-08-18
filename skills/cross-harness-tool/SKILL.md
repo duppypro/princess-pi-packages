@@ -1,6 +1,6 @@
 ---
 name: cross-harness-tool
-description: SUPERSEDED by #226 (shell-first) — do not follow as written; awaiting rewrite in #230. Historical recipe for a tool with both a Pi /command face and a Claude CLI face.
+description: "SUPERSEDED by #226 (shell-first) — do not follow as written; awaiting rewrite in #230. Historical recipe for a tool with both a Pi /command face and a Claude CLI face."
 ---
 
 # Skill: Build a Cross-Harness Tool (Pi `/command` + Claude CLI)
