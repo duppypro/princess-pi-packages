@@ -82,8 +82,14 @@ excluded from `PATH`.
 
 ### The bundling approach (`esbuild`, via `build.ts`)
 
-`bun run build` compiles each `bin/<name>.ts` and bundles its `extensions/lib/` dependencies into
-`bin/<name>.mjs`. **🚨 Gotchas (learned in #9 and #10):**
+`bun run build` bundles a bin's `extensions/lib/` dependencies into `bin/<name>.mjs` — but **only
+for the bins named in `build.ts`'s `TARGETS` array.** The build discovers nothing. Add your entry
+there (with an `external` list for any file that must stay a discrete file on disk) or `bun run
+build` succeeds, says nothing about your tool, and leaves `bin/<name>.mjs` absent — so the command
+you registered in `package.json` `bin` cannot run at all. Caught by macroscopeapp on PR #375
+against the previous wording, which claimed the build compiles *each* `bin/*.ts`.
+
+**🚨 Gotchas (learned in #9 and #10):**
 
 1. **The compilation ghost.** Edit a shared library and the Pi extension picks it up on `/reload`;
    the `.mjs` binary **does not**. Run `bun run build` before you commit, or the package ships stale

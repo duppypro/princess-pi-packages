@@ -60,6 +60,47 @@ for (const m of manifests) {
 }
 
 // ---
+// 1b. Every command `package.json` registers has a build target.
+//
+//     `package.json` `bin` is a citation too — it names a `.mjs` file npm will put
+//     on a user's PATH. `build.ts` produces those from a FIXED `TARGETS` array and
+//     discovers nothing, so registering a bin without adding a target yields a
+//     build that succeeds, says nothing, and ships a global command that does not
+//     exist. Found by macroscopeapp on PR #375 in the skill that teaches this;
+//     the guidance and the guard land together, because guidance alone is what
+//     was already there.
+// ---
+console.log("\n— every registered bin has a build target");
+
+const pkg = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8"));
+const buildSrc = fs.readFileSync(path.join(REPO, "build.ts"), "utf8");
+const targetsBlock = buildSrc.slice(buildSrc.indexOf("const TARGETS"), buildSrc.indexOf("];", buildSrc.indexOf("const TARGETS")));
+const targets = [...targetsBlock.matchAll(/name:\s*"([^"]+)"/g)].map((m) => m[1]);
+
+check(targets.length >= 3, `build.ts declares ${targets.length} targets`, targetsBlock.slice(0, 200));
+
+for (const [cmd, rel] of Object.entries(pkg.bin ?? {}) as Array<[string, string]>) {
+	const clean = rel.replace(/^\.\//, "");
+	check(exists(clean), `bin "${cmd}" → ${clean} exists on disk`);
+	// A handwritten .mjs needs no target; a generated one does. The ⚠️ GENERATED
+	// banner is what tells them apart, and it is the repo's own existing marker.
+	const generated = exists(clean) && /GENERATED/.test(fs.readFileSync(path.join(REPO, clean), "utf8").slice(0, 400));
+	if (!generated) continue;
+	const base = path.basename(clean, ".mjs");
+	check(targets.includes(base),
+		`bin "${cmd}" → ${base} is in build.ts TARGETS`,
+		`generated artifact with no build target — \`bun run build\` will not produce it. Targets: ${targets.join(", ")}`);
+}
+
+// The generated/handwritten split is what decides whether a target is required, so
+// it must not go blind in either direction: a classifier that called everything
+// handwritten would skip every real check and still print all green.
+check(/GENERATED/.test(fs.readFileSync(path.join(REPO, "bin/serve.mjs"), "utf8").slice(0, 400)),
+	"the GENERATED banner is detected on a built artifact");
+check(!/GENERATED/.test(fs.readFileSync(path.join(REPO, "bin/patch-pi-widgets.mjs"), "utf8").slice(0, 400)),
+	"and absent on the handwritten bin — which is why it needs no target");
+
+// ---
 // 2 & 3. Skills cite skills, and skills cite paths.
 // ---
 console.log("\n— skills cite skills that exist");

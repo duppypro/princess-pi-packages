@@ -63,11 +63,20 @@ npm install -g github:duppypro/princess-pi-packages
 ```
 
 This puts **`serve`**, **`wtft`**, **`yada`** (alias `dedupwcount`) and **`patch-pi-widgets`**
-on your `$PATH` as prebuilt `.mjs` CLIs — plain `node`, no build step at install time, no bun
-required. In Claude Code, invoke one with the `!` prefix (e.g. `!serve dist/`) or let the agent
-run it as a single Bash call: it spends **zero LLM reasoning turns** on the success path and
-emits fix-instructing errors on the failure path. Requires **Node ≥ 18** (ESM). Re-run the
-install to update.
+on your `$PATH` as `.mjs` CLIs that then run on plain `node`. In Claude Code, invoke one with the
+`!` prefix (e.g. `!serve dist/`) or let the agent run it as a single Bash call: it spends **zero
+LLM reasoning turns** on the success path and emits fix-instructing errors on the failure path.
+Requires **Node ≥ 18** (ESM). Re-run the install to update.
+
+> **⚠️ The git-URL install above needs `bun` on `PATH`, and only that channel does.** npm runs a
+> package's `prepare` script for a git dependency, and ours is `bun install … && bun build.ts`.
+> On a node-only host the install fails there, before any CLI is placed. This is deliberate, not
+> an oversight: `~/git-projects/CLAUDE.md` § Node Toolchain Standard permits bun-on-PATH for the
+> **git-URL channel (early adopters) only, never for the registry channel** — a registry/tarball
+> install ships the prebuilt `.mjs` via the `files` allowlist, runs no `prepare`, and needs
+> nothing but stock node. `tests/pack-and-smoke.test.ts` proves that channel with bun excluded
+> from `PATH`. If you are on a node-only host today, install from a tarball rather than the git
+> URL.
 
 > **The git-workflow scripts are a separate channel.** `git-checkpoint`, `git-overview`,
 > `wt-new`, `pr-open`, `pr-merge`, `pr-reject`, `pr-cleanup`, `pr-threads`, `repo-gate`,
