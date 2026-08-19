@@ -631,8 +631,8 @@ were exactly the two where `--version` was undiscoverable (#362).
 adjacent ones, each of which let an argument the caller typed be ignored or repurposed while the
 script ran on:
 
-- **Unexpected positionals are refused, naming the argument** (exit `2`; `git-checkpoint` `1`,
-  `install-workflow-tools` `64`). `pr-open some-other-branch` used to open the PR for the *current*
+- **Unexpected positionals are refused, naming the argument** (exit `2` everywhere;
+  `install-workflow-tools`' `64` is the one exception — see the exit-code section below). `pr-open some-other-branch` used to open the PR for the *current*
   branch — the #209 shape, and precisely what `pr-reject`'s `-b` flag exists to prevent. `pr-open`
   and `git-overview` take no arguments at all; `pr-threads` refuses a third positional as `pr-merge`
   has refused a second since #333; `git-checkpoint` refuses an unquoted multi-word message rather
@@ -656,12 +656,12 @@ rationale lives once, in `bin/pr-open`; the others carry a two-line pointer to i
 | `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> <path> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
 | `pr-open` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create`. **Takes no arguments**: a branch name is refused (exit 2, #367), not ignored — until then `pr-open <branch>` opened the *current* branch's PR. To open another branch's PR, run it from that branch's worktree. |
 | `pr-merge [--no-refresh] [<branch>]` | Discovers PR from `<branch>`, default current branch → asks GitHub for `mergeable`/`mergeStateStatus` and gates on the server's own verdict (#349, correcting #258), reading `pr-threads --json` structurally for unresolved threads → `gh pr merge --squash` (human command). Refuses `DIRTY`/`DRAFT`/`BLOCKED`, an unrecognised status, or unresolved threads; `BEHIND` is eligible. **Head-coverage warns but does not block** — that condition is enforced by no ruleset here, and the old message blaming `required_review_thread_resolution` was withdrawn as false (#349). `UNKNOWN` re-queries, then exits 5 rather than guessing. On success, best-effort refreshes every other open PR targeting the same base (#332 — the ruleset's `strict_required_status_checks_policy` marks them out of date on every merge, otherwise serializing a merge burst behind a manual "Update branch" click per PR); never changes `pr-merge`'s own exit code. `--no-refresh` opts out. |
-| `pr-reject [-b <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command). `-b`'s value must not itself be flag-shaped (#367). The reason is every positional joined with single spaces — before or after `--` — so an unquoted multi-word reason arrives whole; it used to keep only the last word, or only the first word after `--`. Quote it to control spacing exactly. |
+| `pr-reject [-b\|--branch <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command). `-b` and its long form `--branch` are the same flag, space-separated only (`--branch=foo` is refused); the value must not itself be flag-shaped (#367). The reason is every positional joined with single spaces — before or after `--` — so an unquoted multi-word reason arrives whole; it used to keep only the last word, or only the first word after `--`. Quote it to control spacing exactly. |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) An extra argument is refused *by name* (exit 2, #367); the count check used to answer it with "`<branch>` is required", which reads as "you forgot it" when the caller in fact supplied one and a typo. |
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, `trusted`/`trustLevel` flags, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. A third positional is refused (exit 2, #367) rather than dropped — two PR numbers is a typo, and which one was meant is unknowable. |
 | `herdr-tab` | Sourceable guard (`. herdr-tab` → `herdr_available`, `herdr_tab <cwd> <label>`; also runs as a one-shot CLI). The `$HERDR_PANE_ID` predicate and the `return 0`-on-every-path discipline live here once instead of in three copies — see [the herdr half](#the-herdr-half-herdr-tab-and-why-the-guard-is-herdr_pane_id-277). Reports its outcome in `$HERDR_TAB_RESULT`, never in an exit code. In CLI mode both arguments are guarded: a dash-leading `<label>` used to pass while a dash-leading `<cwd>` was refused, and `herdr-tab -- <cwd> <label>` is the escape for a value that really starts with `-` (#367). |
 | `herdr-reap [--dry-run] [--json]` | Closes herdr tabs whose panes **all** point at a directory that no longer exists; spares its own tab, any tab with a live agent, and any tab with an unknown cwd. Called by `pr-cleanup`; also correct standalone after `git worktree remove`/`prune`. Exit 0 covers "not inside herdr" and "nothing stale" (`--json`'s `status` tells them apart), 5 = could not determine, 6 = a close was refused. |
-| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). A flag is never a message (#310): `-h`/`--help` prints usage (exit 0), any other leading `-` is refused (exit 1) — `git-checkpoint --help` once committed *and pushed* the message `--help`; use `git-checkpoint -- "-dash-leading message"` for the rare real case. The message is **one quoted argument**: an unquoted multi-word message is refused (exit 1, #367) rather than committed and pushed as its first word alone. Every script in this table answers `-h`/`--help` with usage — most since #310, `pr-threads` and `git-overview` since #362. |
+| `git-checkpoint [--push] "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). **While a PR is open on the branch the push is held back** and commits pile up locally, so a fix round costs one paid code review instead of one per commit (#368); send the batch with `git push`, or use `--push` to commit and push in one step anyway. Before a PR exists every commit is pushed as usual, because that push is free and that is the phase where losing work hurts. The open-PR check is scoped to **our own repo** — `gh pr list --head` matches a branch name across every fork, and a stranger's identically named branch would otherwise withhold the push silently (#369, the #209 shape). A flag is never a message (#310): `-h`/`--help` prints usage (exit 0), any other leading `-` is refused (**exit 2** since #366, was 1) — `git-checkpoint --help` once committed *and pushed* the message `--help`; use `git-checkpoint -- "-dash-leading message"` for the rare real case. The message is **one quoted argument**: an unquoted multi-word message is refused (exit 2, #367) rather than committed and pushed as its first word alone. Every script in this table answers `-h`/`--help` with usage — most since #310, `pr-threads` and `git-overview` since #362. |
 | `git-overview` | Four sections in one call: `git branch --show-current` (blank when HEAD is detached), `git status --short`, `git diff --stat` (**unstaged only** — a fully staged change prints an empty section), `git log --oneline -5` (fixed at 5). Takes no arguments: leading-dash refused since #362, non-dash since #367 (both exit 2). Exits 0, 2, or 128 when git itself fails. |
 | `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249), and the statusline scripts from `statusline/` → `~/.claude/` (#227). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Never writes configuration or prose — `settings.json`, `~/.claude/CLAUDE.md`, `~/git-projects/CLAUDE.md` are dotfiles-doctor's under ADR 0001. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
 
@@ -917,6 +917,22 @@ license to add a seventh number.
 
 `git-overview` and `herdr-tab` are not members, but their unknown-flag refusal uses code `2` with
 this table's meaning (#362) — the only code from it they emit.
+
+**One usage-error vocabulary, one documented exception (#366).** Three were in use for the same
+event — "you passed an argument I don't know": `2` (ten scripts), `1` (`git-checkpoint`), `64`
+(`install-workflow-tools`). All three refused safely, so this was a contract inconsistency rather
+than a bug, and three tables for one event is exactly what the Agent-First standard's *documented
+exit-code table* exists to prevent. The split now follows **who runs the script**:
+
+- **Agent-called → `2`.** Every shipped script, `git-checkpoint` included. Its `1` was documented
+  here, so moving it was a documented-behaviour change, not a cleanup; a caller keying on `1`
+  breaks, and none was found in this repo.
+- **Human-run → `sysexits.h`.** `install-workflow-tools` keeps `EX_USAGE` (`64`). It is the one
+  script a human runs from a shell, where that convention is the local idiom. This is **policy**,
+  not an accident — stated here so it is not re-discovered a third time.
+
+`tests/shipped-script-help.test.ts` carries the exception as a one-entry named allowlist. A
+loosened assertion (`status !== 0`) would hide the divergence; the allowlist keeps it countable.
 
 **`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
 #232's `--json` already shipped depending on it: `1` means "the check succeeded and
@@ -1303,9 +1319,17 @@ ADR 0002 records.
 Everything above governs one repo. `docs/repo-policy.json` declares the same kind of
 baseline for all 29 — **17 public non-fork repos plus 12 private ones created in 2026** —
 and `repo-gate` reports the difference between what it declares and what GitHub actually
-holds. Exit `6` means drift; `--remedy <repo>` prints the fix; the tool never writes.
-`docs/repo-gate-apply.md` is the runbook for applying a remedy, written to be handed to an
+holds. Exit `6` means drift; `--json` emits the whole survey as one document; `--policy <path>`
+points at a policy file other than the default; `--remedy <repo>` prints the fix; the tool never
+writes. `docs/repo-gate-apply.md` is the runbook for applying a remedy, written to be handed to an
 agent.
+
+`repo-gate` is also the **one shell script that implements `--why`** (#365). That is permitted, not
+required: `--why` is a manifest-backed convention scoped to `serve`, `wtft`, and `yada`, and the
+Scripts table above is where every other script answers "why would I run this". A shell script may
+carry an inline `--why` when it earns one — `repo-gate`'s answer is about what its report does and
+does not prove, which is genuinely more than a table row — and it is documented here like any other
+flag, because `tests/tool-flag-contract.test.ts` requires every implemented flag to be.
 
 **`repo-gate` also asserts bot write access, per repo (#304).** The policy's
 `.bot_login` (`princess-pi-bot`, the account #304 wants agent sessions to push as) is

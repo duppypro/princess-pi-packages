@@ -148,15 +148,17 @@ function ghCalls(): string {
 /**
  * The usage-error exit code each script uses.
  *
- * Two scripts refuse safely but with a different code, and both are recorded here
- * BY NAME rather than by relaxing the check — an allowlist keeps the divergence
- * countable, a loosened assertion hides it. `git-checkpoint` exits 1, which
- * docs/dev-workflow-spec.md documents; `install-workflow-tools` exits 64
- * (sysexits EX_USAGE). Neither is governed by the #224 pr-* table. Reconciling the
- * three vocabularies is filed separately — see #366, which will shrink this map.
+ * ONE documented exception, and it is policy rather than an accident (#366): the
+ * split follows WHO RUNS THE SCRIPT. `install-workflow-tools` is the one script a
+ * human runs from a shell, where `sysexits.h` `EX_USAGE` (64) is the local
+ * convention; every other script here is agent-called and speaks the #224 table's
+ * usage code, 2. `git-checkpoint` used to exit 1 — agent-called and in the family,
+ * so #366 moved it to 2 and updated the spec row that documented the 1.
+ *
+ * Kept as a named allowlist rather than a loosened assertion (`status !== 0`): an
+ * allowlist keeps the divergence countable, a loose check hides it.
  */
 const EXIT2_EXEMPT: Record<string, number> = {
-	"git-checkpoint": 1,
 	"install-workflow-tools": 64,
 };
 const usageExit = (s: string): number => EXIT2_EXEMPT[s] ?? 2;

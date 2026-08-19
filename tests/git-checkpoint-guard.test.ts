@@ -268,7 +268,9 @@ console.log("\n#310 — flags are not messages:");
 	}
 	{
 		const { code, out } = runCheckpoint(sb.clone, "--not-a-flag");
-		check(code === 1, "unknown -flag → exit 1 (usage error)", `got ${code}, output:\n${out}`);
+		// 2, not 1, since #366: one usage-error vocabulary across the shipped family.
+		// `install-workflow-tools`' 64 (sysexits) is the single documented exception.
+		check(code === 2, "unknown -flag → exit 2 (usage error, #224 table)", `got ${code}, output:\n${out}`);
 		check(/--not-a-flag/.test(out) && /--/.test(out), "unknown -flag → names it and points at `--` for a message that starts with '-'", out);
 		check(tip(sb.clone) === before, "unknown -flag → no commit created", out);
 	}
@@ -419,12 +421,16 @@ console.log("\n#369 — --push does not bypass flag validation:");
 		// other arguments. So `--push --help` is a usage error, not a help screen —
 		// and either way it must never commit.
 		const { code, out } = runCheckpoint(sb.clone, "--help", { args: ["--push"], env });
-		check(code === 1, "--push --help → exit 1 (#367: terminal flags take no other args)", `got ${code}: ${out}`);
+		// exit 2, not 1, since #366 — see the allowlist note in
+		// tests/shipped-script-help.test.ts. This assertion was written on the #368
+		// branch while main still said 1; the rebase merged the code cleanly and
+		// left the expectation behind, which is the half git cannot see.
+		check(code === 2, "--push --help → exit 2 (#367: terminal flags take no other args)", `got ${code}: ${out}`);
 		check(tip(sb.clone) === before, "--push --help → no commit created", out);
 	}
 	{
 		const { code, out } = runCheckpoint(sb.clone, "--not-a-flag", { args: ["--push"], env });
-		check(code === 1, "--push --not-a-flag → exit 1 (usage error)", `got ${code}: ${out}`);
+		check(code === 2, "--push --not-a-flag → exit 2 (usage error, #366)", `got ${code}: ${out}`);
 		check(tip(sb.clone) === before, "--push --not-a-flag → no commit created", out);
 	}
 	{

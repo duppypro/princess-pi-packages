@@ -86,6 +86,7 @@ case "${1:-}" in
   -h|--help)
     cat <<'EOF'
 usage: pr-open
+       pr-open -h | --help
        pr-open --version
 
 Create the PR for the CURRENT feature branch (from its worktree): pushes,

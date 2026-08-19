@@ -7,6 +7,7 @@
 #   herdr-reap                close stale tabs
 #   herdr-reap --dry-run      report what WOULD be closed, close nothing
 #   herdr-reap --json         one machine-readable document on stdout
+#   herdr-reap -h | --help    this text
 #   herdr-reap --version      print the resolved absolute path of this copy
 #
 # The rule, in full:
@@ -186,7 +187,7 @@ while [ $# -gt 0 ]; do
 	--dry-run) DRY_RUN=1 ;;
 	-h | --help)
 		# Header IS the help text — keep the range covering Usage + the rule.
-		sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	# #178: resolved absolute path of the running copy — install-workflow-tools

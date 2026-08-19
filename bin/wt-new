@@ -125,6 +125,7 @@ case "${1:-}" in
   -h|--help)
     cat <<'EOF'
 usage: wt-new <issue#>-<slug>
+       wt-new -h | --help
        wt-new --version
 
 From the main clone: fetch origin, create the in-tree worktree at
