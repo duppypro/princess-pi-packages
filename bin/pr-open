@@ -129,8 +129,22 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 2
 fi
 
+# --- the protected-branch predicate lives in one file (#222) ----------------
+# Sourced from beside $0, the same discipline `wt-new` uses for `herdr-tab`.
+# Unlike herdr-tab this FAILS CLOSED: herdr is decoration, and a guard that
+# degrades is simply absent — which is the state #222 was filed about. No
+# inline main/master fallback, because a fallback would restore the four copies
+# pr-guard exists to delete, silently, on exactly the hosts already broken.
+PR_GUARD_LIB="$(cd "$(dirname "$0")" && pwd)/pr-guard"
+# shellcheck source=bin/pr-guard
+if [ ! -r "$PR_GUARD_LIB" ] || ! . "$PR_GUARD_LIB"; then
+  echo "pr-open: cannot source the protected-branch guard at $PR_GUARD_LIB." >&2
+  echo "   Refusing rather than proceeding without it. Run: install-workflow-tools" >&2
+  exit 3
+fi
+
 BRANCH=$(git branch --show-current)
-if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+if pr_is_protected "$BRANCH"; then
   echo "pr-open: cannot create a PR from '$BRANCH'. Switch to a feature branch." >&2
   exit 3
 fi

@@ -250,6 +250,7 @@ const UNEXPECTED_POSITIONAL: Record<string, string[]> = {
 	"herdr-tab": ["/tmp", "a-label", "zzz-unexpected"],
 	"install-workflow-tools": ["zzz-unexpected"],
 	"pr-cleanup": ["some-branch", "zzz-unexpected"],
+	"pr-guard": ["some-branch", "zzz-unexpected"], // exactly one branch name
 	"pr-merge": ["some-branch", "zzz-unexpected"],
 	"pr-open": ["zzz-unexpected"], // takes no arguments AT ALL — the #209 shape
 	"pr-reject": [], // variadic: the reason is free text, joined — see section 3
