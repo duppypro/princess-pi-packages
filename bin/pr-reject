@@ -30,6 +30,20 @@ set -euo pipefail
 #      failures land here rather than guessing at 6's "determined refusal")
 #   6  safety gate refused — ambiguous PR selection (more than one of our own
 #      open PRs share the branch's head)
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). The scan stops at `--`, so a REASON that reads
+# `--version` is still reachable as `pr-reject -- --version`.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "pr-reject: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 BRANCH=""
 BRANCH_SOURCE=""   # "explicit" (via -b/--branch) or "cwd" (discovered) — #224
 REASON=""

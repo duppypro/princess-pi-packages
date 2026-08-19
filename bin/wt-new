@@ -106,6 +106,19 @@
 # ---
 set -euo pipefail
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). The scan stops at `--`.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "wt-new: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 # -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
 # message, and "wt-new --help" used to be treated as one.
 case "${1:-}" in

@@ -29,6 +29,22 @@ exit codes: 0 ok · 1 usage · 3 precondition (protected branch / no upstream)
 EOF
 }
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). Exit 1 here, not 2: this script's usage-error code
+# is documented as 1 in docs/dev-workflow-spec.md, and reconciling the family's
+# three vocabularies is #366's call, not a side effect of this guard. The scan
+# stops at `--`, so `git-checkpoint -- "--version"` still commits that message.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "git-checkpoint: $a takes no other arguments (got: $*)" >&2
+        exit 1
+      fi ;;
+  esac
+done
+
 # A flag is never a commit message (#310). Only -h/--help, --version, and the
 # `--` terminator are recognised; any other leading '-' is refused rather than
 # committed, because the cost of guessing wrong is a staged, committed AND

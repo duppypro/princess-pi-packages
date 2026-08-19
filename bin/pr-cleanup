@@ -54,6 +54,21 @@
 # boundary where callers (agents especially) read the outcome.
 set -euo pipefail
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open; `pr-cleanup --version extra-arg` is the instance the
+# issue names, and the header above has called extra arguments a usage error
+# since #221). The scan stops at `--`.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "pr-cleanup: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 # -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
 # message, and "pr-cleanup --help" used to be treated as one.
 case "${1:-}" in

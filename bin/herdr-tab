@@ -89,6 +89,19 @@ herdr_tab() { # $1 = cwd, $2 = label
 # ---
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 	set -euo pipefail
+	# #367: -h/--help/--version are terminal — they take no other arguments (full
+	# rationale in bin/pr-open). The scan stops at `--`.
+	for a in "$@"; do
+		if [ "$a" = "--" ]; then break; fi
+		case "$a" in
+		-h | --help | --version)
+			if [ "$#" -ne 1 ]; then
+				echo "herdr-tab: $a takes no other arguments (got: $*)" >&2
+				exit 2
+			fi
+			;;
+		esac
+	done
 	case "${1:-}" in
 	-h | --help)
 		# Header IS the help text.

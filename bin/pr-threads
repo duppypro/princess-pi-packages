@@ -133,6 +133,20 @@ REVIEWER_LOGINS='["macroscopeapp"]'
 # `--reply` each take the FOLLOWING argument as their value, so this is a
 # `shift`-driven loop rather than the old `for arg in "$@"` — a value-taking
 # flag can't consume its neighbour in a plain for-loop.
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). The scan stops at `--`, which matters here because
+# `--reply -- <text>` may legitimately carry a dash-leading reply.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "pr-threads: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 json_mode=0
 pr=""
 repo=""

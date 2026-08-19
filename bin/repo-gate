@@ -127,6 +127,20 @@ Run repo-gate --help for the full flag reference.
 EOF
 }
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). --why is left out deliberately: it is the one flag
+# whose future is undecided (#365), and this guard should not quietly ratify it.
+for a in "$@"; do
+	if [ "$a" = "--" ]; then break; fi
+	case "$a" in
+		-h|--help|--version)
+			if [ "$#" -ne 1 ]; then
+				echo "$SELF: $a takes no other arguments (got: $*)" >&2
+				exit 2
+			fi ;;
+	esac
+done
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 		# #178: resolved absolute path of the running copy — install-workflow-tools

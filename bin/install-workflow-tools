@@ -56,6 +56,20 @@ set -euo pipefail
 # defeat the point — it must answer even when REPO_DIR resolution would fail.
 # `readlink -f` resolves a real file OR a symlink to its actual on-disk
 # location. Not built, so no commit-hash/semver stamp — PATH only.
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). Exit 64 here, not 2: this script speaks sysexits
+# (EX_USAGE) throughout, and #366 owns whether that stays.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "install-workflow-tools: $a takes no other arguments (got: $*)" >&2
+        exit 64
+      fi ;;
+  esac
+done
+
 case "${1:-}" in
   --version) readlink -f "$0"; exit 0 ;;
 esac

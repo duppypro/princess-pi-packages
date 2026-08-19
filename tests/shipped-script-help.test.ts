@@ -272,6 +272,31 @@ for (const s of SCRIPTS) {
 		`message never quotes the offending argument: ${JSON.stringify(text.slice(0, 200))}`);
 }
 
+// --- 1b. -h/--help/--version are terminal -------------------------------------
+// `pr-cleanup --version extra-arg` printed the path and exited 0, ignoring the
+// extra word — while bin/pr-cleanup's own header has called extra arguments a
+// usage error since #221. Same silent-drop shape as 1, and the one instance #367
+// names by script. Family-wide because "which flag happens to be checked first"
+// is not a contract: every script's help/version path short-circuits, so every
+// script had the hole.
+for (const s of SCRIPTS) {
+	for (const flag of ["--help", "--version"]) {
+		const r = run(s, [flag, "zzz-unexpected"]);
+		const text = `${r.stdout || ""}${r.stderr || ""}`;
+		check(r.status === usageExit(s), `${s} ${flag} zzz-unexpected → exit ${usageExit(s)} (terminal flag)`,
+			`got exit ${r.status}; exit 0 here means the extra argument was ignored. ` +
+			`stdout: ${(r.stdout || "").trim().slice(0, 120)}`);
+		check(text.includes("zzz-unexpected"), `${s} ${flag} zzz-unexpected → names the ignored argument`,
+			`message never quotes it: ${JSON.stringify(text.slice(0, 200))}`);
+	}
+	// The `--` escape still reaches the value: a script whose argument may
+	// legitimately read `--version` must stay usable.
+	const esc = run(s, ["--", "--version"]);
+	check(esc.status !== 0 || (esc.stdout || "").trim() !== fs.realpathSync(path.join(BIN, s)),
+		`${s} -- --version → treats it as a value, not the flag`,
+		"the terminal-flag scan must stop at `--`, or an escaped value is unreachable");
+}
+
 // --- 2. a flag's value that is itself a flag ----------------------------------
 // Refused unless it follows `--`. `pr-threads --resolve` has guarded this since
 // PR #314; the rest of the family did not. GitHub node ids, branch names, repo
