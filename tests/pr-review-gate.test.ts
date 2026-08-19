@@ -672,5 +672,105 @@ console.log("\nrun logs are private to their owner:");
 		JSON.stringify(logs.map((f) => `${f}:${modeOf(path.join(dir, f)).toString(8)}`)));
 }
 
+// --- #379 round 9: 0600 is worthless in a directory someone else can write ---
+// In such a directory another account can unlink the log and leave a symlink in
+// its place between creation and any later write, and every writer follows it —
+// so the file mode protects nothing (macroscopeapp, PR #379). No mode closes that.
+// Not being in such a directory does, so pr-review stops using it and degrades to
+// a private temporary one: the same trade as round 7, artifact over gate.
+console.log("\na log directory others can write is not used at all:");
+{
+	const sb = makeSandbox();
+	const shared = path.join(sb.root, "world-writable");
+	fs.mkdirSync(shared);
+	fs.chmodSync(shared, 0o777);
+	const env = { ...stubs(sb, "clean"), PR_REVIEW_LOG_DIR: shared };
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+
+	check(code === 0, "world-writable log dir → still reviews and exits 0", `got ${code}: ${out}`);
+	check(fs.readdirSync(shared).length === 0,
+		"world-writable log dir → nothing is written there",
+		JSON.stringify(fs.readdirSync(shared)));
+	check(/NOT logging/.test(out) && /every account/.test(out),
+		"world-writable log dir → says it refused, and why", out);
+
+	// Degraded, not skipped: the run still produced a log somewhere it named.
+	const named = out.match(/Log: '([^']+)'/);
+	check(named !== null, "world-writable log dir → names where it logged instead", out);
+	if (named) {
+		const logs = fs.readdirSync(named[1]).filter((f) => f.endsWith(".json"));
+		check(logs.length === 1, "…and that directory holds this run's log", named[1]);
+		check(modeOf(named[1]) === 0o700, "…which is private", modeOf(named[1]).toString(8));
+	}
+}
+{
+	// The predicate is about who can WRITE, not who is in the group. A per-user
+	// group is the Debian/Ubuntu default that makes umask 002 ordinary; treating
+	// g+w as a hole there would exile every log on such a host to /tmp for no gain.
+	// This box is exactly that case, so the check is meaningful here.
+	const sb = makeSandbox();
+	const own = path.join(sb.root, "group-writable");
+	fs.mkdirSync(own);
+	fs.chmodSync(own, 0o770); // g+w, our own primary group, no other members
+	const env = { ...stubs(sb, "clean"), PR_REVIEW_LOG_DIR: own };
+	const { out } = runUmask("002", PR_REVIEW, sb.clone, env);
+	const soleMember = execFileSync("python3", ["-c",
+		"import grp,os,pwd,sys;st=os.stat(sys.argv[1]);me=os.geteuid();" +
+		"o=set(grp.getgrgid(st.st_gid).gr_mem)|{p.pw_name for p in pwd.getpwall() if p.pw_gid==st.st_gid};" +
+		"o.discard(pwd.getpwuid(me).pw_name);print('yes' if not o else 'no')", own],
+		{ encoding: "utf8" }).trim();
+	if (soleMember === "yes") {
+		check(!/NOT logging/.test(out),
+			"group-writable, but the group has no other member → still used", out);
+		check(fs.readdirSync(own).filter((f) => f.endsWith(".json")).length === 1,
+			"…and this run's log is there", JSON.stringify(fs.readdirSync(own)));
+	} else {
+		check(/NOT logging/.test(out),
+			`group-writable with other members (${soleMember}) → refused`, out);
+	}
+}
+{
+	// A symlink at the log path must be REFUSED, never followed. The old spelling
+	// truncated whatever the link pointed at — measured, not theorised.
+	//
+	// SCOPE, stated because it is easy to overclaim here: the log filename carries
+	// a second-resolution stamp AND the pid, so it cannot be predicted from out
+	// here, and planting a link under a name the run will not choose would assert
+	// nothing while looking thorough. This is therefore a MECHANISM proof — the
+	// script creates the log this exact way, and this exact way refuses a symlink.
+	// The end-to-end guarantee is the directory check above: in a directory only
+	// its owner can write, nobody is there to plant the link in the first place.
+	const src = fs.readFileSync(PR_REVIEW, "utf8");
+	const creation = src.split("\n").filter((l) => /:\s*>\s*"\$LOG"/.test(l));
+	check(creation.length === 1, "the log is created in exactly one place",
+		creation.join("\n"));
+	check(creation.every((l) => /set -C/.test(l)),
+		"the log is created with `set -C` — O_EXCL, which fails on a symlink",
+		creation.join("\n"));
+
+	const sb = makeSandbox();
+	const victim = path.join(sb.root, "VICTIM");
+	const link = path.join(sb.root, "planted.json");
+	fs.writeFileSync(victim, "SECRET");
+	fs.symlinkSync(victim, link);
+	const guarded = spawnSync("bash", ["-c", `set -C; umask 077; : > ${JSON.stringify(link)}`]);
+	check(guarded.status !== 0, "…and that spelling refuses to open a planted symlink",
+		`exit ${guarded.status}`);
+	check(fs.readFileSync(victim, "utf8") === "SECRET",
+		"…leaving the link's target untouched",
+		`VICTIM was clobbered: ${JSON.stringify(fs.readFileSync(victim, "utf8"))}`);
+
+	// Non-vacuous: the SAME redirection without `set -C` truncates through the
+	// link. If this control passes, the guard above measured nothing.
+	const control = path.join(sb.root, "CONTROL");
+	const clink = path.join(sb.root, "control-link.json");
+	fs.writeFileSync(control, "SECRET");
+	fs.symlinkSync(control, clink);
+	spawnSync("bash", ["-c", `umask 077; : > ${JSON.stringify(clink)}`]);
+	check(fs.readFileSync(control, "utf8") === "",
+		"control: without `set -C` the same redirection DOES truncate through a symlink",
+		"the primitive is safe on its own, so the guard above proves nothing");
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

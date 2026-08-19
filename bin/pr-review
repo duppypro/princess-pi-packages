@@ -93,8 +93,11 @@ Findings are written to a JSON log OUTSIDE the repository, under
 ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>/ — on a default Linux host
 XDG_STATE_HOME is unset, so that is ~/.local/state/pr-review/<repo>/. Keeping the
 logs out of the tree is what stops `git add -A` committing them. A log holds the
-branch diff verbatim, so it is written 0600, and a directory pr-review creates is
-0700; a directory that already exists is warned about, never chmod'd. With HOME unset
+branch diff verbatim, so it is written 0600 (O_EXCL: a symlink at that path is
+refused, never followed) and a directory pr-review creates is 0700. A directory
+that already exists is warned about but still used if only you can WRITE it; if
+anyone else can, it is not used at all and the run degrades to a private temporary
+directory, because no file mode survives a writable directory. With HOME unset
 too (cron, systemd, containers) the run still happens, into a private temporary
 directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
@@ -266,16 +269,88 @@ if ! mkdir -p -m 700 "$LOG_DIR" 2>/dev/null; then
 fi
 # `-m` is silent on a directory that ALREADY exists — POSIX applies the mode only
 # when creating — so one made by an older version of this script, or by the user,
-# keeps whatever mode it has. Warn, never chmod: PR_REVIEW_LOG_DIR can name a path
-# this script does not own, and silently narrowing someone else's directory is a
-# worse surprise than a message. The log file below is 0600 either way, so the
-# directory mode is defence in depth here, not the only defence.
-if [ "$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mode & 0o077)' "$LOG_DIR" 2>/dev/null || echo 0)" != "0" ]; then
-  echo "⚠️  pr-review: '$LOG_DIR' is accessible to other users on this host, and its" >&2
-  echo "   run logs hold the branch diff verbatim. New logs are written 0600; ones" >&2
-  echo "   already there keep the mode they were created with." >&2
-  echo "   Run: chmod 700 '$LOG_DIR' && chmod 600 '$LOG_DIR'/*.json" >&2
-fi
+# keeps whatever mode it has. What happens next depends on WHO can write it, which
+# is a stronger question than who can read it (macroscopeapp, PR #379):
+#
+#   readable by others  → warn, never chmod. PR_REVIEW_LOG_DIR can name a path this
+#                         script does not own, and silently narrowing someone else's
+#                         directory is a worse surprise than a message. The log is
+#                         0600 regardless, so the content is not exposed.
+#   WRITABLE by others  → do not use it at all. In a directory another account can
+#                         write, 0600 on the file guarantees nothing: that account
+#                         can unlink our log and leave a symlink in its place
+#                         between our creation and any later write, and every
+#                         writer would follow it. No file mode closes that; only
+#                         not being in such a directory does.
+#
+# Group-writable is judged by whether the group HAS another member. A per-user
+# group is the Debian/Ubuntu default that makes umask 002 ordinary, and treating
+# g+w as a hole there would exile everyone's logs to /tmp for no gain.
+LOG_DIR_VERDICT=$(python3 - "$LOG_DIR" <<'PYSAFE' 2>/dev/null || true
+import grp, os, pwd, sys
+
+st = os.stat(sys.argv[1])
+me = os.geteuid()
+
+
+def group_others(gid):
+    """Members of gid other than us, by supplementary AND primary membership."""
+    names = set()
+    try:
+        names |= set(grp.getgrgid(gid).gr_mem)
+    except KeyError:
+        pass
+    names |= {p.pw_name for p in pwd.getpwall() if p.pw_gid == gid}
+    names.discard(pwd.getpwuid(me).pw_name)
+    return names
+
+
+def group_name(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+if st.st_uid != me:
+    print("unsafe|it belongs to uid %d, not to you" % st.st_uid)
+elif st.st_mode & 0o002:
+    print("unsafe|every account on this host can write to it")
+elif st.st_mode & 0o020 and group_others(st.st_gid):
+    print("unsafe|group '%s' can write to it, and you are not its only member (%s)"
+          % (group_name(st.st_gid), ", ".join(sorted(group_others(st.st_gid)))))
+elif st.st_mode & 0o077:
+    print("readable|")
+else:
+    print("ok|")
+PYSAFE
+)
+case "${LOG_DIR_VERDICT%%|*}" in
+  unsafe)
+    echo "⚠️  pr-review: NOT logging to '$LOG_DIR' — ${LOG_DIR_VERDICT#*|}." >&2
+    echo "   Another account could replace the log with a symlink between the moment" >&2
+    echo "   this script creates it and the moment it writes, so 0600 on the file" >&2
+    echo "   would guarantee nothing. This run goes to a private temporary directory" >&2
+    echo "   instead and is NOT durable." >&2
+    LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-review-$REPO_NAME.XXXXXXXX") || {
+      echo "pr-review: and a temporary log directory could not be created either." >&2
+      echo "   Set PR_REVIEW_LOG_DIR to a directory only you can write." >&2
+      exit 3
+    }
+    echo "   Log: '$LOG_DIR'. Set PR_REVIEW_LOG_DIR to a directory only you can write." >&2
+    ;;
+  readable)
+    echo "⚠️  pr-review: '$LOG_DIR' is readable by other users on this host, and its" >&2
+    echo "   run logs hold the branch diff verbatim. New logs are written 0600; ones" >&2
+    echo "   already there keep the mode they were created with." >&2
+    echo "   Run: chmod 700 '$LOG_DIR' && chmod 600 '$LOG_DIR'/*.json" >&2
+    ;;
+  ok) ;;
+  *)
+    echo "⚠️  pr-review: could not determine who can write '$LOG_DIR'; logging there" >&2
+    echo "   anyway, 0600. Set PR_REVIEW_LOG_DIR if that directory is shared." >&2
+    ;;
+esac
 STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 # $$ suffix: the stamp is second-resolution, and two runs in the same second
 # (a retry after fixing a finding) silently overwrote each other. These logs are
@@ -287,9 +362,16 @@ LOG="$LOG_DIR/${BRANCH//\//-}-$STAMP-$$.json"
 # `open(log, "w")` in python, which truncates WITHOUT touching an existing file's
 # mode, so this single line is the whole 0600 guarantee for all three of them.
 # It also proves the directory is writable, which a successful mkdir does not.
-if ! ( umask 077; : > "$LOG" ) 2>/dev/null; then
+# `set -C` is O_EXCL, and O_CREAT|O_EXCL is defined to FAIL on a symlink rather
+# than follow it. Without it this redirection followed a pre-created symlink and
+# truncated whatever it pointed at — measured, not theorised: the target file came
+# back empty (macroscopeapp, PR #379). The directory check above is what makes
+# that unreachable; this is the second lock on the same door, and it also refuses
+# a stale file left by a PID that wrapped inside the same second.
+if ! ( set -C; umask 077; : > "$LOG" ) 2>/dev/null; then
   echo "pr-review: cannot create the log file '$LOG'." >&2
-  echo "   Set PR_REVIEW_LOG_DIR to a writable path, or clear it to use the default." >&2
+  echo "   It already exists (a symlink planted there is refused, never followed)," >&2
+  echo "   or the directory is not writable. Set PR_REVIEW_LOG_DIR to a writable path." >&2
   exit 3
 fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
