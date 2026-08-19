@@ -54,6 +54,11 @@ function git(cwd: string, args: string[]): string {
 	}).trim();
 }
 
+/** `git config --get` exits 1 on an unset key, which git() would throw on. */
+function gitOrEmpty(cwd: string, args: string[]): string {
+	try { return git(cwd, args); } catch { return ""; }
+}
+
 const BRANCH = "iarts/local";
 // The script hard-codes both names and exits 1 if EITHER fails, so a fixture
 // with only one clone made every run exit 1 on a `no-clone` for the other — the
@@ -193,6 +198,81 @@ console.log("\na clone WITH a working mirror remote is not marked refstale:");
 	const tip = git(sb.clone, ["rev-parse", `refs/heads/${BRANCH}`]);
 	check(seen === tip, "the clone's refs/remotes/mirror/* was refreshed — the #384 property",
 		`mirror-view ${seen} vs branch ${tip}`);
+}
+
+// ---
+// A rewritten branch still reaches the mirror, and the tip it replaced survives
+// ---
+// The `.iarts` convention pulls client updates with `git fetch origin && git
+// rebase origin/main`, so rewriting `iarts/local` is the DOCUMENTED workflow, not
+// an edge case. A plain refspec requires a fast-forward and rejects it outright —
+// measured: `! [rejected] iarts/local -> iarts/local (non-fast-forward)`, exit 1,
+// mirror left at the stale tip. Every rebase silently broke the backup.
+//
+// Forcing alone would be the wrong fix. A bare repo keeps NO reflog by default
+// (core.logAllRefUpdates is unset and defaults false), so a forced mirror turns a
+// mistaken `reset --hard` in the clone into permanent loss in the one place it
+// was meant to be recoverable from. Both halves are asserted below.
+console.log("\na rewritten branch is mirrored, and the replaced tip stays recoverable:");
+{
+	const sb = makeSandbox();
+	addMirrorRemote(sb);
+	run(sb);
+	const wasMirrored = git(sb.bare, ["rev-parse", `refs/heads/${BRANCH}`]);
+
+	// Rewrite history the way a rebase onto the client's main does.
+	git(sb.clone, ["commit", "-q", "--amend", "-m", "iarts work (rebased)"]);
+	const rewritten = git(sb.clone, ["rev-parse", `refs/heads/${BRANCH}`]);
+	check(rewritten !== wasMirrored, "the amend really rewrote history (fixture is honest)",
+		`${rewritten} vs ${wasMirrored}`);
+
+	const { code, out } = run(sb);
+	const cols = record(out);
+	check(cols[3] === "rewritten", "a rewrite is mirrored, and named as a rewrite",
+		`got '${cols[3]}' — 'fetch-failed' means the plain refspec is back\n${out}`);
+	check(code === 0, "exit 0 — the work IS mirrored", `got ${code}: ${out}`);
+	check(git(sb.bare, ["rev-parse", `refs/heads/${BRANCH}`]) === rewritten,
+		"the mirror now holds the rewritten tip", out);
+
+	// The half that makes forcing safe: the replaced tip is still reachable.
+	const reflog = git(sb.bare, ["reflog", `refs/heads/${BRANCH}`]);
+	check(reflog.includes(wasMirrored.slice(0, 7)),
+		"the tip the rewrite replaced is still in the mirror's reflog",
+		`reflog:\n${reflog || "(empty — a bare repo keeps no reflog unless configured)"}`);
+	check(git(sb.bare, ["log", "--oneline", "-1", wasMirrored]).length > 0,
+		"and its object survives, so the old state can be restored", "");
+	// Reflog retention: unreachable objects are pruned after 30 days by default,
+	// which would close the recovery window a month after the mistake.
+	check(gitOrEmpty(sb.bare, ["config", "--get", "gc.reflogExpireUnreachable"]) === "never",
+		"the recovery window does not expire (gc.reflogExpireUnreachable=never)", "");
+}
+
+console.log("\na plain fast-forward is still reported as updated, not rewritten:");
+{
+	const sb = makeSandbox();
+	addMirrorRemote(sb);
+	run(sb);
+	fs.writeFileSync(path.join(sb.clone, ".iarts", "more.md"), "more work\n");
+	git(sb.clone, ["add", "-A"]);
+	git(sb.clone, ["commit", "-q", "-m", "more iarts work"]);
+
+	const cols = record(run(sb).out);
+	check(cols[3] === "updated", "ordinary new commits → updated (rewritten is not over-reported)",
+		`got '${cols[3]}'`);
+}
+
+// The config is applied to mirrors that already existed, not only at creation.
+console.log("\nan existing mirror gains the reflog on the next run:");
+{
+	const sb = makeSandbox();
+	addMirrorRemote(sb);
+	run(sb);
+	git(sb.bare, ["config", "--unset", "core.logAllRefUpdates"]);
+	check(gitOrEmpty(sb.bare, ["config", "--get", "core.logAllRefUpdates"]) === "",
+		"fixture: the reflog setting really was removed", "");
+	run(sb);
+	check(gitOrEmpty(sb.bare, ["config", "--get", "core.logAllRefUpdates"]) === "true",
+		"a pre-existing mirror is repaired on the next run, not only at init", "");
 }
 
 // ---

@@ -53,13 +53,20 @@ Takes no arguments. Any argument is refused (exit 2).
 Output: headerless whitespace records, one per repo — `repo branch sha status`.
 Parse by column; `status` is one of:
 
-  updated          the mirror moved to a new sha
+  updated          the mirror fast-forwarded to a new sha
   unchanged        the mirror already held this sha
+  rewritten        the mirror moved to a sha that does NOT contain its previous
+                   tip — an amend, rebase or reset in the clone. The work is
+                   mirrored; the tip it replaced is still reachable in the
+                   mirror's reflog:
+                     git -C ~/git-remotes/<repo>.git reflog refs/heads/iarts/local
+                   Expected after a rebase onto the client's main. Unexpected
+                   otherwise, and that is the moment to look.
   no-clone         the clone directory is missing
   no-branch        the clone has no `iarts/local`
   fetch-failed     the mirror could not be updated — THE WORK IS NOT MIRRORED
 
-`updated` and `unchanged` may carry a `-refstale` suffix (e.g.
+`updated`, `unchanged` and `rewritten` may carry a `-refstale` suffix (e.g.
 `updated-refstale`): THE MIRROR IS CORRECT AND THE WORK IS SAFE — the branch was
 copied. What failed is this clone's own view of the mirror, either because the
 `mirror` fetch errored (its prompt may still report drift that is not real) or
@@ -107,6 +114,19 @@ for repo in "${REPOS[@]}"; do
         printf '%s\t%s\t-\tno-branch\n' "$repo" "$BRANCH"; rc=1; continue
     fi
     [[ -d "$bare" ]] || git init --bare --quiet --initial-branch="$BRANCH" "$bare"
+    # Set every run, not only at creation, so mirrors made before this change get
+    # it too. A bare repo defaults core.logAllRefUpdates to FALSE — verified: a
+    # fresh `git init --bare` has it unset and keeps no reflog at all. That
+    # default is fine for a serving mirror and wrong for the only second copy of
+    # a branch, because the forced fetch below can move the ref backwards and
+    # nothing would record where it had been.
+    #
+    # The expiry settings matter as much as the reflog. Unreachable objects held
+    # only by a reflog are pruned after 30 days by default, so without these the
+    # recovery window would quietly close a month after the mistake.
+    git -C "$bare" config core.logAllRefUpdates true
+    git -C "$bare" config gc.reflogExpire never
+    git -C "$bare" config gc.reflogExpireUnreachable never
 
     # Fully qualified on BOTH sides. `rev-parse iarts/local` resolves refs/tags/
     # BEFORE refs/heads/ (gitrevisions), so a tag of that name in the mirror wins
@@ -117,8 +137,20 @@ for repo in "${REPOS[@]}"; do
     # Fixing only `after` (the reported line) would be WORSE than fixing neither:
     # before=tag, after=branch never match, so every run would report `updated`.
     before=$(git -C "$bare" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo -)
+    # Leading `+`. Without it git requires a fast-forward and rejects the fetch
+    # outright — measured: `! [rejected] iarts/local -> iarts/local
+    # (non-fast-forward)`, exit 1, mirror left at the stale tip. That fires on the
+    # DOCUMENTED workflow, not an edge case: the `.iarts` convention pulls client
+    # updates with `git fetch origin && git rebase origin/main`, so every rebase
+    # broke the backup and reported `fetch-failed` (macroscopeapp, PR #385).
+    #
+    # Forcing is only safe because of the reflog configured above. A backup that
+    # force-overwrites and keeps no history turns a mistaken `reset --hard` in the
+    # clone into permanent loss in the one place it was supposed to be recoverable
+    # from. With the reflog on, the previous tip stays reachable:
+    #   git -C ~/git-remotes/<repo>.git reflog refs/heads/iarts/local
     if ! git -C "$bare" fetch --quiet --no-tags "$clone" \
-            "refs/heads/$BRANCH:refs/heads/$BRANCH" 2>/dev/null; then
+            "+refs/heads/$BRANCH:refs/heads/$BRANCH" 2>/dev/null; then
         printf '%s\t%s\t%s\tfetch-failed\n' "$repo" "$BRANCH" "$before"; rc=1; continue
     fi
     after=$(git -C "$bare" rev-parse "refs/heads/$BRANCH")
@@ -148,7 +180,18 @@ for repo in "${REPOS[@]}"; do
         refstale=-refstale
     fi
 
-    if [[ "$before" == "$after" ]]; then status=unchanged; else status=updated; fi
+    # `rewritten` rather than a second suffix: it is mutually exclusive with a
+    # fast-forward `updated`, so it takes the same column slot and nothing has to
+    # parse `updated-rewritten-refstale`. The distinction is the whole value of
+    # keeping the reflog — a forced update is the one moment recovery is easy, and
+    # a reader who sees `updated` will never think to look.
+    if [[ "$before" == "$after" ]]; then
+        status=unchanged
+    elif [[ "$before" != "-" ]] && ! git -C "$bare" merge-base --is-ancestor "$before" "$after"; then
+        status=rewritten
+    else
+        status=updated
+    fi
     printf '%s\t%s\t%s\t%s\n' "$repo" "$BRANCH" "$after" "$status$refstale"
 done
 exit $rc
