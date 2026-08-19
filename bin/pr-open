@@ -129,8 +129,43 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 2
 fi
 
+# --- the protected-branch predicate lives in one file (#222) ----------------
+# Sourced from beside $0, the same discipline `wt-new` uses for `herdr-tab`.
+# Unlike herdr-tab this FAILS CLOSED: herdr is decoration, and a guard that
+# degrades is simply absent — which is the state #222 was filed about. No
+# inline main/master fallback, because a fallback would restore the four copies
+# pr-guard exists to delete, silently, on exactly the hosts already broken.
+# `readlink -f`, not dirname+pwd: ~/bin copies may be symlinks (bun link), and a
+# link's own directory need not hold pr-guard — the plain spelling made a
+# symlinked pr-* refuse while pr-guard sat beside the real file.
+#
+# The path is then REQUIRED TO BE ABSOLUTE, and that check is not defensive
+# padding — it closes a code-execution hole (macroscopeapp on PR #380, rated
+# Critical). `readlink -f` is not portable: it fails on older macOS. Nested as
+# `dirname "$(readlink -f "$0")"` that failure is laundered into success, because
+# `dirname ""` prints `.` and exits 0 — so PR_GUARD_LIB became `./pr-guard`, the
+# `if !` never fired, and the script SOURCED a file from the caller's current
+# directory. In a checkout whose contents are not ours, that is arbitrary code
+# execution from a tool whose entire job is refusing unsafe operations.
+#
+# Requiring a leading `/` makes the laundering impossible: `.` never matches, so
+# resolution failure lands in the fail-closed block below instead of picking up a
+# stranger's file. On a host where `readlink -f` does not work, these scripts
+# refuse and say so rather than running with no guard.
+PR_GUARD_SELF="$(readlink -f "$0" 2>/dev/null || true)"
+case "${PR_GUARD_SELF:-}" in
+  /*) PR_GUARD_LIB="${PR_GUARD_SELF%/*}/pr-guard" ;;
+  *)  PR_GUARD_LIB="" ;;
+esac
+# shellcheck source=bin/pr-guard
+if [ -z "$PR_GUARD_LIB" ] || [ ! -r "$PR_GUARD_LIB" ] || ! . "$PR_GUARD_LIB"; then
+  echo "pr-open: cannot source the protected-branch guard at $PR_GUARD_LIB." >&2
+  echo "   Refusing rather than proceeding without it. Run: install-workflow-tools" >&2
+  exit 3
+fi
+
 BRANCH=$(git branch --show-current)
-if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+if pr_is_protected "$BRANCH"; then
   echo "pr-open: cannot create a PR from '$BRANCH'. Switch to a feature branch." >&2
   exit 3
 fi

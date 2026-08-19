@@ -195,6 +195,16 @@ SCRIPTS=(
   # needs the executable bit either way, which deploy() sets.
   herdr-tab
   herdr-reap
+  # pr-guard is the protected-branch predicate (#222), sourced from beside $0 by
+  # all four pr-* scripts below. It is listed FIRST in the family for a reason
+  # that is not cosmetic: unlike herdr-tab, those scripts FAIL CLOSED when it is
+  # missing (exit 3, naming this installer), because a safety guard that
+  # degrades gracefully is a safety guard that is absent. So a host with the
+  # pr-* scripts and no pr-guard has no working PR workflow at all — deploying
+  # them together is what keeps that from ever being a reachable state. It is a
+  # sourceable library that also runs as a one-shot CLI, and needs the
+  # executable bit either way, which deploy() sets.
+  pr-guard
   pr-open
   pr-merge
   pr-reject

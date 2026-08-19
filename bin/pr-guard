@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# ---
+# pr-guard — the one place "is this branch protected?" is decided (#222).
+#
+#   . pr-guard              defines pr_protected_branches() and pr_is_protected()
+#   pr-guard <branch>       exit 0 if protected, 1 if not
+#   pr-guard --list         one branch per line, no header (awk/grep-friendly)
+#   pr-guard --json         one pr-guard/protected@1 document
+#   pr-guard -h | --help    this text
+#   pr-guard --version      resolved absolute path of this copy
+#
+# --- why this is a separate file, not four inlined copies -------------------
+# `pr-open`, `pr-merge`, `pr-reject` and `pr-cleanup` each carried
+#
+#     if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+#
+# verbatim, and `pr-cleanup` carried a fifth copy for its PRIMARY_REF walk. Four
+# copies of a safety predicate is how the next divergence happens — and #222 is
+# already the SECOND time this shape cost something: `rogue-savvy` keeps
+# long-lived `dev` and `prod` deploy branches, and a `merge --cleanup` straight
+# after a promote once deleted `prod`, locally and on origin (rogue-savvy #35).
+# That lesson was written into one repo's CLAUDE.md as prose and never into the
+# tool, so every script still believes `main`/`master` is the whole world.
+#
+# --- WHAT IS SHARED, AND WHAT DELIBERATELY IS NOT ---------------------------
+# The PREDICATE is shared. The RESPONSE is not, and that is not an oversight:
+# the four scripts disagree on purpose about what a protected branch means.
+#
+#   pr-open      standing on one → exit 3 (precondition: switch to a feature branch)
+#   pr-merge     named EXPLICITLY → exit 2 (usage: you typed the wrong thing)
+#                standing on one  → exit 3 (precondition)
+#   pr-reject    same two-way split as pr-merge
+#   pr-cleanup   targeting one   → exit 2
+#
+# Collapsing those into one shared message would lose the distinction #224's
+# exit-code table exists to draw. So this file answers one question and returns;
+# each caller keeps its own refusal.
+#
+# --- FAIL CLOSED ------------------------------------------------------------
+# Callers MUST refuse when this file cannot be sourced, and must NOT keep an
+# inline `main`/`master` fallback. `herdr-tab` degrades gracefully because it is
+# decoration; a protected-branch guard that degrades is simply absent, which is
+# the exact state #222 was filed about. An inline fallback would also restore
+# the four copies this file exists to delete — silently, and only on the hosts
+# where the guard was already broken.
+#
+# --- SOURCE OF TRUTH (today: the default only) ------------------------------
+# `pr_protected_branches` is the ONE function to change when #222's second half
+# lands (a repo-declared list, a remote-derived set, or the other-worktree rule
+# — the fork is still open on the issue). Everything else here, and all four
+# callers, are already written against it.
+# ---
+set -uo pipefail
+
+# The default, and today the whole answer. Printed one per line so a caller can
+# pipe it; the set is small and ordered for readability, not significance.
+pr_protected_branches() {
+  printf '%s\n' main master
+}
+
+# pr_is_protected <branch> — exit 0 when protected, 1 otherwise.
+#
+# An EMPTY branch is NOT protected, deliberately. `git branch --show-current`
+# prints empty on a detached HEAD, and every caller already has its own
+# detached-HEAD message that is far more useful than "protected branch". This
+# reproduces the old `[ "$BRANCH" = "main" ]` behaviour exactly, where an empty
+# BRANCH also fell through.
+# Returns ONLY 0 (protected) or 1 (not). Any third outcome — grep missing (127),
+# killed, a future source of truth that cannot reach its data — EXITS the caller
+# instead of returning, because callers test this in an `if`, where a non-zero
+# status is indistinguishable from "not protected" and `set -e` does not fire.
+# That is a guard that fails OPEN, on main, which is the whole thing #222 is
+# about (macroscopeapp, PR #380).
+#
+# Exiting from a sourced function deliberately: the caller cannot proceed
+# without an answer, and putting the check HERE is what keeps it from becoming
+# four copies of a status dance in the four callers.
+pr_is_protected() {
+  [ "$#" -ge 1 ] || return 1
+  [ -n "$1" ] || return 1
+  # Enumerate FIRST, match second, rather than piping straight through. In a
+  # pipeline `pr_protected_branches | grep`, pipefail reports the last non-zero
+  # status — so a source of truth that failed while grep happened to match would
+  # surface as status 1, "not protected", the exact fail-open being closed here.
+  # Today `pr_protected_branches` is a printf and cannot fail; #222's second half
+  # gives it a file or an API to read, and then it can. (Structure taken from
+  # macroscopeapp's suggestion on PR #380; the exit-3 response is not — returning
+  # "protected" on an error, as suggested, makes pr-open tell you to switch off a
+  # feature branch you are already on. Same safety, worse diagnosis.)
+  local branches status=0
+  if ! branches=$(pr_protected_branches); then
+    echo "pr-guard: cannot enumerate the protected branches — refusing to answer." >&2
+    echo "   Proceeding would treat an unanswerable guard as 'not protected'. Run: install-workflow-tools" >&2
+    exit 3
+  fi
+  printf '%s\n' "$branches" | grep -qxF -- "$1" || status=$?
+  case "$status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *)
+      echo "pr-guard: the protected-branch predicate failed (status $status) — refusing to answer." >&2
+      echo "   Proceeding would treat an unanswerable guard as 'not protected'. Run: install-workflow-tools" >&2
+      exit 3
+      ;;
+  esac
+}
+
+# Sourced (`. pr-guard`) rather than executed: define and stop. BASH_SOURCE[0]
+# differs from $0 only when sourced, which is the standard detection and the one
+# herdr-tab uses.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+  return 0 2>/dev/null || true
+fi
+
+# --- CLI ---
+# `readlink -f`, not dirname+pwd: ~/bin copies may be symlinks (bun link), and
+# --version exists to say WHICH FILE is answering. Printing the link's own path
+# answers the question the caller already knew. Same spelling as pr-threads.
+self_path() { readlink -f "$0"; }
+
+usage() {
+  cat <<'USAGE'
+pr-guard — is this branch protected from pr-* operations? (#222)
+
+  pr-guard <branch>   exit 0 if protected, 1 if not
+  pr-guard --list     one branch per line, no header
+  pr-guard --json     one pr-guard/protected@1 document
+  pr-guard --version  resolved path of the running copy
+  pr-guard -h, --help this text
+
+Sourceable library first:  . pr-guard  then  pr_is_protected "$BRANCH"
+
+exit codes: 0 protected (or help/list/json ok) · 1 not protected · 2 usage
+USAGE
+}
+
+# #367: a terminal flag REFUSES trailing arguments rather than ignoring them.
+# `pr-guard --version main` asking "is main protected" and getting a path back
+# is the silently-repurposed-argument shape, and naming the offending word is
+# what separates this refusal from an unrelated one.
+reject_trailing() {
+  local flag="$1"
+  shift
+  [ "$#" -eq 0 ] && return 0
+  echo "pr-guard: '$flag' takes no arguments — got '$1'" >&2
+  usage >&2
+  exit 2
+}
+
+case "${1-}" in
+  -h|--help)
+    shift
+    reject_trailing --help "$@"
+    usage
+    exit 0
+    ;;
+  --version)
+    shift
+    reject_trailing --version "$@"
+    self_path
+    exit 0
+    ;;
+  --list)
+    shift
+    reject_trailing --list "$@"
+    pr_protected_branches
+    exit 0
+    ;;
+  --json)
+    shift
+    reject_trailing --json "$@"
+    # Hand-rolled rather than jq: this is a guard every pr-* script depends on,
+    # and the branch names are shell-safe by construction (they came from this
+    # file). Taking a jq dependency for a two-key document would make the guard
+    # fail on a host jq has not reached yet.
+    printf '{"schema":"pr-guard/protected@1","source":"default","branches":['
+    sep=""
+    while IFS= read -r b; do
+      printf '%s"%s"' "$sep" "$b"
+      sep=","
+    done < <(pr_protected_branches)
+    printf ']}\n'
+    exit 0
+    ;;
+  --)
+    shift
+    ;;
+  -*)
+    echo "pr-guard: unknown flag '$1'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [ "$#" -gt 1 ]; then
+  # Name the offending word (#367). A refusal that only says "wrong number of
+  # arguments" is indistinguishable from a refusal for an unrelated reason —
+  # which is precisely what the suite asserting this exists to tell apart.
+  shift
+  echo "pr-guard: expected exactly one branch name — got an extra argument '$1'" >&2
+  usage >&2
+  exit 2
+fi
+if [ "$#" -lt 1 ]; then
+  echo "pr-guard: expected exactly one branch name — got none" >&2
+  usage >&2
+  exit 2
+fi
+
+pr_is_protected "$1"
