@@ -423,5 +423,26 @@ console.log("\nround-3 High regressions:");
 	check(/LENS_PIDS\+=\(\$!\)/.test(src), "lens pids are tracked for a targeted kill", "");
 }
 
+// --- round-4 Highs, both regressions of round-3 fixes ---
+console.log("\nround-4 High regressions:");
+{
+	const code = fs.readFileSync(PR_REVIEW, "utf8").split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+	// Killing the `{...} &` wrapper does not kill the `timeout claude` inside it.
+	check(/pkill -TERM -P|--ppid/.test(code), "kill_lenses reaps the lens CHILDREN, not just the wrapper", "");
+	// A lens that ran and dropped one malformed finding is a warning, not a failure.
+	check(/lensWarnings/.test(code), "dropped-finding case is a warning, separate from failedLenses", "");
+}
+{
+	// A fully working lens must never be counted as failed coverage.
+	const sb = makeSandbox();
+	const env = stubs(sb, "findings");
+	run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.lensesRan === 3, "all lenses working → lensesRan 3", String(d.lensesRan));
+	check(d.status === "reviewed", "all lenses working → status 'reviewed'", String(d.status));
+	check(Array.isArray(d.lensWarnings), "log carries a lensWarnings array", JSON.stringify(d.lensWarnings));
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

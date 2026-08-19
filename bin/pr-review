@@ -211,7 +211,21 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
 # group — pr-open, the shell that ran it, and any sibling job. Killing exactly
 # what this script started is the only version that is safe to ship.
 LENS_PIDS=()
-kill_lenses() { for pid in ${LENS_PIDS+"${LENS_PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done; }
+# Each entry is the `{ ... } &` WRAPPER subshell, and killing that alone leaves
+# the `timeout claude` it spawned running — the previous version reaped the
+# bookkeeping and left the expensive part alive. Children first (timeout forwards
+# the signal to claude), then the wrapper.
+kill_lenses() {
+  for pid in ${LENS_PIDS+"${LENS_PIDS[@]}"}; do
+    if command -v pkill >/dev/null 2>&1; then
+      pkill -TERM -P "$pid" 2>/dev/null || true
+    else
+      # pkill is not POSIX; ps is the portable fallback for "children of $pid".
+      for kid in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$kid" 2>/dev/null || true; done
+    fi
+    kill "$pid" 2>/dev/null || true
+  done
+}
 trap 'rm -rf "$WORK"' EXIT
 trap 'kill_lenses; rm -rf "$WORK"; exit 130' INT
 trap 'kill_lenses; rm -rf "$WORK"; exit 143' TERM
@@ -322,7 +336,7 @@ def _clip(text, limit):
 
 work, log, base, branch, stamp, model = sys.argv[1:7]
 lenses = sys.argv[7:]
-findings, failed = [], []
+findings, failed, warnings = [], [], []
 
 
 def fail(lens, why):
@@ -388,8 +402,15 @@ for lens in lenses:
                 good.append(f)
         findings.extend(good)
         if len(good) != len(items):
-            failed.append({"lens": lens, "why": f"dropped {len(items) - len(good)} malformed finding(s)",
-                           "raw": _clip(text[s:e + 1], 2000)})
+            # A WARNING, not a failure. This lens ran, returned parseable output,
+            # and contributed findings — filing it under failedLenses made
+            # `lensesRan` under-report coverage and could flip the status to
+            # reviewed-partial on a lens that fully worked, which is the same
+            # "could not look" / "found nothing" merge this file forbids
+            # everywhere else, one severity down.
+            warnings.append({"lens": lens,
+                             "why": f"dropped {len(items) - len(good)} malformed finding(s)",
+                             "raw": _clip(text[s:e + 1], 2000)})
     except Exception as exc:
         failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",
                        "raw": _clip(text[s:e + 1], 2000)})
@@ -403,7 +424,7 @@ status = "reviewed" if not failed else ("reviewed-none" if ran == 0 else "review
 
 json.dump({"status": status, "branch": branch, "base": base, "utc": stamp,
            "model": model, "lenses": lenses, "failedLenses": failed,
-           "lensesRan": ran, "findings": findings},
+           "lensWarnings": warnings, "lensesRan": ran, "findings": findings},
           open(log, "w"), indent=2)
 with open(os.path.join(work, "summary"), "w") as fh:
     fh.write(f"{len(findings)} {len(failed)} {ran}\n")
