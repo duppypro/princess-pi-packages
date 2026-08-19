@@ -631,8 +631,8 @@ were exactly the two where `--version` was undiscoverable (#362).
 adjacent ones, each of which let an argument the caller typed be ignored or repurposed while the
 script ran on:
 
-- **Unexpected positionals are refused, naming the argument** (exit `2`; `git-checkpoint` `1`,
-  `install-workflow-tools` `64`). `pr-open some-other-branch` used to open the PR for the *current*
+- **Unexpected positionals are refused, naming the argument** (exit `2` everywhere;
+  `install-workflow-tools`' `64` is the one exception — see the exit-code section below). `pr-open some-other-branch` used to open the PR for the *current*
   branch — the #209 shape, and precisely what `pr-reject`'s `-b` flag exists to prevent. `pr-open`
   and `git-overview` take no arguments at all; `pr-threads` refuses a third positional as `pr-merge`
   has refused a second since #333; `git-checkpoint` refuses an unquoted multi-word message rather
