@@ -36,12 +36,12 @@
     </style>
 </head>
 <body>
-    <h1>Serve Utility (<code>/serve</code>)</h1>
+    <h1>Serve Utility (<code>!serve</code>)</h1>
     <p><strong>Domain:</strong> Local Development Server, Live-Reload, Cloudflare-Gated Previews</p>
     <p><strong>Reconciled:</strong> 2026-07-28 · Issue #119 · Supersedes <code>EXT_LIVE_SERVE.html</code> (folded in) and <code>SPEC_SERVE_LIST_FLAGS.md</code> (obsolete).</p>
 
     <h2>Overview</h2>
-    <p><code>/serve</code> spawns plain-HTTP development servers on loopback (<code>127.0.0.1</code>), with live-reload via Server-Sent Events and optional Cloudflare-Tunnel-gated public previews at <code>&lt;subdomain&gt;.princess-pi.dev</code>. No local SSL — the edge handles TLS termination. Available as a Pi extension (<code>/serve</code>) and a standalone CLI (<code>bin/serve.mjs</code>).</p>
+    <p><code>/serve</code> spawns plain-HTTP development servers on loopback (<code>127.0.0.1</code>), with live-reload via Server-Sent Events and optional Cloudflare-Tunnel-gated public previews at <code>&lt;subdomain&gt;.princess-pi.dev</code>. No local SSL — the edge handles TLS termination. Invoked as <code>serve</code> from any shell, <code>!serve</code> from inside Pi. There is no <code>/serve</code> command face: <a href="adr/0004-workflow-tools-are-shell-first.md">ADR 0004</a> is shell-first, and the Pi extension survives only for the part a shell cannot render — the live active-server widget (<code>/serve --hide</code>, <code>--show</code>, <code>--emoji</code>).</p>
 
     <h2>Command Reference</h2>
     <div id="serve-cmd-reference" style="background: var(--box-bg); padding: 15px; border-radius: 8px; border: 1px solid #404040;">
@@ -166,8 +166,8 @@
     <h2>Module Map</h2>
     <table>
         <tr><th>Module</th><th>Role</th></tr>
-        <tr><td><code>extensions/serve.ts</code></td><td>Pi extension entry point — registers <code>/serve</code> command, routes flags to handlers</td></tr>
-        <tr><td><code>bin/serve.ts</code></td><td>CLI entry point — standalone shell command, same logic as extension</td></tr>
+        <tr><td><code>extensions/serve.ts</code></td><td>Pi extension entry point — the active-server <strong>widget</strong> and its <code>/serve --hide</code>/<code>--show</code>/<code>--emoji</code> controls. Starts nothing: every other flag is refused with the <code>!serve</code> spelling (ADR 0004)</td></tr>
+        <tr><td><code>bin/serve.ts</code></td><td>CLI entry point and <strong>the</strong> implementation — start, kill, list, publish. The extension no longer duplicates any of it</td></tr>
         <tr><td><code>extensions/lib/serve/domain.ts</code></td><td>Types (<code>ServerInstance</code>, <code>KilledServerInstance</code>), <code>isInsideRepo</code> helper</td></tr>
         <tr><td><code>extensions/lib/serve/process.ts</code></td><td>Server discovery (<code>ps aux</code> parsing), kill, health-check, subdomain-map integration</td></tr>
         <tr><td><code>extensions/lib/serve/tui.ts</code></td><td>Formatters (table/card), widget rendering, box drawing, ANSI coloring</td></tr>
@@ -184,7 +184,7 @@
                 const container = document.getElementById('serve-cmd-reference');
                 if (!container) return;
                 
-                const invokedAs = "/serve";
+                const invokedAs = "!serve";
                 let html = `<p><strong><code>${data.name}</code></strong> - ${data.tagline}</p>`;
                 html += `<p>${data.description}</p>`;
 
