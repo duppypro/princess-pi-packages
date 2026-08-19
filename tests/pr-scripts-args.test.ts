@@ -182,17 +182,17 @@ exit 0
 	fs.writeFileSync(threadsLog, "");
 	// #349: pr-merge reads pr-threads --json to tell "unresolved threads" apart
 	// from "stale review coverage" — one exit code covers both. The document
-	// mirrors the real `pr-threads/list@1` shape and must follow this suite's
+	// mirrors the real `pr-threads/list@2` shape and must follow this suite's
 	// OWN threadsStatus fixture, not report clean unconditionally: exit 1 means
 	// unresolved here, and exit 5 means pr-threads fell over before printing
 	// anything, which is exactly the distinction pr-merge reads.
-	// reviewedHead is a BOOLEAN in the real document (bin/pr-threads:652) — "does
+	// headIsReviewed is a BOOLEAN in the real document (bin/pr-threads:652) — "does
 	// a review cover the current head" — not the reviewed sha. Modelling it as a
 	// sha here made pr-merge's sha comparison look correct (PR #354 finding).
 	const threadsDoc =
 		threadsStatus === 1
-			? '{"schema":"pr-threads/list@1","unresolvedCount":2,"head":"deadbee","reviewedHead":false,"latestReviewCommit":"0ldc0de","threads":[]}'
-			: '{"schema":"pr-threads/list@1","unresolvedCount":0,"head":"deadbee","reviewedHead":true,"latestReviewCommit":"deadbee","threads":[]}';
+			? '{"schema":"pr-threads/list@2","unresolvedCount":2,"head":"deadbee","headIsReviewed":false,"latestReviewCommit":"0ldc0de","threads":[]}'
+			: '{"schema":"pr-threads/list@2","unresolvedCount":0,"head":"deadbee","headIsReviewed":true,"latestReviewCommit":"deadbee","threads":[]}';
 	const threads = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> ${JSON.stringify(threadsLog)}
 for a in "$@"; do
