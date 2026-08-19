@@ -86,11 +86,18 @@ export default function serveExtension(pi: ExtensionAPI) {
 		if (repoServers.length > 0) {
 			const tableText = formatServerTable(repoServers);
 
+			// The ports of the servers ACTUALLY LISTED above, never `--kill all`.
+			// The list is filtered to this repo; `--kill all` is not — it iterates
+			// every server in the registry, so a reminder about three servers here
+			// would stop a preview running for something else entirely
+			// (macroscopeapp on PR #374, verified against bin/serve.ts's handleKill).
+			const killTargets = repoServers.map(s => s.port).join(" ");
+
 			console.log(
 				`\n\x1b[1m\x1b[33m⚠️  REMINDER: You have active background servers running in this repository:\x1b[0m\n\n` +
 				tableText + `\n\n` +
-				`\x1b[33mThese servers will remain active during your "pause". To stop them, run:\x1b[0m\n` +
-				`  \x1b[1m!serve --kill all\x1b[0m\n`
+				`\x1b[33mThese servers will remain active during your "pause". To stop these ones, run:\x1b[0m\n` +
+				`  \x1b[1m!serve --kill ${killTargets}\x1b[0m\n`
 			);
 		}
 	});

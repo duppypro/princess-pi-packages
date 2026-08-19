@@ -71,8 +71,22 @@ this ADR is closing. If the shell face is good enough to shim, it is good enough
 
 **5. Structural, not procedural, enforcement.** `tests/pi-merge-retired.test.ts` asserts that
 **no extension executes a mutating git command in-process**, with a known-bad probe so the
-detector cannot go blind. That is what makes shell-first mean something: every git-touching
-invocation now reaches bash, where the hook can see it.
+detector cannot go blind.
+
+**What that does and does not buy — stated precisely, because the imprecise version is worse
+than silence.** The hook inspects the Bash tool's *literal command string*. So an agent that
+composes a git mutation ad hoc is seen, and that is the case shell-first converts: `/merge`'s
+in-process push was invisible to any hook, and its shell equivalent is not. A **named script**
+is a different matter — `tests/fixtures/git-guardrails-cases.json` §
+`allow-opaque-script-invocation-hides-git-push` records that `git-checkpoint "wip"` is allowed
+on `main` because the first token is not `git`, and the `git push` inside its body is never
+read. That opacity is **load-bearing, not a bug**: `pr-open` and `git-checkpoint` exist to run
+those commands, and a hook that peeked into script bodies would block the workflow it protects.
+
+The honest claim is therefore: **ad-hoc git reaches the hook; reviewed named scripts are trusted
+by name.** What shell-first removes is the third category — mutations inside an extension, which
+were neither inspected nor reviewed as a shipping script (macroscopeapp raised the overstatement
+on PR #374).
 
 ## Consequences
 

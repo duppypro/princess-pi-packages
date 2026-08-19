@@ -118,6 +118,18 @@ console.log("\n— the old invocation is answered, not ignored");
 
 check(/!serve/.test(extSrc), "the source names `!serve` as the replacement");
 
+// The shutdown reminder lists servers filtered to THIS REPO, so the command it
+// offers has to be scoped the same way. `--kill all` is not: it iterates every
+// server in the registry, so a reminder about three servers here would stop a
+// preview running for something else entirely. Caught by macroscopeapp on PR #374
+// against bin/serve.ts's handleKill; the scope mismatch is invisible in the
+// reminder's own text, which is why it needs a pin rather than a careful reader.
+check(!/--kill all/.test(extCode),
+	"no `--kill all` in the extension — the reminder names the ports it listed",
+	extCode.split("\n").filter((l) => l.includes("--kill")).join("\n"));
+check(/--kill \$\{killTargets\}|killTargets/.test(extCode),
+	"the reminder builds its kill targets from the repo-filtered list");
+
 // ---
 // 5. The capability did not vanish — it consolidated. `bin/serve.ts` is the one
 //    implementation, and this check is what separates "moved" from "lost".
