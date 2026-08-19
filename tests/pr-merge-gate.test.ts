@@ -83,7 +83,7 @@ interface SandboxOpts {
 	 * stub `pr-threads`:
 	 *   "clean"        exit 0, 0 unresolved, head covered
 	 *   "unresolved"   exit 1, 2 unresolved
-	 *   "stale-review" exit 1, 0 unresolved but reviewedHead != head — #349's
+	 *   "stale-review" exit 1, 0 unresolved but headIsReviewed != head — #349's
 	 *                  reported bug. pr-threads collapses this into the SAME
 	 *                  exit 1 as "unresolved", which is why pr-merge has to
 	 *                  read --json to tell them apart.
@@ -94,7 +94,14 @@ interface SandboxOpts {
 	 *   "broken"       exit 5, no document (gh/API failure)
 	 *   "missing"      no such command on PATH
 	 */
-	threadState?: "clean" | "unresolved" | "stale-review" | "indeterminate" | "broken" | "missing";
+	threadState?:
+		| "clean"
+		| "unresolved"
+		| "stale-review"
+		| "indeterminate"
+		| "broken"
+		| "missing"
+		| "legacy-schema";
 	/** `gh pr view --json mergeable` — GitHub's own verdict (#349). Default "MERGEABLE". */
 	mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 	/**
@@ -275,14 +282,19 @@ esac
 	fs.chmodSync(path.join(binDir, "gh"), 0o755);
 
 	// --- stub pr-threads: the #258 gate, now read via --json (#349) ---
-	// The real pr-threads emits its `pr-threads/list@1` document and THEN
+	// The real pr-threads emits its `pr-threads/list@2` document and THEN
 	// exits 0/1/5, so "exit 5 with a document" (coverage indeterminate) and
 	// "exit 5 with nothing" (gh failed) are different states. The stub
 	// reproduces that ordering exactly — it is what pr-merge now relies on.
 	if (opts.threadState && opts.threadState !== "missing") {
-		const exitCode = { clean: 0, unresolved: 1, "stale-review": 1, indeterminate: 5, broken: 5 }[
-			opts.threadState
-		];
+		const exitCode = {
+			clean: 0,
+			unresolved: 1,
+			"stale-review": 1,
+			indeterminate: 5,
+			broken: 5,
+			"legacy-schema": 0,
+		}[opts.threadState];
 		const message = {
 			clean: "✅ duppypro/princess-pi-packages #42 — 0 unresolved conversations (2 total, all resolved)",
 			unresolved:
@@ -292,6 +304,8 @@ esac
 			indeterminate:
 				"❓ duppypro/princess-pi-packages #42 — 0 unresolved conversations (1 total, all resolved); could not determine review coverage",
 			broken: "pr-threads: gh api graphql failed for duppypro/princess-pi-packages #42:\ngh: could not connect to api.github.com",
+			"legacy-schema":
+				"✅ duppypro/princess-pi-packages #42 — 0 unresolved conversations (1 total, all resolved)",
 		}[opts.threadState];
 		// The document — only for the states where the real tool would have
 		// produced one. "broken" fails before printing, which is the whole
@@ -300,7 +314,7 @@ esac
 			opts.threadState === "broken"
 				? null
 				: {
-						schema: "pr-threads/list@1",
+						schema: "pr-threads/list@2",
 						repo: "duppypro/princess-pi-packages",
 						pr: 42,
 						totalCount: opts.threadState === "unresolved" ? 2 : 1,
@@ -312,13 +326,23 @@ esac
 						// macroscopeapp finding on PR #354, verified against the real tool's
 						// live output). A fixture that is wrong about the contract tests
 						// nothing about the contract.
-						reviewedHead: opts.threadState === "clean",
+						headIsReviewed: opts.threadState === "clean",
 						latestReviewCommit: opts.threadState === "clean" ? "sha0000head" : "sha9999old",
 						nullCommitReviewCount: opts.threadState === "indeterminate" ? 1 : 0,
 						unknownAuthorReviewCount: 0,
 						prAuthor: "duppypro",
 						threads: [],
 					};
+		// #372 version skew: a pr-threads from before the rename emits a document
+		// that is well-formed, exits 0, and is missing the ONE field pr-merge reads
+		// for head coverage. Modelled as the real shape (schema @1, `reviewedHead`)
+		// rather than as a corrupt blob, because the danger is precisely that it
+		// looks fine.
+		if (doc && opts.threadState === "legacy-schema") {
+			doc.schema = "pr-threads/list@1";
+			delete doc.headIsReviewed;
+			doc.reviewedHead = true;
+		}
 		const prThreads = `#!/usr/bin/env bash
 for a in "$@"; do
   if [ "$a" = "--json" ]; then
@@ -443,6 +467,20 @@ console.log("\npr-threads missing from PATH entirely:");
 		"pr-threads missing → same 'could not verify' framing",
 		out,
 	);
+}
+
+// 4b. A pre-#372 pr-threads on PATH: the document parses, the gate passes, and the
+//     one field pr-merge reads for head coverage is absent. Left unguarded, that null
+//     reads as "no review covers head" and warns on every reviewed PR — wrong quietly,
+//     the same failure class #372 was filed over. Fail closed and name the fix.
+console.log("\npr-threads predates the #372 rename (version skew):");
+{
+	const sb = makeSandbox("42-feature", { threadState: "legacy-schema" });
+	const { code, out } = runPrMerge(sb);
+	check(code === 5, "legacy pr-threads → exit 5", `got ${code}, output:\n${out}`);
+	check(!merged(sb), "legacy pr-threads → gh pr merge never called", out);
+	check(/headIsReviewed/.test(out), "legacy pr-threads → names the missing field", out);
+	check(/install-workflow-tools/.test(out), "legacy pr-threads → names the command that fixes it", out);
 }
 
 // --- regression guard: PR-selection failures still behave as before #258 ---

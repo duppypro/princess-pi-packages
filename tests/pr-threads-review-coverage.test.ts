@@ -260,7 +260,7 @@ console.log("\nno reviews at all (advisory, does not block):");
 //     with submittedAt: null. Must NOT count as coverage — a bot's own
 //     unpublished draft is not a review anyone (including a human) can see.
 //     Falls back to the same "no reviews recorded" advisory as case 3, not a
-//     false "reviewedHead: true".
+//     false "headIsReviewed: true".
 console.log("\nPENDING draft review at head, nothing submitted (advisory, not covered):");
 {
 	const p = page({ headRefOid: "fa8a8fb", pendingReviewCommits: ["fa8a8fb"], unresolvedThreads: 0 });
@@ -270,7 +270,7 @@ console.log("\nPENDING draft review at head, nothing submitted (advisory, not co
 	check(/no review/i.test(out), "pending draft only → treated as 'no reviews recorded'", out);
 
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
-	check(doc?.reviewedHead === false, "pending draft only --json → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "pending draft only --json → headIsReviewed: false", JSON.stringify(doc));
 	check(doc?.latestReviewCommit === null, "pending draft only --json → latestReviewCommit: null (draft excluded)", JSON.stringify(doc));
 }
 
@@ -290,7 +290,7 @@ console.log("\nPENDING draft at head PLUS a stale submitted review (still blocks
 	check(!out.includes("✅"), "draft + stale submitted review → does NOT print the authorizing ✅", out);
 
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
-	check(doc?.reviewedHead === false, "draft + stale submitted → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "draft + stale submitted → headIsReviewed: false", JSON.stringify(doc));
 	check(
 		doc?.latestReviewCommit === "1284eaf",
 		"draft + stale submitted → latestReviewCommit is the SUBMITTED review, not the draft",
@@ -310,16 +310,16 @@ console.log("\nunresolved threads AND stale review together:");
 	check(/no review covers/i.test(out), "both problems → also names the coverage gap", out);
 }
 
-// 5. --json: reviewedHead correct in all three head-coverage states, and the
+// 5. --json: headIsReviewed correct in all three head-coverage states, and the
 //    existing document shape (schema, totalCount, unresolvedCount, threads)
 //    stays intact — the #232 contract this is additive to.
-console.log("\n--json: reviewedHead and the existing contract:");
+console.log("\n--json: headIsReviewed and the existing contract:");
 {
 	const stale = page({ headRefOid: "aaa1111", reviewCommits: ["bbb2222"], unresolvedThreads: 0 });
 	const doc = parse(runPrThreads([stale], ["1", "--json"]).out);
-	check(doc?.schema === "pr-threads/list@1", "stale → schema unchanged", JSON.stringify(doc));
+	check(doc?.schema === "pr-threads/list@2", "stale → schema unchanged", JSON.stringify(doc));
 	check(doc?.head === "aaa1111", "stale → head is the current head sha", JSON.stringify(doc));
-	check(doc?.reviewedHead === false, "stale → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "stale → headIsReviewed: false", JSON.stringify(doc));
 	check(doc?.latestReviewCommit === "bbb2222", "stale → latestReviewCommit is the stale review's sha", JSON.stringify(doc));
 	check(typeof doc?.totalCount === "number", "stale → totalCount still present", JSON.stringify(doc));
 	check(typeof doc?.unresolvedCount === "number", "stale → unresolvedCount still present", JSON.stringify(doc));
@@ -328,20 +328,20 @@ console.log("\n--json: reviewedHead and the existing contract:");
 {
 	const clean = page({ headRefOid: "aaa1111", reviewCommits: ["aaa1111"], unresolvedThreads: 0 });
 	const doc = parse(runPrThreads([clean], ["1", "--json"]).out);
-	check(doc?.reviewedHead === true, "review at head → reviewedHead: true", JSON.stringify(doc));
+	check(doc?.headIsReviewed === true, "review at head → headIsReviewed: true", JSON.stringify(doc));
 	check(doc?.latestReviewCommit === "aaa1111", "review at head → latestReviewCommit == head", JSON.stringify(doc));
 }
 {
 	const none = page({ headRefOid: "aaa1111", reviewCommits: [], unresolvedThreads: 0 });
 	const doc = parse(runPrThreads([none], ["1", "--json"]).out);
-	check(doc?.reviewedHead === false, "no reviews → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "no reviews → headIsReviewed: false", JSON.stringify(doc));
 	check(doc?.latestReviewCommit === null, "no reviews → latestReviewCommit: null", JSON.stringify(doc));
 }
 {
 	// multiple reviews: latestReviewCommit is the LAST one (submission order), not just any match.
 	const multi = page({ headRefOid: "ccc3333", reviewCommits: ["aaa1111", "bbb2222"], unresolvedThreads: 0 });
 	const doc = parse(runPrThreads([multi], ["1", "--json"]).out);
-	check(doc?.reviewedHead === false, "multiple stale reviews → still reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "multiple stale reviews → still headIsReviewed: false", JSON.stringify(doc));
 	check(doc?.latestReviewCommit === "bbb2222", "multiple reviews → latestReviewCommit is the most recent", JSON.stringify(doc));
 }
 
@@ -361,7 +361,7 @@ console.log("\nlegacy fixture with no head/review data at all (now indeterminate
 	check(/could not determine review coverage/i.test(out), "legacy shape → names the actual problem", out);
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
 	check(doc?.head === null, "legacy shape --json → head: null", JSON.stringify(doc));
-	check(doc?.reviewedHead === false, "legacy shape --json → reviewedHead: false (not true, not unknown)", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "legacy shape --json → headIsReviewed: false (not true, not unknown)", JSON.stringify(doc));
 }
 
 // 6b. The macroscopeapp finding, reproduced precisely: reviews and review
@@ -381,7 +381,7 @@ console.log("\nreview threads present, headRefOid MISSING (the reported gap):");
 
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
 	check(doc?.head === null, "no headRefOid --json → head: null", JSON.stringify(doc));
-	check(doc?.reviewedHead === false, "no headRefOid --json → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "no headRefOid --json → headIsReviewed: false", JSON.stringify(doc));
 	check(doc?.latestReviewCommit === "deadbeef", "no headRefOid --json → latestReviewCommit still reported (a review DID happen)", JSON.stringify(doc));
 }
 
@@ -448,8 +448,8 @@ console.log("\n>100 reviews on the PR (#267):");
 		);
 		const doc = parse(runPrThreads([firstHundred], ["1", "--json"]).out);
 		check(
-			doc?.reviewedHead === false,
-			">100 reviews, first:100 shape → reviewedHead: false (the bug: a covering review exists but wasn't in the fetched page)",
+			doc?.headIsReviewed === false,
+			">100 reviews, first:100 shape → headIsReviewed: false (the bug: a covering review exists but wasn't in the fetched page)",
 			JSON.stringify(doc),
 		);
 	}
@@ -469,7 +469,7 @@ console.log("\n>100 reviews on the PR (#267):");
 		);
 		check(out.includes("✅"), ">100 reviews, last:100 shape → prints the authorizing ✅", out);
 		const doc = parse(runPrThreads([lastHundred], ["1", "--json"]).out);
-		check(doc?.reviewedHead === true, ">100 reviews, last:100 shape → reviewedHead: true", JSON.stringify(doc));
+		check(doc?.headIsReviewed === true, ">100 reviews, last:100 shape → headIsReviewed: true", JSON.stringify(doc));
 		check(doc?.latestReviewCommit === headSha, ">100 reviews, last:100 shape → latestReviewCommit is the head", JSON.stringify(doc));
 	}
 
@@ -518,7 +518,7 @@ console.log("\n#267 null-commit review coverage (exact exit codes):");
 	check(out.includes("✅"), "proven-despite-a-null → prints the authorizing ✅", out);
 
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
-	check(doc?.reviewedHead === true, "proven-despite-a-null --json → reviewedHead: true", JSON.stringify(doc));
+	check(doc?.headIsReviewed === true, "proven-despite-a-null --json → headIsReviewed: true", JSON.stringify(doc));
 	check(
 		doc?.nullCommitReviewCount === 1,
 		"proven-despite-a-null --json → nullCommitReviewCount still reported (1)",
@@ -544,7 +544,7 @@ console.log("\n#267 null-commit review coverage (exact exit codes):");
 	check(/1 submitted review/.test(out), "indeterminate → message gives the count", out);
 
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
-	check(doc?.reviewedHead === false, "indeterminate --json → reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "indeterminate --json → headIsReviewed: false", JSON.stringify(doc));
 	check(doc?.nullCommitReviewCount === 1, "indeterminate --json → nullCommitReviewCount: 1", JSON.stringify(doc));
 }
 
@@ -652,7 +652,7 @@ console.log("\n#269 — author's own thread replies do not cover head:");
 	check(code === 1, "author's replies at head → blocking, not clean (exit 1)", `got ${code}, output:\n${out}`);
 	check(!/✅/.test(out), "author's replies at head → no ✅ authorizing a merge", out);
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
-	check(doc?.reviewedHead === false, "author's replies at head → --json reviewedHead: false", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "author's replies at head → --json headIsReviewed: false", JSON.stringify(doc));
 	check(
 		doc?.unresolvedCount === 0,
 		"author's replies at head → unresolvedCount still 0 (threads and coverage stay independent)",
@@ -677,7 +677,7 @@ console.log("\n#269 — an independent review at head still counts (mixed case):
 	const { code, out } = runPrThreads([p]);
 	check(code === 0, "independent review at head alongside author replies → exit 0", `got ${code}, output:\n${out}`);
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
-	check(doc?.reviewedHead === true, "mixed case → --json reviewedHead: true", JSON.stringify(doc));
+	check(doc?.headIsReviewed === true, "mixed case → --json headIsReviewed: true", JSON.stringify(doc));
 	check(
 		doc?.latestReviewCommit === "64ac251",
 		"mixed case → latestReviewCommit is the independent review's commit",
@@ -719,7 +719,7 @@ console.log("\n#269 — only the author has ever reviewed → advisory, not bloc
 	const { code, out } = runPrThreads([p]);
 	check(code === 0, "only self-reviews → advisory exit 0, no permanent false alarm", `got ${code}, output:\n${out}`);
 	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
-	check(doc?.reviewedHead === false, "only self-reviews → --json reviewedHead: false (not claimed as covered)", JSON.stringify(doc));
+	check(doc?.headIsReviewed === false, "only self-reviews → --json headIsReviewed: false (not claimed as covered)", JSON.stringify(doc));
 }
 
 // 9e. Self-authorship undecidable — the PR's `author` is null (deleted

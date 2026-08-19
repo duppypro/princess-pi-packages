@@ -174,7 +174,7 @@ console.log("pr-threads --json: agent-readable review threads (#232)");
 	const { out } = runPrThreads([p], ["1", "--json"]);
 	const doc = parse(out);
 	check(doc !== null, "--json → stdout is one parseable JSON document", `stdout was:\n${out}`);
-	check(doc?.schema === "pr-threads/list@1", "--json → carries schema pr-threads/list@1", out);
+	check(doc?.schema === "pr-threads/list@2", "--json → carries schema pr-threads/list@2", out);
 	check(!/[✅❌]/.test(out), "--json → no emoji or human prose on stdout", out);
 }
 
@@ -324,6 +324,52 @@ console.log("pr-threads --json: agent-readable review threads (#232)");
 	check(/\b1 unresolved conversation\(s\)/.test(out), "human mode → still reports the count", out);
 	check(out.includes("bin/pr-cleanup"), "human mode → still lists the path", out);
 	check(parse(out) === null, "human mode → does NOT emit JSON", out);
+}
+
+// 9. Every top-level field's emitted TYPE matches what its name promises (#372).
+//
+// The defect this guards: `headIsReviewed` was a boolean sitting between `head` and
+// `latestReviewCommit`, two shas. A poll loop wrote `.headIsReviewed[0:7]`, jq sliced
+// the boolean to null, `// "none"` did not catch it (the value was not null, the
+// SLICE was), and the loop could never fire. Documented correctly and still read
+// wrong, because the name taught the wrong type and the neighbours confirmed it.
+//
+// So the assertion is not "the field exists" — it is that a reader who infers the
+// type from the name is right, in zero reasoning steps. A field named as a noun
+// phrase for a commit holds a commit; a predicate is named as a predicate.
+{
+	const p = page([thread({ id: "T1", isResolved: true })], 1, null);
+	const doc = parse(runPrThreads([p], ["1", "--json"]).out);
+
+	const shaish = (v: any) => v === null || (typeof v === "string" && /^[0-9a-f]{7,40}$/.test(v));
+	const TYPES: Array<[string, (v: any) => boolean, string]> = [
+		["schema", (v) => v === "pr-threads/list@2", 'the string "pr-threads/list@2"'],
+		["repo", (v) => typeof v === "string", "string"],
+		["pr", (v) => typeof v === "number", "number"],
+		["totalCount", (v) => typeof v === "number", "number"],
+		["unresolvedCount", (v) => typeof v === "number", "number"],
+		["head", shaish, "sha string or null"],
+		["headIsReviewed", (v) => typeof v === "boolean", "boolean"],
+		["latestReviewCommit", shaish, "sha string or null"],
+		["nullCommitReviewCount", (v) => typeof v === "number", "number"],
+		["unknownAuthorReviewCount", (v) => typeof v === "number", "number"],
+		["prAuthor", (v) => v === null || typeof v === "string", "string or null"],
+		["threads", (v) => Array.isArray(v), "array"],
+	];
+	for (const [field, ok, want] of TYPES) {
+		check(ok(doc?.[field]), `${field} is ${want}`, `${field} = ${JSON.stringify(doc?.[field])}`);
+	}
+
+	// The renamed key is gone outright, not shadowed by a compatibility alias: two
+	// spellings of one fact is the state that lets a stale reader stay wrong quietly.
+	check(!(doc && "reviewedHead" in doc), "reviewedHead is gone (renamed to headIsReviewed)",
+		JSON.stringify(Object.keys(doc ?? {})));
+
+	// The exact failure from #372, replayed: slicing the coverage field must not
+	// silently yield null. It is a boolean now BY NAME, so nobody slices it — but
+	// the two fields that do look sliceable have to survive being sliced.
+	check(typeof doc?.head === "string" && doc.head.slice(0, 7).length === 7,
+		"head survives a [0:7] slice (the read that #372's monitor attempted)", JSON.stringify(doc?.head));
 }
 
 // ---
