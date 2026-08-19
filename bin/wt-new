@@ -106,6 +106,19 @@
 # ---
 set -euo pipefail
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). The scan stops at `--`.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "wt-new: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 # -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
 # message, and "wt-new --help" used to be treated as one.
 case "${1:-}" in
@@ -136,7 +149,16 @@ EOF
   -*) echo "wt-new: unknown flag: $1 (try --help)" >&2; exit 2 ;;
 esac
 
-if [ $# -ne 1 ]; then
+if [ $# -eq 0 ]; then
+  echo "usage: wt-new <issue#>-<slug>" >&2
+  exit 2
+fi
+# #367: same correction as bin/pr-cleanup — the count check refused an extra
+# argument without ever naming it, so a typo'd second word read as "you forgot
+# the branch name".
+if [ $# -gt 1 ]; then
+  shift
+  echo "wt-new: unexpected argument: $1 — wt-new takes exactly one branch name." >&2
   echo "usage: wt-new <issue#>-<slug>" >&2
   exit 2
 fi

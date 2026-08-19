@@ -7,6 +7,19 @@
 # and miscounted the cluster as 3). One copy, reachable from the command line.
 set -euo pipefail
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). The scan stops at `--`.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "git-overview: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 # #178: resolved absolute path of the running copy — install-workflow-tools
 # deploys this script to ~/bin, so a bare `git-overview` from a feature
 # worktree runs whatever was last installed there, not the worktree's own
@@ -31,9 +44,9 @@ constantly, printing four sections in this order:
                                          prints an empty section)
   commits   git log --oneline -5        (fixed at 5, not configurable)
 
-Takes no positional arguments. A leading-dash argument is refused (exit 2); a
-non-dash positional is still ignored. Exits 0, 2 for an unknown flag, or 128 if
-git itself fails (e.g. run outside a repository).
+Takes no arguments. Any argument is refused (exit 2) — leading-dash since #362,
+non-dash since #367. Exits 0, 2 for an unknown flag or unexpected argument, or
+128 if git itself fails (e.g. run outside a repository).
 
   -h, --help  this text.
   --version   resolved path of the running copy.
@@ -44,6 +57,21 @@ USAGE
   # flag was taken as the close reason. A flag is never a branch name, a message,
   # or a reason — refuse it here, exit 2 per the #224 shared table.
   -*) echo "git-overview: unknown flag: $1 (try --help)" >&2; exit 2 ;;
+  # #367: a non-dash positional fell through and printed the snapshot at exit 0.
+  # Harmless here — git-overview only reads — but it is the same "argument the
+  # caller typed, silently dropped" shape that let `pr-open <branch>` act on a
+  # different branch, and #362's help text documented the hole rather than
+  # closing it. Refuse it, so the family contract holds without an exception.
+  # `case "${1:-}"` maps "no arguments" and "one empty argument" to the same "",
+  # so this arm has to tell them apart with `$#` — otherwise `git-overview ""`
+  # prints the snapshot at exit 0, which is the ignored-positional hole this very
+  # case exists to close (macroscopeapp, PR #370).
+  "")
+    if [ "$#" -gt 0 ]; then
+      echo "git-overview: unexpected empty argument — git-overview takes none (try --help)" >&2
+      exit 2
+    fi ;;
+  *) echo "git-overview: unexpected argument: $1 — git-overview takes none (try --help)" >&2; exit 2 ;;
 esac
 
 echo "=== branch ==="

@@ -127,6 +127,20 @@ Run repo-gate --help for the full flag reference.
 EOF
 }
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). --why is left out deliberately: it is the one flag
+# whose future is undecided (#365), and this guard should not quietly ratify it.
+for a in "$@"; do
+	if [ "$a" = "--" ]; then break; fi
+	case "$a" in
+		-h|--help|--version)
+			if [ "$#" -ne 1 ]; then
+				echo "$SELF: $a takes no other arguments (got: $*)" >&2
+				exit 2
+			fi ;;
+	esac
+done
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 		# #178: resolved absolute path of the running copy — install-workflow-tools
@@ -137,8 +151,24 @@ while [ $# -gt 0 ]; do
 		# preconditions below, so --version works even without them on PATH.
 		--version) readlink -f "$0"; exit 0 ;;
 		--json) JSON=1; shift ;;
-		--policy) POLICY="${2:-}"; [ -n "$POLICY" ] || { echo "$SELF: --policy needs a path" >&2; exit 2; }; shift 2 ;;
-		--remedy) REMEDY="${2:-}"; [ -n "$REMEDY" ] || { echo "$SELF: --remedy needs a repo name" >&2; exit 2; }; shift 2 ;;
+		# #367: both values were taken as `${2:-}` unconditionally, so the `-*`
+		# guard below never saw them — `repo-gate --policy --json` searched for a
+		# policy file literally named "--json" and reported "no policy file
+		# found", naming a cause that was not the real one. Neither a path nor a
+		# repo name starts with a dash here, so this rejects only a swallowed flag.
+		# `-n "$1"` is not redundant with the dash check (macroscopeapp, PR #370):
+		# an empty value passes both `$#` and the dash test, and the pre-#367 code
+		# caught it with the `-n "$POLICY"` test this rewrite replaced. Dropping it
+		# made `--policy ""` audit against the DEFAULT policy and `--remedy ""`
+		# silently widen to a full audit — each answering a question nobody asked.
+		--policy)
+			shift
+			[ $# -gt 0 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --policy needs a path, got '${1:-}'" >&2; exit 2; }
+			POLICY="$1"; shift ;;
+		--remedy)
+			shift
+			[ $# -gt 0 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --remedy needs a repo name, got '${1:-}'" >&2; exit 2; }
+			REMEDY="$1"; shift ;;
 		--why) why; exit 0 ;;
 		-h|--help) usage; exit 0 ;;
 		-*) echo "$SELF: unknown flag '$1' (try --help)" >&2; exit 2 ;;

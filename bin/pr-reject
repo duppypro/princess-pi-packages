@@ -30,9 +30,24 @@ set -euo pipefail
 #      failures land here rather than guessing at 6's "determined refusal")
 #   6  safety gate refused — ambiguous PR selection (more than one of our own
 #      open PRs share the branch's head)
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). The scan stops at `--`, so a REASON that reads
+# `--version` is still reachable as `pr-reject -- --version`.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "pr-reject: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 BRANCH=""
 BRANCH_SOURCE=""   # "explicit" (via -b/--branch) or "cwd" (discovered) — #224
 REASON=""
+REASON_WORDS=()    # every positional, joined with single spaces after the loop (#367)
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)
@@ -44,6 +59,9 @@ Human-only: close the open PR for <branch> (default: current branch) without
 merging, leaving <reason> as a comment. Use `--` before a reason that starts
 with '-'.
 
+An unquoted multi-word reason is joined with single spaces, before or after
+`--` (#367). Quote it to control the spacing exactly.
+
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
       exit 0 ;;
@@ -54,21 +72,62 @@ EOF
     # no commit-hash/semver stamp — PATH only.
     --version) readlink -f "$0"; exit 0 ;;
     -b|--branch)
-      BRANCH="${2:-}"
-      if [ -z "$BRANCH" ]; then
-        echo "pr-reject: -b needs a branch name." >&2
+      # Echo back the spelling the caller used, not a canonical one: a message
+      # naming `-b` when they typed `--branch` reads as being about a different
+      # flag, and this script's whole job is not acting on the wrong thing.
+      BRANCH_FLAG="$1"
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "pr-reject: $BRANCH_FLAG needs a branch name." >&2
         exit 2
       fi
+      # #367: the value was taken as `${2:-}` unconditionally, so the `-*` guard
+      # below never saw it: `pr-reject -b --json` set BRANCH="--json" and went on
+      # to run live `gh repo view` / `gh pr list --head "--json"`. It failed at
+      # the lookup rather than closing the wrong PR, but that is luck, not a
+      # gate — same class as #364. A branch name never starts with a dash (git
+      # itself refuses to create one), so this cannot reject valid input.
+      if [ "${1#-}" != "$1" ]; then
+        echo "pr-reject: $BRANCH_FLAG needs a branch name, got the flag '$1'" >&2
+        exit 2
+      fi
+      # An EMPTY value is a MISSING value (macroscopeapp, PR #370). The dash check
+      # above and the `$#` check before it both pass on `""` — it looks like a
+      # flag to neither — so `pr-reject -b ""` left BRANCH empty and fell through
+      # to the cwd discovery below, closing the CURRENT branch's PR while the
+      # caller had explicitly named one. That is #209 and #364 in a single line,
+      # reintroduced by the fix for them: the pre-#367 code checked `-z` and this
+      # rewrite replaced it with an arity check instead of adding to it. Verified
+      # live before the test existed, the expensive way — it closed PR #370.
+      if [ -z "$1" ]; then
+        echo "pr-reject: $BRANCH_FLAG needs a branch name, got an empty one." >&2
+        exit 2
+      fi
+      BRANCH="$1"
       BRANCH_SOURCE="explicit"
-      shift 2 ;;
-    --) shift; REASON="${1:-}"; break ;;
+      shift ;;
+    # #367: this took exactly ONE word — `pr-reject -- -not merging now` closed
+    # the PR with the reason "-not" and dropped the rest, silently. Everything
+    # after `--` is the reason, verbatim, dash and all.
+    --) shift; while [ $# -gt 0 ]; do REASON_WORDS+=("$1"); shift; done; break ;;
     # #362: THIS arm is what closed PR #364. `pr-reject --zzz-unknown` fell in
     # here, became the close REASON, and the script went on to find the current
     # branch's PR and close it. A leading dash is never a reason.
     -*) echo "pr-reject: unknown flag: $1 (try --help)" >&2; exit 2 ;;
-    *)  REASON="$1"; shift ;;
+    # #367: this kept only the LAST word — `pr-reject wrong approach` closed the
+    # PR with the reason "approach". Collect every positional and join them with
+    # single spaces, so an unquoted reason means what it reads as. Unlike
+    # git-checkpoint (which refuses an unquoted message rather than guess), the
+    # reason is a PR comment, not a commit message that gets pushed and rewritten
+    # — and the branch is a flag here, so no positional is ever ambiguous.
+    *)  REASON_WORDS+=("$1"); shift ;;
   esac
 done
+# `${arr[*]}` on an empty array is an unbound-variable error under `set -u` on
+# bash < 4.4, and this ships to whatever bash the host has.
+if [ "${#REASON_WORDS[@]}" -gt 0 ]; then
+  REASON="${REASON_WORDS[*]}"
+fi
 if [ -z "$BRANCH" ]; then
   BRANCH_SOURCE="cwd"
   # Failure here (not run inside a git repository at all) must not leak git's

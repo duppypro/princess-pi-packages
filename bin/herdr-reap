@@ -166,6 +166,20 @@ fi
 
 JSON=0
 DRY_RUN=0
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). The scan stops at `--`.
+for a in "$@"; do
+	if [ "$a" = "--" ]; then break; fi
+	case "$a" in
+	-h | --help | --version)
+		if [ "$#" -ne 1 ]; then
+			echo "herdr-reap: $a takes no other arguments (got: $*)" >&2
+			exit 2
+		fi
+		;;
+	esac
+done
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--json) JSON=1 ;;

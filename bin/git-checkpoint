@@ -52,6 +52,22 @@ exit codes: 0 ok · 1 usage · 3 precondition (protected branch / no upstream)
 EOF
 }
 
+# #367: -h/--help/--version are terminal — they take no other arguments (full
+# rationale in bin/pr-open). Exit 1 here, not 2: this script's usage-error code
+# is documented as 1 in docs/dev-workflow-spec.md, and reconciling the family's
+# three vocabularies is #366's call, not a side effect of this guard. The scan
+# stops at `--`, so `git-checkpoint -- "--version"` still commits that message.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "git-checkpoint: $a takes no other arguments (got: $*)" >&2
+        exit 1
+      fi ;;
+  esac
+done
+
 # A flag is never a commit message (#310). Only -h/--help, --version, and the
 # `--` terminator are recognised; any other leading '-' is refused rather than
 # committed, because the cost of guessing wrong is a staged, committed AND
@@ -81,6 +97,20 @@ esac
 MSG="${1:-}"
 if [ -z "$MSG" ]; then
   echo "git-checkpoint: message required" >&2
+  echo "  git-checkpoint \"feat: add widget (#42)\"" >&2
+  exit 1
+fi
+# #367: `MSG="$1"` took the first word and dropped the rest, so an UNQUOTED
+# message committed and PUSHED only its first word — `git-checkpoint fix the
+# parser` committed "fix". Silent truncation of an already-pushed commit message
+# is the expensive half of #367's finding 3; refusing costs one retry with
+# quotes. Joining the words instead was the road not taken: this script's whole
+# contract is "the message is ONE quoted argument" (that is why `--` exists),
+# and guessing at spacing for a message that is about to be pushed is the kind
+# of helpful guess #209 was filed over.
+if [ "$#" -gt 1 ]; then
+  shift
+  echo "git-checkpoint: unexpected argument: '$1' — the message must be ONE quoted argument." >&2
   echo "  git-checkpoint \"feat: add widget (#42)\"" >&2
   exit 1
 fi
