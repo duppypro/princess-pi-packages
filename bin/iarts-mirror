@@ -60,10 +60,13 @@ Parse by column; `status` is one of:
   fetch-failed     the mirror could not be updated — THE WORK IS NOT MIRRORED
 
 `updated` and `unchanged` may carry a `-refstale` suffix (e.g.
-`updated-refstale`): the mirror is correct and the work is safe, but this
-clone's view of the mirror could not be refreshed, so its prompt may still
-report drift. Exact-matching `updated` therefore treats a half-done run as
-incomplete, which is the intended reading.
+`updated-refstale`): THE MIRROR IS CORRECT AND THE WORK IS SAFE — the branch was
+copied. What failed is this clone's own view of the mirror, either because the
+`mirror` fetch errored (its prompt may still report drift that is not real) or
+because the clone has no `mirror` remote at all (it cannot observe the mirror in
+either direction). Investigate the suffix; do not re-run for safety.
+Exact-matching `updated` therefore treats a half-done run as incomplete, which is
+the intended reading.
 
 Environment:
   IARTS_MIRROR_ROOT  bare mirrors        (default: ~/git-remotes)
@@ -105,12 +108,20 @@ for repo in "${REPOS[@]}"; do
     fi
     [[ -d "$bare" ]] || git init --bare --quiet --initial-branch="$BRANCH" "$bare"
 
-    before=$(git -C "$bare" rev-parse --verify --quiet "$BRANCH" || echo -)
+    # Fully qualified on BOTH sides. `rev-parse iarts/local` resolves refs/tags/
+    # BEFORE refs/heads/ (gitrevisions), so a tag of that name in the mirror wins
+    # — and `--verify --quiet` reports it with the ambiguity warning suppressed,
+    # which makes this the silent half of the pair. Measured: branch 3343477,
+    # tag e35fd13, and both `rev-parse` forms returned the tag.
+    #
+    # Fixing only `after` (the reported line) would be WORSE than fixing neither:
+    # before=tag, after=branch never match, so every run would report `updated`.
+    before=$(git -C "$bare" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo -)
     if ! git -C "$bare" fetch --quiet --no-tags "$clone" \
             "refs/heads/$BRANCH:refs/heads/$BRANCH" 2>/dev/null; then
         printf '%s\t%s\t%s\tfetch-failed\n' "$repo" "$BRANCH" "$before"; rc=1; continue
     fi
-    after=$(git -C "$bare" rev-parse "$BRANCH")
+    after=$(git -C "$bare" rev-parse "refs/heads/$BRANCH")
 
     # #384: the BARE repo ran that fetch, so only its refs moved. Git updates
     # `refs/remotes/<remote>/*` solely in the repository that runs the transfer,
@@ -120,9 +131,21 @@ for repo in "${REPOS[@]}"; do
     # teaches the reader to ignore the one indicator that matters on a branch
     # this clone never pushes. Refresh via the remote's own refspec rather than
     # writing the ref directly, so this cannot drift from how `mirror` is set up.
+    #
+    # A clone with NO `mirror` remote is `-refstale` as well. Not for the reason
+    # a failed fetch is: with no remote there is no upstream, so `git status -sb`
+    # prints a bare `## iarts/local` and the prompt reports nothing at all rather
+    # than reporting drift (verified against both live clones, which track
+    # `mirror/iarts/local`). The reason is stronger than a lying prompt — such a
+    # clone cannot observe the mirror AT ALL, so the one property this tool
+    # exists to give the reader ("you can see whether you are ahead of your only
+    # second copy") is unavailable. Reporting a bare `updated` would claim a
+    # completeness the run does not have.
     refstale=
     if git -C "$clone" remote get-url mirror >/dev/null 2>&1; then
         git -C "$clone" fetch --quiet --no-tags mirror 2>/dev/null || refstale=-refstale
+    else
+        refstale=-refstale
     fi
 
     if [[ "$before" == "$after" ]]; then status=unchanged; else status=updated; fi
