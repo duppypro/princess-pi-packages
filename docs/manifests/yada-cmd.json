@@ -1,6 +1,5 @@
 {
   "name": "yada",
-  "version": "1.0.0",
   "tagline": "Dynamic streaming log deduplicator with fuzzy matching and periodicity detection",
   "description": "A streaming pipe tool that collapses repeated near-identical log lines in-place with count badges, revealing real changes as they happen. Uses Levenshtein distance for fuzzy matching so lines with different IDs, timestamps, or numbers are still recognized as duplicates. Detects periodic patterns (e.g. cron jobs) and annotates them. Pass --no-collapse for safe pipe-to-grep/file without ANSI escape sequences.",
   "examples": [

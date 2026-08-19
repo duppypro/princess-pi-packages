@@ -4885,10 +4885,12 @@ async function renderWtftWhy(manifestPath, invokedAs) {
 function renderWtftVersion(manifestPath, moduleUrl) {
   const manifest = JSON.parse(fs12.readFileSync(manifestPath, "utf8"));
   const pkgPath = path11.join(path11.dirname(fileURLToPath2(moduleUrl)), "..", "package.json");
-  let semver = manifest.version;
+  let semver;
   try {
-    semver = JSON.parse(fs12.readFileSync(pkgPath, "utf8")).version ?? semver;
-  } catch {}
+    semver = JSON.parse(fs12.readFileSync(pkgPath, "utf8")).version;
+  } catch (err) {
+    semver = `unknown (cannot read ${pkgPath}: ${err.message})`;
+  }
   return formatVersion(manifest.name, semver, moduleUrl);
 }
 
