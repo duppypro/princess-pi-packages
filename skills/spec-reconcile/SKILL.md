@@ -292,9 +292,14 @@ production code. If the audit turns up a code finding (§5), it does not belong 
 commit.
 
 The "spec reconciled" gate is satisfied when this record exists and shows no open
-contradictions — not when someone remembers re-reading the spec. (It was a
-`merge-checklist` skill's gate once; that skill never existed on disk, and the checks it
-described now live inside `pr-open`.)
+contradictions — not when someone remembers re-reading the spec.
+
+**Nothing enforces that gate, and saying so is the point.** `pr-open` runs branch,
+divergence, and PR-state pre-checks; it never reads a reconcile record and never asks
+whether contradictions are closed. The gate belonged to a `merge-checklist` skill that never
+existed on disk. So the record is *evidence for the human at `pr-merge`*, not a
+blocker — an unenforced rule is a wish, and a wish described as a gate is worse than
+either. If it should block, that is a change to `pr-open`, filed as its own issue.
 
 ## 7. Validating this skill — backtested, and re-runnable
 

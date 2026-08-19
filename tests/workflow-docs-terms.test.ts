@@ -52,7 +52,7 @@ const RETIRED: Array<{ term: RegExp; label: string; now: string }> = [
 	{ term: /\bgit-snap\b/, label: "git-snap", now: "git-checkpoint" },
 	{ term: /\bgit-ship\b/, label: "git-ship", now: "git-checkpoint" },
 	{ term: /\bpost-merge-cleanup\b/, label: "post-merge-cleanup", now: "pr-cleanup" },
-	{ term: /\bmerge-checklist\b/, label: "merge-checklist", now: "pr-open's own pre-checks" },
+	{ term: /\bmerge-checklist\b/, label: "merge-checklist", now: "nothing — the skill never existed and pr-open does not gate on it" },
 	{ term: /\bMERGE_BLOCKED\b/, label: "MERGE_BLOCKED", now: "pr-open's real gh output" },
 	{ term: /\b5-step flow\b|\b5-Step\b|\bfive-step flow\b/, label: "the 5-step flow", now: "the TDD + PR flow" },
 	{ term: /\bStep 5\b/, label: "Step 5", now: '"Code & Spec Approved" / the spec-reconcile step' },
@@ -97,6 +97,19 @@ function liveGuidance(): string[] {
 	return out.filter((r) => fs.existsSync(path.join(REPO, r)));
 }
 
+/**
+ * The blank-line-delimited block containing line `i`, joined into one string.
+ * Table rows are their own paragraph in practice (a table is a run of non-blank
+ * lines), which is what lets a "What was removed" row exempt itself.
+ */
+function paragraphAt(lines: string[], i: number): string {
+	let a = i;
+	let b = i;
+	while (a > 0 && lines[a - 1].trim() !== "") a--;
+	while (b < lines.length - 1 && lines[b + 1].trim() !== "") b++;
+	return lines.slice(a, b + 1).join(" ");
+}
+
 console.log("#230: retired workflow vocabulary in live guidance");
 
 const violations: string[] = [];
@@ -110,7 +123,16 @@ for (const rel of liveGuidance()) {
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		if (/^#{1,6}\s/.test(line) || /^\s*\|\s*(Retired|Removed|What)\b/i.test(line)) heading = line;
-		if (HISTORICAL.test(line) || HISTORICAL.test(heading)) continue;
+
+		// The exemption is evaluated over the whole PARAGRAPH, not the line. Prose
+		// wraps, so "…a `merge-checklist` skill that never\nexisted on disk" would
+		// otherwise fail on the first line and pass on the second — an author fixing
+		// it correctly gets a red test and learns to reword for the regex instead of
+		// for the reader. That happened twice while writing this suite, which is the
+		// evidence for the shape. A paragraph admitting the term is history is an
+		// honest paragraph regardless of where the line breaks fall.
+		if (HISTORICAL.test(paragraphAt(lines, i)) || HISTORICAL.test(heading)) continue;
+
 		for (const { term, label, now } of RETIRED) {
 			if (term.test(line)) {
 				violations.push(`${rel}:${i + 1}  ${label} → ${now}\n    ${line.trim().slice(0, 120)}`);
@@ -129,6 +151,14 @@ check(violations.length === 0,
 const PROBE = "Run `git-snap` to save your work, then finish at Step 5.";
 const probeHits = RETIRED.filter((r) => r.term.test(PROBE)).length;
 check(probeHits === 2, "the detector still catches a known-bad probe", `caught ${probeHits} of 2`);
+
+// The paragraph rule itself: a marker on ANY line of the block exempts the block,
+// and a block with no marker anywhere is not exempt.
+const WRAPPED = ["The gate belonged to a `merge-checklist` skill that never", "existed on disk.", ""];
+check(HISTORICAL.test(paragraphAt(WRAPPED, 0)),
+	"a marker that wrapped onto the next line still exempts the term");
+check(!HISTORICAL.test(paragraphAt(["Run `git-snap` first,", "then push.", ""], 0)),
+	"a wrapped paragraph with no marker is still caught");
 check(HISTORICAL.test("`git-snap` was replaced by `git-checkpoint`."),
 	"a sentence that admits the term is history is exempt");
 check(!HISTORICAL.test("Run `git-snap` to save your work."),
