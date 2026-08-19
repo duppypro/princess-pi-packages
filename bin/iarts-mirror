@@ -124,9 +124,45 @@ for repo in "${REPOS[@]}"; do
     # The expiry settings matter as much as the reflog. Unreachable objects held
     # only by a reflog are pruned after 30 days by default, so without these the
     # recovery window would quietly close a month after the mistake.
-    git -C "$bare" config core.logAllRefUpdates true
-    git -C "$bare" config gc.reflogExpire never
-    git -C "$bare" config gc.reflogExpireUnreachable never
+    git -C "$bare" config core.logAllRefUpdates true 2>/dev/null || true
+    git -C "$bare" config gc.reflogExpire never 2>/dev/null || true
+    git -C "$bare" config gc.reflogExpireUnreachable never 2>/dev/null || true
+
+    # READ BACK, do not trust the exit codes. This script runs `set -uo pipefail`
+    # with no `-e`, so a `git config` that failed — a stale `config.lock` from an
+    # interrupted git is the ordinary way — left the mirror with no retention while
+    # the run reported success (macroscopeapp, PR #385). Reading the values proves
+    # the state; the write's exit code only claims it.
+    retention=1
+    [[ "$(git -C "$bare" config --get core.logAllRefUpdates 2>/dev/null || true)" == "true" ]] || retention=0
+    [[ "$(git -C "$bare" config --get gc.reflogExpire 2>/dev/null || true)" == "never" ]] || retention=0
+    [[ "$(git -C "$bare" config --get gc.reflogExpireUnreachable 2>/dev/null || true)" == "never" ]] || retention=0
+
+    # THE INVARIANT: never force without a way back.
+    #
+    # With retention, `+` is safe — a displaced tip stays in the reflog. Without
+    # it, forcing would make the displaced tip unrecoverable, which is the precise
+    # loss the reflog was added to prevent. So retention decides the refspec.
+    #
+    # NOT "refuse to mirror at all", which is what the report proposed. A
+    # fast-forward displaces nothing — the old tip is an ancestor of the new one
+    # and stays reachable through the branch itself — so it never needed the
+    # reflog and is still perfectly safe to mirror. Refusing it would turn a
+    # config hiccup into NO BACKUP on the one branch that exists nowhere else,
+    # failing closed on the case that was never in danger.
+    #
+    # Dropping `+` makes the outcome self-reporting: a fast-forward still lands and
+    # reads `updated`, while a rewrite is rejected by git and reads `fetch-failed`
+    # — which is then literally true, the mirror could not be updated. No new
+    # status, and no run claims a safety it does not have.
+    refspec="+refs/heads/$BRANCH:refs/heads/$BRANCH"
+    if [[ "$retention" -eq 0 ]]; then
+        refspec="refs/heads/$BRANCH:refs/heads/$BRANCH"
+        echo "iarts-mirror: $repo — reflog retention could not be set on $bare," >&2
+        echo "   so this run will NOT force. Ordinary new commits still mirror; a rebased" >&2
+        echo "   or amended branch will report fetch-failed instead of overwriting a tip" >&2
+        echo "   nothing could recover. Check for a stale lock: rm -f '$bare/config.lock'" >&2
+    fi
 
     # Fully qualified on BOTH sides. `rev-parse iarts/local` resolves refs/tags/
     # BEFORE refs/heads/ (gitrevisions), so a tag of that name in the mirror wins
@@ -149,8 +185,7 @@ for repo in "${REPOS[@]}"; do
     # clone into permanent loss in the one place it was supposed to be recoverable
     # from. With the reflog on, the previous tip stays reachable:
     #   git -C ~/git-remotes/<repo>.git reflog refs/heads/iarts/local
-    if ! git -C "$bare" fetch --quiet --no-tags "$clone" \
-            "+refs/heads/$BRANCH:refs/heads/$BRANCH" 2>/dev/null; then
+    if ! git -C "$bare" fetch --quiet --no-tags "$clone" "$refspec" 2>/dev/null; then
         printf '%s\t%s\t%s\tfetch-failed\n' "$repo" "$BRANCH" "$before"; rc=1; continue
     fi
     after=$(git -C "$bare" rev-parse "refs/heads/$BRANCH")
@@ -173,9 +208,27 @@ for repo in "${REPOS[@]}"; do
     # exists to give the reader ("you can see whether you are ahead of your only
     # second copy") is unavailable. Reporting a bare `updated` would claim a
     # completeness the run does not have.
+    #
+    # EXPLICIT refspec, then CHECK THE REF. A bare `git fetch mirror` uses the
+    # configured `remote.mirror.fetch`, so a remote set up to track something
+    # narrower than `+refs/heads/*:refs/remotes/mirror/*` exits 0 while never
+    # touching this branch's tracking ref (macroscopeapp, PR #385). Both live
+    # clones happen to carry the wildcard refspec today, so this is a guarantee
+    # being made explicit rather than a bug being repaired — but the record claims
+    # the ref was refreshed, and an exit code does not prove that.
+    #
+    # The rev-parse after it is the actual guarantee: it asks whether the ref now
+    # HOLDS the mirrored sha, which is the property `-refstale` is about, and
+    # catches any cause rather than the one cause we thought of.
     refstale=
     if git -C "$clone" remote get-url mirror >/dev/null 2>&1; then
-        git -C "$clone" fetch --quiet --no-tags mirror 2>/dev/null || refstale=-refstale
+        if git -C "$clone" fetch --quiet --no-tags mirror \
+                "+refs/heads/$BRANCH:refs/remotes/mirror/$BRANCH" 2>/dev/null; then
+            [[ "$(git -C "$clone" rev-parse --verify --quiet "refs/remotes/mirror/$BRANCH" || echo -)" == "$after" ]] \
+                || refstale=-refstale
+        else
+            refstale=-refstale
+        fi
     else
         refstale=-refstale
     fi

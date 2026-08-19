@@ -276,6 +276,101 @@ console.log("\nan existing mirror gains the reflog on the next run:");
 }
 
 // ---
+// Never force without a way back
+// ---
+// The three `git config` calls that establish reflog retention are unchecked by
+// `set -uo pipefail` (no `-e`), so a stale `config.lock` from an interrupted git
+// left the mirror with NO retention while the run forced anyway and reported
+// success (macroscopeapp, PR #385). Retention now decides the refspec, verified
+// by READING the values back rather than trusting the writes' exit codes.
+//
+// The degradation is deliberately partial. Refusing to mirror at all — what the
+// report proposed — would fail closed on the case that was never in danger: a
+// fast-forward displaces nothing, so it never needed the reflog.
+console.log("\nwithout reflog retention it does not force, and says so:");
+{
+	const sb = makeSandbox();
+	addMirrorRemote(sb);
+	run(sb);
+	const safeTip = git(sb.bare, ["rev-parse", `refs/heads/${BRANCH}`]);
+
+	// A mirror that exists but cannot be reconfigured: a stale lock from an
+	// interrupted git is the ordinary way this happens.
+	for (const k of ["core.logAllRefUpdates", "gc.reflogExpire", "gc.reflogExpireUnreachable"]) {
+		git(sb.bare, ["config", "--unset", k]);
+	}
+	fs.writeFileSync(path.join(sb.bare, "config.lock"), "");
+	check(gitOrEmpty(sb.bare, ["config", "--get", "core.logAllRefUpdates"]) === "",
+		"fixture: retention really is unset and cannot be rewritten", "");
+
+	// A REWRITE must be refused rather than forced.
+	git(sb.clone, ["commit", "-q", "--amend", "-m", "rewritten while unprotected"]);
+	const rewrote = run(sb);
+	const cols = record(rewrote.out);
+	check(cols[3] === "fetch-failed", "no retention + rewrite → fetch-failed, not a forced overwrite",
+		`got '${cols[3]}' — 'rewritten' means it forced with no way back\n${rewrote.out}`);
+	check(git(sb.bare, ["rev-parse", `refs/heads/${BRANCH}`]) === safeTip,
+		"the mirror still holds the tip it would have destroyed", "");
+	check(rewrote.code === 1, "and the run exits nonzero", `got ${rewrote.code}`);
+	check(/config\.lock/.test(rewrote.out), "the warning names the cause and the command that clears it",
+		rewrote.out);
+}
+
+console.log("\nwithout retention an ordinary fast-forward still mirrors:");
+{
+	const sb = makeSandbox();
+	addMirrorRemote(sb);
+	run(sb);
+	for (const k of ["core.logAllRefUpdates", "gc.reflogExpire", "gc.reflogExpireUnreachable"]) {
+		git(sb.bare, ["config", "--unset", k]);
+	}
+	fs.writeFileSync(path.join(sb.bare, "config.lock"), "");
+
+	// New commits, no rewrite — nothing is displaced, so nothing needed the reflog.
+	fs.writeFileSync(path.join(sb.clone, ".iarts", "more.md"), "more work\n");
+	git(sb.clone, ["add", "-A"]);
+	git(sb.clone, ["commit", "-q", "-m", "more iarts work"]);
+
+	const { code, out } = run(sb);
+	check(record(out)[3] === "updated",
+		"a fast-forward is still mirrored — the safe case does not fail closed",
+		`got '${record(out)[3]}'\n${out}`);
+	check(code === 0, "exit 0", `got ${code}`);
+	check(git(sb.bare, ["rev-parse", `refs/heads/${BRANCH}`]) ===
+		git(sb.clone, ["rev-parse", `refs/heads/${BRANCH}`]),
+		"and the mirror really did move", "");
+}
+
+// ---
+// The tracking ref is checked, not assumed
+// ---
+// A bare `git fetch mirror` uses the configured `remote.mirror.fetch`, so a remote
+// tracking something narrower than `+refs/heads/*:refs/remotes/mirror/*` exits 0
+// without ever touching this branch's ref — and the record claimed the #384
+// refresh had happened (macroscopeapp, PR #385).
+console.log("\na mirror remote whose refspec misses the branch no longer leaves the ref stale:");
+{
+	const sb = makeSandbox();
+	for (const repo of REPOS) {
+		const c = path.join(sb.cloneRoot, repo);
+		git(c, ["remote", "add", "mirror", path.join(sb.mirrorRoot, `${repo}.git`)]);
+		// A refspec that resolves and fetches cleanly, but not for OUR branch.
+		git(c, ["config", "remote.mirror.fetch", "+refs/heads/client-main:refs/remotes/mirror/client-main"]);
+	}
+	const { out } = run(sb);
+	check(record(out)[3] === "updated",
+		"the explicit refspec refreshes the ref despite the narrow remote config",
+		`got '${record(out)[3]}'\n${out}`);
+	// gitOrEmpty, not git: without the fix the ref does not exist at all, and a
+	// throw here would abort the suite instead of failing this check — a red that
+	// crashes proves less than a red that reports.
+	check(gitOrEmpty(sb.clone, ["rev-parse", `refs/remotes/mirror/${BRANCH}`]) ===
+		git(sb.clone, ["rev-parse", `refs/heads/${BRANCH}`]),
+		"the tracking ref actually holds the mirrored sha",
+		"(empty = the ref was never created, so the narrow remote refspec still governs)");
+}
+
+// ---
 // The documented statuses are the ones it can actually emit
 // ---
 // The record is parsed by column, so `status` is a contract. A status the script
