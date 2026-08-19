@@ -1,6 +1,6 @@
 ---
 name: spec-reconcile
-description: Find and FIX every readable artifact that contradicts the actual code — specs, manifests, --help text, error messages, README, docstrings, test header comments. Runs fresh-context auditors that must quote code, then applies the corrections and re-verifies until a pass finds nothing new. Use at Step 5 of the 5-step flow ("Code and Spec Approved"), or when the user says "reconcile the spec", "step 5", "bring the docs up to date with the code", "does the spec still match", or before answering "ready to merge?".
+description: Find and FIX every readable artifact that contradicts the actual code — specs, manifests, --help text, error messages, README, docstrings, test header comments. Runs fresh-context auditors that must quote code, then applies the corrections and re-verifies until a pass finds nothing new. Use at the **Code & Spec Approved** step — after GREEN, before `pr-open` — or when the user says "reconcile the spec", "bring the docs up to date with the code", "does the spec still match", or before answering "ready to merge?".
 ---
 
 # Spec Reconcile
@@ -13,9 +13,14 @@ description: Find and FIX every readable artifact that contradicts the actual co
 > that keep §4 honest live in the same repo (`research/spec-reconcile-backtest/`), which is
 > why the skill lives here rather than in `dotfiles`.
 
-Step 5 of the 5-step flow says: *update the Spec artifacts to perfectly mirror the
+The flow's reconcile step asks you to *update the Spec artifacts to perfectly mirror the
 tested Code*. "Perfectly mirror" is unfalsifiable — you cannot fail it, so you cannot
 finish it either. This skill replaces that with something checkable.
+
+Where it sits: **Spec Approved → RED → GREEN (Code Approved) → *spec-reconcile* (Code &
+Spec Approved) → `pr-open` → human `pr-merge`.** The step used to be numbered — "Step 5"
+of a five-step flow that the PR-based flow replaced — and the number is gone, not the
+step.
 
 ## The rule this exists to enforce
 
@@ -30,7 +35,7 @@ standing**, across every artifact a reader might reach.
 ## The inversion — this is why it gets missed
 
 Every other review in the flow checks **code against spec**: *did we build what we said?*
-Step 5 is the opposite: **spec against code**: *does every claim we wrote still hold?*
+This one is the opposite: **spec against code**: *does every claim we wrote still hold?*
 
 Nobody catches drift by re-reading a spec they wrote. It reads as correct because it
 matches what they believed. You must **enumerate the claims and go look at the code for
@@ -282,12 +287,19 @@ The coverage column is the skill's own honesty check. A row marked
 still the right fix, but a lead for the test process. Count them; a run producing many is
 reporting a coverage hole, not a documentation one.
 
-Step 5 commits change **specs, comments, and spec-supporting artifacts only** — no
+Reconcile commits change **specs, comments, and spec-supporting artifacts only** — no
 production code. If the audit turns up a code finding (§5), it does not belong in this
 commit.
 
-`merge-checklist`'s "spec reconciled" gate is satisfied when this record exists and shows
-no open contradictions — not when someone remembers re-reading the spec.
+The "spec reconciled" gate is satisfied when this record exists and shows no open
+contradictions — not when someone remembers re-reading the spec.
+
+**Nothing enforces that gate, and saying so is the point.** `pr-open` runs branch,
+divergence, and PR-state pre-checks; it never reads a reconcile record and never asks
+whether contradictions are closed. The gate belonged to a `merge-checklist` skill that never
+existed on disk. So the record is *evidence for the human at `pr-merge`*, not a
+blocker — an unenforced rule is a wish, and a wish described as a gate is worse than
+either. If it should block, that is a change to `pr-open`, filed as its own issue.
 
 ## 7. Validating this skill — backtested, and re-runnable
 

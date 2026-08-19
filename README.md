@@ -29,11 +29,10 @@ today **Pi Coding Agent** and **Claude Code**, with room for others. Each capabi
 | **`wtft.ts`** | `/wtft` | **Where The F\*\*\*ing Tokens?!** - A cost-auditing widget that hooks into turn-completion events to display running session costs in the TUI without wasting tokens. |
 | **`ddg-search.ts`** | `search_web` (Tool) | High-speed, schema-validated web search tool using DuckDuckGo. Perfect for searching Svelte 5 runes and modern framework docs. |
 | **`serve.ts`** | `!serve` (widget: `/serve`) | Spawns loopback HTTP dev servers with live-reload. Publishes Access-gated previews via Cloudflare Tunnel at `<subdomain>.princess-pi.dev`. The Pi extension is the live TUI widget only — ADR 0004. |
-| **`merge.ts`** | `/merge` | Safety-centric git branch merger for multi-worktree repositories. The Step 5 commit-message gate it used to enforce was removed in #191, and the `bin/merge` CLI in #201 — the shipping path is now `pr-open` → human `pr-merge`. |
 | **`github-issue-autocomplete.ts`** | (Automatic) | Enhances the terminal TUI by autocompleting GitHub issue numbers (starting with `#`) dynamically as you type. |
 | **`system-clock.ts`** | (System Service) | Emits centralized 1s, 4s, and 60s tick events across the `pi` event bus to drive polling widgets smoothly. |
 | **`cross-harness-tool`** | (Skill) | How to build or port a tool to the one-implementation-per-tool bar described above. Found in `skills/cross-harness-tool/SKILL.md`. |
-| **`spec-reconcile`** | (Skill) | Step 5 of the 5-step flow: find and **fix** every readable artifact that contradicts the code. Backtested against four frozen drifts (#163); corpus, prompts, and rubric in `research/spec-reconcile-backtest/`. Found in `skills/spec-reconcile/SKILL.md` — that copy is the source of truth, `~/.claude/skills/spec-reconcile/` is a downstream deploy copy. |
+| **`spec-reconcile`** | (Skill) | The **Code & Spec Approved** step, run before `pr-open`: find and **fix** every readable artifact that contradicts the code. Backtested against four frozen drifts (#163); corpus, prompts, and rubric in `research/spec-reconcile-backtest/`. Found in `skills/spec-reconcile/SKILL.md` — that copy is the source of truth, `~/.claude/skills/spec-reconcile/` is a downstream deploy copy. |
 
 ---
 
@@ -63,21 +62,31 @@ harnesses. Install them globally **from GitHub `main`** (not a local clone) with
 npm install -g github:duppypro/princess-pi-packages
 ```
 
-This puts **`merge`** on your `$PATH` as a plain-Node CLI (`#!/usr/bin/env node`, no build step).
-In Claude Code, invoke it with the `!` prefix (e.g. `!merge <commit-ish>`) or let the agent run it
-as a single Bash call — it spends **zero LLM reasoning turns** on the success path and emits
-fix-instructing errors on the failure path. Requires **Node ≥ 18** (ESM). Re-run the install to update.
+This puts **`serve`**, **`wtft`**, **`yada`** (alias `dedupwcount`) and **`patch-pi-widgets`**
+on your `$PATH` as `.mjs` CLIs that then run on plain `node`. In Claude Code, invoke one with the
+`!` prefix (e.g. `!serve dist/`) or let the agent run it as a single Bash call: it spends **zero
+LLM reasoning turns** on the success path and emits fix-instructing errors on the failure path.
+Requires **Node ≥ 18** (ESM). Re-run the install to update.
 
-> **Cross-harness status:** only `merge` is verified as a global CLI today. The other bins
-> (`wtft`, `yada`/`dedupwcount`, `serve`) are still TypeScript and rely on `--experimental-strip-types`,
-> which **Node refuses for files under `node_modules/`** (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`) —
-> so they don't yet run from a global install. Porting them to plain `.mjs` (the same fix `merge` got)
-> is tracked separately (goal #1).
+> **⚠️ The git-URL install above needs `bun` on `PATH`, and only that channel does.** npm runs a
+> package's `prepare` script for a git dependency, and ours is `bun install … && bun build.ts`.
+> On a node-only host the install fails there, before any CLI is placed. This is deliberate, not
+> an oversight: `~/git-projects/CLAUDE.md` § Node Toolchain Standard permits bun-on-PATH for the
+> **git-URL channel (early adopters) only, never for the registry channel** — a registry/tarball
+> install ships the prebuilt `.mjs` via the `files` allowlist, runs no `prepare`, and needs
+> nothing but stock node. `tests/pack-and-smoke.test.ts` proves that channel with bun excluded
+> from `PATH`. If you are on a node-only host today, install from a tarball rather than the git
+> URL.
 
-> `merge` works in both layouts: a dedicated `main` git-worktree (merges there, leaving your
-> feature checkout untouched) **or** a plain single checkout (merges in-place, then returns you
-> to your feature branch; rolls back on conflict). It enforces the Step 5 "Code and Spec Approved"
-> gate before any push.
+> **The git-workflow scripts are a separate channel.** `git-checkpoint`, `git-overview`,
+> `wt-new`, `pr-open`, `pr-merge`, `pr-reject`, `pr-cleanup`, `pr-threads`, `repo-gate`,
+> `herdr-tab` and `herdr-reap` are shell scripts installed to `~/bin` by
+> `bin/install-workflow-tools`, not by the npm package. They are not in `bin` above because
+> they are host tooling for this workflow rather than a published library surface.
+
+> **The `merge` CLI this section used to describe is gone.** `bin/merge` was replaced by
+> `pr-open` in #201, and the Pi `/merge` command was deleted in #226 — nothing merges locally
+> any more. See [ADR 0004](docs/adr/0004-workflow-tools-are-shell-first.md).
 
 ### Managing Extensions
 

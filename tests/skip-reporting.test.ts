@@ -131,6 +131,8 @@ const WAIVED: Record<string, string> = {
 		"$HOME appears only in prose comments describing the temp-root technique; the suite installs into a temp root only, never the real host",
 	"serve-117-list.test.ts":
 		"uses homedir() to BUILD fixture paths for a pure function (the behaviour under test is 'shorten $HOME to ~'); reads nothing from disk",
+	"doc-references-resolve.test.ts":
+		"$HOME appears only in the comment explaining why deployed-copy parity is NOT checked there (#230); the suite reads the repo only",
 	"git-checkpoint-guard.test.ts":
 		"builds a hermetic git sandbox and pins GIT_CONFIG_GLOBAL=/dev/null; $HOME appears only in a comment explaining why",
 };
