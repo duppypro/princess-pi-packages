@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# iarts-mirror — refresh the private mirrors of the never-pushed `iarts/local`
+# branches in the client clones (the `.iarts` convention).
+#
+# These branches exist in exactly two places: the clone, and the bare mirror
+# under ~/git-remotes. They are never pushed to the client's `origin`. This
+# script is the only thing between them and total loss, which is why it is
+# owned here rather than living untracked in ~/bin (#384).
+#
+# Why fetch, not push: `git push mirror iarts/local` would work identically --
+# the guardrails hook is destination-aware and permits it. The fetch direction
+# is kept because it names its source as a path and has no concept of `origin`,
+# so it cannot be mis-aimed at the client repo. A push has to be aimed.
+#
+# Usage: run `iarts-mirror --help`. Deliberately NOT restated here — one copy,
+# reachable from the command line (the #362 lesson).
+set -uo pipefail
+
+# #367: -h/--help/--version are terminal — they take no other arguments.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "iarts-mirror: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
+# #178: resolved absolute path of the running copy — install-workflow-tools
+# deploys this to ~/bin, so a bare `iarts-mirror` runs whatever was last
+# installed there, not a worktree's copy.
+case "${1:-}" in
+  --version) readlink -f "$0"; exit 0 ;;
+  -h|--help)
+    cat <<'USAGE'
+usage: iarts-mirror
+       iarts-mirror -h | --help
+       iarts-mirror --version
+
+Refresh the private bare mirrors of the never-pushed `iarts/local` branches in
+the client clones. Run it before ending a session in a client clone: that
+branch exists only in the clone and in the mirror, and is never pushed to the
+client's origin.
+
+For each repo it fetches `iarts/local` FROM the clone INTO the bare mirror,
+then refreshes the clone's own `refs/remotes/mirror/*` so the shell prompt
+stops reporting mirrored work as unmirrored (#384).
+
+Takes no arguments. Any argument is refused (exit 2).
+
+Output: headerless whitespace records, one per repo — `repo branch sha status`.
+Parse by column; `status` is one of:
+
+  updated          the mirror moved to a new sha
+  unchanged        the mirror already held this sha
+  no-clone         the clone directory is missing
+  no-branch        the clone has no `iarts/local`
+  fetch-failed     the mirror could not be updated — THE WORK IS NOT MIRRORED
+
+`updated` and `unchanged` may carry a `-refstale` suffix (e.g.
+`updated-refstale`): the mirror is correct and the work is safe, but this
+clone's view of the mirror could not be refreshed, so its prompt may still
+report drift. Exact-matching `updated` therefore treats a half-done run as
+incomplete, which is the intended reading.
+
+Environment:
+  IARTS_MIRROR_ROOT  bare mirrors        (default: ~/git-remotes)
+  IARTS_CLONE_ROOT   client clones       (default: ~/git-projects)
+
+Exit: 0 if every repo succeeded, 1 if any did not, 2 for an unknown flag or
+unexpected argument.
+
+  -h, --help  this text.
+  --version   resolved path of the running copy.
+USAGE
+    exit 0 ;;
+  -*) echo "iarts-mirror: unknown flag: $1 (try --help)" >&2; exit 2 ;;
+  # `case "${1:-}"` maps "no arguments" and "one empty argument" to the same
+  # "", so this arm tells them apart with $# (the PR #370 shape).
+  "")
+    if [ "$#" -gt 0 ]; then
+      echo "iarts-mirror: unexpected empty argument — iarts-mirror takes none (try --help)" >&2
+      exit 2
+    fi ;;
+  *) echo "iarts-mirror: unexpected argument: $1 — iarts-mirror takes none (try --help)" >&2; exit 2 ;;
+esac
+
+MIRROR_ROOT="${IARTS_MIRROR_ROOT:-$HOME/git-remotes}"
+CLONE_ROOT="${IARTS_CLONE_ROOT:-$HOME/git-projects}"
+BRANCH="iarts/local"
+REPOS=(robotic_hardware rusty-robots)
+
+rc=0
+for repo in "${REPOS[@]}"; do
+    bare="$MIRROR_ROOT/$repo.git"
+    clone="$CLONE_ROOT/$repo"
+
+    if [[ ! -d "$clone" ]]; then
+        printf '%s\t%s\t-\tno-clone\n' "$repo" "$BRANCH"; rc=1; continue
+    fi
+    if ! git -C "$clone" rev-parse --verify --quiet "$BRANCH" >/dev/null; then
+        printf '%s\t%s\t-\tno-branch\n' "$repo" "$BRANCH"; rc=1; continue
+    fi
+    [[ -d "$bare" ]] || git init --bare --quiet --initial-branch="$BRANCH" "$bare"
+
+    before=$(git -C "$bare" rev-parse --verify --quiet "$BRANCH" || echo -)
+    if ! git -C "$bare" fetch --quiet --no-tags "$clone" \
+            "refs/heads/$BRANCH:refs/heads/$BRANCH" 2>/dev/null; then
+        printf '%s\t%s\t%s\tfetch-failed\n' "$repo" "$BRANCH" "$before"; rc=1; continue
+    fi
+    after=$(git -C "$bare" rev-parse "$BRANCH")
+
+    # #384: the BARE repo ran that fetch, so only its refs moved. Git updates
+    # `refs/remotes/<remote>/*` solely in the repository that runs the transfer,
+    # and the clone ran nothing — so its `refs/remotes/mirror/*` stays frozen at
+    # whatever it was when someone last fetched by hand. The prompt then reports
+    # unmirrored work that IS mirrored, drifting further with every commit, which
+    # teaches the reader to ignore the one indicator that matters on a branch
+    # this clone never pushes. Refresh via the remote's own refspec rather than
+    # writing the ref directly, so this cannot drift from how `mirror` is set up.
+    refstale=
+    if git -C "$clone" remote get-url mirror >/dev/null 2>&1; then
+        git -C "$clone" fetch --quiet --no-tags mirror 2>/dev/null || refstale=-refstale
+    fi
+
+    if [[ "$before" == "$after" ]]; then status=unchanged; else status=updated; fi
+    printf '%s\t%s\t%s\t%s\n' "$repo" "$BRANCH" "$after" "$status$refstale"
+done
+exit $rc
