@@ -149,6 +149,7 @@ while [ "$#" -gt 0 ]; do
     -h|--help)
       cat <<'EOF'
 usage: pr-merge [--no-refresh] [<branch>]
+       pr-merge -h | --help
        pr-merge --version
 
 Human-only: squash-merge the open PR for <branch> (default: current branch),

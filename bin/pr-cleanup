@@ -75,6 +75,7 @@ case "${1:-}" in
   -h|--help)
     cat <<'EOF'
 usage: pr-cleanup <branch>
+       pr-cleanup -h | --help
        pr-cleanup --version
 
 After the PR is MERGED: remove the branch's worktree, delete the remote and

@@ -8,6 +8,7 @@
 # Usage:
 #   install-workflow-tools           install/refresh all four sets
 #   install-workflow-tools --check   report drift, write nothing (doctor mode)
+#   install-workflow-tools -h | --help  this text
 #   install-workflow-tools --version print the resolved absolute path of this copy
 #
 # Exit codes:
@@ -48,17 +49,10 @@
 # leaves with dotfiles-doctor. Asserted by tests/installer-path-ownership.test.ts.
 set -euo pipefail
 
-# #178: resolved absolute path of the running copy, checked FIRST — before
-# REPO_DIR resolution below, deliberately. This is the bootstrap tool: the
-# thing that deploys every other script to ~/bin, and the one whose own
-# identity (repo checkout vs. last-installed ~/bin copy) is exactly what #178
-# needs an answer for. Making --version depend on finding the repo first would
-# defeat the point — it must answer even when REPO_DIR resolution would fail.
-# `readlink -f` resolves a real file OR a symlink to its actual on-disk
-# location. Not built, so no commit-hash/semver stamp — PATH only.
 # #367: -h/--help/--version are terminal — they take no other arguments (full
 # rationale in bin/pr-open). Exit 64 here, not 2: this script speaks sysexits
-# (EX_USAGE) throughout, and #366 owns whether that stays.
+# (EX_USAGE) throughout, and #366 kept that as the one documented exception —
+# it is the script a HUMAN runs from a shell.
 for a in "$@"; do
   if [ "$a" = "--" ]; then break; fi
   case "$a" in
@@ -70,6 +64,14 @@ for a in "$@"; do
   esac
 done
 
+# #178: resolved absolute path of the running copy, checked FIRST — before
+# REPO_DIR resolution below, deliberately. This is the bootstrap tool: the
+# thing that deploys every other script to ~/bin, and the one whose own
+# identity (repo checkout vs. last-installed ~/bin copy) is exactly what #178
+# needs an answer for. Making --version depend on finding the repo first would
+# defeat the point — it must answer even when REPO_DIR resolution would fail.
+# `readlink -f` resolves a real file OR a symlink to its actual on-disk
+# location. Not built, so no commit-hash/semver stamp — PATH only.
 case "${1:-}" in
   --version) readlink -f "$0"; exit 0 ;;
 esac
@@ -174,7 +176,7 @@ MODE=install
 case "${1:-}" in
   --check) MODE=check ;;
   # Header IS the help text — keep the range covering Usage + Exit codes.
-  -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "") ;;
   *) echo "install-workflow-tools: unknown argument '$1' (try --help)" >&2; exit 64 ;;
 esac

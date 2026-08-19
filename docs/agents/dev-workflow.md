@@ -19,6 +19,19 @@ Install CLI bins from the local clone's current branch for immediate testing:
 
 Runs `bun run build` then `bun link` — CLI bins on `$PATH` are symlinked to this repo's `bin/`.
 
+**This covers the built commands only** (`serve`, `wtft`, `yada`): the ones in `package.json`'s
+`bin` map. The twelve **workflow shell scripts** (`pr-open`, `git-checkpoint`, `repo-gate`, …)
+are not in that map and no symlink points at them — `install-workflow-tools` **copies** them to
+`~/bin`. Editing `bin/git-overview` in a worktree therefore changes nothing about the
+`git-overview` on your `$PATH` until you re-run the installer, which is the exact trap `--version`
+(#178) exists to diagnose: it prints the resolved path of the copy that actually answered.
+
+```bash
+bin/install-workflow-tools           # deploy this clone's scripts to ~/bin
+bin/install-workflow-tools --check   # report drift, write nothing
+git-overview --version               # which copy is on $PATH right now?
+```
+
 ## Hot-swap after push
 
 After pushing changes, re-download and recompile extensions:

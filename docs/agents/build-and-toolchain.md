@@ -6,6 +6,12 @@ Most `bin/*.mjs` files are **build artifacts** generated from `.ts` counterparts
 
 **Exception:** `bin/patch-pi-widgets.mjs` is handwritten source (no `.ts` twin) — edit it directly.
 
+**Not covered by any of this: the twelve extensionless workflow scripts** in `bin/`
+(`pr-open`, `git-checkpoint`, `repo-gate`, …). They are **hand-edited bash source** with no
+`.ts` twin, no build step, and no generated banner — edit the file in `bin/` and it is done.
+`install-workflow-tools` copies them to `~/bin`; nothing compiles them. This page governs only
+the `.mjs`/`.ts` pairs.
+
 Tests must run against the built `.mjs` (the end-user path), not the `.ts` source.
 
 ### A symbol reaches the bundle only if it is re-exported (#149)

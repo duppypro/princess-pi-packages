@@ -7,6 +7,7 @@
 #   herdr-tab <cwd> <label>  opens one best-effort bookmark tab, always exit 0
 #   herdr-tab --version      prints the resolved absolute path of this copy
 #   herdr-tab -- <cwd> <label>  same, for a cwd or label starting with '-'
+#   herdr-tab -h | --help    this text
 #
 # --- why this is a separate file, not three inlined copies -------------------
 # `wt-new` and `herdr-reap` both need the same guard, and the guard is subtle
@@ -105,7 +106,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 	case "${1:-}" in
 	-h | --help)
 		# Header IS the help text.
-		sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	# #178: resolved absolute path of the running copy. Only meaningful in CLI
