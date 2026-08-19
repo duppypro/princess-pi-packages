@@ -735,6 +735,23 @@ def _clip(text, limit):
 
 work, log, base, branch, stamp, model, base_sha, head_sha = sys.argv[1:9]
 lenses = sys.argv[9:]
+def _usable(f):
+    """A finding has to SAY something.
+
+    `{"findings":[{}]}` parses, counts as one finding, and exits 7 — a PR blocked
+    by `[?/?] ?:?` with an empty detail line, which no one can act on and only
+    --reviewed can clear (macroscopeapp, PR #379).
+
+    The bar is a non-empty title OR detail, deliberately NOT all five fields: a
+    file-level finding legitimately carries no `line`, and requiring one would
+    silently drop real findings — trading a visible bad state for an invisible
+    one, which is the worse of the two.
+    """
+    if not isinstance(f, dict):
+        return False
+    return bool(str(f.get("title", "")).strip() or str(f.get("detail", "")).strip())
+
+
 findings, failed, warnings = [], [], []
 
 
@@ -793,7 +810,7 @@ for lens in lenses:
         # objects and one string keeps its nine.
         good = []
         for f in items:
-            if isinstance(f, dict):
+            if _usable(f):
                 f["lens"] = lens
                 good.append(f)
         findings.extend(good)
@@ -805,7 +822,8 @@ for lens in lenses:
             # "could not look" / "found nothing" merge this file forbids
             # everywhere else, one severity down.
             warnings.append({"lens": lens,
-                             "why": f"dropped {len(items) - len(good)} malformed finding(s)",
+                             "why": f"dropped {len(items) - len(good)} finding(s) that were "
+                                    f"not objects or carried no title or detail",
                              "raw": _clip(text[s:e + 1], 2000)})
     except Exception as exc:
         failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",

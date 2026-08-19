@@ -70,7 +70,7 @@ function makeSandbox(): Sandbox {
 // which must be treated as a FAILED lens rather than a clean one — "found
 // nothing" and "could not look" are different facts.
 type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv"
-	| "prosebrace" | "errorobject";
+	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly";
 function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
@@ -89,6 +89,19 @@ function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string,
 		// found nothing — a clean review manufactured out of a failure.
 		fs.writeFileSync(path.join(sb.binDir, "claude"),
 			`#!/usr/bin/env bash\nprintf '%s' '{"is_error":false,"result":"{\\"error\\":\\"rate limited\\"}"}'; exit 0\n`,
+			{ mode: 0o755 });
+	} else if (mode === "emptyfinding") {
+		// Parseable, and says nothing: counted as a finding, exited 7, and printed
+		// `[?/?] ?:?` — a PR blocked by a message no one can act on.
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nprintf '%s' '{"is_error":false,"result":"{\\"findings\\":[{}]}"}'; exit 0\n`,
+			{ mode: 0o755 });
+	} else if (mode === "titleonly") {
+		// A FILE-level finding: real, actionable, and carrying no `line`. Requiring
+		// every field would drop this one, trading a visible bad state for an
+		// invisible one.
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nprintf '%s' '{"is_error":false,"result":"{\\"findings\\":[{\\"severity\\":\\"High\\",\\"file\\":\\"feature.sh\\",\\"title\\":\\"no shebang guard\\"}]}"}'; exit 0\n`,
 			{ mode: 0o755 });
 	} else if (mode === "arrayenv") {
 		// An envelope that parses as an ARRAY, not an object. Used to raise
@@ -1014,6 +1027,50 @@ console.log("\nan ACL is access the mode bits cannot show:");
 		"nonexistent TMPDIR → answered by the audit, never by an unguarded mktemp", out);
 	check(/Using \/tmp for this run instead/.test(out),
 		"nonexistent TMPDIR → falls back rather than giving up", out);
+}
+
+// --- #379 round 13: a finding has to say something ---------------------------
+// `{"findings":[{}]}` parses, counts, exits 7 and prints `[?/?] ?:?` with an empty
+// detail line — a PR blocked by a message nobody can act on, clearable only with
+// --reviewed (macroscopeapp, PR #379). This one fails CLOSED rather than open,
+// which makes it the gentler class of bug, but a gate that cannot say why it
+// refused is still a gate you learn to override.
+console.log("\na finding that says nothing is not a finding:");
+{
+	const sb = makeSandbox();
+	const env = stubs(sb, "emptyfinding");
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+	check(code === 0, "an empty finding object → exit 0, the PR is not blocked",
+		`got ${code}: ${out}`);
+	// NOT /\[\?\/\?\]/ — the lens name IS populated, so the degenerate line reads
+	// `[?/correctness]  ?:?`. Matching the reviewer's shorthand literally would
+	// have made this check pass against the unfixed script, which it did once.
+	check(!/\[\?\//.test(out), "…and no unknown-severity line is printed", out);
+
+	const dir = env.PR_REVIEW_LOG_DIR;
+	const d = JSON.parse(fs.readFileSync(path.join(dir,
+		fs.readdirSync(dir).filter((f) => f.endsWith(".json"))[0]), "utf8"));
+	check(d.findings.length === 0, "…it is not recorded as a finding",
+		JSON.stringify(d.findings));
+	// Dropped, but never silently: the lens RAN, so this is a warning, not a
+	// failure — filing it as failed would under-report coverage on a lens that
+	// worked, the same "could not look"/"found nothing" merge forbidden elsewhere.
+	check(d.lensWarnings.length === 3, "…every lens records a warning about the drop",
+		JSON.stringify(d.lensWarnings));
+	check(d.lensesRan === 3 && d.failedLenses.length === 0,
+		"…and coverage still counts all three lenses as having run",
+		`ran ${d.lensesRan}, failed ${d.failedLenses.length}`);
+	check(d.status === "reviewed", "…so the status is a clean review, not partial", d.status);
+}
+{
+	// The other side of the threshold, and the reason it is not "all five fields":
+	// a file-level finding carries no `line` and must survive.
+	const sb = makeSandbox();
+	const env = stubs(sb, "titleonly");
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+	check(code === 7, "a finding with a title but no line → still blocks (exit 7)",
+		`got ${code}: ${out}`);
+	check(/no shebang guard/.test(out), "…and is printed", out);
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
