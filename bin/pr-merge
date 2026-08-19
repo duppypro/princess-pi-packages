@@ -370,14 +370,25 @@ if ! printf '%s' "$UNRESOLVED" | grep -Eq '^[0-9]+$'; then
   exit 5
 fi
 THREAD_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.head // ""' 2>/dev/null || true)
-# reviewedHead is a BOOLEAN — "does some review cover the current head" —
-# NOT the sha that was reviewed (bin/pr-threads:696-698, `reviewed_head=false` then
-# `jq 'index($h) != null'`, emitted with --argjson). Comparing it to a sha is
-# always unequal, which made the coverage warning below fire on every reviewed
-# PR, including ones whose review covers head exactly. The sha a stale review
-# actually saw lives in latestReviewCommit.
-REVIEWED_HEAD=$(printf '%s' "$THREAD_JSON" | jq -r '.reviewedHead' 2>/dev/null || true)
+# headIsReviewed is a BOOLEAN — "does some review cover the current head" — not
+# the sha that was reviewed; that lives in latestReviewCommit. It shipped as
+# `reviewedHead`, a noun phrase between two shas, and was renamed in #372 for
+# exactly the reason this comment used to have to exist: readers kept inferring
+# a sha from the name and comparing it to one, which is always unequal.
+HEAD_IS_REVIEWED=$(printf '%s' "$THREAD_JSON" | jq -r '.headIsReviewed' 2>/dev/null || true)
 LATEST_REVIEW=$(printf '%s' "$THREAD_JSON" | jq -r '.latestReviewCommit // ""' 2>/dev/null || true)
+
+# Version skew is the one way #372's rename can bite: a pr-threads still emitting
+# `reviewedHead` gives null here, the coverage test below reads that as "no review
+# covers head", and it warns on every reviewed PR — wrong, and quietly so. Test the
+# FIELD, not the schema string, so a later additive @3 still passes.
+if [ "$HEAD_IS_REVIEWED" != "true" ] && [ "$HEAD_IS_REVIEWED" != "false" ]; then
+  THREAD_SCHEMA=$(printf '%s' "$THREAD_JSON" | jq -r '.schema // "none"' 2>/dev/null || true)
+  echo "❌ pr-merge: pr-threads emitted no boolean headIsReviewed (schema: $THREAD_SCHEMA)." >&2
+  echo "   The copy on PATH predates #372 and this one does not speak its shape." >&2
+  echo "   Run: install-workflow-tools" >&2
+  exit 5
+fi
 
 # Our own policy, not a prediction about the server: an unanswered review
 # question blocks. The human-readable rendering is worth a second call HERE
@@ -445,11 +456,11 @@ fi
 # but it is exactly the case #254 was filed over (a bot that reviews once per
 # PR never sees the commits written in response to its own findings), so it
 # stays visible.
-# Two conditions, and both are needed. `reviewedHead != true` is "no review
+# Two conditions, and both are needed. `headIsReviewed != true` is "no review
 # covers this head"; a non-null LATEST_REVIEW is "a review exists at all" — a
 # PR nobody has reviewed has nothing stale about it, which is the case #254
 # deliberately does not gate on.
-if [ "$REVIEWED_HEAD" != "true" ] && [ -n "$LATEST_REVIEW" ] && [ "$LATEST_REVIEW" != "null" ]; then
+if [ "$HEAD_IS_REVIEWED" != "true" ] && [ -n "$LATEST_REVIEW" ] && [ "$LATEST_REVIEW" != "null" ]; then
   echo "⚠️  pr-merge: no review covers head ${THREAD_HEAD:0:7} (latest review: ${LATEST_REVIEW:0:7})." >&2
   echo "   Merging anyway — no rule on this repo requires it (mergeStateStatus=$MERGE_STATE)." >&2
 fi

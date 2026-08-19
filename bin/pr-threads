@@ -13,16 +13,23 @@
 # nothing to say" and "reviewer has never seen this head". A bot that reviews
 # once per PR (not once per push) means the commits most likely to need a
 # second look — the ones written in response to a finding — are exactly the
-# ones that escaped the gate. `head` and `reviewedHead` close that gap.
+# ones that escaped the gate. `head` and `headIsReviewed` close that gap.
 #
 # Why the thread half exists: `gh pr view` has no unresolved-conversation
 # field — thread resolution state only exists in the GraphQL API. Pairs with
 # the ruleset rule required_review_thread_resolution (ruleset 18684693).
 #
-# --json (#232) emits one `pr-threads/list@1` document with the thread ids and
+# --json (#232) emits one `pr-threads/list@2` document with the thread ids and
 # comment bodies an agent needs to ACT on a review, instead of scraping the HTML
-# behind the URL. #254 added three top-level fields to the SAME document: head,
-# reviewedHead, latestReviewCommit — see docs/dev-workflow-spec.md.
+# behind the URL. #254 added three top-level fields to the SAME document:
+# `head` (sha), `headIsReviewed` (bool), `latestReviewCommit` (sha).
+#
+# That middle field shipped as `reviewedHead` and was renamed in #372, which is
+# why the schema is @2. A noun phrase naming a commit, sitting between two shas,
+# holding a boolean: a poll loop read `.reviewedHead[0:7]`, jq sliced the boolean
+# to null, and the loop could never fire — a silent never-true, indistinguishable
+# from a condition that has not happened yet. The name now says it is a predicate,
+# so nobody has to reach the docs to get the type right.
 #
 # Contract, including the trust boundary the `trusted`/`trustLevel` fields exist
 # to serve (#339 split it three ways — issuer / reviewer / untrusted):
@@ -176,9 +183,10 @@ usage: pr-threads <pr#> [owner/repo] [--json]
 Review state for a PR: unresolved-conversation count AND whether any independent
 review covers the current head. Scriptable merge gate — pr-merge reads it.
 
-  --json     one pr-threads/list@1 document on stdout (or pr-threads/resolve@1
+  --json     one pr-threads/list@2 document on stdout (or pr-threads/resolve@1
              for --resolve). Adds thread ids, every comment body, trusted and
-             trustLevel flags, head/reviewedHead/latestReviewCommit.
+             trustLevel flags, head (sha), headIsReviewed (bool),
+             latestReviewCommit (sha).
   --resolve  resolve one thread by id; --reply posts text first.
   -h, --help this text.
   --version  resolved path of the running copy.
@@ -557,7 +565,7 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
     # in the reviews_json filter below.)
     # reviews_json holds the commit oids of INDEPENDENT submitted reviews only:
     # submitted, commit resolvable, and authored by someone other than the PR's
-    # own author. Everything downstream (reviewed_head, no_reviews,
+    # own author. Everything downstream (head_is_reviewed, no_reviews,
     # latest_review_commit) reads this one array, so filtering here is what
     # makes "reviewed" mean "someone else looked", with no further changes.
     #
@@ -742,9 +750,9 @@ fi
 head_known=false
 [ -n "$head_sha" ] && head_known=true
 
-reviewed_head=false
+head_is_reviewed=false
 if $head_known; then
-  reviewed_head=$(jq -r --arg h "$head_sha" 'index($h) != null' <<<"$reviews_json")
+  head_is_reviewed=$(jq -r --arg h "$head_sha" 'index($h) != null' <<<"$reviews_json")
 fi
 
 no_reviews=$(jq -r 'length == 0' <<<"$reviews_json")
@@ -772,8 +780,8 @@ latest_review_commit=$(jq -r '.[-1] // empty' <<<"$reviews_json")
 #
 # head_missing (#258 macroscopeapp follow-up, rated High): `headRefOid` came
 # back missing/null. Checked BEFORE the null-commit-review case, and without
-# even consulting `reviewed_head` — a response that cannot name its own head
-# cannot prove `reviewed_head` false, let alone true, so neither
+# even consulting `head_is_reviewed` — a response that cannot name its own head
+# cannot prove `head_is_reviewed` false, let alone true, so neither
 # review_blocked ("reviews exist, none match head") nor review_advisory ("no
 # reviews, nothing to gate on") is a claim this response is entitled to make.
 # Same exit-5 bucket as a null-commit review: both mean "coverage could not
@@ -788,7 +796,7 @@ head_missing=false
 if ! $head_known; then
   head_missing=true
   review_indeterminate=true
-elif [ "$reviewed_head" != "true" ]; then
+elif [ "$head_is_reviewed" != "true" ]; then
   # unknown_author_review_count (#269) joins null_commit_review_count in the
   # indeterminate bucket, for the same reason and at the same precedence: both
   # mean "review activity happened that this run could not evaluate", which is
@@ -816,7 +824,7 @@ $head_known && head_suffix=" @ $head_short"
 # resolvable commit"), and a count degrades to plain truthiness for a caller
 # that only wants to know indeterminate-or-not — `reviewCoverage: "..."` as an
 # enum was the other option on the table, but it would either duplicate
-# reviewedHead/latestReviewCommit (both already answer "proven" vs "blocking"
+# headIsReviewed/latestReviewCommit (both already answer "proven" vs "blocking"
 # vs "advisory") or require restating them, for no reader this document does
 # not already serve. One new flat number closes the gap without touching the
 # #232 contract's existing shape.
@@ -827,19 +835,19 @@ if [ "$json_mode" -eq 1 ]; then
     --argjson total "$total" \
     --argjson unresolved "$unresolved_count" \
     --arg head "$head_sha" \
-    --argjson reviewedHead "$reviewed_head" \
+    --argjson headIsReviewed "$head_is_reviewed" \
     --arg latestReviewCommit "$latest_review_commit" \
     --argjson nullCommitReviewCount "$null_commit_review_count" \
     --argjson unknownAuthorReviewCount "$unknown_author_review_count" \
     --arg prAuthor "$pr_author" \
     '{
-      schema: "pr-threads/list@1",
+      schema: "pr-threads/list@2",
       repo: $repo,
       pr: $pr,
       totalCount: $total,
       unresolvedCount: $unresolved,
       head: ($head | if . == "" then null else . end),
-      reviewedHead: $reviewedHead,
+      headIsReviewed: $headIsReviewed,
       latestReviewCommit: ($latestReviewCommit | if . == "" then null else . end),
       nullCommitReviewCount: $nullCommitReviewCount,
       unknownAuthorReviewCount: $unknownAuthorReviewCount,

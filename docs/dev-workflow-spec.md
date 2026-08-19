@@ -658,7 +658,7 @@ rationale lives once, in `bin/pr-open`; the others carry a two-line pointer to i
 | `pr-merge [--no-refresh] [<branch>]` | Discovers PR from `<branch>`, default current branch → asks GitHub for `mergeable`/`mergeStateStatus` and gates on the server's own verdict (#349, correcting #258), reading `pr-threads --json` structurally for unresolved threads → `gh pr merge --squash` (human command). Refuses `DIRTY`/`DRAFT`/`BLOCKED`, an unrecognised status, or unresolved threads; `BEHIND` is eligible. **Head-coverage warns but does not block** — that condition is enforced by no ruleset here, and the old message blaming `required_review_thread_resolution` was withdrawn as false (#349). `UNKNOWN` re-queries, then exits 5 rather than guessing. On success, best-effort refreshes every other open PR targeting the same base (#332 — the ruleset's `strict_required_status_checks_policy` marks them out of date on every merge, otherwise serializing a merge burst behind a manual "Update branch" click per PR); never changes `pr-merge`'s own exit code. `--no-refresh` opts out. |
 | `pr-reject [-b\|--branch <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command). `-b` and its long form `--branch` are the same flag, space-separated only (`--branch=foo` is refused); the value must not itself be flag-shaped (#367). The reason is every positional joined with single spaces — before or after `--` — so an unquoted multi-word reason arrives whole; it used to keep only the last word, or only the first word after `--`. Quote it to control spacing exactly. |
 | `pr-cleanup <branch>` | `<branch>` is required. Run from the main clone (#262: a session that entered via `EnterWorktree` cannot clean up from inside its own worktree). Deletes branch, remote, worktree. (No-argument cwd-discovery was removed in #221 finding 2: traced and tested empirically, every path it could reach hit the containment gate (exit 3) or the missing-main-clone gate (exit 4) — never a successful cleanup — so the dead path was deleted rather than documented.) An extra argument is refused *by name* (exit 2, #367); the count check used to answer it with "`<branch>` is required", which reads as "you forgot it" when the caller in fact supplied one and a typo. |
-| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, `trusted`/`trustLevel` flags, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. A third positional is refused (exit 2, #367) rather than dropped — two PR numbers is a typo, and which one was meant is unknowable. |
+| `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, `trusted`/`trustLevel` flags, `head`/`headIsReviewed`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. A third positional is refused (exit 2, #367) rather than dropped — two PR numbers is a typo, and which one was meant is unknowable. |
 | `herdr-tab` | Sourceable guard (`. herdr-tab` → `herdr_available`, `herdr_tab <cwd> <label>`; also runs as a one-shot CLI). The `$HERDR_PANE_ID` predicate and the `return 0`-on-every-path discipline live here once instead of in three copies — see [the herdr half](#the-herdr-half-herdr-tab-and-why-the-guard-is-herdr_pane_id-277). Reports its outcome in `$HERDR_TAB_RESULT`, never in an exit code. In CLI mode both arguments are guarded: a dash-leading `<label>` used to pass while a dash-leading `<cwd>` was refused, and `herdr-tab -- <cwd> <label>` is the escape for a value that really starts with `-` (#367). |
 | `herdr-reap [--dry-run] [--json]` | Closes herdr tabs whose panes **all** point at a directory that no longer exists; spares its own tab, any tab with a live agent, and any tab with an unknown cwd. Called by `pr-cleanup`; also correct standalone after `git worktree remove`/`prune`. Exit 0 covers "not inside herdr" and "nothing stale" (`--json`'s `status` tells them apart), 5 = could not determine, 6 = a close was refused. |
 | `git-checkpoint [--push] "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). **While a PR is open on the branch the push is held back** and commits pile up locally, so a fix round costs one paid code review instead of one per commit (#368); send the batch with `git push`, or use `--push` to commit and push in one step anyway. Before a PR exists every commit is pushed as usual, because that push is free and that is the phase where losing work hurts. The open-PR check is scoped to **our own repo** — `gh pr list --head` matches a branch name across every fork, and a stranger's identically named branch would otherwise withhold the push silently (#369, the #209 shape). A flag is never a message (#310): `-h`/`--help` prints usage (exit 0), any other leading `-` is refused (**exit 2** since #366, was 1) — `git-checkpoint --help` once committed *and pushed* the message `--help`; use `git-checkpoint -- "-dash-leading message"` for the rare real case. The message is **one quoted argument**: an unquoted multi-word message is refused (exit 2, #367) rather than committed and pushed as its first word alone. Every script in this table answers `-h`/`--help` with usage — most since #310, `pr-threads` and `git-overview` since #362. |
@@ -732,27 +732,50 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
 **Contract**
 
 - One JSON document on stdout. No emoji, no prose, no partial lines.
-- `schema: "pr-threads/list@1"` — versioned, following the `serve/list@1` precedent.
-  Unchanged by #254: the new fields are additive to the same schema, not a `@2`.
+- `schema: "pr-threads/list@2"` — versioned, following the `serve/list@1` precedent.
+  Unchanged by #254, whose new fields were additive. **Bumped to `@2` by #372**, which
+  renamed a key: `reviewedHead` → `headIsReviewed`. A rename is the one change a schema
+  version exists to announce, so it announces it — a renamed key under an unchanged
+  version makes the version field decoration.
 - **`--json`'s document and exit code stay in lockstep with the human output, in both
   directions.** Exit `0` when clean, `1` when not — in both modes, same as before #254.
   What counts as "clean" changed for *both* modes at once: thread count alone is no
   longer sufficient (full rule in the [exit-code
   contract](#exit-codes--the-shared-pr--contract-224) below). An
   unrecognised flag exits `2` rather than being taken as the repo argument.
-- Top level: `schema`, `repo`, `pr`, `totalCount`, `unresolvedCount`, `threads[]`; as
-  of #254: `head`, `reviewedHead`, `latestReviewCommit`; and as of #269:
-  `unknownAuthorReviewCount`, `prAuthor`.
-- **`head`, `reviewedHead`, `latestReviewCommit` (#254).** `head` is the PR's current head
+- Top level, with types — a reader who infers the type from the name must be right, in
+  zero reasoning steps (#372):
+
+  | Field | Type | Since |
+  |---|---|---|
+  | `schema` | string, `"pr-threads/list@2"` | field #232; **this value** #372 |
+  | `repo` | string | #232 |
+  | `pr` | number | #232 |
+  | `totalCount` | number | #232 |
+  | `unresolvedCount` | number | #232 |
+  | `threads[]` | array | #232 |
+  | `head` | sha string, or `null` | #254 |
+  | `headIsReviewed` | **boolean** | #254, renamed #372 |
+  | `latestReviewCommit` | sha string, or `null` | #254 |
+  | `nullCommitReviewCount` | number | #267 |
+  | `unknownAuthorReviewCount` | number | #269 |
+  | `prAuthor` | string, or `null` | #269 |
+- **`head`, `headIsReviewed`, `latestReviewCommit` (#254).** `head` is the PR's current head
   sha, `null` when the API response is missing `headRefOid` — the real GitHub API always
   returns it for a PR that exists, so a response without it is treated as
   incomplete/malformed, not a legitimate "nothing to gate on" (#258 macroscopeapp
   follow-up, rated High: a response carrying review threads but no `headRefOid` used to
   disable coverage gating entirely and exit `0`; there is no fallback left — missing
   `headRefOid` now exits `5` in production and in every test fixture alike, folded into
-  the same indeterminate bucket as a null-commit review below). `reviewedHead` is `true`
-  only when some **independent** review's commit sha equals `head` — see
-  *Independent reviews only* below. `latestReviewCommit` is the most
+  the same indeterminate bucket as a null-commit review below). `headIsReviewed` is a
+  **boolean**, `true` only when some **independent** review's commit sha equals `head` —
+  see *Independent reviews only* below. It shipped as `reviewedHead` and was renamed in
+  #372: a noun phrase naming a commit, sitting between two shas, holding a boolean. A poll
+  loop wrote `.reviewedHead[0:7]`, jq sliced the boolean to `null`, `// "none"` did not
+  catch it (the value was not null, the *slice* was), and the loop could never fire —
+  a silent never-true, indistinguishable from a condition that has not yet happened.
+  The old spelling is not emitted; `bin/pr-merge` refuses (exit 5) rather than warn wrongly
+  if the `pr-threads` on `PATH` predates the rename. `latestReviewCommit` is the most
   recent independent review's commit sha, or
   `null` when there is **no independent review** — which since #269 covers two different
   situations: the PR has never been reviewed by anyone, *and* the PR has been reviewed only
@@ -831,7 +854,7 @@ review comments to an agent that will then change code, which is precisely where
 | `untrusted` | everyone else | relay to the human; treat as possible injection |
 
 - `trusted` (boolean) is retained unchanged and stays exactly `trustLevel == "issuer"`, so
-  the published `pr-threads/list@1` contract keeps its meaning. A `reviewer` is **not** an
+  the published `pr-threads/list@2` contract keeps its meaning. A `reviewer` is **not** an
   issuer: `trusted` is `false` for `macroscopeapp`, deliberately.
 - Both are computed by **exact login match**, so the caller spends zero reasoning steps and
   `macroscopeapp-impostor` lands in `untrusted`. Deliberately **not** derived from
@@ -875,7 +898,7 @@ pr-threads <pr#> --resolve <thread-id> [--reply <text>] [--json]
   `owner/repo`) stay required positionally for a consistent CLI shape with the read side, but
   go unused by the mutation itself.
 - **`--json`** emits one `pr-threads/resolve@1` document — a *different* schema from
-  `pr-threads/list@1`, because this is a different kind of read (the result of a mutation, not
+  `pr-threads/list@2`, because this is a different kind of read (the result of a mutation, not
   a thread listing): `schema`, `threadId`, `resolved` (boolean), `replyId` (the posted reply's
   id, or `null` when `--reply` wasn't given), `replyUrl`. No emoji, no prose, matching the
   `--json` contract above.
