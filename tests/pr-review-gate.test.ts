@@ -12,7 +12,7 @@
 //
 // Run with: bun tests/pr-review-gate.test.ts
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -525,6 +525,40 @@ console.log("\npreconditions refuse with a code from the shared table:");
 		invocations.join("\n"));
 	const bare = invocations.filter((l) => !/--kill-after/.test(l));
 	check(bare.length === 0, "no `timeout` invocation without --kill-after", bare.join("\n"));
+}
+
+// --- #379 round 6: a reviewer that IGNORES TERM must still be gone -----------
+// `--kill-after` does not cover the signal path: when `timeout` is itself
+// signalled it forwards and exits rather than escalating, so a TERM-ignoring
+// reviewer outlived the trap as an orphan still holding a model call
+// (macroscopeapp, PR #379). Behavioural rather than source-level, because "we
+// call kill -KILL somewhere" is not the claim — the claim is that it is dead.
+//
+// TIMING, chosen so the check cannot pass vacuously. The stub sleeps 10s and only
+// then writes its marker. pr-review is interrupted at ~3s, its trap TERMs the tree
+// and escalates to KILL at ~5s, and the assertion waits until ~14s — comfortably
+// past the moment an un-killed stub would have woken and written. A shorter wait
+// would pass whether or not the fix works.
+console.log("\nINT/TERM leaves no reviewer behind:");
+{
+	const sleep = (sec: number) => spawnSync("sleep", [String(sec)]);
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	const survived = path.join(sb.root, "SURVIVED");
+	fs.writeFileSync(path.join(sb.binDir, "claude"),
+		`#!/usr/bin/env bash\ntrap '' TERM\nsleep 10\ntouch ${JSON.stringify(survived)}\n`,
+		{ mode: 0o755 });
+
+	const child = spawn("bash", [PR_REVIEW], {
+		cwd: sb.clone, env: { ...process.env, ...GIT_ENV, ...env }, stdio: "ignore",
+	});
+	sleep(3);              // lenses have spawned their (hung) reviewers
+	child.kill("SIGTERM"); // trap: TERM the tree, 2s grace, then KILL
+	sleep(11);             // past the stub's own 10s sleep
+
+	check(!fs.existsSync(survived),
+		"a reviewer that ignores TERM does not outlive the trap",
+		"SURVIVED marker exists — the reviewer was never escalated to KILL");
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);

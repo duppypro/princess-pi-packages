@@ -236,19 +236,47 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
 # what this script started is the only version that is safe to ship.
 LENS_PIDS=()
 # Each entry is the `{ ... } &` WRAPPER subshell, and killing that alone leaves
-# the `timeout claude` it spawned running — the previous version reaped the
-# bookkeeping and left the expensive part alive. Children first (timeout forwards
-# the signal to claude), then the wrapper.
-kill_lenses() {
-  for pid in ${LENS_PIDS+"${LENS_PIDS[@]}"}; do
-    if command -v pkill >/dev/null 2>&1; then
-      pkill -TERM -P "$pid" 2>/dev/null || true
-    else
-      # pkill is not POSIX; ps is the portable fallback for "children of $pid".
-      for kid in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$kid" 2>/dev/null || true; done
-    fi
-    kill "$pid" 2>/dev/null || true
+# the `timeout claude` it spawned running — an early version reaped the
+# bookkeeping and left the expensive part alive.
+#
+# TERM ALONE IS NOT ENOUGH, and `--kill-after` does not cover this path
+# (macroscopeapp, PR #379). That flag governs `timeout`'s OWN expiry: when
+# `timeout` is itself signalled, it forwards the signal to its child and exits
+# rather than waiting to escalate. So a reviewer that traps or ignores TERM
+# outlived the trap as an orphan, still holding an in-flight model call — the
+# exact resource leak the ceiling exists to prevent, reached by the other door.
+# `pkill -P` also reaches only DIRECT children, so anything `claude` spawned was
+# never signalled at all.
+#
+# So: walk the whole descendant tree, TERM it, allow a short grace to flush, then
+# KILL unconditionally. Still BY PID, never `kill 0` — this script is not a
+# process-group leader when invoked normally, and `kill 0` would signal the
+# caller's entire group (pr-open, its shell, any sibling job).
+#
+# The grace is 2s, not the 30s of --kill-after: this path runs inside an INT
+# trap, where a human is waiting on their own Ctrl-C.
+_descendants() {
+  local kid
+  for kid in $(ps -o pid= --ppid "$1" 2>/dev/null); do
+    _descendants "$kid"
+    printf '%s\n' "$kid"
   done
+}
+kill_lenses() {
+  local pid kid tree=""
+  for pid in ${LENS_PIDS+"${LENS_PIDS[@]}"}; do
+    tree="$tree $(_descendants "$pid" | tr '\n' ' ') $pid"
+  done
+  # shellcheck disable=SC2086
+  set -- $tree
+  [ "$#" -gt 0 ] || return 0
+  for kid in "$@"; do kill -TERM "$kid" 2>/dev/null || true; done
+  sleep 2
+  # KILL is unconditional rather than conditional on liveness: `kill -KILL` on a
+  # reaped pid is a suppressed error, and a liveness poll here would be one more
+  # thing to get wrong on the path that exists precisely because something is
+  # already misbehaving.
+  for kid in "$@"; do kill -KILL "$kid" 2>/dev/null || true; done
 }
 trap 'rm -rf "$WORK"' EXIT
 trap 'kill_lenses; rm -rf "$WORK"; exit 130' INT
