@@ -92,7 +92,9 @@ in three parallel lenses (correctness, reasoning, contract), and reports finding
 Findings are written to a JSON log OUTSIDE the repository, under
 ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>/ — on a default Linux host
 XDG_STATE_HOME is unset, so that is ~/.local/state/pr-review/<repo>/. Keeping the
-logs out of the tree is what stops `git add -A` committing them.
+logs out of the tree is what stops `git add -A` committing them. With HOME unset
+too (cron, systemd, containers) the run still happens, into a private temporary
+directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
 environment: PR_REVIEW_MODEL (default claude-opus-5) · PR_REVIEW_TIMEOUT (600s)
              PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
@@ -215,7 +217,35 @@ command -v python3 >/dev/null 2>&1 || \
 # It does not; the reason to move the logs out was stronger than stated, not
 # weaker. Verified with git check-ignore rather than by reading .gitignore.)
 REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
-LOG_DIR="${PR_REVIEW_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/$REPO_NAME}"
+# Resolved in steps rather than by nested `${A:-${B:-$C}}`, because HOME is not
+# guaranteed. Under `set -u` the nested form aborted the whole script on
+# "HOME: unbound variable" with exit 1 — a code in no table here — in exactly the
+# environments this gate most needs to survive: cron, systemd units and
+# containers, none of which set HOME by default. pr-open then fell open with
+# "pr-review exited 1 — proceeding unreviewed", naming no cause, so the gate
+# turned itself off and the message did not say why (macroscopeapp, PR #379).
+#
+# The last resort is a private `mktemp -d`, not a fixed `/tmp/pr-review/<repo>`:
+# these logs carry the branch diff verbatim, and a predictable path in a
+# world-writable directory is pre-creatable by any other user on the host.
+# Ephemeral logs degrade the btw#59 evidence trail; losing the review itself is
+# worse, so the run continues and says on stderr where it wrote.
+if [ -n "${PR_REVIEW_LOG_DIR:-}" ]; then
+  LOG_DIR="$PR_REVIEW_LOG_DIR"
+elif [ -n "${XDG_STATE_HOME:-}" ]; then
+  LOG_DIR="$XDG_STATE_HOME/pr-review/$REPO_NAME"
+elif [ -n "${HOME:-}" ]; then
+  LOG_DIR="$HOME/.local/state/pr-review/$REPO_NAME"
+else
+  LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-review-$REPO_NAME.XXXXXXXX") || {
+    echo "pr-review: HOME, XDG_STATE_HOME and PR_REVIEW_LOG_DIR are all unset," >&2
+    echo "   and a temporary log directory could not be created either." >&2
+    echo "   Set PR_REVIEW_LOG_DIR to a writable path." >&2
+    exit 3
+  }
+  echo "⚠️  pr-review: HOME and XDG_STATE_HOME are both unset — this run's log goes to" >&2
+  echo "   '$LOG_DIR' and is NOT durable. Set PR_REVIEW_LOG_DIR to keep the evidence." >&2
+fi
 # Mapped, not raw. Under `set -e` a failed mkdir exited with mkdir's own status
 # (1), which is not in this script's table at all — and the spec asserts pr-review
 # is a member of the shared pr-* contract, so an unwritable PR_REVIEW_LOG_DIR

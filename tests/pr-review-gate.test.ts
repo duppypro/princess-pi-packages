@@ -561,5 +561,43 @@ console.log("\nINT/TERM leaves no reviewer behind:");
 		"SURVIVED marker exists — the reviewer was never escalated to KILL");
 }
 
+// --- #379 round 7: no HOME is not a reason to stop reviewing ----------------
+// `${XDG_STATE_HOME:-$HOME/.local/state}` dereferences HOME unguarded, so under
+// `set -u` the script died on "HOME: unbound variable" with exit 1 — a code in no
+// table here — before writing a log or reviewing a line. pr-open read that as
+// "proceeding unreviewed", so the gate turned itself off in exactly the
+// environments that never set HOME: cron, systemd units, containers
+// (macroscopeapp, PR #379).
+//
+// Run through `env -u`, because run() merges process.env and this box has a HOME.
+console.log("\nno HOME still reviews, into a temporary log dir:");
+{
+	const sb = makeSandbox();
+	const tmp = path.join(sb.root, "tmp");
+	fs.mkdirSync(tmp);
+	const { PR_REVIEW_LOG_DIR: _dropped, ...env } = stubs(sb, "clean");
+	const { code, out } = run("/usr/bin/env", sb.clone,
+		{ ...env, TMPDIR: tmp },
+		["-u", "HOME", "-u", "XDG_STATE_HOME", "-u", "PR_REVIEW_LOG_DIR", PR_REVIEW]);
+
+	check(code === 0, "HOME unset → still reviews and exits 0 (clean)", `got ${code}: ${out}`);
+	check(!/unbound variable/.test(out), "HOME unset → no unbound-variable abort", out);
+	check(/PR_REVIEW_LOG_DIR/.test(out),
+		"HOME unset → warns, naming the variable that makes the log durable", out);
+
+	// The degradation is announced AND real: a log was written where it said.
+	const named = out.match(/'([^']*pr-review-[^']*)'/);
+	check(named !== null, "HOME unset → names the temporary log directory it used", out);
+	if (named) {
+		const wrote = fs.existsSync(named[1]) && fs.readdirSync(named[1]).length > 0;
+		check(wrote, "HOME unset → the named directory actually holds this run's log",
+			`${named[1]} is empty or absent`);
+	}
+	// Private, not a predictable /tmp path: these logs carry the branch diff.
+	check(!fs.existsSync(path.join(tmp, "pr-review")),
+		"HOME unset → no predictable shared /tmp/pr-review path is created",
+		"a guessable path in a world-writable dir is pre-creatable by another user");
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);
