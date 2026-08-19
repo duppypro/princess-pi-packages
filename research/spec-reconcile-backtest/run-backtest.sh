@@ -30,6 +30,9 @@
 #             3 corpus (overlay missing, corpus already carries host/)
 #             4 refused (OUT already holds transcripts; set OVERWRITE=1)
 #             5 sha (env FIXTURE_SHA contradicts the round marker; set OVERRIDE_SHA=1)
+#
+# A round directory MUST contain FIXTURE_SHA (exit 2 without it). A failed transcript set
+# — one carrying the 'is NOT a scoreable run' marker — is replaced without OVERWRITE.
 #             1 at least one auditor exited non-zero — see STATUS.tsv
 # ---
 set -euo pipefail
@@ -52,11 +55,11 @@ PROMPT_DIR="$HERE/prompts/$ROUND"
 #     in which the guardrails hook was already destination-aware and a host document still
 #     said otherwise — a different SHA from rounds 1-2, which stay on 9b2a16e so an
 #     unqualified run reproduces the #163 record.
-if [ -f "$PROMPT_DIR/FIXTURE_SHA" ]; then
-	DEFAULT_SHA="$(tr -d "[:space:]" < "$PROMPT_DIR/FIXTURE_SHA")"
-else
-	DEFAULT_SHA="9b2a16e"
-fi
+# A round whose corpus is guessed produces a full transcript set, a green STATUS.tsv, and
+# a scoreable-looking result measured on a tree its prompts were never written for. RUBRIC
+# states the marker as an absolute rule; the harness enforces it as one.
+[ -f "$PROMPT_DIR/FIXTURE_SHA" ] || { echo "round $ROUND has no prompts/$ROUND/FIXTURE_SHA — a round must declare its own corpus" >&2; exit 2; }
+DEFAULT_SHA="$(tr -d "[:space:]" < "$PROMPT_DIR/FIXTURE_SHA")"
 FIXTURE_SHA="${FIXTURE_SHA:-$DEFAULT_SHA}"
 if [ "$FIXTURE_SHA" != "$DEFAULT_SHA" ] && [ "${OVERRIDE_SHA:-0}" != "1" ]; then
 	echo "FIXTURE_SHA=$FIXTURE_SHA contradicts round $ROUND's marker ($DEFAULT_SHA)." >&2
@@ -91,10 +94,22 @@ echo "model     : $MODEL"
 # The default OUT is the round's TRACKED directory, which RUBRIC.md scores and
 # tests/spec-163 asserts non-empty. A bare re-run must not destroy that record — the
 # #383 re-run did exactly this and erased the transcript that justified issue #390.
-if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ] && [ "${OVERWRITE:-0}" != "1" ]; then
-	echo "$OUT already holds a scored transcript set; refusing to overwrite it." >&2
-	echo "Set OVERWRITE=1 to replace it, or OUT=<path> to write elsewhere." >&2
-	exit 4
+# Protect a SCORED RECORD, never wreckage. A run that died mid-way leaves transcripts
+# carrying the failure marker; refusing to let anyone retry those is protection pointed at
+# the wrong thing.
+if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
+	if grep -rlq "is NOT a scoreable run" "$OUT" 2>/dev/null; then
+		echo "$OUT holds a failed run (transcripts carry the failure marker) — replacing it." >&2
+		rm -f "$OUT"/*.md "$OUT"/STATUS.tsv
+	elif [ "${OVERWRITE:-0}" != "1" ]; then
+		echo "$OUT already holds a scored transcript set; refusing to overwrite it." >&2
+		echo "Set OVERWRITE=1 to replace it, or OUT=<path> to write elsewhere." >&2
+		exit 4
+	else
+		# Clear first: a re-run with renamed or fewer prompts would otherwise leave stale
+		# transcripts beside the new ones, with STATUS.tsv describing only the new set.
+		rm -f "$OUT"/*.md "$OUT"/STATUS.tsv
+	fi
 fi
 mkdir -p "$OUT"
 

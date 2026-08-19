@@ -169,6 +169,7 @@ check(`F5 corpus SHA ${F5_SHA} is reachable from this clone`, f5Reachable);
 // Probe the hook's BEHAVIOUR at that SHA, not its banner comment. Verifying a comment as
 // a proxy for behaviour is the exact drift class F5 exists to measure, so this suite must
 // not do it (#383 review). The hook is materialised from the frozen tree and run for real.
+let f5ProbeError = "";
 function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "error" {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-probe-"));
 	try {
@@ -184,40 +185,59 @@ function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "
 		if (res.status === 0) return "allow";
 		if (res.status === 2) return "block";
 		return "error";
-	} catch {
+	} catch (err) {
+		// A probe that dies because git/bash/tmpdir is unusable must not read as a
+		// behaviour regression in a 2026-era hook. Keep the cause.
+		f5ProbeError = (err as Error).message;
 		return "error";
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 }
 
+// Both destination probes are branch-INDEPENDENT, so they would still pass if the payload
+// shape were wrong and the hook silently fell back to this process's own cwd. The pair
+// below is branch-sensitive and fails loudly in that case — it proves the probe harness,
+// not the hook.
+const onMain = hookVerdictAtF5("git commit -m x", "main");
+const onFeature = hookVerdictAtF5("git commit -m x", "42-feat");
+check(
+	"F5 probe harness: the injected cwd is honoured (commit blocked on main, allowed on a feature branch)",
+	onMain === "block" && onFeature === "allow",
+	f5ProbeError || `on main: ${onMain}, on feature: ${onFeature}`,
+);
 check(
 	"F5: the hook at that SHA in fact ALLOWED a feature-branch push (measured, not read)",
 	f5Reachable && hookVerdictAtF5("git push origin 42-feat", "42-feat") === "allow",
+	f5ProbeError,
 );
 check(
 	"F5: …and blocked a push whose destination was main — so the gate was on DESTINATION",
 	f5Reachable && hookVerdictAtF5("git push origin main", "42-feat") === "block",
+	f5ProbeError,
 );
 // The control's F5-clean result is only evidence if the claim was absent from the WHOLE
 // tracked tree, not merely contradicted in one file. `git grep` at the frozen SHA is the
 // check the old label promised and did not make.
-let claimInTracked: string[] = [];
-try {
-	claimInTracked = execFileSync(
-		"git",
-		["-C", REPO, "grep", "-l", "-F", "intercept: `git push`", F5_SHA],
-		{ encoding: "utf8" },
-	)
-		.trim()
-		.split("\n")
-		.filter(Boolean);
-} catch {
-	claimInTracked = []; // git grep exits 1 when nothing matches — the expected case
-}
+// `git grep` exits 1 for "no match" and 2+ for a real failure (bad SHA, not a repo). A
+// bare catch turns both into a PASS, which is a vacuous pass on the load-bearing evidence
+// check — the check most worth breaking loudly (#383 review).
+const grepRes = spawnSync(
+	"git",
+	["-C", REPO, "grep", "-l", "-F", "intercept: `git push`", F5_SHA],
+	{ encoding: "utf8" },
+);
+const grepRan = grepRes.status === 0 || grepRes.status === 1;
+const claimInTracked =
+	grepRes.status === 0 ? grepRes.stdout.trim().split("\n").filter(Boolean) : [];
+check(
+	"F5: the tree-wide search actually ran (exit 0 or 1 — anything else is a broken check, not a clean one)",
+	grepRan,
+	`git grep exited ${grepRes.status}: ${(grepRes.stderr || "").trim()}`,
+);
 check(
 	"F5: NO tracked file at that SHA carried the false claim — which is what makes the control's clean result evidence",
-	claimInTracked.length === 0,
+	grepRan && claimInTracked.length === 0,
 	`found in: ${JSON.stringify(claimInTracked)}`,
 );
 check(
@@ -455,46 +475,52 @@ for (const arm of ["C1-guardrails-repo-only-control", "C2-guardrails-host-scoped
 
 // The manipulation between the two arms must be scope and nothing else. If they differ
 // anywhere but the host-document block, the round measures prompt wording, not scope.
-// The stated invariant is bidirectional — "byte-identical apart from one block" — so a
-// one-directional membership test is not it: an instruction DELETED from C2, or added to
-// C1 only, or a reordering, each turns the round into a measurement of prompt wording
-// while a set-difference check stays green (#383 review).
-const promptLines = (n: string): string[] =>
-	safeRead(`research/spec-reconcile-backtest/prompts/round3-host-scope/${n}.txt`).split("\n");
+// The stated invariant is bidirectional and positional — "byte-identical apart from one
+// block". An exemption predicate ("any C2-only line mentioning host") is looser than that:
+// it lets ANY instruction through as long as it contains the word, and cannot see a line
+// deleted from C2 or a reordering. So compute the insertion positionally instead: strip the
+// common prefix and the common suffix, and whatever is left in the middle IS the block —
+// with C1 required to have nothing left over at all.
+const promptLines = (n: string): string[] | null => {
+	const rel = `research/spec-reconcile-backtest/prompts/round3-host-scope/${n}.txt`;
+	return fs.existsSync(path.join(REPO, rel)) ? readRepo(rel).split("\n") : null;
+};
 const c1Lines = promptLines("C1-guardrails-repo-only-control");
 const c2Lines = promptLines("C2-guardrails-host-scoped");
-const isHostBlock = (l: string): boolean =>
-	/host|artifact set is not the diff/i.test(l) || l.trim() === "";
 
-// Delete C2's host block, then the two prompts must be identical LINE FOR LINE, in order.
-const c2WithoutHostBlock: string[] = [];
-{
-	let i = 0;
-	for (const line of c2Lines) {
-		if (c1Lines[i] === line) {
-			c2WithoutHostBlock.push(line);
-			i++;
-		} else if (isHostBlock(line)) {
-			continue; // part of the enumeration block C2 is allowed to add
-		} else {
-			c2WithoutHostBlock.push(line);
-		}
-	}
+check(
+	"both round-3 prompts are readable — a parity check over two missing files is vacuous",
+	c1Lines !== null && c2Lines !== null && c1Lines.length > 1,
+);
+
+let insertion: string[] = [];
+let parity = false;
+if (c1Lines && c2Lines && c1Lines.length > 1) {
+	let head = 0;
+	while (head < c1Lines.length && c1Lines[head] === c2Lines[head]) head++;
+	let tail = 0;
+	while (
+		tail < c1Lines.length - head &&
+		c1Lines[c1Lines.length - 1 - tail] === c2Lines[c2Lines.length - 1 - tail]
+	)
+		tail++;
+	// C1 fully consumed by the common prefix + suffix => C2 is C1 with ONE block inserted.
+	parity = head + tail === c1Lines.length;
+	insertion = c2Lines.slice(head, c2Lines.length - tail);
 }
-const identical =
-	c1Lines.length > 0 && JSON.stringify(c2WithoutHostBlock) === JSON.stringify(c1Lines);
 check(
-	"C1 and C2 are identical line-for-line once C2's host-enumeration block is removed",
-	identical,
-	identical
-		? ""
-		: `C1 has ${c1Lines.length} lines; C2-minus-host-block reduces to ${c2WithoutHostBlock.length}`,
+	"C2 is C1 with exactly ONE contiguous block inserted — nothing deleted, nothing reordered",
+	parity,
+	parity ? "" : "the prompts diverge in more than one place; the round measures wording, not scope",
 );
 check(
-	"C2 does add the host-enumeration block — otherwise there is no manipulation at all",
-	c2Lines.some((l) => l.includes("./host/git-projects-CLAUDE.md")),
+	"that inserted block is the host-document enumeration and nothing else",
+	parity &&
+		insertion.length > 0 &&
+		insertion.some((l) => l.includes("./host/git-projects-CLAUDE.md")) &&
+		insertion.every((l) => l.trim() === "" || /host|artifact set is not the diff/i.test(l)),
+	JSON.stringify(insertion.filter((l) => l.trim() && !/host|artifact set is not the diff/i.test(l))),
 );
-
 check(
 	`round 3 declares ${F5_SHA} as its corpus`,
 	safeRead("research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA").trim() ===
@@ -515,6 +541,14 @@ check(
 check(
 	"the harness ships an exit-code table and a --help that prints it",
 	harness.includes("exit codes: 0 ok") && harness.includes("-h|--help"),
+);
+check(
+	"a round with no FIXTURE_SHA marker is refused rather than run against a guessed corpus",
+	harness.includes("a round must declare its own corpus"),
+);
+check(
+	"a failed transcript set is replaced, not protected as if it were a record",
+	harness.includes("is NOT a scoreable run") && harness.includes("holds a failed run"),
 );
 check(
 	"an env FIXTURE_SHA that contradicts the round's marker is refused",

@@ -12,7 +12,7 @@ a `STAGE_HOST` marker.
 
 | File | Reproduced from | Frozen at | Why |
 |---|---|---|---|
-| `host/git-projects-CLAUDE.md` | `~/git-projects/CLAUDE.md`, "Git & GitHub Etiquette" subsection | `2026-08-19T16:01:47Z`, from the host's own `.bak` snapshot | The state immediately **before** #381 corrected it. Scored as **F5** in `RUBRIC.md` |
+| `host/git-projects-CLAUDE.md` | `~/git-projects/CLAUDE.md`, "Git & GitHub Etiquette" subsection — **first 24 of its 26 lines**; the trailing *Model Routing for Spawned Agents* bullet is elided as unrelated to any tool this corpus audits | `2026-08-19T16:01:47Z`, from the host's own `.bak` snapshot | The state immediately **before** #381 corrected it. Scored as **F5** in `RUBRIC.md`. The Git Guardrails bullet — the F5 claim — is byte-for-byte |
 
 **The provenance lives here, not in the fixture.** An earlier revision carried this note as
 a banner comment inside the staged file, where the auditor read it — *"do not edit to make

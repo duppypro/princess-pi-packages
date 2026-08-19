@@ -400,10 +400,11 @@ findings and never mentioned it once.** The drift was not hidden from the diff-s
 auditor — it was *unenumerated*, which is precisely what a diff does to a file that appears
 in no changeset.
 
-**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those 60
-findings included two live guardrail bugs (#389, #390); none of them said push was blocked
-outright, because no tracked artifact claimed it. Result and per-auditor exit status in
-`RUBRIC.md`'s log.
+**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those 59
+scoreable findings included a live guardrail bug (#389, the `gh -R … pr merge` bypass);
+none of them said push was blocked outright, because no tracked artifact claimed it.
+Per-arm attribution, and the one issue whose transcript an earlier re-run erased, are in
+`RUBRIC.md`'s log — read it before crediting a finding to an arm.
 
 The corpus, the prompts as run, and the scoring rubric are in
 `princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1,
@@ -411,17 +412,23 @@ The corpus, the prompts as run, and the scoring rubric are in
 
 **One invocation runs one round.** Re-measuring after a §1/§4 edit means all three:
 
+Each round writes into its own tracked `runs/<round>/` and **refuses to overwrite a scored
+transcript set** (exit 4), so a re-measurement writes to a scratch directory and is diffed
+against the record — replace the record only once you have decided the new run supersedes it:
+
 ```
 B=research/spec-reconcile-backtest/run-backtest.sh
-ROUND=round1-as-written $B    # F1-F4, skill as written during #158, SHA 9b2a16e
-ROUND=round2-fixed      $B    # F1-F4, post-fix — the harness default, SHA 9b2a16e
-ROUND=round3-host-scope $B    # F5, Tier 4, SHA bf4d104
-# then score every runs/<round>/ against RUBRIC.md
+S=$(mktemp -d)
+ROUND=round1-as-written OUT=$S/round1-as-written $B   # F1-F4, skill as of #158, SHA 9b2a16e
+ROUND=round2-fixed      OUT=$S/round2-fixed      $B   # F1-F4, post-fix,        SHA 9b2a16e
+ROUND=round3-host-scope OUT=$S/round3-host-scope $B   # F5, Tier 4,             SHA bf4d104
+# score every $S/<round>/ against RUBRIC.md, then, to adopt it:
+#   OVERWRITE=1 ROUND=<round> $B
 ```
 
-Each round writes into its own tracked `runs/<round>/` and **refuses to overwrite a scored
-transcript set** (exit 4) — pass `OUT=` to write elsewhere, or `OVERWRITE=1` when you mean
-to replace the record. `run-backtest.sh --help` carries the exit-code table.
+`run-backtest.sh --help` carries the exit-code table. **Adopting a re-run destroys the
+transcript the previous record cites** — the #383 run did exactly that and erased the
+evidence behind issue #390, which is why the refusal exists.
 
 If a fixture regresses, **fix the skill, not the score.** A miss is a finding about this
 file.

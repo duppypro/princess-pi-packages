@@ -83,7 +83,11 @@ reach it, then change the skill.
 - **Counts as surfaced when:** the auditor quotes the host document's `intercept:` sentence
   AND cites the destination check in the hook as `path:line`. Naming the hook's behaviour
   without reaching the host document does **not** count — that is the control's result.
-- **Difficulty:** structural, not textual. **No *rewording* of the audit instructions reaches this fixture — only naming the document does.** The
+- **Difficulty:** structural, not textual. **What the round controlled for is enumeration, not phrasing.** The two arms differ by one
+  block — the paragraph naming the host documents — and by nothing else, so the result
+  attributes the hit to *naming the file*. It does **not** establish that no other phrasing
+  could ever reach the fixture; no arm tested that, and the fixture is staged in the tree
+  for both arms precisely so the difference is enumeration rather than availability. The
   drift is not in the corpus at all: `~/git-projects/` is not a git repository, so the file
   has no commit, no history, and appears in no changeset. Only §1's **reverse scope**
   (branch touches `hooks/` → Tier 4 activates) and §2 Tier 4's **enumerated set** put the
@@ -128,7 +132,7 @@ reach it, then change the skill.
 | Fix, not report | Every surfaced contradiction ends fixed in-branch or filed as a named issue |
 | Glossary | `CONTEXT.md` has `## Language — Serve` and **no wtft section**. The auditor must say so and invent nothing. Applying serve's `_Avoid_` list to wtft is a **fail** — it is inventing a ruling |
 | Triage smell | Output grouped "most important first", or a stated word budget, means findings were dropped (§1 granularity) |
-| Absence declared (F5) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The auditor must SAY they are missing. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent. The absence is pinned by `tests/spec-163-spec-reconcile.test.ts`, which asserts `fixtures/host/` holds exactly the one expected file; adding either file silently inverts this row |
+| Absence declared (F5, **C2 only**) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The host-scoped auditor must SAY they are missing — the control's prompt never names them, so this row is not scored against it. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent. The absence is pinned by `tests/spec-163-spec-reconcile.test.ts`, which asserts `fixtures/host/` holds exactly the one expected file; adding either file silently inverts this row |
 | Auditor actually ran (round 3 on) | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor, and its `#` header records the round, corpus SHA and model the transcripts came from. Rounds 1-2 predate the file and are exempt. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
 
 ## Result log
@@ -141,7 +145,8 @@ reach it, then change the skill.
 > | **#389** | `gh -R o/r pr merge` walks the human-only gate | **control** (`C1` D3), reproduced in both runs |
 > | **#390** | the hook fails *open* when `jq` is unavailable | **the superseded first run only** — see the caveat below |
 > | **#391** | `git revert` advances `main` without a PR | **both arms** (`C1` D12, `C2` A15) — not host-scoped |
-> | **#392** | the hook's banner misquotes the host doc it cites | **host-scoped arm only** — one of the two contradicting documents is in no repo |
+> | **#392** (banner half) | the hook's banner misquotes the host doc it cites | **host-scoped arm only** (`C2` A16) — one of the two contradicting documents is in no repo |
+> | **#392** (spec half) | `dev-workflow-spec.md:337` says nothing hooks `git worktree remove` | **both arms** (`C1` D8, `C2` B1) — an ordinary tracked-artifact drift |
 >
 > **Caveat, recorded rather than tidied away.** #390 was surfaced by the *first* round-3
 > run, whose transcripts the corrected re-run **overwrote** — neither committed transcript
