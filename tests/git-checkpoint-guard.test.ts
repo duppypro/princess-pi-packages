@@ -86,18 +86,52 @@ function makeSandbox(primary: "main" | "master" = "main"): Sandbox {
 	return { root, remote, clone, primary };
 }
 
-function runCheckpoint(cwd: string, msg = "test commit"): { code: number; out: string } {
+function runCheckpoint(
+	cwd: string,
+	msg = "test commit",
+	opts: { args?: string[]; env?: Record<string, string> } = {},
+): { code: number; out: string } {
 	try {
-		const out = execFileSync("bash", [GIT_CHECKPOINT, msg], {
+		const out = execFileSync("bash", [GIT_CHECKPOINT, ...(opts.args ?? []), msg], {
 			cwd,
 			encoding: "utf8",
-			env: { ...process.env, ...GIT_ENV },
+			env: { ...process.env, ...GIT_ENV, ...(opts.env ?? {}) },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		return { code: 0, out };
 	} catch (err: any) {
 		return { code: err?.status ?? -1, out: `${err?.stdout || ""}${err?.stderr || ""}` };
 	}
+}
+
+// --- fake `gh` (#368) ---
+// git-checkpoint asks `gh pr list --head <branch> --state open --json number`
+// whether a PR is already open. The whole point of the change is what happens
+// on each of that command's THREE outcomes, so the tests must be able to drive
+// all three — including the failure one, which is unreachable against the real
+// gh without breaking the network.
+//
+// `mode` maps to the contract git-checkpoint relies on:
+//   "open"    -> exit 0, a non-empty JSON array   (a PR is open)
+//   "none"    -> exit 0, `[]`                     (no PR)
+//   "fail"    -> exit 1                           (gh broke / not logged in)
+//   "missing" -> no gh on PATH at all
+// Returns the env overlay that puts the fake first on PATH.
+function fakeGh(sb: Sandbox, mode: "open" | "none" | "fail" | "missing"): Record<string, string> {
+	const binDir = path.join(sb.root, `fakebin-${mode}`);
+	fs.mkdirSync(binDir, { recursive: true });
+	if (mode !== "missing") {
+		const body =
+			mode === "open"
+				? 'echo \'[{"number":42,"state":"OPEN"}]\'; exit 0'
+				: mode === "none"
+					? "echo '[]'; exit 0"
+					: 'echo "gh: could not reach api.github.com" >&2; exit 1';
+		fs.writeFileSync(path.join(binDir, "gh"), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+	}
+	// PATH is replaced, not prepended, for "missing" — otherwise the real gh on
+	// this developer's PATH would answer and the test would measure the host.
+	return { PATH: mode === "missing" ? `${binDir}:/usr/bin:/bin` : `${binDir}:${process.env.PATH}` };
 }
 
 function tip(repo: string, ref = "HEAD"): string {
@@ -222,6 +256,87 @@ console.log("\n#310 — flags are not messages:");
 		check(code === 0, "`-- -dashy message` → exit 0 (committed)", `got ${code}, output:\n${out}`);
 		check(/^-dashy message \(#310\) 👑π🐱$/.test(git(sb.clone, ["log", "-1", "--format=%s"])), "`--` → the dash-leading message is the commit subject", git(sb.clone, ["log", "-1", "--format=%s"]));
 	}
+}
+
+// --- #368: while a PR is open, commit locally and batch the push ---
+// Macroscope bills a $0.50 floor per review run and re-reviews on every push:
+// 157 of 269 runs over 8 days were re-reviews, $64.58, 45% of spend (btw#59).
+// Pushes made BEFORE a PR exists cost nothing — the opening review bundles them
+// (measured: first review fires within seconds of PR creation on 7-11 commit
+// PRs). So the push is withheld only while a PR is open, and only then.
+//
+// The property under test is the remote tip, not the log text: "batched" means
+// the commit exists locally and origin has not moved.
+console.log("\n#368 — batch the push while a PR is open:");
+{
+	// open PR → commit lands, remote does NOT move, and the user is told how to send it
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
+	const remoteBefore = tip(sb.remote, "refs/heads/42-feature");
+	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
+	const { code, out } = runCheckpoint(sb.clone, "fix: address review (#42)", { env: fakeGh(sb, "open") });
+	check(code === 0, "open PR → exit 0", `got ${code}, output:\n${out}`);
+	check(tip(sb.clone) !== remoteBefore, "open PR → commit still created locally", out);
+	check(tip(sb.remote, "refs/heads/42-feature") === remoteBefore, "open PR → remote tip UNCHANGED (push batched)", out);
+	check(/git push/.test(out), "open PR → names the command that sends the batch", out);
+	check(/#42|PR/.test(out), "open PR → says why the push was held", out);
+}
+{
+	// a second checkpoint keeps batching, and the pending count grows
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
+	const remoteBefore = tip(sb.remote, "refs/heads/42-feature");
+	const env = fakeGh(sb, "open");
+	fs.writeFileSync(path.join(sb.clone, "a.txt"), "1\n");
+	runCheckpoint(sb.clone, "fix: one (#42)", { env });
+	fs.writeFileSync(path.join(sb.clone, "b.txt"), "2\n");
+	const { out } = runCheckpoint(sb.clone, "fix: two (#42)", { env });
+	check(tip(sb.remote, "refs/heads/42-feature") === remoteBefore, "open PR → still unpushed after two checkpoints", out);
+	check(/\b2\b/.test(out), "open PR → reports the pending-commit count (2)", out);
+}
+{
+	// no open PR → today's behaviour exactly: push. This is the pre-PR phase,
+	// where the push is free and losing work is the real risk.
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
+	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
+	const { code, out } = runCheckpoint(sb.clone, "feat: widget (#42)", { env: fakeGh(sb, "none") });
+	check(code === 0, "no PR → exit 0", `got ${code}, output:\n${out}`);
+	check(tip(sb.remote, "refs/heads/42-feature") === tip(sb.clone), "no PR → pushed, remote matches local", out);
+}
+{
+	// --push overrides the batching: sometimes you WANT the re-review now
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
+	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
+	const { code, out } = runCheckpoint(sb.clone, "fix: ready for re-review (#42)", { args: ["--push"], env: fakeGh(sb, "open") });
+	check(code === 0, "--push with open PR → exit 0", `got ${code}, output:\n${out}`);
+	check(tip(sb.remote, "refs/heads/42-feature") === tip(sb.clone), "--push with open PR → pushes anyway", out);
+}
+{
+	// gh broken → FALL BACK TO PUSHING. A missed detection costs $0.50; a
+	// wrongly-withheld push risks the work. Fail open toward the old behaviour.
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
+	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
+	const { code, out } = runCheckpoint(sb.clone, "feat: widget (#42)", { env: fakeGh(sb, "fail") });
+	check(code === 0, "gh fails → exit 0", `got ${code}, output:\n${out}`);
+	check(tip(sb.remote, "refs/heads/42-feature") === tip(sb.clone), "gh fails → pushes (fails open, work protected)", out);
+}
+{
+	// gh not installed at all → same fail-open path
+	const sb = makeSandbox("main");
+	git(sb.clone, ["checkout", "-q", "-b", "42-feature"]);
+	git(sb.clone, ["push", "-q", "--set-upstream", "origin", "42-feature"]);
+	fs.writeFileSync(path.join(sb.clone, "feature.txt"), "work\n");
+	const { code, out } = runCheckpoint(sb.clone, "feat: widget (#42)", { env: fakeGh(sb, "missing") });
+	check(code === 0, "no gh on PATH → exit 0", `got ${code}, output:\n${out}`);
+	check(tip(sb.remote, "refs/heads/42-feature") === tip(sb.clone), "no gh on PATH → pushes (fails open)", out);
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} git-checkpoint guard: ${checks - failures} of ${checks} checks passed.`);
