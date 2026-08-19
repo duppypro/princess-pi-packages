@@ -138,6 +138,50 @@ console.log("\n— pr-guard present: the predicate answers");
 }
 
 // ---
+// 4. The two ways a fail-closed guard fails OPEN instead. Both found by
+//    macroscopeapp on PR #380, and neither is visible from the happy path.
+// ---
+console.log("\n— the guard cannot be bypassed by a broken environment");
+{
+	// (a) A caller reached through a SYMLINK. `$(dirname "$0")` yields the LINK's
+	//     directory, which need not hold pr-guard — so the guard was absent for
+	//     every symlinked install (bun link) while the real file sat beside the
+	//     target. Fails closed, so the symptom was a tool that refused to run at
+	//     all rather than one that skipped its safety check; either way the
+	//     predicate was not consulted.
+	const { bin, cwd } = sandbox(true);
+	const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-guard-link-"));
+	for (const c of CALLERS) {
+		fs.symlinkSync(path.join(bin, c), path.join(linkDir, c));
+	}
+	for (const c of CALLERS) {
+		const r = spawnSync("bash", [path.join(linkDir, c), ...(ARGS[c] ?? [])], {
+			cwd, encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin" },
+		});
+		const text = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+		check(!/cannot source the protected-branch guard/.test(text),
+			`${c} via a symlink → finds pr-guard beside the REAL file`, text.slice(0, 200));
+	}
+
+	// (b) The predicate itself cannot answer. Callers test it in an `if`, where a
+	//     non-zero status reads as "not protected" and `set -e` does not fire — so
+	//     a broken grep would have let pr-open run ON MAIN. Simulated with a `grep`
+	//     that exits 2 — grep's own "an error occurred" code, as distinct from 1
+	//     ("no lines matched"). Stubbing grep rather than emptying PATH, because an
+	//     empty PATH also removes the `bash` that runs the probe.
+	const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-guard-nogrep-"));
+	fs.writeFileSync(path.join(stubDir, "grep"), "#!/usr/bin/env bash\nexit 2\n");
+	fs.chmodSync(path.join(stubDir, "grep"), 0o755);
+	const r = spawnSync("bash", ["-c",
+		`. ${JSON.stringify(path.join(bin, "pr-guard"))}; pr_is_protected main; echo "RETURNED:$?"`],
+		{ cwd, encoding: "utf8", env: { ...process.env, PATH: `${stubDir}:/usr/bin:/bin` } });
+	const text = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+	check(!/RETURNED:1/.test(text),
+		"an unanswerable predicate does NOT return 'not protected'", text.slice(0, 300));
+	check(r.status === 3, "an unanswerable predicate exits 3", `got ${r.status}: ${text.slice(0, 200)}`);
+}
+
+// ---
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} #222: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

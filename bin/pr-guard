@@ -65,10 +65,44 @@ pr_protected_branches() {
 # detached-HEAD message that is far more useful than "protected branch". This
 # reproduces the old `[ "$BRANCH" = "main" ]` behaviour exactly, where an empty
 # BRANCH also fell through.
+# Returns ONLY 0 (protected) or 1 (not). Any third outcome — grep missing (127),
+# killed, a future source of truth that cannot reach its data — EXITS the caller
+# instead of returning, because callers test this in an `if`, where a non-zero
+# status is indistinguishable from "not protected" and `set -e` does not fire.
+# That is a guard that fails OPEN, on main, which is the whole thing #222 is
+# about (macroscopeapp, PR #380).
+#
+# Exiting from a sourced function deliberately: the caller cannot proceed
+# without an answer, and putting the check HERE is what keeps it from becoming
+# four copies of a status dance in the four callers.
 pr_is_protected() {
   [ "$#" -ge 1 ] || return 1
   [ -n "$1" ] || return 1
-  pr_protected_branches | grep -qxF -- "$1"
+  # Enumerate FIRST, match second, rather than piping straight through. In a
+  # pipeline `pr_protected_branches | grep`, pipefail reports the last non-zero
+  # status — so a source of truth that failed while grep happened to match would
+  # surface as status 1, "not protected", the exact fail-open being closed here.
+  # Today `pr_protected_branches` is a printf and cannot fail; #222's second half
+  # gives it a file or an API to read, and then it can. (Structure taken from
+  # macroscopeapp's suggestion on PR #380; the exit-3 response is not — returning
+  # "protected" on an error, as suggested, makes pr-open tell you to switch off a
+  # feature branch you are already on. Same safety, worse diagnosis.)
+  local branches status=0
+  if ! branches=$(pr_protected_branches); then
+    echo "pr-guard: cannot enumerate the protected branches — refusing to answer." >&2
+    echo "   Proceeding would treat an unanswerable guard as 'not protected'. Run: install-workflow-tools" >&2
+    exit 3
+  fi
+  printf '%s\n' "$branches" | grep -qxF -- "$1" || status=$?
+  case "$status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *)
+      echo "pr-guard: the protected-branch predicate failed (status $status) — refusing to answer." >&2
+      echo "   Proceeding would treat an unanswerable guard as 'not protected'. Run: install-workflow-tools" >&2
+      exit 3
+      ;;
+  esac
 }
 
 # Sourced (`. pr-guard`) rather than executed: define and stop. BASH_SOURCE[0]

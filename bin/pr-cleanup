@@ -135,9 +135,15 @@ fi
 # degrades is simply absent — which is the state #222 was filed about. No
 # inline main/master fallback, because a fallback would restore the four copies
 # pr-guard exists to delete, silently, on exactly the hosts already broken.
-PR_GUARD_LIB="$(cd "$(dirname "$0")" && pwd)/pr-guard"
+# `readlink -f`, not dirname+pwd: ~/bin copies may be symlinks (bun link), and a
+# link's own directory need not hold pr-guard — so the plain spelling made a
+# symlinked pr-* refuse with exit 3 while pr-guard sat right there beside the
+# real file. Also keeps the resolution INSIDE the if-condition: a bare
+# `X="$(cd ...)"` under `set -euo pipefail` dies with cd's raw status before
+# reaching the message below (both found by macroscopeapp on PR #380).
 # shellcheck source=bin/pr-guard
-if [ ! -r "$PR_GUARD_LIB" ] || ! . "$PR_GUARD_LIB"; then
+if ! PR_GUARD_LIB="$(dirname "$(readlink -f "$0")")/pr-guard" \
+   || [ ! -r "$PR_GUARD_LIB" ] || ! . "$PR_GUARD_LIB"; then
   echo "pr-cleanup: cannot source the protected-branch guard at $PR_GUARD_LIB." >&2
   echo "   Refusing rather than proceeding without it. Run: install-workflow-tools" >&2
   exit 3
