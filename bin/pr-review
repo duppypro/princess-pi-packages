@@ -203,11 +203,17 @@ command -v python3 >/dev/null 2>&1 || \
   emit_status "reviewer-unavailable" "⚠️  pr-review: 'python3' not on PATH — opening the PR unreviewed." 0
 
 # Logs live OUTSIDE the repository. The old default was the relative path
-# `.claude/pr-review`, which only princess-pi-packages gitignored — so in every
-# other repo, btw included (where this experiment's PRs are opened), the next
-# `git add -A` swept the review logs into the branch being reviewed. A relative
-# path also meant running from a subdirectory wrote somewhere the ignore rule
-# did not anchor. Neither problem exists if the logs are never in a repo.
+# `.claude/pr-review`, and NO repo ignores it — not even this one:
+# `git check-ignore .claude/pr-review/x.json` matches nothing here, because
+# .gitignore covers `.claude/worktrees` specifically, not `.claude/`. So the next
+# `git add -A` swept the review logs into the branch being reviewed, everywhere,
+# including btw (where this experiment's PRs are opened). A relative path also
+# meant running from a subdirectory wrote somewhere no ignore rule would anchor.
+# Neither problem exists if the logs are never in a repo.
+#
+# (An earlier version of this comment said princess-pi-packages ignored the path.
+# It does not; the reason to move the logs out was stronger than stated, not
+# weaker. Verified with git check-ignore rather than by reading .gitignore.)
 REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
 LOG_DIR="${PR_REVIEW_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/$REPO_NAME}"
 # Mapped, not raw. Under `set -e` a failed mkdir exited with mkdir's own status
