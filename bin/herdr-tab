@@ -159,6 +159,15 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 			esac
 		done
 	fi
+	# An empty value passes the count check and the dash check alike (PR #370),
+	# and `herdr tab create --cwd "" --label ""` is a tab pointing at nothing that
+	# herdr-reap can never identify as stale. Refuse it even though this tool is
+	# decoration: arguments are still arguments.
+	if [ -z "$1" ] || [ -z "$2" ]; then
+		echo "herdr-tab: <cwd> and <label> must both be non-empty." >&2
+		echo "usage: herdr-tab <cwd> <label>" >&2
+		exit 2
+	fi
 	herdr_tab "$1" "$2"
 	exit 0
 fi

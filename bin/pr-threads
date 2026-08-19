@@ -211,6 +211,12 @@ USAGE
         echo "pr-threads: --resolve requires a thread id, got the flag '$1'" >&2
         exit 2
       fi
+      # An empty id passes both checks above and then reaches the API as a lookup
+      # for a node named "" (PR #370, same class the reviewer found in pr-reject).
+      if [ -z "$1" ]; then
+        echo "pr-threads: --resolve requires a thread id, got an empty one" >&2
+        exit 2
+      fi
       resolve_id="$1"; shift
       ;;
     --reply)
@@ -228,8 +234,14 @@ USAGE
           echo "pr-threads: --reply requires text after --" >&2
           exit 2
         fi
+        if [ -z "$1" ]; then
+          echo "pr-threads: --reply requires text after --, got an empty string" >&2
+          exit 2
+        fi
         reply_text="$1"; have_reply=1; shift
-      elif [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
+      elif [ "$#" -eq 0 ] || [ -z "$1" ] || [ "${1#-}" != "$1" ]; then
+        # `-z` alongside the dash test (PR #370): an empty reply posts a blank
+        # comment on someone's review thread and marks it resolved.
         echo "pr-threads: --reply requires text (use -- before text starting with -)" >&2
         exit 2
       else

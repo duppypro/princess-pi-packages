@@ -72,9 +72,13 @@ EOF
     # no commit-hash/semver stamp — PATH only.
     --version) readlink -f "$0"; exit 0 ;;
     -b|--branch)
+      # Echo back the spelling the caller used, not a canonical one: a message
+      # naming `-b` when they typed `--branch` reads as being about a different
+      # flag, and this script's whole job is not acting on the wrong thing.
+      BRANCH_FLAG="$1"
       shift
       if [ "$#" -eq 0 ]; then
-        echo "pr-reject: -b needs a branch name." >&2
+        echo "pr-reject: $BRANCH_FLAG needs a branch name." >&2
         exit 2
       fi
       # #367: the value was taken as `${2:-}` unconditionally, so the `-*` guard
@@ -84,7 +88,19 @@ EOF
       # gate — same class as #364. A branch name never starts with a dash (git
       # itself refuses to create one), so this cannot reject valid input.
       if [ "${1#-}" != "$1" ]; then
-        echo "pr-reject: -b needs a branch name, got the flag '$1'" >&2
+        echo "pr-reject: $BRANCH_FLAG needs a branch name, got the flag '$1'" >&2
+        exit 2
+      fi
+      # An EMPTY value is a MISSING value (macroscopeapp, PR #370). The dash check
+      # above and the `$#` check before it both pass on `""` — it looks like a
+      # flag to neither — so `pr-reject -b ""` left BRANCH empty and fell through
+      # to the cwd discovery below, closing the CURRENT branch's PR while the
+      # caller had explicitly named one. That is #209 and #364 in a single line,
+      # reintroduced by the fix for them: the pre-#367 code checked `-z` and this
+      # rewrite replaced it with an arity check instead of adding to it. Verified
+      # live before the test existed, the expensive way — it closed PR #370.
+      if [ -z "$1" ]; then
+        echo "pr-reject: $BRANCH_FLAG needs a branch name, got an empty one." >&2
         exit 2
       fi
       BRANCH="$1"

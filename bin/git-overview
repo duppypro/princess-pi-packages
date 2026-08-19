@@ -62,7 +62,15 @@ USAGE
   # caller typed, silently dropped" shape that let `pr-open <branch>` act on a
   # different branch, and #362's help text documented the hole rather than
   # closing it. Refuse it, so the family contract holds without an exception.
-  "") ;;
+  # `case "${1:-}"` maps "no arguments" and "one empty argument" to the same "",
+  # so this arm has to tell them apart with `$#` — otherwise `git-overview ""`
+  # prints the snapshot at exit 0, which is the ignored-positional hole this very
+  # case exists to close (macroscopeapp, PR #370).
+  "")
+    if [ "$#" -gt 0 ]; then
+      echo "git-overview: unexpected empty argument — git-overview takes none (try --help)" >&2
+      exit 2
+    fi ;;
   *) echo "git-overview: unexpected argument: $1 — git-overview takes none (try --help)" >&2; exit 2 ;;
 esac
 

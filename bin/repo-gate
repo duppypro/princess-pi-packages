@@ -156,13 +156,18 @@ while [ $# -gt 0 ]; do
 		# policy file literally named "--json" and reported "no policy file
 		# found", naming a cause that was not the real one. Neither a path nor a
 		# repo name starts with a dash here, so this rejects only a swallowed flag.
+		# `-n "$1"` is not redundant with the dash check (macroscopeapp, PR #370):
+		# an empty value passes both `$#` and the dash test, and the pre-#367 code
+		# caught it with the `-n "$POLICY"` test this rewrite replaced. Dropping it
+		# made `--policy ""` audit against the DEFAULT policy and `--remedy ""`
+		# silently widen to a full audit — each answering a question nobody asked.
 		--policy)
 			shift
-			[ $# -gt 0 ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --policy needs a path, got '${1:-}'" >&2; exit 2; }
+			[ $# -gt 0 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --policy needs a path, got '${1:-}'" >&2; exit 2; }
 			POLICY="$1"; shift ;;
 		--remedy)
 			shift
-			[ $# -gt 0 ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --remedy needs a repo name, got '${1:-}'" >&2; exit 2; }
+			[ $# -gt 0 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --remedy needs a repo name, got '${1:-}'" >&2; exit 2; }
 			REMEDY="$1"; shift ;;
 		--why) why; exit 0 ;;
 		-h|--help) usage; exit 0 ;;

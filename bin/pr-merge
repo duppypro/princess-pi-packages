@@ -179,6 +179,15 @@ EOF
         echo "usage: pr-merge [--no-refresh] [<branch>]" >&2
         exit 2
       fi
+      # An empty <branch> would leave BRANCH empty and fall through to the cwd
+      # discovery below — merging the CURRENT branch's PR while the caller named
+      # a different target. Same shape macroscopeapp found in `pr-reject -b ""`
+      # on PR #370, and this command is irreversible.
+      if [ -z "$1" ]; then
+        echo "pr-merge: <branch> is empty — name a branch, or pass none to use the current one." >&2
+        echo "usage: pr-merge [--no-refresh] [<branch>]" >&2
+        exit 2
+      fi
       BRANCH="$1"
       shift
       ;;

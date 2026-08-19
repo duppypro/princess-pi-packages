@@ -319,6 +319,45 @@ for (const [s, args] of DASH_LEADING_VALUE) {
 		`message never quotes the offending value: ${JSON.stringify(text.slice(0, 200))}`);
 }
 
+// --- 2b. an EMPTY value is a missing value ------------------------------------
+// macroscopeapp on PR #370, and it was right: the round-2 guards replaced each
+// flag's emptiness check with an arity + dash-shape check and dropped the
+// emptiness half. `pr-reject -b ""` then passed every guard, left BRANCH empty,
+// and fell through to cwd discovery — closing the CURRENT branch's PR while the
+// caller had explicitly named a branch. That is #209 and #364 in one, reintroduced
+// by the fix for them. Verified live before this test existed, the expensive way:
+// it closed PR #370.
+//
+// The empty string is the hole every "looks like a flag?" check has, because it
+// looks like nothing at all. Checked family-wide rather than on the three scripts
+// the reviewer named.
+const EMPTY_VALUE: Array<[string, string[], string]> = [
+	["pr-reject", ["-b", ""], "-b"],
+	["pr-reject", ["--branch", ""], "--branch"],
+	["repo-gate", ["--policy", ""], "--policy"],
+	["repo-gate", ["--remedy", ""], "--remedy"],
+	["pr-threads", ["5", "--resolve", ""], "--resolve"],
+	["herdr-tab", ["", "a-label"], ""],
+	["herdr-tab", ["/tmp", ""], ""],
+	["git-overview", [""], ""],
+	["pr-open", [""], ""],
+	["pr-cleanup", [""], ""],
+	["pr-merge", [""], ""],
+	["wt-new", [""], ""],
+];
+for (const [s, args, flag] of EMPTY_VALUE) {
+	const r = run(s, args);
+	const shown = args.map((a) => (a === "" ? '""' : a)).join(" ");
+	check(r.status === usageExit(s), `${s} ${shown} → exit ${usageExit(s)} (empty is missing)`,
+		`got exit ${r.status}; an accepted empty value falls through to whatever the script ` +
+		`discovers from cwd, which is the wrong-target shape. stderr: ${(r.stderr || "").trim().slice(0, 160)}`);
+	if (flag) {
+		const text = `${r.stdout || ""}${r.stderr || ""}`;
+		check(text.includes(flag), `${s} ${flag} "" → names the flag whose value was empty`,
+			`message never quotes it: ${JSON.stringify(text.slice(0, 160))}`);
+	}
+}
+
 // --- 3. the reason survives whole ---------------------------------------------
 // Asserted on the recorded `gh` argv, not on the script's own echo — the argv is
 // what actually reaches the PR. Needs a gh that ANSWERS the two lookups before

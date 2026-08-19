@@ -118,6 +118,15 @@ if [ $# -gt 1 ]; then
   exit 2
 fi
 BRANCH="$1"
+# An empty <branch> is a missing one, not a branch named "" (PR #370). Without
+# this it reached the main-clone lookup and reported "no local branch ''" as a
+# NOT FOUND (exit 4) — a determinate-sounding answer to a question the caller
+# never asked.
+if [ -z "$BRANCH" ]; then
+  echo "pr-cleanup: <branch> is empty — name the branch to clean up." >&2
+  echo "usage: pr-cleanup <branch>" >&2
+  exit 2
+fi
 
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   echo "pr-cleanup: refusing to target the protected branch '$BRANCH'." >&2
