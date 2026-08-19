@@ -92,7 +92,9 @@ in three parallel lenses (correctness, reasoning, contract), and reports finding
 Findings are written to a JSON log OUTSIDE the repository, under
 ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>/ — on a default Linux host
 XDG_STATE_HOME is unset, so that is ~/.local/state/pr-review/<repo>/. Keeping the
-logs out of the tree is what stops `git add -A` committing them. With HOME unset
+logs out of the tree is what stops `git add -A` committing them. A log holds the
+branch diff verbatim, so it is written 0600, and a directory pr-review creates is
+0700; a directory that already exists is warned about, never chmod'd. With HOME unset
 too (cron, systemd, containers) the run still happens, into a private temporary
 directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
@@ -251,16 +253,45 @@ fi
 # is a member of the shared pr-* contract, so an unwritable PR_REVIEW_LOG_DIR
 # documented a code the script did not emit (macroscopeapp, PR #379). 3 is the
 # right row: a precondition the environment failed to meet, not a bad flag.
-if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+#
+# Created 0700 rather than at the ambient umask. These logs carry the branch diff
+# verbatim, and on a umask 002 host (this one) a plain `mkdir -p` left the
+# directory 0775 and every log 0664 — group-WRITABLE and world-readable, in the
+# one file that holds the code under review (macroscopeapp, PR #379). `-m` applies
+# to the leaf only; the parent holds per-repo directories, never a log.
+if ! mkdir -p -m 700 "$LOG_DIR" 2>/dev/null; then
   echo "pr-review: cannot create the log directory '$LOG_DIR'." >&2
   echo "   Set PR_REVIEW_LOG_DIR to a writable path, or clear it to use the default." >&2
   exit 3
+fi
+# `-m` is silent on a directory that ALREADY exists — POSIX applies the mode only
+# when creating — so one made by an older version of this script, or by the user,
+# keeps whatever mode it has. Warn, never chmod: PR_REVIEW_LOG_DIR can name a path
+# this script does not own, and silently narrowing someone else's directory is a
+# worse surprise than a message. The log file below is 0600 either way, so the
+# directory mode is defence in depth here, not the only defence.
+if [ "$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mode & 0o077)' "$LOG_DIR" 2>/dev/null || echo 0)" != "0" ]; then
+  echo "⚠️  pr-review: '$LOG_DIR' is accessible to other users on this host, and its" >&2
+  echo "   run logs hold the branch diff verbatim. New logs are written 0600; ones" >&2
+  echo "   already there keep the mode they were created with." >&2
+  echo "   Run: chmod 700 '$LOG_DIR' && chmod 600 '$LOG_DIR'/*.json" >&2
 fi
 STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 # $$ suffix: the stamp is second-resolution, and two runs in the same second
 # (a retry after fixing a finding) silently overwrote each other. These logs are
 # the evidence artifact for btw#59 — a lost run is lost measurement.
 LOG="$LOG_DIR/${BRANCH//\//-}-$STAMP-$$.json"
+# Created private BEFORE any writer opens it, via a subshell umask rather than
+# touch-then-chmod — chmod leaves a window in which the file exists at the ambient
+# mode and a reader on a shared host only needs that window. Every later writer is
+# `open(log, "w")` in python, which truncates WITHOUT touching an existing file's
+# mode, so this single line is the whole 0600 guarantee for all three of them.
+# It also proves the directory is writable, which a successful mkdir does not.
+if ! ( umask 077; : > "$LOG" ) 2>/dev/null; then
+  echo "pr-review: cannot create the log file '$LOG'." >&2
+  echo "   Set PR_REVIEW_LOG_DIR to a writable path, or clear it to use the default." >&2
+  exit 3
+fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
 # EXIT cleans up; INT/TERM additionally kill the lens children and EXIT. A bare
 # handler on INT/TERM returns to the interrupted command, so the background

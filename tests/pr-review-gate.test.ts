@@ -599,5 +599,78 @@ console.log("\nno HOME still reviews, into a temporary log dir:");
 		"a guessable path in a world-writable dir is pre-creatable by another user");
 }
 
+// --- #379 round 8: the log holds the diff, so it is nobody else's to read ----
+// `mkdir -p` and python's `open(log, "w")` both take the AMBIENT umask. On this
+// repo's own host (umask 002) that made every run log 0664 and its directory 0775
+// — group-WRITABLE and world-readable, in the one artifact that contains the code
+// under review (macroscopeapp, PR #379).
+//
+// The umask is forced here rather than inherited. Under a strict umask the logs
+// would come out private for reasons that have nothing to do with this script, and
+// every check below would pass while proving nothing. The CONTROL file is what
+// rules that out: it is created by the same shell, with the same umask, in the
+// same directory, and it must come out 0664. If it does not, the umask never took
+// and the results are meaningless — so the control failing is itself a failure.
+function runUmask(mask: string, script: string, cwd: string, env: Record<string, string>) {
+	try {
+		const out = execFileSync("bash", ["-c", `umask ${mask}; "$@" 2>&1`, "_", script], {
+			cwd, encoding: "utf8",
+			env: { ...process.env, ...GIT_ENV, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+		return { code: 0, out };
+	} catch (err: any) {
+		return { code: err?.status ?? -1, out: `${err?.stdout || ""}${err?.stderr || ""}` };
+	}
+}
+const modeOf = (p: string) => fs.statSync(p).mode & 0o777;
+
+console.log("\nrun logs are private to their owner:");
+{
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	const dir = env.PR_REVIEW_LOG_DIR;
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+	check(code === 0, "umask 002 → still reviews and exits 0", `got ${code}: ${out}`);
+
+	const control = path.join(dir, "control");
+	execFileSync("bash", ["-c", `umask 002; : > ${JSON.stringify(control)}`]);
+	check(modeOf(control) === 0o664,
+		"control: umask 002 is really in force (a plain file lands 0664)",
+		`control file is ${modeOf(control).toString(8)} — the checks below prove nothing`);
+
+	check(modeOf(dir) === 0o700,
+		"a log directory pr-review creates is 0700",
+		`got ${modeOf(dir).toString(8)}`);
+
+	const logs = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+	check(logs.length === 1, "one log written", JSON.stringify(logs));
+	if (logs.length) {
+		check(modeOf(path.join(dir, logs[0])) === 0o600,
+			"the log file is 0600 — the branch diff is not other users' to read",
+			`got ${modeOf(path.join(dir, logs[0])).toString(8)}`);
+	}
+}
+{
+	// A directory pr-review did NOT create is warned about, never chmod'd:
+	// PR_REVIEW_LOG_DIR can name a path this script does not own, and silently
+	// narrowing someone else's directory is a worse surprise than a message. The
+	// file inside it is 0600 regardless — that, not the directory, is the guarantee.
+	const sb = makeSandbox();
+	const dir = path.join(sb.root, "shared-logs");
+	fs.mkdirSync(dir);
+	fs.chmodSync(dir, 0o755); // mkdir's mode argument is itself masked by the umask
+	const env = { ...stubs(sb, "clean"), PR_REVIEW_LOG_DIR: dir };
+	const { out } = runUmask("002", PR_REVIEW, sb.clone, env);
+
+	check(/chmod 700/.test(out),
+		"a pre-existing world-readable log dir → warns with the command that fixes it", out);
+	check(modeOf(dir) === 0o755,
+		"…and does not silently narrow a directory it did not create",
+		`mode changed to ${modeOf(dir).toString(8)}`);
+	const logs = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+	check(logs.length === 1 && modeOf(path.join(dir, logs[0])) === 0o600,
+		"…while this run's log inside it is still 0600",
+		JSON.stringify(logs.map((f) => `${f}:${modeOf(path.join(dir, f)).toString(8)}`)));
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);
