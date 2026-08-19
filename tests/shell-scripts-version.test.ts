@@ -60,6 +60,7 @@ const SCRIPTS = [
 	"pr-guard",
 	"pr-threads",
 	"repo-gate",
+	"iarts-mirror",
 	"install-workflow-tools",
 ];
 
