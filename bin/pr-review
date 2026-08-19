@@ -95,9 +95,10 @@ XDG_STATE_HOME is unset, so that is ~/.local/state/pr-review/<repo>/. Keeping th
 logs out of the tree is what stops `git add -A` committing them. A log holds the
 branch diff verbatim, so it is written 0600 (O_EXCL: a symlink at that path is
 refused, never followed) and a directory pr-review creates is 0700. A directory
-that already exists is warned about but still used if only you can WRITE it; if
-anyone else can, it is not used at all and the run degrades to a private temporary
-directory, because no file mode survives a writable directory. With HOME unset
+that already exists is warned about but still used if only you can WRITE it -- it
+and every directory above it, since renaming a parent redirects every later write.
+If anyone else can, it is not used at all and the run degrades to a private
+temporary directory, because no file mode survives a writable directory. With HOME unset
 too (cron, systemd, containers) the run still happens, into a private temporary
 directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
@@ -289,7 +290,6 @@ fi
 LOG_DIR_VERDICT=$(python3 - "$LOG_DIR" <<'PYSAFE' 2>/dev/null || true
 import grp, os, pwd, sys
 
-st = os.stat(sys.argv[1])
 me = os.geteuid()
 
 
@@ -312,17 +312,57 @@ def group_name(gid):
         return str(gid)
 
 
+def writable_by_others(st):
+    """Who, other than us, can write this directory — or None."""
+    if st.st_mode & 0o002:
+        return "every account on this host"
+    others = group_others(st.st_gid) if st.st_mode & 0o020 else set()
+    if others:
+        return "group '%s' (%s)" % (group_name(st.st_gid), ", ".join(sorted(others)))
+    return None
+
+
+def verdict(text):
+    print(text)
+    raise SystemExit(0)
+
+
+# realpath first: the audit must follow the chain that will actually be walked at
+# write time, not the one the user typed. A resolved path contains no symlinks, so
+# every component below is a real directory.
+d = os.path.realpath(sys.argv[1])
+st = os.stat(d)
+
 if st.st_uid != me:
-    print("unsafe|it belongs to uid %d, not to you" % st.st_uid)
-elif st.st_mode & 0o002:
-    print("unsafe|every account on this host can write to it")
-elif st.st_mode & 0o020 and group_others(st.st_gid):
-    print("unsafe|group '%s' can write to it, and you are not its only member (%s)"
-          % (group_name(st.st_gid), ", ".join(sorted(group_others(st.st_gid)))))
-elif st.st_mode & 0o077:
-    print("readable|")
-else:
-    print("ok|")
+    verdict("unsafe|it belongs to uid %d, not to you" % st.st_uid)
+who = writable_by_others(st)
+if who:
+    verdict("unsafe|%s can write to it" % who)
+
+# Ancestors matter too, and for a different reason (macroscopeapp, PR #379): an
+# account that can RENAME a parent can move our directory aside and leave a
+# symlink where it stood, and every later write follows the new path. Checking the
+# leaf alone would miss that entirely. This is the same audit OpenSSH does for
+# ~/.ssh under StrictModes, and for the same reason.
+#
+# Sticky is the exception that matters: on a sticky directory a non-owner cannot
+# rename or delete an entry it does not own, which IS this attack — and it is what
+# keeps /tmp usable, including by our own mktemp -d fallback. The exception is
+# deliberately NOT extended to the log directory itself, where the concern is
+# creating entries rather than renaming one, and sticky permits that.
+parent = os.path.dirname(d)
+while True:
+    pst = os.lstat(parent)
+    if pst.st_uid not in (me, 0):
+        verdict("unsafe|'%s' above it belongs to uid %d" % (parent, pst.st_uid))
+    who = writable_by_others(pst)
+    if who and not pst.st_mode & 0o1000:
+        verdict("unsafe|'%s' above it is writable by %s" % (parent, who))
+    if os.path.dirname(parent) == parent:
+        break
+    parent = os.path.dirname(parent)
+
+verdict("readable|" if st.st_mode & 0o077 else "ok|")
 PYSAFE
 )
 case "${LOG_DIR_VERDICT%%|*}" in
@@ -497,6 +537,17 @@ wait
 python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "${LENSES[@]}" <<'PYEOF'
 import json, os, sys
 
+def _open_private(path):
+    """Reopen the log the shell already created, refusing a symlink at that path.
+
+    O_NOFOLLOW covers the FINAL component — exactly the one an attacker could swap
+    for a link. O_CREAT is absent because the file exists by construction, so a
+    missing one is a real error, not something to silently re-create at the wrong
+    mode (macroscopeapp, PR #379).
+    """
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
+
+
 
 def _balanced_objects(text):
     """Every top-level brace-balanced {...} span, in order, ignoring braces
@@ -660,7 +711,7 @@ status = "reviewed" if not failed else ("reviewed-none" if ran == 0 else "review
 json.dump({"status": status, "branch": branch, "base": base, "utc": stamp,
            "model": model, "lenses": lenses, "failedLenses": failed,
            "lensWarnings": warnings, "lensesRan": ran, "findings": findings},
-          open(log, "w"), indent=2)
+          _open_private(log), indent=2)
 with open(os.path.join(work, "summary"), "w") as fh:
     fh.write(f"{len(findings)} {len(failed)} {ran}\n")
 PYEOF
@@ -715,6 +766,17 @@ PYIDS
 
   python3 - "$WORK" "$LOG" <<'PYCLUSTER'
 import json, os, sys
+
+def _open_private(path):
+    """Reopen the log the shell already created, refusing a symlink at that path.
+
+    O_NOFOLLOW is on the FINAL component only, which is exactly the component an
+    attacker could swap for a link; O_CREAT is absent because the file exists by
+    construction, so a missing one is a real error rather than something to
+    silently re-create at the wrong mode (macroscopeapp, PR #379).
+    """
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
+
 work, log = sys.argv[1], sys.argv[2]
 d = json.load(open(log))
 raw = d["findings"]
@@ -726,7 +788,7 @@ def finish(distinct, method, note=None):
     d["dedup"] = method
     if note:
         d["dedupNote"] = note
-    json.dump(d, open(log, "w"), indent=2)
+    json.dump(d, _open_private(log), indent=2)
     with open(os.path.join(work, "distinct"), "w") as fh:
         fh.write(f"{len(distinct)}\n")
 
@@ -763,12 +825,22 @@ PYCLUSTER
   read -r COUNT < "$WORK/distinct"
 else
   python3 - "$LOG" <<'PYNOCLUSTER'
-import json, sys
+import json, os, sys
+def _open_private(path):
+    """Reopen the log the shell already created, refusing a symlink at that path.
+
+    O_NOFOLLOW covers the FINAL component — exactly the one an attacker could swap
+    for a link. O_CREAT is absent because the file exists by construction, so a
+    missing one is a real error, not something to silently re-create at the wrong
+    mode (macroscopeapp, PR #379).
+    """
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
+
 d = json.load(open(sys.argv[1]))
 d["distinct"] = d["findings"]
 d["distinctFindings"] = len(d["findings"])
 d["dedup"] = "not-needed" if len(d["findings"]) <= 1 else "disabled"
-json.dump(d, open(sys.argv[1], "w"), indent=2)
+json.dump(d, _open_private(sys.argv[1]), indent=2)
 PYNOCLUSTER
   COUNT="$RAWCOUNT"
 fi

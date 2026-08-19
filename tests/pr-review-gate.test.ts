@@ -772,5 +772,93 @@ console.log("\na log directory others can write is not used at all:");
 		"the primitive is safe on its own, so the guard above proves nothing");
 }
 
+// --- #379 round 10: the leaf being safe says nothing about the path to it ----
+// An account that can RENAME a parent directory moves ours aside and leaves a
+// symlink where it stood; every later write then follows the new path, and the
+// leaf's own 0700 never came into it (macroscopeapp, PR #379). So the whole
+// resolved chain is audited — the same check OpenSSH makes on ~/.ssh under
+// StrictModes, for the same reason.
+console.log("\nthe path above the log dir is audited too:");
+{
+	const sb = makeSandbox();
+	const parent = path.join(sb.root, "loose-parent");
+	const dir = path.join(parent, "logs");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.chmodSync(dir, 0o700);   // the leaf itself is impeccable…
+	fs.chmodSync(parent, 0o777); // …and the directory holding it is not
+	const env = { ...stubs(sb, "clean"), PR_REVIEW_LOG_DIR: dir };
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+
+	check(code === 0, "loose parent → still reviews and exits 0", `got ${code}: ${out}`);
+	check(/NOT logging/.test(out) && /above it/.test(out),
+		"a 0700 log dir inside a world-writable parent → refused, naming the parent", out);
+	check(fs.readdirSync(dir).length === 0,
+		"…and nothing is written into it", JSON.stringify(fs.readdirSync(dir)));
+}
+{
+	// The sticky bit is the exception, and it is load-bearing rather than a
+	// concession: on a sticky directory a non-owner cannot rename or delete an
+	// entry it does not own, which is precisely this attack. Without the exception
+	// /tmp would be condemned — and pr-review's own no-HOME fallback lands there,
+	// so the rule would forbid its own last resort.
+	const sb = makeSandbox();
+	const parent = path.join(sb.root, "sticky-parent");
+	const dir = path.join(parent, "logs");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.chmodSync(dir, 0o700);
+	// NOT fs.chmodSync: bun 1.3.14 silently drops setuid/setgid/STICKY (0o1777
+	// lands as 0o777), so the whole point of this case evaporates and it fails
+	// against a correct script. node keeps them; the suite runs under bun. Verified
+	// both ways before blaming the script — /usr/bin/chmod is the portable answer.
+	spawnSync("chmod", ["1777", parent]); // world-writable AND sticky, exactly like /tmp
+	check((fs.statSync(parent).mode & 0o1000) !== 0,
+		"precondition: the sticky bit is actually set on the parent",
+		`mode is ${(fs.statSync(parent).mode & 0o7777).toString(8)} — this case cannot test what it claims`);
+	const env = { ...stubs(sb, "clean"), PR_REVIEW_LOG_DIR: dir };
+	const { out } = runUmask("002", PR_REVIEW, sb.clone, env);
+
+	check(!/NOT logging/.test(out),
+		"a sticky world-writable parent → accepted, as /tmp must be", out);
+	check(fs.readdirSync(dir).filter((f) => f.endsWith(".json")).length === 1,
+		"…and this run's log is written there", JSON.stringify(fs.readdirSync(dir)));
+}
+{
+	// Every python writer reopens the log BY PATH, so each is its own chance to
+	// follow a link swapped in after creation. O_NOFOLLOW on the final component
+	// closes that. Source-level by necessity — the swap cannot be staged from here
+	// without predicting stamp and pid — but it asserts the shape exactly: no
+	// writer may use a bare open(..., "w").
+	const src = fs.readFileSync(PR_REVIEW, "utf8");
+	// Comment lines are excluded deliberately: this file DISCUSSES the old spelling
+	// at length, and a check that flags prose gets muted rather than fixed — the
+	// same trap the `timeout` check above already fell into once.
+	const bare = src.split("\n")
+		.filter((l) => !/^\s*#/.test(l))
+		.filter((l) => /\bopen\((log|sys\.argv\[1\]), "w"\)/.test(l));
+	check(bare.length === 0, "no log writer uses a bare open(..., \"w\")", bare.join("\n"));
+	const writes = src.split("\n").filter((l) => /_open_private\(/.test(l) && !/^def |"""/.test(l.trim()));
+	check(writes.filter((l) => /json\.dump|indent=2/.test(l)).length === 3,
+		"all three writers go through the O_NOFOLLOW helper",
+		writes.join("\n"));
+	// Defined once per heredoc — they are separate python processes, and a helper
+	// defined in one is a NameError in the next.
+	const defs = src.split("\n").filter((l) => /^def _open_private/.test(l));
+	check(defs.length === 3, `the helper is defined in each of the three heredocs (got ${defs.length})`,
+		"a helper defined in one heredoc does not exist in another");
+
+	// And the flag does what the name claims, on this kernel.
+	const sb = makeSandbox();
+	const victim = path.join(sb.root, "NF-VICTIM");
+	const link = path.join(sb.root, "nf-link.json");
+	fs.writeFileSync(victim, "SECRET");
+	fs.symlinkSync(victim, link);
+	const r = spawnSync("python3", ["-c",
+		"import os,sys;os.fdopen(os.open(sys.argv[1], os.O_WRONLY|os.O_TRUNC|os.O_NOFOLLOW),'w')", link]);
+	check(r.status !== 0, "O_NOFOLLOW refuses a symlink at the final component", `exit ${r.status}`);
+	check(fs.readFileSync(victim, "utf8") === "SECRET",
+		"…leaving the target intact",
+		`clobbered: ${JSON.stringify(fs.readFileSync(victim, "utf8"))}`);
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);
