@@ -112,8 +112,16 @@ reach it, then change the skill.
 
 ## Result log
 
+> **Round 3 also paid for itself outside the fixture.** The control auditor surfaced two
+> live guardrail holes, both re-probed against `main` and filed: **#389** (`gh -R o/r pr
+> merge` walks the human-only gate) and **#390** (the hook fails *open* when `jq` is
+> unavailable). The host-scoped auditor added **#391** (`git revert` advances `main`
+> without a PR) and caught the hook's own banner **misquoting** the host document it cites
+> (**#392**) — a cross-document contradiction no repo-scoped audit can see, since one of
+> the two documents is in no repo.
+
 | Round | Prompts | F1 | F2 | F3 | F4 | F5 | Notes |
 |---|---|---|---|---|---|---|---|
 | 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | — | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
 | 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | — | 4 of 4. Also surfaced two drifts still live on `main` |
-| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | RESULT_F5 | RESULT_NOTE |
+| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only, exactly as predicted.** C2 quotes `host/git-projects-CLAUDE.md:40`'s `intercept:` sentence against `block-dangerous-git.sh:505-538` with measured probes, and names both staged-but-absent host files. C1 — the same prompt body over the diff-scoped artifact set — returned 62 findings and **not one about push being blocked outright**: correct, because every tracked artifact was already right. A clean control here is the evidence, not a miss |
