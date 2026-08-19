@@ -60,6 +60,26 @@
 # ---
 set -euo pipefail
 
+# #367: -h/--help/--version are TERMINAL — they take no other arguments. Every
+# script in this family short-circuits on the first flag it recognises, so
+# `pr-cleanup --version extra-arg` printed the path and exited 0, silently
+# ignoring the extra word while pr-cleanup's own header called extra arguments a
+# usage error. Same silent-drop shape as an ignored positional. Duplicated per
+# script by necessity, not by preference: install-workflow-tools copies each of
+# these to ~/bin as a standalone file, so there is no shared library to source.
+# The scan stops at `--`, so a value that legitimately reads `--version` stays
+# reachable.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "pr-open: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
 # -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
 # message, and "pr-open --help" used to be treated as one.
 case "${1:-}" in
@@ -69,7 +89,10 @@ usage: pr-open
        pr-open --version
 
 Create the PR for the CURRENT feature branch (from its worktree): pushes,
-then `gh pr create` with the branch's commits as the body. Takes no arguments.
+then `gh pr create` with the branch's commits as the body.
+
+Takes no arguments: a branch name or any other argument is REFUSED (exit 2),
+not ignored (#367). To open another branch's PR, run this from its worktree.
 
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
 EOF
@@ -86,6 +109,19 @@ EOF
   # or a reason — refuse it here, exit 2 per the #224 shared table.
   -*) echo "pr-open: unknown flag: $1 (try --help)" >&2; exit 2 ;;
 esac
+
+# #367: a NON-dash argument used to fall through this case too, and pr-open then
+# discovered the branch from cwd — so `pr-open some-other-branch` opened the PR
+# for the CURRENT branch while the caller had named a different one. That is the
+# #209 shape (acting on a target the caller did not name), and it is exactly what
+# bin/pr-reject's `-b` flag exists to prevent. pr-open takes no arguments at all:
+# the branch IS the worktree it runs in, so there is no argument to accept.
+if [ "$#" -gt 0 ]; then
+  echo "pr-open: unexpected argument: $1 — pr-open takes no arguments." >&2
+  echo "  It opens the PR for the branch checked out in the current worktree." >&2
+  echo "  To open another branch's PR, run pr-open from that branch's worktree." >&2
+  exit 2
+fi
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "pr-open: not inside a git repository." >&2
