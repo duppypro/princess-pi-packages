@@ -73,7 +73,14 @@ done
 # committed, because the cost of guessing wrong is a staged, committed AND
 # pushed "--typo".
 FORCE_PUSH=0
-case "${1:-}" in
+# A LOOP, not a single `case` (macroscopeapp, PR #369): `--push` shifted itself
+# out and the `case` then ended, so neither the `--` terminator nor the
+# flag-shaped-message refusal below ever ran against what followed it.
+# `git-checkpoint --push -- "-fix"` committed the message `--`. That is #310
+# reopening through a flag added after it — every flag added here from now on
+# composes, instead of each one needing its own re-validation.
+while [ $# -gt 0 ]; do
+  case "$1" in
   -h|--help) usage; exit 0 ;;
   # --push opts out of the open-PR batching below and restores the
   # unconditional push, for when the re-review is the point (#368).
@@ -86,13 +93,19 @@ case "${1:-}" in
   # scripts), so there is no commit-hash/semver stamp to print alongside it —
   # this is the PATH half only.
   --version) readlink -f "$0"; exit 0 ;;
-  --) shift ;;
+  # `break`, not a bare `shift`: everything after `--` is the message, verbatim,
+  # and must not be re-scanned as flags.
+  --) shift; break ;;
   -*)
     echo "git-checkpoint: '$1' looks like a flag, not a commit message — refusing to commit it." >&2
     echo "  For a message that really starts with '-': git-checkpoint -- \"$1\"" >&2
     echo "  Usage: git-checkpoint --help" >&2
     exit 1 ;;
-esac
+  # The first non-flag word is the message. Stop scanning so the arity check
+  # below sees the message and only the message.
+  *) break ;;
+  esac
+done
 
 MSG="${1:-}"
 if [ -z "$MSG" ]; then
@@ -143,17 +156,29 @@ fi
 # --- Is a PR already open on this branch? (#368) ---
 # `gh pr list --json` is the machine-readable contract: exit 0 with a JSON array
 # on success, non-zero on failure. That separates the three answers cleanly —
-# "[]" means no PR, a non-empty array means a PR is open, and a non-zero exit
-# means gh could not tell us. No human-facing text is parsed (Agent-First Output).
+# a count of `0` means no PR of ours, a positive count means one is open, and a
+# non-zero exit means gh could not tell us. No human-facing text is parsed
+# (Agent-First Output); `--jq` does the counting so this stays jq-free itself.
 #
 # FAIL OPEN. If gh is missing, unauthenticated, rate-limited, or offline, this
 # pushes exactly as it did before. The asymmetry is the reason: a missed
 # detection costs $0.50, a wrongly-withheld push risks the work itself.
+#
+# SCOPED TO OUR OWN REPO (macroscopeapp, PR #369, rated High). `--head` matches by
+# branch NAME across every fork, so an open PR on a stranger's `42-feature` used
+# to answer for ours and withhold this branch's push — silently and indefinitely,
+# because nothing here has a PR to explain why the commits are piling up. Same
+# fork-collision guard bin/pr-reject and bin/pr-merge have carried since #209.
+# The owner lookup is a second call, and a failure of EITHER falls open, so the
+# guard cannot cost a push.
 pr_is_open() {
   command -v gh >/dev/null 2>&1 || return 1
-  local out
-  out=$(gh pr list --head "$BRANCH" --state open --json number 2>/dev/null) || return 1
-  [ -n "$out" ] && [ "$out" != "[]" ]
+  local owner ours
+  owner=$(gh repo view --json owner --jq '.owner.login' 2>/dev/null) || return 1
+  [ -n "$owner" ] || return 1
+  ours=$(gh pr list --head "$BRANCH" --state open --json number,headRepositoryOwner \
+    --jq "[.[] | select(.headRepositoryOwner.login == \"$owner\")] | length" 2>/dev/null) || return 1
+  [ -n "$ours" ] && [ "$ours" != "0" ]
 }
 
 git add -A
