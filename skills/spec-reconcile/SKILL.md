@@ -390,9 +390,20 @@ corrected prompts surfaced four of four, including two drifts still live on `mai
 **Round 3 ran 2026-08-19 (`princess-pi-packages#383`)** against a fifth fixture — the
 Tier-4 case, at its own corpus SHA `bf4d104`, with the host document staged beside the
 tree because no `git archive` can carry a file that lives in no repository. F5 is the only
-fixture that measures a **scope** rule with nothing left for prompt wording to explain:
-the diff-scoped control comes back *clean*, correctly, because every tracked artifact was
-already right. Result in `RUBRIC.md`'s log.
+fixture that measures a **scope** rule with nothing left for prompt wording to explain —
+the two prompts are byte-identical apart from the block that enumerates the host documents,
+and both arms are handed the same tree.
+
+**The sharpest part of the result: the host document sat in the control's corpus the whole
+time.** Both arms got the same tree; only C2's prompt named the file. C1 returned **60
+findings and never mentioned it once.** The drift was not hidden from the diff-scoped
+auditor — it was *unenumerated*, which is precisely what a diff does to a file that appears
+in no changeset.
+
+**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those 60
+findings included two live guardrail bugs (#389, #390); none of them said push was blocked
+outright, because no tracked artifact claimed it. Result and per-auditor exit status in
+`RUBRIC.md`'s log.
 
 The corpus, the prompts as run, and the scoring rubric are in
 `princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1,

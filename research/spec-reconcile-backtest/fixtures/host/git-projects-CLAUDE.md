@@ -1,20 +1,4 @@
-<!--
-  FIXTURE — frozen excerpt, do not edit to make an auditor pass.
-
-  Source: ~/git-projects/CLAUDE.md as it stood at 2026-08-19T16:01:47Z, taken from the
-  host's own .bak snapshot, immediately BEFORE princess-pi-packages#381 corrected it.
-
-  This file exists because a Tier-4 fixture cannot come from `git archive`: the document
-  it reproduces lives in NO git repository, which is the entire reason spec-reconcile's
-  diff scope could never reach it. The excerpt is the "Git & GitHub Etiquette" subsection
-  only — enough realistic haystack that the false claim has to be found rather than
-  handed over, and no more of a personal host file than the claim itself.
-
-  Round-3 auditors read it at ./host/git-projects-CLAUDE.md, beside the corpus tree.
-  RUBRIC.md F5 is scored against it.
--->
-
-# The Princess-Pi Engineering Standard (excerpt — host-scoped domain rules)
+# The Princess-Pi Engineering Standard
 
 ### 3. Git & GitHub Etiquette
 - **Issue Cadence:** Comment on an issue about as often as you commit — status progress, not just code dumps. Every active repo maintains a standing "Project status & human action items" issue so human and agent never lose track of the big picture between sessions. Full detail: `princess-pi-packages/docs/dev-workflow-spec.md#issue-cadence--branch-cleanup`.

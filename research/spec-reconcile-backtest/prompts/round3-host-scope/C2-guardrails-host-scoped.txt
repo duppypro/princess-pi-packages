@@ -15,8 +15,6 @@ For each finding: quote the artifact line, quote the contradicting code as `path
 
 Include claims that are *incomplete*, not just wrong — an accepted input that `--help` never mentions is a contradiction, because a reader concludes it is unsupported.
 
-A claim about observable tool behaviour — an exit code, what is blocked, what a flag accepts — should be reported with the exact verbatim sentence that carries it, so the correction can be pinned rather than merely edited.
-
 If a user-facing string uses a term the project glossary (`CONTEXT.md`) marks under `_Avoid_`, that is a finding. If the glossary has no section for this tool, say so plainly and invent no terminology.
 
 If you find none, do not say "looks good" — list what you checked and how you verified it. Do not fix anything.

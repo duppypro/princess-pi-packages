@@ -1,0 +1,3 @@
+Marker: stage fixtures/host/ into this round's corpus as ./host/.
+Per-round, not global — rounds 1-2 are scored against the 2026-08-10 record and
+their corpus must not grow a directory that run never saw.

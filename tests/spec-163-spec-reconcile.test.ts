@@ -170,7 +170,7 @@ check(
 	f5Hook.includes("push whose DESTINATION ref is main/master"),
 );
 check(
-	"F5: the TRACKED spec at that SHA was already correct — so the control must come back clean",
+	"F5: no tracked artifact at that SHA claimed push was blocked outright — the control's F5-clean result",
 	f5Spec.includes("destination-aware, not a flat block list"),
 );
 
@@ -180,9 +180,24 @@ check(
 	"F5: it still carries the false claim verbatim — softening the fixture is softening the score",
 	hostDoc.includes("intercept: `git push`, `git reset --hard`"),
 );
+// The staged file must read like the live host document and nothing else. An earlier
+// revision carried a provenance banner INSIDE it — "do not edit to make an auditor pass",
+// "immediately BEFORE #381 corrected it" — which told the auditor a false claim was planted
+// here and dated it. A real ~/git-projects/CLAUDE.md carries no such hint.
 check(
-	"F5: and it is NOT reachable by any diff of the corpus — it lives in no repo by construction",
-	hostDoc.includes("lives in NO git repository"),
+	"F5: the fixture carries no provenance banner that would hint at the planted claim",
+	!/FIXTURE|do not edit to make|scored against it/i.test(hostDoc),
+	"provenance belongs in fixtures/README.md, which is never staged into the corpus",
+);
+// (§2 Tier 4 / RUBRIC "Absence declared") The round scores the auditor for SAYING that
+// claude-CLAUDE.md and claude-settings.json are missing. That is only a fact about the
+// corpus while this directory holds exactly one file.
+const HOST_DIR = path.join(REPO, "research/spec-reconcile-backtest/fixtures/host");
+const staged = fs.existsSync(HOST_DIR) ? fs.readdirSync(HOST_DIR).sort() : [];
+check(
+	"F5: fixtures/host holds exactly the one staged document the round expects",
+	staged.length === 1 && staged[0] === "git-projects-CLAUDE.md",
+	`found: ${JSON.stringify(staged)} — adding a file silently inverts the absence check`,
 );
 
 // ---
@@ -219,8 +234,18 @@ const CLAUSES: Array<[string, string, string]> = [
 	["F5 (pin)", "§2 Tier 4 — a reword is invisible to behaviour probes alone", "Pin the claim; do not merely edit the sentence"],
 ];
 
+// Match with runs of whitespace collapsed, so a needle spanning a hard line wrap survives
+// a cosmetic reflow of the paragraph. A reflow is not a skill regression, and reporting it
+// as one is the false signal this array exists to avoid.
+const flat = (t: string): string => t.replace(/\s+/g, " ");
+const flatSkill = flat(skill);
+
 for (const [reaches, why, needle] of CLAUSES) {
-	check(`clause present [${reaches}] ${why}`, skill.includes(needle), `missing: ${JSON.stringify(needle.slice(0, 48))}`);
+	check(
+		`clause present [${reaches}] ${why}`,
+		flatSkill.includes(flat(needle)),
+		`missing: ${JSON.stringify(needle.slice(0, 48))}`,
+	);
 }
 
 check(
@@ -289,7 +314,10 @@ for (const rel of [
 	"research/spec-reconcile-backtest/prompts/round2-fixed/B3-title-layout-test.txt",
 	"research/spec-reconcile-backtest/runs/round1-as-written/A1-renderer-faithful.md",
 	"research/spec-reconcile-backtest/runs/round2-fixed/B1-renderer.md",
+	"research/spec-reconcile-backtest/fixtures/README.md",
 	"research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA",
+	"research/spec-reconcile-backtest/prompts/round3-host-scope/STAGE_HOST",
+	"research/spec-reconcile-backtest/runs/round3-host-scope/STATUS.tsv",
 	"research/spec-reconcile-backtest/prompts/round3-host-scope/C1-guardrails-repo-only-control.txt",
 	"research/spec-reconcile-backtest/prompts/round3-host-scope/C2-guardrails-host-scoped.txt",
 	"research/spec-reconcile-backtest/runs/round3-host-scope/C1-guardrails-repo-only-control.md",
@@ -304,25 +332,91 @@ for (const rel of [
 	check(`present and non-empty: ${rel}`, bytes > 0, bytes === 0 ? "0 bytes" : "missing");
 }
 
-const harness = readRepo("research/spec-reconcile-backtest/run-backtest.sh");
+const safeRead = (rel: string): string =>
+	fs.existsSync(path.join(REPO, rel)) ? readRepo(rel) : "";
+
+const harness = safeRead("research/spec-reconcile-backtest/run-backtest.sh");
 check("the harness pins the same corpus SHA the record cites", harness.includes(CORPUS_SHA));
 check(
 	"the harness reads each round's own FIXTURE_SHA — a fixture is a tree AND a question",
-	harness.includes('prompts/$ROUND/FIXTURE_SHA'),
+	harness.includes('PROMPT_DIR="$HERE/prompts/$ROUND"') &&
+		harness.includes('$PROMPT_DIR/FIXTURE_SHA'),
 );
 check(
 	"the harness stages the host doc, which `git archive` structurally cannot carry",
-	harness.includes('cp -R "$HERE/fixtures/host" "$WORK/host"'),
+	harness.includes('cp -R "$HERE/fixtures/host/." "$WORK/host/"'),
 );
 check(
+	"the overlay is gated PER ROUND, so rounds 1-2 still reproduce the 9b2a16e corpus",
+	harness.includes('[ -f "$PROMPT_DIR/STAGE_HOST" ]'),
+);
+check(
+	"round 3 carries the STAGE_HOST marker its prompts depend on",
+	fs.existsSync(
+		path.join(REPO, "research/spec-reconcile-backtest/prompts/round3-host-scope/STAGE_HOST"),
+	),
+);
+check(
+	"a mistyped ROUND is fatal, not a green run over zero auditors",
+	harness.includes("no such round") && harness.includes("contains no *.txt prompts"),
+);
+check(
+	"a non-zero auditor makes the whole run non-zero",
+	harness.includes('exit "$worst"') && harness.includes("STATUS.tsv"),
+);
+check(
+	"OUT defaults to the round directory the record scores",
+	harness.includes('OUT="${OUT:-$HERE/runs/$ROUND}"'),
+);
+// (#383 review) A dead auditor emits zero findings, which scores identically to a clean
+// control. The harness's own error path appends a marker to the transcript, so "non-empty"
+// alone cannot tell the two apart — check the recorded exit status and the marker.
+const R3 = "research/spec-reconcile-backtest/runs/round3-host-scope";
+const statusPath = path.join(REPO, R3, "STATUS.tsv");
+const statusRows = fs.existsSync(statusPath)
+	? readRepo(`${R3}/STATUS.tsv`).trim().split("\n").slice(1)
+	: [];
+check(
+	"round 3 recorded a per-auditor exit status for both arms",
+	statusRows.length === 2,
+	`STATUS.tsv rows: ${statusRows.length}`,
+);
+check(
+	"every round-3 auditor exited 0 — a killed auditor is not a result",
+	statusRows.length > 0 && statusRows.every((r) => r.split("\t")[1]?.trim() === "0"),
+	statusRows.join(" | "),
+);
+for (const arm of ["C1-guardrails-repo-only-control", "C2-guardrails-host-scoped"]) {
+	const rel = `${R3}/${arm}.md`;
+	const body = fs.existsSync(path.join(REPO, rel)) ? readRepo(rel) : "";
+	check(
+		`${arm}: transcript carries no harness failure marker`,
+		body.length > 0 && !body.includes("is NOT a scoreable run"),
+	);
+}
+
+// The manipulation between the two arms must be scope and nothing else. If they differ
+// anywhere but the host-document block, the round measures prompt wording, not scope.
+const promptOf = (n: string): string[] =>
+	readRepo(`research/spec-reconcile-backtest/prompts/round3-host-scope/${n}.txt`).split("\n");
+const onlyInC2 = promptOf("C2-guardrails-host-scoped").filter(
+	(l) => l.trim() && !promptOf("C1-guardrails-repo-only-control").includes(l),
+);
+check(
+	"C1 and C2 differ only by the block that enumerates the host documents",
+	onlyInC2.length > 0 && onlyInC2.every((l) => /host|artifact set is not the diff/i.test(l)),
+	`unexpected extra instruction in C2: ${JSON.stringify(onlyInC2.filter((l) => !/host|artifact set is not the diff/i.test(l)))}`,
+);
+
+check(
 	`round 3 declares ${F5_SHA} as its corpus`,
-	readRepo("research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA").trim() ===
+	safeRead("research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA").trim() ===
 		F5_SHA,
 );
 check(
 	"RUBRIC records F5 and its own SHA, so the record stays third-party checkable",
 	(() => {
-		const r = readRepo("research/spec-reconcile-backtest/RUBRIC.md");
+		const r = safeRead("research/spec-reconcile-backtest/RUBRIC.md");
 		return r.includes("## F5 —") && r.includes(F5_SHA);
 	})(),
 );

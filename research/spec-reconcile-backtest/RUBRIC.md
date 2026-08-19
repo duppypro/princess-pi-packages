@@ -86,14 +86,29 @@ reach it, then change the skill.
   (branch touches `hooks/` → Tier 4 activates) and §2 Tier 4's **enumerated set** put the
   document in front of an auditor. This is the one fixture that measures a *scope* rule
   with nothing left over for prompt wording to explain.
-- **The control is the point.** `C1-guardrails-repo-only-control.txt` is the same prompt
-  body over the diff-scoped artifact set — the skill exactly as it stood before #383. It
-  must come back **clean on the guardrails claim**, because at `bf4d104` every tracked
-  artifact was already correct: `docs/dev-workflow-spec.md:449` says *"destination-aware,
-  not a flat block list"*. A clean control is a pass, not a miss; it is the evidence that
-  the diff scope could not have found this.
+- **The control is the point, and the manipulation is enumeration only.**
+  `C1-guardrails-repo-only-control.txt` and `C2-guardrails-host-scoped.txt` are
+  **byte-identical apart from one block**: C2's paragraph naming the host-scoped documents.
+  `diff` the two files — if they differ anywhere else, the round is measuring prompt wording
+  and not scope, and the result does not stand.
+- **Both arms are handed the same corpus, host document included.** `STAGE_HOST` puts
+  `./host/` in the tree for the whole round, so C1 *could* read the file and simply is never
+  told to. That is the faithful reproduction: on a real host the document is right there, and
+  the only thing the skill changes is whether an auditor is pointed at it. C1 is therefore
+  "diff-*enumerated*", not "diff-restricted" — do not describe it as an artifact set the file
+  was withheld from.
+- **What the control must show:** no finding that push is blocked outright, in any tracked
+  artifact. Nothing stronger. At `bf4d104` no tracked artifact carried that claim —
+  `docs/dev-workflow-spec.md:449` says *"destination-aware, not a flat block list"* — but the
+  control is expected to return plenty of *other* drift, and it does. **"Clean" means clean on
+  the F5 claim, never clean overall**; the 2026-08-19 control returned 60 findings, two of
+  which were filed as live bugs. A control that returns nothing at all is a dead auditor
+  (check `STATUS.tsv`), not a result.
 - **Bonus signal:** a strong auditor reports the offending sentence **verbatim**, so the
   correction can be pinned as a claim-table entry (§2 Tier 4) rather than merely reworded.
+  Neither prompt asks for this — an earlier revision of C2 did, which made the signal
+  un-earnable by the control and therefore worthless. If you add that instruction back,
+  delete this row with it.
 
 ---
 
@@ -108,14 +123,15 @@ reach it, then change the skill.
 | Fix, not report | Every surfaced contradiction ends fixed in-branch or filed as a named issue |
 | Glossary | `CONTEXT.md` has `## Language — Serve` and **no wtft section**. The auditor must say so and invent nothing. Applying serve's `_Avoid_` list to wtft is a **fail** — it is inventing a ruling |
 | Triage smell | Output grouped "most important first", or a stated word budget, means findings were dropped (§1 granularity) |
-| Absence declared (F5) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The auditor must SAY they are missing. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent |
+| Absence declared (F5) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The auditor must SAY they are missing. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent. The absence is pinned by `tests/spec-163-spec-reconcile.test.ts`, which asserts `fixtures/host/` holds exactly the one expected file; adding either file silently inverts this row |
+| Auditor actually ran | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
 
 ## Result log
 
 > **Round 3 also paid for itself outside the fixture.** The control auditor surfaced two
 > live guardrail holes, both re-probed against `main` and filed: **#389** (`gh -R o/r pr
 > merge` walks the human-only gate) and **#390** (the hook fails *open* when `jq` is
-> unavailable). The host-scoped auditor added **#391** (`git revert` advances `main`
+> unavailable). Both reproduced in the re-run. The host-scoped auditor added **#391** (`git revert` advances `main`
 > without a PR) and caught the hook's own banner **misquoting** the host document it cites
 > (**#392**) — a cross-document contradiction no repo-scoped audit can see, since one of
 > the two documents is in no repo.
@@ -124,4 +140,4 @@ reach it, then change the skill.
 |---|---|---|---|---|---|---|---|
 | 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | — | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
 | 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | — | 4 of 4. Also surfaced two drifts still live on `main` |
-| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only, exactly as predicted.** C2 quotes `host/git-projects-CLAUDE.md:40`'s `intercept:` sentence against `block-dangerous-git.sh:505-538` with measured probes, and names both staged-but-absent host files. C1 — the same prompt body over the diff-scoped artifact set — returned 62 findings and **not one about push being blocked outright**: correct, because every tracked artifact was already right. A clean control here is the evidence, not a miss |
+| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only.** C2 (53 findings) quotes `host/git-projects-CLAUDE.md:24`'s `intercept: git push` sentence against `block-dangerous-git.sh:477`, measured (`git push origin 42-feat` from `main` → exit 0), and declares both staged-but-absent host files. C1 — byte-identical prompt minus the enumeration block, **same corpus, host document present on disk** — returned 60 findings and **zero mentions of `host/`**: it never opened the file, because nothing pointed it there. `STATUS.tsv`: both arms exit 0 |
