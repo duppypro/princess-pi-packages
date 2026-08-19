@@ -77,10 +77,34 @@ So:
 - Treat "grouped by theme, most important first" in auditor output as a **symptom**, not
   a service. It means findings were dropped.
 
-## 2. Artifact classes — three tiers, checked three different ways
+### Reverse scope — when the branch changes a *tool*, ask who quotes it
+
+Diff scope answers *"which artifacts describe the files I changed?"*, and it answers it
+from inside the repo. For a **tool whose behaviour other documents assert** — a hook, a
+`bin/` script, an extension, a skill — the useful question is the reverse: **"who quotes
+this tool's behaviour, anywhere?"** That is a downstream-readers set. It is not a diff set,
+and no widening of `--name-only` produces it.
+
+**Trigger.** The branch touches `hooks/`, `bin/`, `extensions/`, or `skills/` → **Tier 4**
+(§2) activates, in addition to every tier the diff already reached.
+
+**Why a diff provably cannot get there** (`princess-pi-packages#381`).
+`~/git-projects/CLAUDE.md` told every session that `git push` was intercepted
+unconditionally. `hooks/block-dangerous-git.sh` has blocked by push *destination* since
+#74. The file is not gitignored — `~/git-projects/` is **not a git repository at all**, so
+the file has no history, no diff, and no commit any check can hang off. *There is no
+changeset in which it appears*, which is why "add `CLAUDE.md` to the reconcile file list"
+does not reach it. An agent read the file, believed it, and wrote *"the guardrails hook
+blocks agent `git push`"* into four artifacts in another repo — during a session in which
+`pr-open` pushed a branch for it four times. The tracked spec
+(`docs/dev-workflow-spec.md`) was correct the whole time, so a repo-scoped audit of that
+branch would have come back clean.
+
+## 2. Artifact classes — four tiers, checked four different ways
 
 Not every artifact is reachable the same way. Sort them before auditing, or you will
-either miss the unlinkable ones or waste passes on ones that cannot drift.
+either miss the unlinkable ones or waste passes on ones that cannot drift. Tiers 1–3 are
+reached by the diff; Tier 4 is reached only by §1's reverse scope.
 
 ### Tier 1 — shared source: fix once, propagates
 
@@ -136,6 +160,57 @@ something to paper over here.
 skill's first version (#163) — it described a check that no audit prompt implemented, so
 no auditor ever performed it. The glossary clause is now in the §4 template. If you write
 a variant prompt, carry that clause or Tier 3 silently stops existing.
+
+### Tier 4 — host-scoped docs: loaded every session, reachable by no diff
+
+These are the documents that configure the agent rather than the product. They are read
+into **every session**, they assert what your tools do, and **nothing enumerates them from
+a changeset** — some live in another repo, some in no repo at all.
+
+| Document | Status | Reachable by a diff? |
+|---|---|---|
+| `<this repo>/CLAUDE.md`, `AGENTS.md` | tracked | yes — Tier 2 already has it |
+| Other clones' `CLAUDE.md` / `AGENTS.md` (client repos, sibling projects) | tracked, **other repo** | no |
+| `~/git-projects/CLAUDE.md` (domain rules) | **in no repository** | **no** |
+| `~/.claude/CLAUDE.md` (global rules) | **in no repository** | **no** |
+| `~/.claude/settings.json` where it names a script by path | **in no repository** | **no** |
+
+**The set is enumerated because it cannot be derived.** That is a cost, not a design
+flourish — but the list is short, stable, and conventional, which is what makes this tier
+practical rather than aspirational. **A new host document that quotes a tool and never
+gets added here is invisible again**; when you write one, add its row in the same commit.
+
+**Check the ones present; declare the ones absent.** An agent on a laptop cannot see this
+VPS's files, and CI has none of them. "Absent" is a fact to record, never a pass — a run
+that silently checked nothing reports the same green as a run that checked everything.
+
+#### Pin the claim; do not merely edit the sentence
+
+Where the claim is about **observable tool behaviour** — an exit code, what is blocked,
+what a flag accepts — the reconcile output should be a **claim-table entry**, not just a
+corrected sentence. `princess-pi-packages#381` / PR #382 is the worked pattern
+(`tests/doc-claims-vs-hooks.test.ts`): each entry pins a **verbatim quote that must still
+appear in its document** *and* the **probes that quote asserts**, run against every
+implementation, with `##SKIP##` (`tests/lib/skips.ts`) when the host document is absent.
+
+That covers two failure directions, and a probe-only check catches just one:
+
+1. **The tool changes and a doc still asserts the old behaviour** — caught by the probes.
+2. **A doc is reworded into a false claim while the tool stays put** — caught only by the
+   pinned quote. This is the direction that actually happened.
+
+A pin converts a one-time correction into a standing check, so the next behaviour change
+fails the build instead of waiting for a human to ask the right question.
+
+**Honest limits, which this tier does not paper over:**
+
+- **A check on host state cannot be enforced on CI**, which has none of these files. It
+  must skip *visibly*, never pass quietly.
+- **Not every prose claim is probe-able.** *"Prefer X over Y"* has no verdict. Pin the
+  claims that name observable behaviour; correct the rest as ordinary Tier 2 prose.
+- **A wrong rule here is worse than an absent one.** These files carry the authority of
+  the harness itself, so agents propagate their errors into places the file's author will
+  never look — which is the whole reason a tier that costs an enumerated list is worth it.
 
 ## 3. The loop — find, fix, re-verify, until dry
 
@@ -312,12 +387,21 @@ with per-fixture attribution is `docs/spec-163-spec-reconcile-backtest.md` §9. 
 corrected prompts surfaced four of four, including two drifts still live on `main` that
 #158's hand-run had missed.
 
+**Round 3 ran 2026-08-19 (`princess-pi-packages#383`)** against a fifth fixture — the
+Tier-4 case, at its own corpus SHA `bf4d104`, with the host document staged beside the
+tree because no `git archive` can carry a file that lives in no repository. F5 is the only
+fixture that measures a **scope** rule with nothing left for prompt wording to explain:
+the diff-scoped control comes back *clean*, correctly, because every tracked artifact was
+already right. Result in `RUBRIC.md`'s log.
+
 The corpus, the prompts as run, and the scoring rubric are in
-`princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1
-or §4** — those two sections are measured artifacts now, not prose:
+`princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1,
+§2's Tier 4, or §4** — those sections are measured artifacts now, not prose:
 
 ```
-research/spec-reconcile-backtest/run-backtest.sh    # then score against RUBRIC.md
+research/spec-reconcile-backtest/run-backtest.sh                       # rounds 1-2, SHA 9b2a16e
+ROUND=round3-host-scope research/spec-reconcile-backtest/run-backtest.sh   # F5, SHA bf4d104
+# then score against RUBRIC.md
 ```
 
 If a fixture regresses, **fix the skill, not the score.** A miss is a finding about this

@@ -282,6 +282,14 @@ still be useless, because the drift that actually bit this repo (#160) is an omi
 
 ## 9. Backtest record
 
+> **Superseded as a total, not as a record (#383, 2026-08-19).** Everything below is the
+> #163 run and stays accurate for it: four fixtures, one corpus SHA, two rounds. The corpus
+> has since gained a fifth fixture — **F5**, the Tier-4 host-scoped case — which pins its
+> own SHA (`bf4d104`) because a fixture is a tree *and* a question. The live scoring record
+> is `research/spec-reconcile-backtest/RUBRIC.md`; read "four of four" here as the score of
+> *this* run, not as the size of the corpus.
+
+
 Run 2026-08-10. Corpus: `git archive 9b2a16e` into a tmpdir — never a worktree, so it
 cannot be committed to by accident and does not appear in `git worktree list`.
 

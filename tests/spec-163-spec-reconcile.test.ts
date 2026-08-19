@@ -38,6 +38,8 @@ import { execFileSync } from "node:child_process";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const CORPUS_SHA = "9b2a16e";
+/** F5 (#383) pins its own tree: the commit BEFORE #382 corrected the host doc. */
+const F5_SHA = "bf4d104";
 
 let passed = 0;
 let failed = 0;
@@ -52,13 +54,16 @@ function check(label: string, cond: boolean, detail = "") {
 	}
 }
 
-/** Read a file as it existed at the frozen corpus SHA. */
-function atCorpus(relPath: string): string {
-	return execFileSync("git", ["-C", REPO, "show", `${CORPUS_SHA}:${relPath}`], {
+/** Read a file as it existed at an arbitrary frozen SHA. */
+function atSha(sha: string, relPath: string): string {
+	return execFileSync("git", ["-C", REPO, "show", `${sha}:${relPath}`], {
 		encoding: "utf8",
 		maxBuffer: 32 * 1024 * 1024,
 	});
 }
+
+/** Read a file as it existed at the frozen F1–F4 corpus SHA. */
+const atCorpus = (relPath: string): string => atSha(CORPUS_SHA, relPath);
 
 function readRepo(relPath: string): string {
 	return fs.readFileSync(path.join(REPO, relPath), "utf8");
@@ -139,6 +144,48 @@ check(
 );
 
 // ---
+// 1b. F5 (#383) — the Tier-4 fixture, which needs BOTH halves to stay true:
+//     a frozen host document that is wrong, and a tree at F5_SHA in which every
+//     TRACKED artifact is already right. The second half is what makes the
+//     diff-scoped control's clean result evidence rather than an absence.
+// ---
+console.log(`\n— F5 host-scope fixture at ${F5_SHA} + frozen host doc`);
+
+const HOST_DOC = "research/spec-reconcile-backtest/fixtures/host/git-projects-CLAUDE.md";
+
+let f5Reachable = true;
+let f5Hook = "";
+let f5Spec = "";
+try {
+	f5Hook = atSha(F5_SHA, "hooks/block-dangerous-git.sh");
+	f5Spec = atSha(F5_SHA, "docs/dev-workflow-spec.md");
+} catch (err) {
+	f5Reachable = false;
+	console.log(`  (git show ${F5_SHA} failed: ${(err as Error).message})`);
+}
+check(`F5 corpus SHA ${F5_SHA} is reachable from this clone`, f5Reachable);
+
+check(
+	"F5: the hook at that SHA already gated push on DESTINATION",
+	f5Hook.includes("push whose DESTINATION ref is main/master"),
+);
+check(
+	"F5: the TRACKED spec at that SHA was already correct — so the control must come back clean",
+	f5Spec.includes("destination-aware, not a flat block list"),
+);
+
+const hostDoc = fs.existsSync(path.join(REPO, HOST_DOC)) ? readRepo(HOST_DOC) : "";
+check(`F5: the frozen host doc is committed at ${HOST_DOC}`, hostDoc.length > 0);
+check(
+	"F5: it still carries the false claim verbatim — softening the fixture is softening the score",
+	hostDoc.includes("intercept: `git push`, `git reset --hard`"),
+);
+check(
+	"F5: and it is NOT reachable by any diff of the corpus — it lives in no repo by construction",
+	hostDoc.includes("lives in NO git repository"),
+);
+
+// ---
 // 2. The vendored skill still carries the clauses the backtest measured.
 //    Each string below is traceable to a fixture it was shown to reach; dropping one
 //    regresses the skill to the version that scored 2 of 4.
@@ -161,6 +208,15 @@ const CLAUSES: Array<[string, string, string]> = [
 	["Tier 3", "§4 — the glossary check is unreachable unless the prompt asks", "invent no terminology"],
 	["§6 output", "auditors that fill in tables stop finding rows", "auditors return findings, not tables"],
 	["durability", "the two copies fork silently without a stated direction", "is the **source of truth**"],
+	// #383 — Tier 4. Each of these is what puts a host-scoped document in front of an
+	// auditor at all; without them the skill regresses to a scope that provably cannot
+	// reach F5, and no other test would notice.
+	["F5 (reverse scope)", "§1 — a diff answers the wrong question for a tool change", 'who quotes\nthis tool\'s behaviour, anywhere?'],
+	["F5 (trigger)", "§1 — names the paths that activate the tier", "The branch touches `hooks/`, `bin/`, `extensions/`, or `skills/`"],
+	["F5 (why no diff works)", "§1 — the file is not gitignored, it is in no repo", "is **not a git repository at all**"],
+	["F5 (enumeration)", "§2 Tier 4 — the set cannot be derived, so it must be listed", "enumerated because it cannot be derived"],
+	["F5 (absence)", "§2 Tier 4 — a host check that finds no file must say so", "Check the ones present; declare the ones absent"],
+	["F5 (pin)", "§2 Tier 4 — a reword is invisible to behaviour probes alone", "Pin the claim; do not merely edit the sentence"],
 ];
 
 for (const [reaches, why, needle] of CLAUSES) {
@@ -233,14 +289,42 @@ for (const rel of [
 	"research/spec-reconcile-backtest/prompts/round2-fixed/B3-title-layout-test.txt",
 	"research/spec-reconcile-backtest/runs/round1-as-written/A1-renderer-faithful.md",
 	"research/spec-reconcile-backtest/runs/round2-fixed/B1-renderer.md",
+	"research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA",
+	"research/spec-reconcile-backtest/prompts/round3-host-scope/C1-guardrails-repo-only-control.txt",
+	"research/spec-reconcile-backtest/prompts/round3-host-scope/C2-guardrails-host-scoped.txt",
+	"research/spec-reconcile-backtest/runs/round3-host-scope/C1-guardrails-repo-only-control.md",
+	"research/spec-reconcile-backtest/runs/round3-host-scope/C2-guardrails-host-scoped.md",
+	HOST_DOC,
 	"docs/spec-163-spec-reconcile-backtest.md",
 ]) {
-	check(`present: ${rel}`, fs.existsSync(path.join(REPO, rel)));
+	// Non-empty, not merely present: an auditor that timed out leaves a 0-byte
+	// transcript behind, and "the file is there" would score that as a run.
+	const abs = path.join(REPO, rel);
+	const bytes = fs.existsSync(abs) ? fs.statSync(abs).size : -1;
+	check(`present and non-empty: ${rel}`, bytes > 0, bytes === 0 ? "0 bytes" : "missing");
 }
 
+const harness = readRepo("research/spec-reconcile-backtest/run-backtest.sh");
+check("the harness pins the same corpus SHA the record cites", harness.includes(CORPUS_SHA));
 check(
-	"the harness pins the same corpus SHA the record cites",
-	readRepo("research/spec-reconcile-backtest/run-backtest.sh").includes(CORPUS_SHA),
+	"the harness reads each round's own FIXTURE_SHA — a fixture is a tree AND a question",
+	harness.includes('prompts/$ROUND/FIXTURE_SHA'),
+);
+check(
+	"the harness stages the host doc, which `git archive` structurally cannot carry",
+	harness.includes('cp -R "$HERE/fixtures/host" "$WORK/host"'),
+);
+check(
+	`round 3 declares ${F5_SHA} as its corpus`,
+	readRepo("research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA").trim() ===
+		F5_SHA,
+);
+check(
+	"RUBRIC records F5 and its own SHA, so the record stays third-party checkable",
+	(() => {
+		const r = readRepo("research/spec-reconcile-backtest/RUBRIC.md");
+		return r.includes("## F5 —") && r.includes(F5_SHA);
+	})(),
 );
 
 console.log(`\n${passed} passed, ${failed} failed`);

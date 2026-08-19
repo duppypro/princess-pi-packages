@@ -1,7 +1,10 @@
 # Scoring rubric — `spec-reconcile` backtest
 
-Corpus SHA: **`9b2a16e`** (`princess-pi-packages` `main`, before #158 landed).
-Score auditor output in `runs/<round>/` against the four fixtures below.
+Corpus SHA: **`9b2a16e`** (`princess-pi-packages` `main`, before #158 landed) for F1–F4.
+**F5 pins its own corpus** — `bf4d104`, the commit before #382 landed — because a fixture
+is a tree *and* a question, and F5's question did not exist in the older tree. Each round
+declares its SHA in `prompts/<round>/FIXTURE_SHA`.
+Score auditor output in `runs/<round>/` against the five fixtures below.
 
 **The rule: a miss is a finding about the skill, never about the score.** Do not soften a
 fixture because an auditor came close. Record which prompt clause or scope rule failed to
@@ -61,6 +64,39 @@ reach it, then change the skill.
   skipped the prose. One surfacing F4 but not F2 read the prose and skipped the code.
   Scoring both separates those failure modes.
 
+## F5 — host-scoped false claim, reachable by no diff (**Tier 4**, `#383`)
+
+- **Corpus:** `bf4d104` + the staged host doc. Round `round3-host-scope`.
+- **Artifact:** `host/git-projects-CLAUDE.md` — the **Git Guardrails (hard block)**
+  bullet, frozen verbatim from `~/git-projects/CLAUDE.md` at `2026-08-19T16:01:47Z`:
+  *"…intercept: `git push`, `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`,
+  `git checkout .`, `git restore .`"*, with the `main`/`master` qualifier attached only to
+  the #301 additions that follow.
+- **Contradicted by:** `hooks/block-dangerous-git.sh` — push is blocked on **destination**
+  (`main`/`master`) since #74, and a bare `push` only while the repo is *on* `main`. Twin:
+  `extensions/lib/git-guardrails-core.ts`.
+- **Test-covered:** ✅ `tests/doc-claims-vs-hooks.test.ts` (#382), which pins the corrected
+  sentence *and* probes both implementations.
+- **Counts as surfaced when:** the auditor quotes the host document's `intercept:` sentence
+  AND cites the destination check in the hook as `path:line`. Naming the hook's behaviour
+  without reaching the host document does **not** count — that is the control's result.
+- **Difficulty:** structural, not textual. **No prompt wording reaches this fixture.** The
+  drift is not in the corpus at all: `~/git-projects/` is not a git repository, so the file
+  has no commit, no history, and appears in no changeset. Only §1's **reverse scope**
+  (branch touches `hooks/` → Tier 4 activates) and §2 Tier 4's **enumerated set** put the
+  document in front of an auditor. This is the one fixture that measures a *scope* rule
+  with nothing left over for prompt wording to explain.
+- **The control is the point.** `C1-guardrails-repo-only-control.txt` is the same prompt
+  body over the diff-scoped artifact set — the skill exactly as it stood before #383. It
+  must come back **clean on the guardrails claim**, because at `bf4d104` every tracked
+  artifact was already correct: `docs/dev-workflow-spec.md:449` says *"destination-aware,
+  not a flat block list"*. A clean control is a pass, not a miss; it is the evidence that
+  the diff scope could not have found this.
+- **Bonus signal:** a strong auditor reports the offending sentence **verbatim**, so the
+  correction can be pinned as a claim-table entry (§2 Tier 4) rather than merely reworded.
+
+---
+
 ---
 
 ## Non-fixture checks, scored on the same run
@@ -72,10 +108,12 @@ reach it, then change the skill.
 | Fix, not report | Every surfaced contradiction ends fixed in-branch or filed as a named issue |
 | Glossary | `CONTEXT.md` has `## Language — Serve` and **no wtft section**. The auditor must say so and invent nothing. Applying serve's `_Avoid_` list to wtft is a **fail** — it is inventing a ruling |
 | Triage smell | Output grouped "most important first", or a stated word budget, means findings were dropped (§1 granularity) |
+| Absence declared (F5) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The auditor must SAY they are missing. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent |
 
 ## Result log
 
-| Round | Prompts | F1 | F2 | F3 | F4 | Notes |
-|---|---|---|---|---|---|---|
-| 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
-| 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | 4 of 4. Also surfaced two drifts still live on `main` |
+| Round | Prompts | F1 | F2 | F3 | F4 | F5 | Notes |
+|---|---|---|---|---|---|---|---|
+| 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | — | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
+| 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | — | 4 of 4. Also surfaced two drifts still live on `main` |
+| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | RESULT_F5 | RESULT_NOTE |
