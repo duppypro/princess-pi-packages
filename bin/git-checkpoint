@@ -57,6 +57,20 @@ if [ -z "$MSG" ]; then
   echo "  git-checkpoint \"feat: add widget (#42)\"" >&2
   exit 1
 fi
+# #367: `MSG="$1"` took the first word and dropped the rest, so an UNQUOTED
+# message committed and PUSHED only its first word — `git-checkpoint fix the
+# parser` committed "fix". Silent truncation of an already-pushed commit message
+# is the expensive half of #367's finding 3; refusing costs one retry with
+# quotes. Joining the words instead was the road not taken: this script's whole
+# contract is "the message is ONE quoted argument" (that is why `--` exists),
+# and guessing at spacing for a message that is about to be pushed is the kind
+# of helpful guess #209 was filed over.
+if [ "$#" -gt 1 ]; then
+  shift
+  echo "git-checkpoint: unexpected argument: '$1' — the message must be ONE quoted argument." >&2
+  echo "  git-checkpoint \"feat: add widget (#42)\"" >&2
+  exit 1
+fi
 
 BRANCH=$(git branch --show-current)
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ] || [ -z "$BRANCH" ]; then

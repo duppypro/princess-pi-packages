@@ -136,7 +136,16 @@ EOF
   -*) echo "wt-new: unknown flag: $1 (try --help)" >&2; exit 2 ;;
 esac
 
-if [ $# -ne 1 ]; then
+if [ $# -eq 0 ]; then
+  echo "usage: wt-new <issue#>-<slug>" >&2
+  exit 2
+fi
+# #367: same correction as bin/pr-cleanup — the count check refused an extra
+# argument without ever naming it, so a typo'd second word read as "you forgot
+# the branch name".
+if [ $# -gt 1 ]; then
+  shift
+  echo "wt-new: unexpected argument: $1 — wt-new takes exactly one branch name." >&2
   echo "usage: wt-new <issue#>-<slug>" >&2
   exit 2
 fi

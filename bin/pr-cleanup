@@ -86,9 +86,20 @@ esac
 # --- argument parsing --------------------------------------------------------
 # <branch> is required — see the "no-argument mode removed (#221 finding 2)"
 # header note above for why the old cwd-discovery fallback is gone.
-if [ $# -ne 1 ]; then
+if [ $# -eq 0 ]; then
   echo "usage: pr-cleanup <branch>" >&2
   echo "   <branch> is required. Run from the main clone: pr-cleanup <branch>" >&2
+  exit 2
+fi
+# #367: `[ $# -ne 1 ]` refused this already, but with the message above — which
+# reads as "you forgot the branch" when the caller in fact supplied one and a
+# typo. Name the argument being refused, same as the #362 flag guards do; the
+# header has called extra arguments a usage error since #221 without the
+# message ever saying which one was extra.
+if [ $# -gt 1 ]; then
+  shift
+  echo "pr-cleanup: unexpected argument: $1 — pr-cleanup takes exactly one branch." >&2
+  echo "usage: pr-cleanup <branch>" >&2
   exit 2
 fi
 BRANCH="$1"

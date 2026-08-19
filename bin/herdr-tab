@@ -6,6 +6,7 @@
 #   . herdr-tab            defines herdr_available() and herdr_tab()
 #   herdr-tab <cwd> <label>  opens one best-effort bookmark tab, always exit 0
 #   herdr-tab --version      prints the resolved absolute path of this copy
+#   herdr-tab -- <cwd> <label>  same, for a cwd or label starting with '-'
 #
 # --- why this is a separate file, not three inlined copies -------------------
 # `wt-new` and `herdr-reap` both need the same guard, and the guard is subtle
@@ -91,7 +92,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 	case "${1:-}" in
 	-h | --help)
 		# Header IS the help text.
-		sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	# #178: resolved absolute path of the running copy. Only meaningful in CLI
@@ -107,14 +108,43 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 	# #362: a leading dash is never a <cwd>. This refused already (the arg count
 	# check below), but with a generic usage line that never named the offending
 	# flag — so a typo'd flag read as "you passed the wrong number of arguments".
+	# #367: the conventional escape, so a <cwd> or <label> that really does start
+	# with a dash stays reachable now that both are guarded below. Same shape as
+	# git-checkpoint's `--` and pr-threads' `--reply --`.
+	--)
+		shift
+		ESCAPED=1
+		;;
 	-*)
 		echo "herdr-tab: unknown flag: $1 (try --help)" >&2
 		exit 2
 		;;
 	esac
-	if [ $# -ne 2 ]; then
+	if [ $# -lt 2 ]; then
 		echo "usage: herdr-tab <cwd> <label>   (or: . herdr-tab, then herdr_tab <cwd> <label>)" >&2
 		exit 2
+	fi
+	# #367: name the extra argument rather than reprinting the usage line, which
+	# read as "wrong number of arguments" for what is nearly always a typo.
+	if [ $# -gt 2 ]; then
+		echo "herdr-tab: unexpected argument: $3 — herdr-tab takes exactly <cwd> <label>." >&2
+		echo "usage: herdr-tab <cwd> <label>" >&2
+		exit 2
+	fi
+	# #367: the guard above caught a dash-leading <cwd> and let a dash-leading
+	# LABEL straight through — the mirror asymmetry. A swallowed flag becoming a
+	# tab label is harmless in itself, but it is the same class as `pr-reject -b
+	# --json`, and "which argument happens to be checked" is not a contract.
+	if [ "${ESCAPED:-0}" -eq 0 ]; then
+		for arg in "$1" "$2"; do
+			case "$arg" in
+			-*)
+				echo "herdr-tab: '$arg' looks like a flag, not a <cwd> or <label>." >&2
+				echo "  For a value that really starts with '-': herdr-tab -- <cwd> <label>" >&2
+				exit 2
+				;;
+			esac
+		done
 	fi
 	herdr_tab "$1" "$2"
 	exit 0

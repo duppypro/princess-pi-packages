@@ -137,8 +137,19 @@ while [ $# -gt 0 ]; do
 		# preconditions below, so --version works even without them on PATH.
 		--version) readlink -f "$0"; exit 0 ;;
 		--json) JSON=1; shift ;;
-		--policy) POLICY="${2:-}"; [ -n "$POLICY" ] || { echo "$SELF: --policy needs a path" >&2; exit 2; }; shift 2 ;;
-		--remedy) REMEDY="${2:-}"; [ -n "$REMEDY" ] || { echo "$SELF: --remedy needs a repo name" >&2; exit 2; }; shift 2 ;;
+		# #367: both values were taken as `${2:-}` unconditionally, so the `-*`
+		# guard below never saw them — `repo-gate --policy --json` searched for a
+		# policy file literally named "--json" and reported "no policy file
+		# found", naming a cause that was not the real one. Neither a path nor a
+		# repo name starts with a dash here, so this rejects only a swallowed flag.
+		--policy)
+			shift
+			[ $# -gt 0 ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --policy needs a path, got '${1:-}'" >&2; exit 2; }
+			POLICY="$1"; shift ;;
+		--remedy)
+			shift
+			[ $# -gt 0 ] && [ "${1#-}" = "$1" ] || { echo "$SELF: --remedy needs a repo name, got '${1:-}'" >&2; exit 2; }
+			REMEDY="$1"; shift ;;
 		--why) why; exit 0 ;;
 		-h|--help) usage; exit 0 ;;
 		-*) echo "$SELF: unknown flag '$1' (try --help)" >&2; exit 2 ;;

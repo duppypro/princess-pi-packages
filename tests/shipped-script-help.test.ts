@@ -145,6 +145,22 @@ function ghCalls(): string {
 	return fs.readFileSync(SB.ghLog, "utf8").trim();
 }
 
+/**
+ * The usage-error exit code each script uses.
+ *
+ * Two scripts refuse safely but with a different code, and both are recorded here
+ * BY NAME rather than by relaxing the check — an allowlist keeps the divergence
+ * countable, a loosened assertion hides it. `git-checkpoint` exits 1, which
+ * docs/dev-workflow-spec.md documents; `install-workflow-tools` exits 64
+ * (sysexits EX_USAGE). Neither is governed by the #224 pr-* table. Reconciling the
+ * three vocabularies is filed separately — see #366, which will shrink this map.
+ */
+const EXIT2_EXEMPT: Record<string, number> = {
+	"git-checkpoint": 1,
+	"install-workflow-tools": 64,
+};
+const usageExit = (s: string): number => EXIT2_EXEMPT[s] ?? 2;
+
 const SCRIPTS = shippedScripts();
 const DECLARED = installerScripts();
 
@@ -192,17 +208,7 @@ for (const s of SCRIPTS) {
 	// so the refusal is provably ABOUT the flag.
 	const u = run(s, ["--zzz-unknown-flag"]);
 	const utext = `${u.stdout || ""}${u.stderr || ""}`;
-	// Two scripts refuse safely but with a different code, and both are recorded
-	// here BY NAME rather than by relaxing the check — an allowlist keeps the
-	// divergence countable, a loosened assertion hides it. `git-checkpoint` exits
-	// 1, which docs/dev-workflow-spec.md documents; `install-workflow-tools`
-	// exits 64 (sysexits EX_USAGE). Neither is governed by the #224 pr-* table.
-	// Reconciling the three vocabularies is filed separately — see #366.
-	const EXIT2_EXEMPT: Record<string, number> = {
-		"git-checkpoint": 1,
-		"install-workflow-tools": 64,
-	};
-	const wantExit = EXIT2_EXEMPT[s] ?? 2;
+	const wantExit = usageExit(s);
 	check(u.status === wantExit, `${s} --zzz-unknown-flag → exit ${wantExit}${wantExit === 2 ? " (usage, per #224)" : " (documented exception, #366)"}`,
 		`got exit ${u.status}; a non-${wantExit} non-zero here means it failed for an unrelated ` +
 		`reason and the flag still fell through. stderr: ${(u.stderr || "").trim().slice(0, 160)}`);
@@ -213,6 +219,151 @@ for (const s of SCRIPTS) {
 // The incident assertion. None of the paths above may reach GitHub.
 check(ghCalls() === "", "no help/version/usage path invoked gh",
 	`stub gh recorded:\n${ghCalls()}`);
+
+// --- #367: argument handling, round 2 ----------------------------------------
+// #362 closed the unknown-FLAG hole. Three adjacent holes stayed open, and each
+// is the same shape as the incident above: an argument the caller typed being
+// silently dropped or silently repurposed, with the script proceeding anyway.
+//
+// 1. POSITIONALS a script does not take were ignored. `pr-open some-other-branch`
+//    opened the PR for the CURRENT branch — the #209 shape, acting on a different
+//    target than the caller named.
+// 2. OPTION VALUES were unguarded. `pr-reject -b --json` took "--json" as the
+//    branch and went on to talk to GitHub with it.
+// 3. The `--` escape took exactly ONE word, so a multi-word reason was truncated.
+//
+// Each assertion below names the offending argument as well as checking the exit
+// code, for the same reason the unknown-flag check does: a script that refuses for
+// an unrelated reason (no origin, dirty worktree) would otherwise satisfy it.
+
+console.log("\n#367 argument handling — positionals, option values, -- escape");
+
+// --- 1. unexpected positionals ------------------------------------------------
+// Every script is listed. The two variadic ones carry an empty array WITH a reason,
+// so "this script was never checked" cannot hide as "this script has no entry".
+const UNEXPECTED_POSITIONAL: Record<string, string[]> = {
+	"git-checkpoint": ["a message", "zzz-unexpected"], // a message is ONE argument; quote it
+	"git-overview": ["zzz-unexpected"],
+	"herdr-reap": ["zzz-unexpected"],
+	"herdr-tab": ["/tmp", "a-label", "zzz-unexpected"],
+	"install-workflow-tools": ["zzz-unexpected"],
+	"pr-cleanup": ["some-branch", "zzz-unexpected"],
+	"pr-merge": ["some-branch", "zzz-unexpected"],
+	"pr-open": ["zzz-unexpected"], // takes no arguments AT ALL — the #209 shape
+	"pr-reject": [], // variadic: the reason is free text, joined — see section 3
+	"pr-threads": ["1", "owner/repo", "zzz-unexpected"],
+	"repo-gate": [], // variadic: an explicit list of repos to check
+	"wt-new": ["1-a-slug", "zzz-unexpected"],
+};
+check(
+	JSON.stringify(Object.keys(UNEXPECTED_POSITIONAL).sort()) === JSON.stringify(SCRIPTS),
+	"every shipped script has a declared positional-arity case",
+	`declared: ${Object.keys(UNEXPECTED_POSITIONAL).sort().join(", ")}\nshipped:  ${SCRIPTS.join(", ")}`,
+);
+for (const s of SCRIPTS) {
+	const args = UNEXPECTED_POSITIONAL[s] ?? [];
+	if (args.length === 0) continue;
+	const r = run(s, args);
+	const text = `${r.stdout || ""}${r.stderr || ""}`;
+	check(r.status === usageExit(s), `${s} ${args.join(" ")} → exit ${usageExit(s)} (unexpected positional)`,
+		`got exit ${r.status}; an ignored positional means the script acted on a target the caller did not name. ` +
+		`stderr: ${(r.stderr || "").trim().slice(0, 160)}`);
+	check(text.includes("zzz-unexpected"), `${s} → names the unexpected argument it refused`,
+		`message never quotes the offending argument: ${JSON.stringify(text.slice(0, 200))}`);
+}
+
+// --- 2. a flag's value that is itself a flag ----------------------------------
+// Refused unless it follows `--`. `pr-threads --resolve` has guarded this since
+// PR #314; the rest of the family did not. GitHub node ids, branch names, repo
+// names and paths never start with a dash, so this cannot reject valid input.
+const DASH_LEADING_VALUE: Array<[string, string[]]> = [
+	["pr-reject", ["-b", "--json"]],
+	["pr-reject", ["--branch", "--json"]],
+	["pr-threads", ["5", "--resolve", "--json"]], // already green — guards the regression
+	["repo-gate", ["--policy", "--json"]],
+	["repo-gate", ["--remedy", "--json"]],
+	["herdr-tab", ["/tmp", "--json"]], // the mirror asymmetry: cwd guarded, LABEL not
+];
+for (const [s, args] of DASH_LEADING_VALUE) {
+	const r = run(s, args);
+	const text = `${r.stdout || ""}${r.stderr || ""}`;
+	check(r.status === usageExit(s), `${s} ${args.join(" ")} → exit ${usageExit(s)} (flag-shaped value)`,
+		`got exit ${r.status}; a swallowed flag reaching a lookup is the #364 class. ` +
+		`stderr: ${(r.stderr || "").trim().slice(0, 160)}`);
+	check(text.includes("--json"), `${s} ${args[0]} → names the flag-shaped value it refused`,
+		`message never quotes the offending value: ${JSON.stringify(text.slice(0, 200))}`);
+}
+
+// --- 3. the reason survives whole ---------------------------------------------
+// Asserted on the recorded `gh` argv, not on the script's own echo — the argv is
+// what actually reaches the PR. Needs a gh that ANSWERS the two lookups before
+// `gh pr close`, so this gets its own sandbox with its own log; the incident
+// assertion above still governs SB, where gh must never be called at all.
+function scriptedGhSandbox() {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reason-argv-"));
+	const gitEnv = {
+		...process.env,
+		GIT_AUTHOR_NAME: "t",
+		GIT_AUTHOR_EMAIL: "t@t",
+		GIT_COMMITTER_NAME: "t",
+		GIT_COMMITTER_EMAIL: "t@t",
+	};
+	execFileSync("git", ["init", "-q", "-b", "367-sandbox"], { cwd: dir });
+	execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "init"], { cwd: dir, env: gitEnv });
+	const binDir = path.join(dir, "stubbin");
+	fs.mkdirSync(binDir);
+	const ghLog = path.join(dir, "gh.log");
+	fs.writeFileSync(ghLog, "");
+	// Answers `repo view` and `pr list` so the run REACHES `gh pr close`, records
+	// every argv, and fails the close itself — the PR is never really touched, and
+	// pr-reject exits 5 (remote failure) rather than 0. Still no network: the repo
+	// has no origin and `gh` here is this stub.
+	fs.writeFileSync(
+		path.join(binDir, "gh"),
+		`#!/usr/bin/env bash\n` +
+			`printf '%s\\n' "$*" >> ${JSON.stringify(ghLog)}\n` +
+			`case "$1 $2" in\n` +
+			`  "repo view") echo "test-owner"; exit 0 ;;\n` +
+			`  "pr list")   echo "42"; exit 0 ;;\n` +
+			`esac\n` +
+			`echo "stub gh: close refused (test)" >&2\nexit 1\n`,
+		{ mode: 0o755 },
+	);
+	return { dir, binDir, ghLog };
+}
+const RS = scriptedGhSandbox();
+function rejectWith(args: string[]): string {
+	fs.writeFileSync(RS.ghLog, "");
+	spawnSync(path.join(BIN, "pr-reject"), args, {
+		encoding: "utf8",
+		timeout: 15_000,
+		cwd: RS.dir,
+		env: {
+			...process.env,
+			PATH: `${RS.binDir}${path.delimiter}${process.env.PATH}`,
+			GH_TOKEN: undefined,
+			GITHUB_TOKEN: undefined,
+		},
+	});
+	const lines = fs.readFileSync(RS.ghLog, "utf8").trim().split("\n").filter(Boolean);
+	return lines[lines.length - 1] ?? "";
+}
+
+const WANT = "pr close 42 --comment -1, multi word reason";
+// Quoted: one argv word. Green before #367 — this guards it.
+check(rejectWith(["--", "-1, multi word reason"]) === WANT,
+	'pr-reject -- "-1, multi word reason" → full reason reaches gh',
+	`gh argv was ${JSON.stringify(rejectWith(["--", "-1, multi word reason"]))}`);
+// Unquoted after `--`: four argv words. `REASON="${1:-}"` kept only "-1,".
+check(rejectWith(["--", "-1,", "multi", "word", "reason"]) === WANT,
+	"pr-reject -- -1, multi word reason → all words survive, joined",
+	`gh argv was ${JSON.stringify(rejectWith(["--", "-1,", "multi", "word", "reason"]))}`);
+// Unquoted with no `--`: the old `*) REASON="$1"` arm kept only the LAST word.
+check(rejectWith(["multi", "word", "reason"]) === "pr close 42 --comment multi word reason",
+	"pr-reject multi word reason → all words survive, joined",
+	`gh argv was ${JSON.stringify(rejectWith(["multi", "word", "reason"]))}`);
+
+fs.rmSync(RS.dir, { recursive: true, force: true });
 
 fs.rmSync(SB.dir, { recursive: true, force: true });
 

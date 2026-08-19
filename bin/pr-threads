@@ -186,8 +186,15 @@ USAGE
       # value starting with "-": GitHub's opaque node ids (PRRT_...) never
       # start with a dash, so this cannot reject a legitimate thread id, only
       # a following flag that got swallowed by mistake.
-      if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
+      if [ "$#" -eq 0 ]; then
         echo "pr-threads: --resolve requires a thread id" >&2
+        exit 2
+      fi
+      # #367: the refusal was right and the message did not say WHAT it refused —
+      # `--resolve --json` reported "requires a thread id" while a thread id was
+      # arguably present, just flag-shaped. Quote it, same as the #362 guards.
+      if [ "${1#-}" != "$1" ]; then
+        echo "pr-threads: --resolve requires a thread id, got the flag '$1'" >&2
         exit 2
       fi
       resolve_id="$1"; shift
@@ -217,8 +224,17 @@ USAGE
       ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
     *)
+      # #367: a THIRD positional used to fall through both branches and be
+      # dropped, so `pr-threads 5 owner/repo 7` reported on PR 5 while the caller
+      # had typed two PR numbers and could mean either. pr-merge takes the same
+      # hard line for the same reason (a second positional is a typo, never a
+      # second target) — refuse rather than pick one.
       if [ -z "$pr" ]; then pr="$1"
       elif [ -z "$repo" ]; then repo="$1"
+      else
+        echo "pr-threads: unexpected argument: $1" >&2
+        echo "usage: pr-threads <pr#> [owner/repo] [--json] [--resolve <thread-id> [--reply <text>]]" >&2
+        exit 2
       fi
       shift
       ;;
