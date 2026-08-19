@@ -2,8 +2,11 @@
 
 Corpus SHA: **`9b2a16e`** (`princess-pi-packages` `main`, before #158 landed) for F1–F4.
 **F5 pins its own corpus** — `bf4d104`, the commit before #382 landed — because a fixture
-is a tree *and* a question, and F5's question did not exist in the older tree. Each round
-declares its SHA in `prompts/<round>/FIXTURE_SHA`.
+is a tree *and* a question, and F5's question did not exist in the older tree. **Every round
+declares its SHA in `prompts/<round>/FIXTURE_SHA`** — rounds 1-2 carry `9b2a16e` explicitly
+rather than relying on the harness's fallback, and `tests/spec-163-spec-reconcile.test.ts`
+asserts every round directory has one. An env `FIXTURE_SHA` that contradicts a round's marker
+is refused (exit 5).
 Score auditor output in `runs/<round>/` against the five fixtures below.
 
 **The rule: a miss is a finding about the skill, never about the score.** Do not soften a
@@ -80,7 +83,7 @@ reach it, then change the skill.
 - **Counts as surfaced when:** the auditor quotes the host document's `intercept:` sentence
   AND cites the destination check in the hook as `path:line`. Naming the hook's behaviour
   without reaching the host document does **not** count — that is the control's result.
-- **Difficulty:** structural, not textual. **No prompt wording reaches this fixture.** The
+- **Difficulty:** structural, not textual. **No *rewording* of the audit instructions reaches this fixture — only naming the document does.** The
   drift is not in the corpus at all: `~/git-projects/` is not a git repository, so the file
   has no commit, no history, and appears in no changeset. Only §1's **reverse scope**
   (branch touches `hooks/` → Tier 4 activates) and §2 Tier 4's **enumerated set** put the
@@ -101,14 +104,16 @@ reach it, then change the skill.
   artifact. Nothing stronger. At `bf4d104` no tracked artifact carried that claim —
   `docs/dev-workflow-spec.md:449` says *"destination-aware, not a flat block list"* — but the
   control is expected to return plenty of *other* drift, and it does. **"Clean" means clean on
-  the F5 claim, never clean overall**; the 2026-08-19 control returned 60 findings, two of
+  the F5 claim, never clean overall**; the 2026-08-19 control returned 59 scoreable findings, two of
   which were filed as live bugs. A control that returns nothing at all is a dead auditor
   (check `STATUS.tsv`), not a result.
 - **Bonus signal:** a strong auditor reports the offending sentence **verbatim**, so the
   correction can be pinned as a claim-table entry (§2 Tier 4) rather than merely reworded.
-  Neither prompt asks for this — an earlier revision of C2 did, which made the signal
-  un-earnable by the control and therefore worthless. If you add that instruction back,
-  delete this row with it.
+  Both prompts ask for quoting *generally* (`quote the artifact line`), symmetrically, so
+  the signal stays earnable by either arm. What neither may carry is an instruction aimed
+  at **this sentence** — an earlier revision of C2 said "report the exact verbatim sentence",
+  which made the row un-earnable by the control and therefore worthless. If that goes back
+  in, delete this row with it.
 
 ---
 
@@ -124,20 +129,28 @@ reach it, then change the skill.
 | Glossary | `CONTEXT.md` has `## Language — Serve` and **no wtft section**. The auditor must say so and invent nothing. Applying serve's `_Avoid_` list to wtft is a **fail** — it is inventing a ruling |
 | Triage smell | Output grouped "most important first", or a stated word budget, means findings were dropped (§1 granularity) |
 | Absence declared (F5) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The auditor must SAY they are missing. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent. The absence is pinned by `tests/spec-163-spec-reconcile.test.ts`, which asserts `fixtures/host/` holds exactly the one expected file; adding either file silently inverts this row |
-| Auditor actually ran | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
+| Auditor actually ran (round 3 on) | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor, and its `#` header records the round, corpus SHA and model the transcripts came from. Rounds 1-2 predate the file and are exempt. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
 
 ## Result log
 
-> **Round 3 also paid for itself outside the fixture.** The control auditor surfaced two
-> live guardrail holes, both re-probed against `main` and filed: **#389** (`gh -R o/r pr
-> merge` walks the human-only gate) and **#390** (the hook fails *open* when `jq` is
-> unavailable). Both reproduced in the re-run. The host-scoped auditor added **#391** (`git revert` advances `main`
-> without a PR) and caught the hook's own banner **misquoting** the host document it cites
-> (**#392**) — a cross-document contradiction no repo-scoped audit can see, since one of
-> the two documents is in no repo.
+> **Round 3 also paid for itself outside the fixture** — four issues, each **re-probed
+> against current `main`** before filing rather than taken from a transcript:
+>
+> | Issue | What | Which arm found it |
+> |---|---|---|
+> | **#389** | `gh -R o/r pr merge` walks the human-only gate | **control** (`C1` D3), reproduced in both runs |
+> | **#390** | the hook fails *open* when `jq` is unavailable | **the superseded first run only** — see the caveat below |
+> | **#391** | `git revert` advances `main` without a PR | **both arms** (`C1` D12, `C2` A15) — not host-scoped |
+> | **#392** | the hook's banner misquotes the host doc it cites | **host-scoped arm only** — one of the two contradicting documents is in no repo |
+>
+> **Caveat, recorded rather than tidied away.** #390 was surfaced by the *first* round-3
+> run, whose transcripts the corrected re-run **overwrote** — neither committed transcript
+> mentions `jq`. The issue stands on its own re-probe against `main`, not on a transcript
+> you can read here. That erasure is why `run-backtest.sh` now refuses to write into a
+> non-empty `OUT` (exit 4): a harness that can destroy its own evidence will.
 
 | Round | Prompts | F1 | F2 | F3 | F4 | F5 | Notes |
 |---|---|---|---|---|---|---|---|
 | 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | — | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
 | 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | — | 4 of 4. Also surfaced two drifts still live on `main` |
-| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only.** C2 (53 findings) quotes `host/git-projects-CLAUDE.md:24`'s `intercept: git push` sentence against `block-dangerous-git.sh:477`, measured (`git push origin 42-feat` from `main` → exit 0), and declares both staged-but-absent host files. C1 — byte-identical prompt minus the enumeration block, **same corpus, host document present on disk** — returned 60 findings and **zero mentions of `host/`**: it never opened the file, because nothing pointed it there. `STATUS.tsv`: both arms exit 0 |
+| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only.** C2 (52 scoreable findings; 53 labelled, one self-declared "not a finding") quotes `host/git-projects-CLAUDE.md:24`'s `intercept: git push` sentence against `block-dangerous-git.sh:477`, measured (`git push origin 42-feat` from `main` → exit 0), and declares both **prompt-named but deliberately absent** host files. C1 — byte-identical prompt minus the enumeration block, **same corpus, host document present on disk** — returned 59 scoreable findings (60 labelled) and **zero mentions of `host/`**: it never opened the file, because nothing pointed it there. `STATUS.tsv`: both arms exit 0 |

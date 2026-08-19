@@ -34,7 +34,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import * as os from "node:os";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const CORPUS_SHA = "9b2a16e";
@@ -165,12 +166,62 @@ try {
 }
 check(`F5 corpus SHA ${F5_SHA} is reachable from this clone`, f5Reachable);
 
+// Probe the hook's BEHAVIOUR at that SHA, not its banner comment. Verifying a comment as
+// a proxy for behaviour is the exact drift class F5 exists to measure, so this suite must
+// not do it (#383 review). The hook is materialised from the frozen tree and run for real.
+function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "error" {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-probe-"));
+	try {
+		const hook = path.join(dir, "hook.sh");
+		fs.writeFileSync(hook, atSha(F5_SHA, "hooks/block-dangerous-git.sh"));
+		const repo = path.join(dir, "repo");
+		fs.mkdirSync(repo);
+		execFileSync("git", ["init", "-q", "-b", branch, repo]);
+		const res = spawnSync("bash", [hook], {
+			input: JSON.stringify({ tool_input: { command, cwd: repo } }),
+			encoding: "utf8",
+		});
+		if (res.status === 0) return "allow";
+		if (res.status === 2) return "block";
+		return "error";
+	} catch {
+		return "error";
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 check(
-	"F5: the hook at that SHA already gated push on DESTINATION",
-	f5Hook.includes("push whose DESTINATION ref is main/master"),
+	"F5: the hook at that SHA in fact ALLOWED a feature-branch push (measured, not read)",
+	f5Reachable && hookVerdictAtF5("git push origin 42-feat", "42-feat") === "allow",
 );
 check(
-	"F5: no tracked artifact at that SHA claimed push was blocked outright — the control's F5-clean result",
+	"F5: …and blocked a push whose destination was main — so the gate was on DESTINATION",
+	f5Reachable && hookVerdictAtF5("git push origin main", "42-feat") === "block",
+);
+// The control's F5-clean result is only evidence if the claim was absent from the WHOLE
+// tracked tree, not merely contradicted in one file. `git grep` at the frozen SHA is the
+// check the old label promised and did not make.
+let claimInTracked: string[] = [];
+try {
+	claimInTracked = execFileSync(
+		"git",
+		["-C", REPO, "grep", "-l", "-F", "intercept: `git push`", F5_SHA],
+		{ encoding: "utf8" },
+	)
+		.trim()
+		.split("\n")
+		.filter(Boolean);
+} catch {
+	claimInTracked = []; // git grep exits 1 when nothing matches — the expected case
+}
+check(
+	"F5: NO tracked file at that SHA carried the false claim — which is what makes the control's clean result evidence",
+	claimInTracked.length === 0,
+	`found in: ${JSON.stringify(claimInTracked)}`,
+);
+check(
+	"F5: the tracked spec at that SHA said the opposite, in as many words",
 	f5Spec.includes("destination-aware, not a flat block list"),
 );
 
@@ -373,9 +424,16 @@ check(
 // alone cannot tell the two apart — check the recorded exit status and the marker.
 const R3 = "research/spec-reconcile-backtest/runs/round3-host-scope";
 const statusPath = path.join(REPO, R3, "STATUS.tsv");
-const statusRows = fs.existsSync(statusPath)
-	? readRepo(`${R3}/STATUS.tsv`).trim().split("\n").slice(1)
-	: [];
+const statusText = fs.existsSync(statusPath) ? readRepo(`${R3}/STATUS.tsv`) : "";
+const statusRows = statusText
+	.trim()
+	.split("\n")
+	.filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("auditor\t"));
+check(
+	"round 3's STATUS.tsv records the corpus its transcripts came from",
+	/^# round=round3-host-scope fixture_sha=bf4d104 /.test(statusText),
+	statusText.split("\n")[0] ?? "(empty)",
+);
 check(
 	"round 3 recorded a per-auditor exit status for both arms",
 	statusRows.length === 2,
@@ -397,15 +455,44 @@ for (const arm of ["C1-guardrails-repo-only-control", "C2-guardrails-host-scoped
 
 // The manipulation between the two arms must be scope and nothing else. If they differ
 // anywhere but the host-document block, the round measures prompt wording, not scope.
-const promptOf = (n: string): string[] =>
-	readRepo(`research/spec-reconcile-backtest/prompts/round3-host-scope/${n}.txt`).split("\n");
-const onlyInC2 = promptOf("C2-guardrails-host-scoped").filter(
-	(l) => l.trim() && !promptOf("C1-guardrails-repo-only-control").includes(l),
+// The stated invariant is bidirectional — "byte-identical apart from one block" — so a
+// one-directional membership test is not it: an instruction DELETED from C2, or added to
+// C1 only, or a reordering, each turns the round into a measurement of prompt wording
+// while a set-difference check stays green (#383 review).
+const promptLines = (n: string): string[] =>
+	safeRead(`research/spec-reconcile-backtest/prompts/round3-host-scope/${n}.txt`).split("\n");
+const c1Lines = promptLines("C1-guardrails-repo-only-control");
+const c2Lines = promptLines("C2-guardrails-host-scoped");
+const isHostBlock = (l: string): boolean =>
+	/host|artifact set is not the diff/i.test(l) || l.trim() === "";
+
+// Delete C2's host block, then the two prompts must be identical LINE FOR LINE, in order.
+const c2WithoutHostBlock: string[] = [];
+{
+	let i = 0;
+	for (const line of c2Lines) {
+		if (c1Lines[i] === line) {
+			c2WithoutHostBlock.push(line);
+			i++;
+		} else if (isHostBlock(line)) {
+			continue; // part of the enumeration block C2 is allowed to add
+		} else {
+			c2WithoutHostBlock.push(line);
+		}
+	}
+}
+const identical =
+	c1Lines.length > 0 && JSON.stringify(c2WithoutHostBlock) === JSON.stringify(c1Lines);
+check(
+	"C1 and C2 are identical line-for-line once C2's host-enumeration block is removed",
+	identical,
+	identical
+		? ""
+		: `C1 has ${c1Lines.length} lines; C2-minus-host-block reduces to ${c2WithoutHostBlock.length}`,
 );
 check(
-	"C1 and C2 differ only by the block that enumerates the host documents",
-	onlyInC2.length > 0 && onlyInC2.every((l) => /host|artifact set is not the diff/i.test(l)),
-	`unexpected extra instruction in C2: ${JSON.stringify(onlyInC2.filter((l) => !/host|artifact set is not the diff/i.test(l)))}`,
+	"C2 does add the host-enumeration block — otherwise there is no manipulation at all",
+	c2Lines.some((l) => l.includes("./host/git-projects-CLAUDE.md")),
 );
 
 check(
@@ -413,6 +500,27 @@ check(
 	safeRead("research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA").trim() ===
 		F5_SHA,
 );
+const PROMPT_ROOT = path.join(REPO, "research/spec-reconcile-backtest/prompts");
+const rounds = fs.existsSync(PROMPT_ROOT) ? fs.readdirSync(PROMPT_ROOT).sort() : [];
+check(
+	"every round directory declares its own corpus SHA — the rule RUBRIC states",
+	rounds.length >= 3 &&
+		rounds.every((r) => fs.existsSync(path.join(PROMPT_ROOT, r, "FIXTURE_SHA"))),
+	`rounds without FIXTURE_SHA: ${JSON.stringify(rounds.filter((r) => !fs.existsSync(path.join(PROMPT_ROOT, r, "FIXTURE_SHA"))))}`,
+);
+check(
+	"the harness refuses to overwrite a scored transcript set",
+	harness.includes("refusing to overwrite it") && harness.includes('"${OVERWRITE:-0}"'),
+);
+check(
+	"the harness ships an exit-code table and a --help that prints it",
+	harness.includes("exit codes: 0 ok") && harness.includes("-h|--help"),
+);
+check(
+	"an env FIXTURE_SHA that contradicts the round's marker is refused",
+	harness.includes("contradicts round") && harness.includes("OVERRIDE_SHA"),
+);
+
 check(
 	"RUBRIC records F5 and its own SHA, so the record stays third-party checkable",
 	(() => {

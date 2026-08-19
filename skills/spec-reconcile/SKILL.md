@@ -409,11 +409,19 @@ The corpus, the prompts as run, and the scoring rubric are in
 `princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1,
 §2's Tier 4, or §4** — those sections are measured artifacts now, not prose:
 
+**One invocation runs one round.** Re-measuring after a §1/§4 edit means all three:
+
 ```
-research/spec-reconcile-backtest/run-backtest.sh                       # rounds 1-2, SHA 9b2a16e
-ROUND=round3-host-scope research/spec-reconcile-backtest/run-backtest.sh   # F5, SHA bf4d104
-# then score against RUBRIC.md
+B=research/spec-reconcile-backtest/run-backtest.sh
+ROUND=round1-as-written $B    # F1-F4, skill as written during #158, SHA 9b2a16e
+ROUND=round2-fixed      $B    # F1-F4, post-fix — the harness default, SHA 9b2a16e
+ROUND=round3-host-scope $B    # F5, Tier 4, SHA bf4d104
+# then score every runs/<round>/ against RUBRIC.md
 ```
+
+Each round writes into its own tracked `runs/<round>/` and **refuses to overwrite a scored
+transcript set** (exit 4) — pass `OUT=` to write elsewhere, or `OVERWRITE=1` when you mean
+to replace the record. `run-backtest.sh --help` carries the exit-code table.
 
 If a fixture regresses, **fix the skill, not the score.** A miss is a finding about this
 file.

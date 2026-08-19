@@ -1,3 +1,4 @@
+# round=round3-host-scope fixture_sha=bf4d104 model=opus
 auditor	exit
 C1-guardrails-repo-only-control	0
 C2-guardrails-host-scoped	0

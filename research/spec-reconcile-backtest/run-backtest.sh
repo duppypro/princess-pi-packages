@@ -17,8 +17,28 @@
 # ran and found nothing. So a mistyped ROUND, a zero-prompt round, a missing overlay, and
 # a non-zero auditor all exit non-zero, and every auditor's exit status is recorded in
 # STATUS.tsv beside its transcript.
+#
+# usage: run-backtest.sh          # ROUND defaults to round2-fixed — ONE round per run
+#        ROUND=round1-as-written run-backtest.sh
+#        ROUND=round3-host-scope run-backtest.sh
+#        run-backtest.sh -h | --help
+#
+# env: ROUND · FIXTURE_SHA (must match the round's marker unless OVERRIDE_SHA=1) ·
+#      OUT · MODEL · REPO · OVERWRITE (=1 to replace a committed transcript set)
+#
+# exit codes: 0 ok · 2 usage (no such round, round has no prompts)
+#             3 corpus (overlay missing, corpus already carries host/)
+#             4 refused (OUT already holds transcripts; set OVERWRITE=1)
+#             5 sha (env FIXTURE_SHA contradicts the round marker; set OVERRIDE_SHA=1)
+#             1 at least one auditor exited non-zero — see STATUS.tsv
 # ---
 set -euo pipefail
+
+case "${1:-}" in
+	-h|--help) sed -n '/^# usage:/,/^# ---$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//;$d'; exit 0 ;;
+	"") ;;
+	*) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
+esac
 
 REPO="${REPO:-$(git rev-parse --show-toplevel)}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +58,12 @@ else
 	DEFAULT_SHA="9b2a16e"
 fi
 FIXTURE_SHA="${FIXTURE_SHA:-$DEFAULT_SHA}"
+if [ "$FIXTURE_SHA" != "$DEFAULT_SHA" ] && [ "${OVERRIDE_SHA:-0}" != "1" ]; then
+	echo "FIXTURE_SHA=$FIXTURE_SHA contradicts round $ROUND's marker ($DEFAULT_SHA)." >&2
+	echo "A round's prompts are written against its own tree; scoring a foreign one is not a result." >&2
+	echo "Set OVERRIDE_SHA=1 if that is genuinely what you want." >&2
+	exit 5
+fi
 
 # --- Default OUT to the round's own directory, which is what RUBRIC.md scores and what
 #     tests/spec-163-spec-reconcile.test.ts checks. A timestamped default wrote somewhere
@@ -49,7 +75,9 @@ MODEL="${MODEL:-opus}"
 
 shopt -s nullglob
 PROMPTS=("$PROMPT_DIR"/*.txt)
-[ "${#PROMPTS[@]}" -gt 0 ] || { echo "round $ROUND contains no *.txt prompts" >&2; exit 2; }
+# `${#arr[@]}` on an empty array is an unbound-variable error under `set -u` on bash < 4.4
+# (macOS ships 3.2), which would exit 1 with no message instead of the refusal below.
+[ -n "${PROMPTS[0]:-}" ] || { echo "round $ROUND contains no *.txt prompts" >&2; exit 2; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/spec-reconcile-backtest-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -60,6 +88,14 @@ echo "output    : $OUT"
 echo "round     : $ROUND"
 echo "auditors  : ${#PROMPTS[@]}"
 echo "model     : $MODEL"
+# The default OUT is the round's TRACKED directory, which RUBRIC.md scores and
+# tests/spec-163 asserts non-empty. A bare re-run must not destroy that record — the
+# #383 re-run did exactly this and erased the transcript that justified issue #390.
+if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ] && [ "${OVERWRITE:-0}" != "1" ]; then
+	echo "$OUT already holds a scored transcript set; refusing to overwrite it." >&2
+	echo "Set OVERWRITE=1 to replace it, or OUT=<path> to write elsewhere." >&2
+	exit 4
+fi
 mkdir -p "$OUT"
 
 git -C "$REPO" archive "$FIXTURE_SHA" | tar -x -C "$WORK"
@@ -86,7 +122,8 @@ fi
 #     That is the strictest available reading of §4's "no session history": a fresh
 #     process cannot inherit the orchestrator's assumptions even accidentally.
 STATUS="$OUT/STATUS.tsv"
-printf 'auditor\texit\n' > "$STATUS"
+printf '# round=%s fixture_sha=%s model=%s\n' "$ROUND" "$FIXTURE_SHA" "$MODEL" > "$STATUS"
+printf 'auditor\texit\n' >> "$STATUS"
 worst=0
 for p in "${PROMPTS[@]}"; do
 	name="$(basename "$p" .txt)"
