@@ -1,0 +1,253 @@
+{
+  "branch": "377-pr-review-gate",
+  "base": "3c91377d20d644adac2a50c0f4d6874fdc60c242",
+  "utc": "2026-08-19T07-39-51Z",
+  "lenses": [
+    "correctness",
+    "reasoning",
+    "contract"
+  ],
+  "failedLenses": [],
+  "findings": [
+    {
+      "severity": "High",
+      "file": "bin/pr-review",
+      "line": 141,
+      "title": "Diffs over ~128KB make every lens fail silently; PR opens unreviewed",
+      "detail": "The whole diff is interpolated into a single argv string (`args=(-p \"$prompt\" ...)`). Linux caps one argument at MAX_ARG_STRLEN (131072 bytes), so `claude` fails with E2BIG for any branch whose `git diff --unified=8` exceeds that. Verified empirically: a 249KB diff produced `3 of 3 lenses failed`, exit 0, and pr-open proceeds to create the PR. The failure is size-triggered, so the largest changes \u2014 the ones most in need of review \u2014 are exactly the ones never reviewed. Pass the prompt on stdin (`claude -p - `/ heredoc) or a file instead of argv, and/or cap+chunk the diff.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "High",
+      "file": "bin/pr-review",
+      "line": 191,
+      "title": "Prints '\u2705 no findings across 3 lenses' when all 3 lenses failed",
+      "detail": "The clean-result message is gated only on `COUNT -eq 0`, never on `NFAILED`. When every lens fails, output is `\u26a0\ufe0f 3 of 3 lenses failed` (stderr) immediately followed by `\u2705 pr-review: no findings across 3 lenses` (stdout) \u2014 verified in the 249KB-diff run above. This directly contradicts the file's own stated invariant at line 165 (\"A lens that failed is reported as a failed lens, never as a clean one \u2014 'no findings' and 'could not look' are different facts and must not merge\"). Anything reading the last stdout line, human or agent, records a clean review that never happened. Gate the \u2705 on `NFAILED -eq 0` and emit a distinct 'coverage incomplete' line otherwise.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "High",
+      "file": "bin/pr-review",
+      "line": 182,
+      "title": "--json emits two concatenated JSON documents, so any strict parser fails",
+      "detail": "The collector heredoc unconditionally `print(json.dumps({\"findings\": n, \"failed\": [...]}))` to stdout, and the `--json` branch then `cat \"$LOG\"`. Verified: `pr-review --json` outputs `{\"findings\": 0, \"failed\": []}` followed by the full log object. `JSON.parse`/`json.load` reject that; only a streaming reader survives. The same stray line also pollutes human output and is printed mid-run by pr-open. Send the collector's summary to stderr (or to a file the shell reads), not stdout.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 40,
+      "title": "Log dir is only gitignored in this repo \u2014 elsewhere git-checkpoint commits the logs",
+      "detail": "`LOG_DIR` defaults to the relative path `.claude/pr-review`, and pr-review is installed to ~/bin and invoked by pr-open in every repo. Only princess-pi-packages adds `.claude/pr-review/` to .gitignore; checked every repo under ~/git-projects and none of the others match \u2014 including `btw`, the repo btw#59's experiment runs in. The next `git-checkpoint`'s `git add -A` there sweeps every review log into the branch being reviewed, which is precisely the failure the new .gitignore hunk says it exists to prevent. Write to a repo-independent location (e.g. under `$XDG_STATE_HOME`/`~/.claude/pr-review/<repo>/`), or have pr-review append the ignore rule it depends on.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 89,
+      "title": "A failed `git diff` is reported as 'no changes \u2014 nothing to review' and exits 0",
+      "detail": "`DIFF=$(git diff ... 2>/dev/null || true)` collapses every git failure into an empty string, and the next branch treats empty as 'nothing to review' and exits 0 \u2014 which pr-open reads as a clean gate. A bogus `--base` ref, a corrupt object, or a shallow clone therefore opens the PR with no review and a message asserting there was nothing to review. Capture git's status separately: empty output with status 0 is 'no changes'; nonzero status is a reviewer error and should say so.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 143,
+      "title": "The reason a lens failed is captured then deleted unread",
+      "detail": "Each lens redirects stderr to `$WORK/$lens.err`, but nothing ever reads those files and the EXIT trap `rm -rf \"$WORK\"` destroys them. The only signal left is the count `N of 3 lenses failed`, with no cause \u2014 so E2BIG, missing auth, rate limit, and a crashed CLI are indistinguishable, and since the script fails open the operator has no way to learn why reviews stopped happening. Copy the first lines of each failing lens's stderr into the log's `failedLenses` entries.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 104,
+      "title": "Second-resolution log filename silently overwrites a prior run's evidence",
+      "detail": "`LOG` is `<branch>-<UTC to the second>.json` with no collision handling. Two runs inside the same second write the same path; verified \u2014 two consecutive invocations left exactly one file in the log dir. These logs are the evidence artifact for the btw#59 comparison, so a lost run is lost measurement, not just a lost file. Add a counter/PID suffix, or refuse to clobber an existing path.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "Low",
+      "file": "bin/pr-review",
+      "line": 178,
+      "title": "A lens whose JSON is unparseable is filed as 'failed', hiding real findings",
+      "detail": "The collector's outermost-object heuristic (`text.find('{')` .. `text.rfind('}')`) plus the blanket `except Exception: failed.append(lens)` means a lens that genuinely found defects but wrapped or fenced them unexpectedly is recorded as a lens that could not look. Findings are then dropped, `COUNT` stays 0, and the PR opens. Distinguish 'reviewer error' from 'response unparseable' and keep the raw text in the log so a dropped finding is recoverable.",
+      "lens": "correctness"
+    },
+    {
+      "severity": "High",
+      "file": "bin/pr-review",
+      "line": 191,
+      "title": "\"no findings across 3 lenses\" is printed when lenses failed \u2014 the exact merge the code comment says it prevents",
+      "detail": "Line 152 states the invariant: \"A lens that failed is reported as a failed lens, never as a clean one \u2014 'no findings' and 'could not look' are different facts and must not merge.\" The success line at 191 hardcodes ${#LENSES[@]} (the DECLARED lens count), not the count that actually returned. Verified empirically: with 1 of 3 lenses failing and 0 findings, stdout is `\u2705 pr-review: no findings across 3 lenses` while stderr separately says `1 of 3 lenses failed`, and the exit code is 0. The stdout claim of 3-lens coverage is false, and the two lines contradict each other in the same run. Compute the ran count as ${#LENSES[@]} - NFAILED and print that, or refuse the \u2705 wording whenever NFAILED > 0.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "High",
+      "file": "bin/pr-review",
+      "line": 182,
+      "title": "Uncaptured python print leaks a second JSON document onto stdout, breaking --json",
+      "detail": "The heredoc python at 154-183 ends with `print(json.dumps({\"findings\": len(findings), \"failed\": failed}))`, but its stdout is not captured \u2014 the summary is recomputed separately at 185 via a second `python3 -c`. Verified: every run emits `{\"findings\": 0, \"failed\": []}` on stdout before any other output. Under `--json` the output is therefore TWO concatenated JSON documents, and the key `findings` is an integer in the first and an array in the second \u2014 `JSON.parse`/`json.load` on the output fails, and a consumer that reads only the first document gets a count under a key that means a list everywhere else. Redirect that print to /dev/null (or capture it and drop the redundant second python3 call).",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "High",
+      "file": "bin/install-workflow-tools",
+      "line": 199,
+      "title": "Adding pr-review to SCRIPTS without documenting it breaks tests/dev-workflow-spec-consistency.test.ts",
+      "detail": "That suite asserts every entry of install-workflow-tools' SCRIPTS array appears backtick-wrapped in BOTH docs/dev-workflow-spec.md's Scripts table and CLAUDE.md's Shipped scripts table (#234, \"the Three scripts / seven installed bug, caught mechanically\"). This diff adds `pr-review` to SCRIPTS and touches neither document. Ran it on this branch: `\u274c dev-workflow-spec consistency: 31 of 33 checks passed` \u2014 one failure per table. `bun run test` is red on this branch. Add the pr-review row to both tables.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Medium",
+      "file": ".gitignore",
+      "line": 46,
+      "title": "The \"never committed\" guarantee holds only when pr-review runs from the repo root",
+      "detail": "The comment claims the logs are \"never committed \u2014 git-checkpoint's `git add -A` would otherwise sweep every run into the branch it was reviewing.\" LOG_DIR defaults to the RELATIVE path `.claude/pr-review` (bin/pr-review:40) and neither pr-review nor pr-open cd to the toplevel, so an invocation from a subdirectory writes `<subdir>/.claude/pr-review/`. A gitignore pattern containing an interior slash is anchored to the .gitignore's own directory: verified with `git check-ignore` \u2014 root path ignored, `sub/.claude/pr-review/a.json` NOT-IGNORED, and `git add -A` stages it. Resolve LOG_DIR against `git rev-parse --show-toplevel`, or write the pattern as `**/.claude/pr-review/`.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 65,
+      "title": "--quiet is advertised in usage but suppresses nothing on the normal path",
+      "detail": "QUIET is read exactly once (line 97), guarding only the \"no changes against $BASE\" message \u2014 a path that also exits immediately. Verified: `pr-review --quiet` on a real diff still prints the leaked summary JSON and the \u2705/\ud83d\udd0e line to stdout. A flag listed in `usage:` that has no effect on the output it appears to name is a stated contract the code does not enforce. Either gate the 191/193 summary block on QUIET or drop the flag.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 193,
+      "title": "The reported finding count is per-lens and undeduplicated, so the btw#59 evidence it produces is not comparable to a reviewer's count",
+      "detail": "COUNT sums findings across all three lenses with no dedup (tests/pr-review-gate.test.ts:171 asserts this deliberately: one stub finding becomes 3 log entries). The printed \"$COUNT finding(s)\" and the log's `findings` array therefore inflate by up to 3x relative to distinct defects. The .gitignore comment and the header both state the logs exist so \"a later pass can diff what our gate caught against what a paid reviewer still found\" \u2014 but the header's own baseline (\"Macroscope raised 11 findings\") is a deduplicated per-reviewer count. Comparing an up-to-3x-inflated number against it is a units mismatch that will overstate the intervention arm. Record a distinct-defect count (file+line+title key) alongside the raw per-lens list.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 150,
+      "title": "No timeout on the reviewer \u2014 the \"can never become a broken release path\" guarantee covers nonzero exits but not hangs",
+      "detail": "bin/pr-review:27-30 and bin/pr-open:305-306 both assert a broken reviewer can never block the release path. The code enforces that only for a reviewer that EXITS nonzero: `claude` is invoked at 142 with no timeout and `wait` at 150 blocks unconditionally, so a hung or rate-limit-stalled reviewer wedges pr-open indefinitely \u2014 the failure mode the comment explicitly names (\"a wedged pr-open costs the workflow\"). Wrap each lens in `timeout <N>` and treat expiry as a failed lens.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 141,
+      "title": "Three subagents dispatched with no explicit model, contradicting the repo's mandatory routing rule and the zero-cost claim",
+      "detail": "`args=(-p \"$prompt\" --output-format json)` adds `--model` only when PR_REVIEW_MODEL is set, which defaults empty (line 41) \u2014 so all three lenses silently inherit the caller's model. ~/git-projects/CLAUDE.md states: \"Every subagent dispatch (Agent tool) and every Workflow agent() call MUST carry an explicit model \u2014 spawns silently inherit the main-loop model otherwise, running mechanical work at flagship pricing.\" Line 132's \"Marginal cost is zero under the subscription, so there is no reason to serialise or to run fewer\" is also not derivable \u2014 it asserts a pricing model the script cannot observe, and it is the justification for tripling the per-PR call count. Default PR_REVIEW_MODEL to a named model.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Low",
+      "file": "bin/pr-review",
+      "line": 6,
+      "title": "Cited cost figures are not reconcilable with each other or with the sample size stated in the test",
+      "detail": "$143.56 over 8 days at $1.28 per PR implies ~112 PRs in 8 days (~14/day); tests/pr-review-gate.test.ts:6 says the same experiment \"measures over 35 real PRs\" \u2014 the two sample sizes are off by ~3x with no bridging note, and neither number is derivable from anything in the repo. Separately, line 29 prices the asymmetry as \"a missed review costs a $0.50 Macroscope finding\" using the per-run FLOOR, while line 6's own per-PR average is $1.28 \u2014 the argument for failing open understates its own downside by ~2.6x. Cite the btw#59 comment these come from, and use the same statistic on both lines.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Low",
+      "file": "bin/pr-open",
+      "line": 128,
+      "title": "Leftover-argument error still claims pr-open takes no arguments after --reviewed became one",
+      "detail": "`pr-open --reviewed foo` reaches line 127 (--reviewed is shifted off first) and prints \"unexpected argument: foo \u2014 pr-open takes no arguments.\" That is now false: the same commit adds `pr-open --reviewed` to the usage block and documents it as accepted. The message misdirects a caller who used the documented flag correctly and merely added one word. Reword to \"takes no arguments other than --reviewed\", matching the new help text's \"Takes no other arguments\".",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "Low",
+      "file": "bin/pr-review",
+      "line": 104,
+      "title": "Log filenames are second-resolution with no uniquifier, so two runs in the same second silently overwrite",
+      "detail": "LOG is `<branch>-<YYYY-MM-DDTHH-MM-SSZ>.json`. Two pr-review runs in the same wall-clock second (a retry after a fixed finding, or a scripted loop) write the same path and the earlier run's evidence is lost with no warning \u2014 while tests/pr-review-gate.test.ts:163 asserts \"one log per run\" as a property. Append $$ or a counter, or refuse to clobber an existing log.",
+      "lens": "reasoning"
+    },
+    {
+      "severity": "High",
+      "file": "bin/pr-review",
+      "line": 182,
+      "title": "Stray summary JSON on stdout corrupts the --json contract",
+      "detail": "The collector heredoc ends with `print(json.dumps({\"findings\": ..., \"failed\": ...}))` on unredirected stdout. In `--json` mode line 188 then `cat`s the log, so stdout carries TWO concatenated JSON documents \u2014 `{\"findings\":1,\"failed\":[]}` followed by the full log object. `pr-review --json | jq .findings` reads the wrong document; any single-document parser (json.load, JSON.parse) throws. The value is also never consumed by the shell (line 184 re-reads the log with a second python3 call instead), so it is pure output pollution: in human mode it prints a raw JSON line above the \u2705/\ud83d\udd0e summary. Redirect it to /dev/stderr or drop it and have the shell consume it.",
+      "lens": "contract"
+    },
+    {
+      "severity": "High",
+      "file": "bin/pr-review",
+      "line": 89,
+      "title": "`|| true` converts a git failure into a clean review",
+      "detail": "`DIFF=$(git diff --unified=8 \"$BASE\"...HEAD 2>/dev/null || true)` discards both git's stderr and its exit status. Any git failure \u2014 a bad `--base` ref supplied by the user, an unreadable object, a broken repo \u2014 yields an empty DIFF, which line 90 reports as `no changes against $BASE \u2014 nothing to review` and exits 0. pr-open (bin/pr-open:317) reads that 0 as 'reviewed, clean' and opens the PR. The two facts 'the diff is empty' and 'the diff could not be computed' are merged into the one that opens PRs unreviewed \u2014 the same merge the collector comment at line 152 explicitly forbids for lenses. Check git's status separately and exit 3 when the diff command itself failed.",
+      "lens": "contract"
+    },
+    {
+      "severity": "High",
+      "file": "bin/install-workflow-tools",
+      "line": 199,
+      "title": "pr-review ships in SCRIPTS but fails three existing repo gates",
+      "detail": "Adding `pr-review` to the SCRIPTS manifest activates three enforcement tests that this branch does not satisfy; both were run on this branch and fail. (1) tests/dev-workflow-spec-consistency.test.ts: `\u274c spec's Scripts table names 'pr-review'` and `\u274c CLAUDE.md's Shipped scripts table names 'pr-review'` \u2014 neither docs/dev-workflow-spec.md nor CLAUDE.md mentions pr-review at all (`grep -c` returns 0 for both). (2) tests/shell-scripts-version.test.ts: `\u274c 87 of 88 checks passed` \u2014 its literal SCRIPTS list and the assertion 'SCRIPTS manifest matches every extensionless file in bin/' now disagree with bin/. pr-review also has no `--version` flag (line 66's `*)` arm refuses it with exit 2), breaking the #178 contract that every shipped script prints its resolved running path \u2014 the exact contract that test exists to enforce by name for a new script.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 191,
+      "title": "Partial coverage reported as a complete clean pass",
+      "detail": "When lenses fail, line 189 writes `N of 3 lenses failed \u2014 coverage is incomplete` to STDERR, then line 191 writes `\u2705 pr-review: no findings across ${#LENSES[@]} lenses` to STDOUT \u2014 a hardcoded 3, not the number that actually ran. With 2 of 3 lenses dead, the success line claims three lenses looked and found nothing. The exit code is 0 on both paths, so pr-open cannot tell the difference either. Report the count of lenses that actually completed (`3 - NFAILED`) in the success line, and make the incomplete-coverage case visible in the same stream as the verdict.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 91,
+      "title": "--json emits non-JSON or nothing on three exit paths",
+      "detail": "`--json` is only honoured at line 188. The earlier exits ignore it: line 91 prints the human line `\ud83d\udd0d pr-review: no changes against $BASE` to stdout (invalid JSON on the machine-readable surface), line 100 exits 0 with an empty stdout when `claude` is absent, and the precondition exits at lines 79/84/87 emit nothing. A consumer doing `pr-review --json | jq` gets a parse error on the empty-diff path and empty input on the fail-open path \u2014 the exact case a machine reader most needs to distinguish ('nothing to review' vs 'reviewer unavailable' vs 'clean'). Emit the same envelope shape (with `failedLenses`/a status field) on every exit path when `--json` is set.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-open",
+      "line": 45,
+      "title": "Exit code 7 documented in --help but absent from the script's own exit-code table",
+      "detail": "The `--help` heredoc now lists `7 review found issues, PR not created`, but the header block at lines 43-59 \u2014 labelled 'Exit codes (#224 contract, shared table: docs/dev-workflow-spec.md)' \u2014 still enumerates 0,2,3,4,5,6 only and closes with 'pr-open never leaks git's raw exit status \u2014 every push failure is mapped to one of these two.' The referenced shared table in docs/dev-workflow-spec.md is likewise unchanged, and CLAUDE.md's script table still reads 'Takes **no arguments** \u2014 it opens the PR for the worktree it runs in, and a branch name is refused', which `--reviewed` now contradicts. Three documentation surfaces disagree with the code about both the exit-code set and the accepted arguments.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 184,
+      "title": "$LOG interpolated into python3 -c \u2014 breaks on quoting, and PR_REVIEW_LOG_DIR is unvalidated",
+      "detail": "Lines 184 and 194 build python source by string-interpolating `$LOG` inside single quotes: `json.load(open('$LOG'))`. Only `/` is sanitized out of the branch name (line 141, `${BRANCH//\\//-}`); git permits apostrophes and other python/shell-significant characters in ref names, and `PR_REVIEW_LOG_DIR` is an unvalidated environment variable. A path containing `'` produces a SyntaxError (uncaught, `set -e` kills the run with an undocumented exit code) or, with a crafted value, executes arbitrary python in the release path. The collector heredoc directly above already does this correctly by passing paths as `sys.argv`; do the same for both `-c` calls.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 180,
+      "title": "python3 is an unchecked hard dependency with undocumented failure exits",
+      "detail": "The script's documented exit codes are 0/2/3/7 (header lines 30-34 and the usage text at line 55). Lines 155, 184 and 194 shell out to `python3` with no `command -v` guard \u2014 unlike `claude`, which gets an explicit fail-open check at line 96 precisely so 'the message names the real cause'. On a host without python3, or if the collector raises before writing the log, `set -euo pipefail` aborts with 127/1/2: an exit code that appears in no table, and that pr-open:323 reports to the user as `pr-review exited 127 \u2014 proceeding unreviewed` with no indication that the cause is a missing interpreter rather than a broken reviewer. Guard python3 the same way claude is guarded.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Medium",
+      "file": "bin/pr-review",
+      "line": 126,
+      "title": "Whole diff embedded in argv with no size cap; overflow degrades to a silent fail-open",
+      "detail": "`args=(-p \"$prompt\" ...)` passes the entire `git diff --unified=8` output as a single command-line argument, once per lens. A large branch diff hits ARG_MAX (E2BIG, exec failure) or the model's context limit; either way the lens exits nonzero, is recorded as a failed lens, and \u2014 if all three fail \u2014 the script prints an incomplete-coverage warning to stderr and exits 0, so pr-open opens the PR. There is no size threshold, no documented limit, and no distinct message for 'the diff was too big to review', so the failure mode that most correlates with risky PRs (the largest ones) is the one most likely to sail through the gate. Pass the diff on stdin or via a file reference, and report an over-size diff as its own outcome.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Low",
+      "file": "bin/pr-review",
+      "line": 130,
+      "title": "Per-lens stderr is captured, never surfaced, then deleted",
+      "detail": "Each lens writes stderr to `$WORK/$lens.err`, but nothing ever reads that file and the `trap 'rm -rf \"$WORK\"' EXIT` at line 145 removes it. When a lens fails the user is told only `N of 3 lenses failed`, and the JSON log records just the lens name in `failedLenses` \u2014 the reason (auth expired, rate limit, context overflow, binary crash) is discarded at the moment it is most needed to decide whether the fail-open was safe. Copy the captured stderr (or its first lines) into the log's failedLenses entries.",
+      "lens": "contract"
+    },
+    {
+      "severity": "Low",
+      "file": "bin/pr-review",
+      "line": 64,
+      "title": "--quiet suppresses only one message; terminal flags accept trailing arguments",
+      "detail": "`--quiet` is documented in the usage block but guards exactly one line (91's 'no changes' notice); the \u2705/\ud83d\udd0e summary, the per-finding dump and the incomplete-coverage warning all still print, so the flag does not deliver what its name contracts. Separately, the option loop lets `-h`/`--help` short-circuit at line 63 with other arguments still on the line: `pr-review --json -h` prints help and exits 0, silently discarding `--json`. Every other script in bin/ refuses this (see bin/pr-open:73-82, #367) \u2014 a terminal flag with other arguments is exit 2, not a silent drop.",
+      "lens": "contract"
+    }
+  ]
+}

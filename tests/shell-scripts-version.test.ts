@@ -58,6 +58,7 @@ const SCRIPTS = [
 	"pr-reject",
 	"pr-cleanup",
 	"pr-guard",
+	"pr-review",
 	"pr-threads",
 	"repo-gate",
 	"install-workflow-tools",

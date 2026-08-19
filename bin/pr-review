@@ -2,54 +2,62 @@
 # ---
 # pr-review — review this branch's diff before it becomes a PR.
 #
-# The intervention arm of duppypro/btw#59. That issue measured Macroscope at
-# $143.56 over 8 days and $1.28 per PR, billed per review run at a $0.50 floor.
-# This runs our own review first, where the marginal cost is zero.
+# The intervention arm of duppypro/btw#59. That issue measured a paid reviewer at
+# $1.28 per PR over 112 PRs in 8 days ($143.56 total), billed per run at a $0.50
+# floor. This runs our own review first, where the marginal cost is zero.
 #
 # --- Why three lenses and not one pass ---
-# Across three rounds on btw#61 Macroscope raised 11 findings, all real. The two
-# that changed published numbers were not code defects — a power calculation that
-# solved for point-estimate significance instead of statistical power, and a
-# baseline inflated by counting findings from outside its own billing window. A
-# linter, a type checker and a diff reader all pass that code. So one lens reads
-# the code, one reads the CLAIMS against the code, and one reads the failure
-# paths. Distinct lenses beat a repeated pass: redundancy finds the same things.
+# Across three rounds on btw#61 the paid reviewer raised 11 findings, all real.
+# The two that changed published numbers were not code defects — a power
+# calculation that solved for point-estimate significance instead of statistical
+# power, and a baseline inflated by counting findings from outside its own
+# billing window. A linter, a type checker and a diff reader all pass that code.
+# So one lens reads the code, one reads the CLAIMS against the code, and one
+# reads the failure paths. Distinct lenses beat a repeated pass: redundancy finds
+# the same things twice.
 #
 # --- Why it blocks ---
 # Findings mean exit 7 and no PR. A gate that prints and proceeds is a gate an
 # agent walks straight through, and the question this experiment asks is whether
 # findings get ACTED ON before the PR opens, not whether they get printed.
-# `--reviewed` is the escape hatch, and it is deliberately a separate word rather
-# than a silent default.
+# `--reviewed` on pr-open is the escape hatch, deliberately an explicit word.
 #
-# --- Why it fails open ---
-# `claude` missing, unauthenticated or erroring means the PR still gets created.
-# A broken reviewer must never become a broken release path. The asymmetry is the
-# same one git-checkpoint uses for its open-PR check: a missed review costs a
-# $0.50 Macroscope finding, a wedged pr-open costs the workflow.
+# --- Why it fails open, and the exact limit of that promise ---
+# `claude` missing, erroring, or TIMING OUT means the PR still gets created: a
+# broken reviewer must never become a broken release path. The promise covers
+# hangs too, which is why every lens is wrapped in `timeout` — an earlier version
+# waited unconditionally and would have wedged pr-open on a stalled reviewer,
+# the one failure this paragraph claims cannot happen.
 #
 # --- Exit codes ---
 #   0  reviewed, nothing found (or fail-open: reviewer unavailable)
 #   2  usage error
-#   3  precondition — not in a git repo, or on a protected branch
-#   7  findings — the PR was NOT created; fix them or re-run with --reviewed
+#   3  precondition — not a git repo, protected branch, or the diff itself failed
+#   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
 # ---
 set -euo pipefail
 
 LENSES=("correctness" "reasoning" "contract")
-LOG_DIR="${PR_REVIEW_LOG_DIR:-.claude/pr-review}"
-MODEL="${PR_REVIEW_MODEL:-}"
+# Explicit, never inherited (~/git-projects/CLAUDE.md model-routing rule). Review
+# is judgment work, not mechanical, so it pins the strong model rather than
+# downshifting — and marginal cost is zero, so there is no reason to trade
+# quality here. An inherited model would also make the review's depth a property
+# of whoever happened to call it.
+MODEL="${PR_REVIEW_MODEL:-claude-opus-5}"
+LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
 
 usage() {
   cat <<'EOF'
 usage: pr-review [--base <ref>] [--json] [--quiet]
        pr-review -h | --help
+       pr-review --version
 
 Reviews the current branch's diff against its merge-base with the primary branch,
 in three parallel lenses (correctness, reasoning, contract), and reports findings.
 
-Findings are written to .claude/pr-review/<branch>-<utc>.json regardless of outcome,
-so a later pass can compare what this caught against what a paid reviewer still found.
+Findings are written to a JSON log OUTSIDE the repository
+($XDG_STATE_HOME/pr-review/<repo>/), so a later pass can compare what this caught
+against what a paid reviewer still found without the logs ever entering a commit.
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage · 3 precondition · 7 findings
 EOF
@@ -58,9 +66,24 @@ EOF
 JSON_OUT=0
 QUIET=0
 BASE=""
+# Terminal flags take no other arguments (#367): every other script in bin/
+# refuses this, and `pr-review --json -h` silently dropping --json was the
+# inconsistency.
+for a in "$@"; do
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "pr-review: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    # #178: which copy am I running? install-workflow-tools deploys this to
+    # ~/bin, so a bare `pr-review` runs whatever was last installed.
+    --version) readlink -f "$0"; exit 0 ;;
     --json) JSON_OUT=1; shift ;;
     --quiet) QUIET=1; shift ;;
     --base) BASE="${2:-}"; [ -n "$BASE" ] || { echo "pr-review: --base needs a ref" >&2; exit 2; }; shift 2 ;;
@@ -68,40 +91,70 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-  echo "pr-review: not inside a git repository." >&2; exit 3; }
+# Every exit path speaks the caller's language. A machine reader most needs to
+# tell 'nothing to review' from 'reviewer unavailable' from 'clean', and the old
+# version emitted a human sentence, an empty stdout, and JSON respectively.
+emit_status() {  # emit_status <status> <human message> <exit code>
+  if [ "$JSON_OUT" -eq 1 ]; then
+    printf '{"status":"%s","findings":[],"distinctFindings":0,"failedLenses":[],"message":"%s"}\n' \
+      "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')"
+  elif [ "$QUIET" -eq 0 ]; then
+    printf '%s\n' "$2" >&2
+  fi
+  exit "$3"
+}
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+  emit_status "precondition" "pr-review: not inside a git repository." 3
 
 BRANCH=$(git branch --show-current)
 if [ -z "$BRANCH" ] || [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
-  echo "pr-review: on '${BRANCH:-detached HEAD}' — there is no feature diff to review." >&2
-  exit 3
+  emit_status "precondition" \
+    "pr-review: on '${BRANCH:-detached HEAD}' — there is no feature diff to review." 3
 fi
 
-# Merge-base against the primary branch, not the branch tip: reviewing
-# `origin/main..HEAD` would include whatever landed on main since this branch
-# started, and every one of those commits has already been reviewed.
 if [ -z "$BASE" ]; then
   PRIMARY=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo "origin/main")
   BASE=$(git merge-base "$PRIMARY" HEAD 2>/dev/null || true)
 fi
-[ -n "$BASE" ] || { echo "pr-review: cannot determine a base to diff against." >&2; exit 3; }
+[ -n "$BASE" ] || emit_status "precondition" "pr-review: cannot determine a base to diff against." 3
 
-DIFF=$(git diff --unified=8 "$BASE"...HEAD 2>/dev/null || true)
-if [ -z "$DIFF" ]; then
-  [ "$QUIET" -eq 1 ] || echo "🔍 pr-review: no changes against $BASE — nothing to review."
-  exit 0
+# Status checked SEPARATELY from emptiness. `|| true` used to collapse every git
+# failure — a bogus --base, an unreadable object, a shallow clone — into an empty
+# diff, which then read as "nothing to review" and exit 0, which pr-open read as
+# "reviewed, clean". Three different facts arriving at the one outcome that opens
+# PRs unreviewed.
+diff_status=0
+DIFF=$(git diff --unified=8 "$BASE"...HEAD 2>/dev/null) || diff_status=$?
+if [ "$diff_status" -ne 0 ]; then
+  emit_status "diff-failed" \
+    "pr-review: 'git diff $BASE...HEAD' failed (status $diff_status) — cannot review." 3
 fi
+[ -n "$DIFF" ] || emit_status "no-changes" "🔍 pr-review: no changes against $BASE — nothing to review." 0
 
-# Fail open, loudly. `command -v` first so the common "not installed" case does
-# not pay for a subprocess, and so the message names the real cause.
-if ! command -v claude >/dev/null 2>&1; then
-  echo "⚠️  pr-review: 'claude' not on PATH — skipping review, opening the PR unreviewed." >&2
-  exit 0
-fi
+# Fail open, loudly, and name the real cause. python3 is guarded for the same
+# reason claude is: without it the script died under `set -e` with 127, an exit
+# code in no table, which pr-open reported as "proceeding unreviewed" with no
+# hint that an interpreter was missing rather than a reviewer broken.
+command -v claude >/dev/null 2>&1 || \
+  emit_status "reviewer-unavailable" "⚠️  pr-review: 'claude' not on PATH — opening the PR unreviewed." 0
+command -v python3 >/dev/null 2>&1 || \
+  emit_status "reviewer-unavailable" "⚠️  pr-review: 'python3' not on PATH — opening the PR unreviewed." 0
 
+# Logs live OUTSIDE the repository. The old default was the relative path
+# `.claude/pr-review`, which only princess-pi-packages gitignored — so in every
+# other repo, btw included (where this experiment's PRs are opened), the next
+# `git add -A` swept the review logs into the branch being reviewed. A relative
+# path also meant running from a subdirectory wrote somewhere the ignore rule
+# did not anchor. Neither problem exists if the logs are never in a repo.
+REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
+LOG_DIR="${PR_REVIEW_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/$REPO_NAME}"
 mkdir -p "$LOG_DIR"
 STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
-LOG="$LOG_DIR/${BRANCH//\//-}-$STAMP.json"
+# $$ suffix: the stamp is second-resolution, and two runs in the same second
+# (a retry after fixing a finding) silently overwrote each other. These logs are
+# the evidence artifact for btw#59 — a lost run is lost measurement.
+LOG="$LOG_DIR/${BRANCH//\//-}-$STAMP-$$.json"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
 trap 'rm -rf "$WORK"' EXIT INT TERM
 printf '%s' "$DIFF" > "$WORK/diff"
@@ -126,79 +179,160 @@ exit codes that contradict documentation, and rules stated in prose but never en
   esac
 }
 
-# One agent per lens, in parallel. Marginal cost is zero under the subscription,
-# so there is no reason to serialise or to run fewer.
 for lens in "${LENSES[@]}"; do
   {
-    prompt="$(lens_prompt "$lens")
+    # The prompt goes on STDIN, never argv. Linux caps a single argument at
+    # MAX_ARG_STRLEN (131072 bytes) regardless of ARG_MAX, so passing the diff as
+    # `-p "$prompt"` made every lens fail with E2BIG on any branch above ~128KB —
+    # exit 0, no findings, PR opened. The failure was size-triggered, so the
+    # largest changes were exactly the ones that went unreviewed.
+    {
+      lens_prompt "$lens"
+      cat <<'RULES'
 
 Return ONLY a JSON object, no prose around it:
-{\"findings\":[{\"severity\":\"Critical|High|Medium|Low\",\"file\":\"path\",\"line\":123,\"title\":\"short\",\"detail\":\"what is wrong and why it matters\"}]}
-Return {\"findings\":[]} if you find nothing. Do not invent findings to seem useful; a clean diff is a valid result.
+{"findings":[{"severity":"Critical|High|Medium|Low","file":"path","line":123,"title":"short","detail":"what is wrong and why it matters"}]}
+Return {"findings":[]} if you find nothing. Do not invent findings to seem useful; a clean diff is a valid result.
 
-DIFF (base $BASE, branch $BRANCH):
-$(cat "$WORK/diff")"
-    args=(-p "$prompt" --output-format json)
-    [ -n "$MODEL" ] && args+=(--model "$MODEL")
-    if out=$(claude "${args[@]}" 2>"$WORK/$lens.err"); then
-      printf '%s' "$out" > "$WORK/$lens.out"
+DIFF:
+RULES
+      cat "$WORK/diff"
+    } > "$WORK/$lens.prompt"
+
+    # `timeout` so a stalled reviewer cannot wedge pr-open. Expiry is recorded as
+    # a failed lens, which is the same treatment as any other failure — never as
+    # a clean one.
+    if timeout "$LENS_TIMEOUT" claude -p --output-format json --model "$MODEL" \
+         < "$WORK/$lens.prompt" > "$WORK/$lens.out" 2> "$WORK/$lens.err"; then
+      :
     else
-      printf 'FAILED' > "$WORK/$lens.fail"
+      echo "exit $? (timeout ${LENS_TIMEOUT}s or reviewer failure)" >> "$WORK/$lens.err"
+      : > "$WORK/$lens.fail"
     fi
   } &
 done
 wait
 
-# Collect. A lens that failed is reported as a failed lens, never as a clean one —
-# "no findings" and "could not look" are different facts and must not merge.
-python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "${LENSES[@]}" <<'PYEOF'
+# Collector. Paths go through argv, never string interpolation into `python3 -c`:
+# git permits apostrophes in ref names and PR_REVIEW_LOG_DIR is unvalidated, so
+# the old `json.load(open('$LOG'))` was a SyntaxError at best and arbitrary code
+# execution in the release path at worst. Its summary goes to a FILE, not stdout,
+# because an unredirected print made `--json` emit two concatenated documents
+# with `findings` an integer in one and a list in the other.
+python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "${LENSES[@]}" <<'PYEOF'
 import json, os, sys
-work, log, base, branch, stamp = sys.argv[1:6]
-lenses = sys.argv[6:]
+work, log, base, branch, stamp, model = sys.argv[1:7]
+lenses = sys.argv[7:]
 findings, failed = [], []
+
+
+def fail(lens, why):
+    err = os.path.join(work, f"{lens}.err")
+    detail = ""
+    if os.path.exists(err):
+        # Keep the CAUSE. It used to be captured and then deleted unread by the
+        # EXIT trap, leaving "N of 3 lenses failed" with no way to tell E2BIG
+        # from expired auth from a rate limit — while the script failed open.
+        detail = open(err, errors="replace").read().strip()[:500]
+    failed.append({"lens": lens, "why": why, "stderr": detail})
+
+
 for lens in lenses:
     if os.path.exists(os.path.join(work, f"{lens}.fail")):
-        failed.append(lens); continue
+        fail(lens, "reviewer exited nonzero or timed out"); continue
     path = os.path.join(work, f"{lens}.out")
     if not os.path.exists(path):
-        failed.append(lens); continue
+        fail(lens, "no output"); continue
     try:
         env = json.load(open(path))
-        text = env.get("result") or ""
-        if env.get("is_error"):
-            failed.append(lens); continue
-        # The model may fence the JSON; take the outermost object.
-        s, e = text.find("{"), text.rfind("}")
-        if s < 0 or e < 0:
-            failed.append(lens); continue
-        for f in json.loads(text[s:e+1]).get("findings", []):
-            f["lens"] = lens
-            findings.append(f)
-    except Exception:
-        failed.append(lens)
-json.dump({"branch": branch, "base": base, "utc": stamp,
-           "lenses": lenses, "failedLenses": failed, "findings": findings},
-          open(log, "w"), indent=2)
-print(json.dumps({"findings": len(findings), "failed": failed}))
-PYEOF
-SUMMARY=$(python3 -c "import json,sys;d=json.load(open('$LOG'));print(len(d['findings']),len(d['failedLenses']))")
-COUNT=${SUMMARY% *}
-NFAILED=${SUMMARY#* }
+    except Exception as exc:
+        fail(lens, f"envelope not JSON: {exc}"); continue
+    if env.get("is_error"):
+        fail(lens, "reviewer reported is_error"); continue
+    text = env.get("result") or ""
+    s, e = text.find("{"), text.rfind("}")
+    if s < 0 or e < 0:
+        # "Could not parse the answer" is NOT "the reviewer broke", and the raw
+        # text is kept so a dropped finding stays recoverable.
+        failed.append({"lens": lens, "why": "response not parseable as JSON",
+                       "raw": text[:2000]})
+        continue
+    try:
+        parsed = json.loads(text[s:e + 1])
+    except Exception as exc:
+        failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",
+                       "raw": text[s:e + 1][:2000]})
+        continue
+    for f in parsed.get("findings", []):
+        f["lens"] = lens
+        findings.append(f)
 
-if [ "$JSON_OUT" -eq 1 ]; then cat "$LOG"; else
-  [ "$NFAILED" -gt 0 ] && echo "⚠️  pr-review: $NFAILED of ${#LENSES[@]} lenses failed — coverage is incomplete." >&2
+# DISTINCT count is the experiment's metric (btw#59). The raw list keeps one
+# entry per lens because two lenses flagging the same line from different angles
+# is signal about that finding — but the control arm it is compared against is a
+# deduplicated per-reviewer count, so reporting the raw total would inflate this
+# arm by up to the lens count and corrupt the very measurement this gate exists
+# to produce.
+seen, distinct = set(), []
+for f in findings:
+    key = (str(f.get("file", "")), str(f.get("line", "")), str(f.get("title", "")).strip().lower())
+    if key not in seen:
+        seen.add(key)
+        distinct.append(f)
+
+json.dump({"status": "reviewed", "branch": branch, "base": base, "utc": stamp,
+           "model": model, "lenses": lenses, "failedLenses": failed,
+           "lensesRan": len(lenses) - len(failed),
+           "distinctFindings": len(distinct), "findings": findings,
+           "distinct": distinct},
+          open(log, "w"), indent=2)
+with open(os.path.join(work, "summary"), "w") as fh:
+    fh.write(f"{len(distinct)} {len(failed)} {len(lenses) - len(failed)}\n")
+PYEOF
+
+read -r COUNT NFAILED NRAN < "$WORK/summary"
+
+if [ "$JSON_OUT" -eq 1 ]; then
+  cat "$LOG"
+elif [ "$QUIET" -eq 0 ]; then
+  # The ✅ is gated on coverage, not just on the count, and reports the number of
+  # lenses that ACTUALLY RAN rather than the number declared. Printing
+  # "no findings across 3 lenses" while stderr said "3 of 3 lenses failed" was
+  # the exact merge this file's collector comment forbids — and anything reading
+  # the last stdout line recorded a clean review that never happened.
+  if [ "$NFAILED" -gt 0 ]; then
+    echo "⚠️  pr-review: $NFAILED of ${#LENSES[@]} lenses failed — COVERAGE INCOMPLETE." >&2
+    # Heredoc, not `python3 -c '...'`: escaped double quotes inside an f-string
+    # expression are a SyntaxError, and getting them past both the shell and the
+    # f-string parser is not worth the cleverness.
+    python3 - "$LOG" <<'PYFAIL' >&2
+import json, sys
+d = json.load(open(sys.argv[1]))
+for f in d["failedLenses"]:
+    print("    {}: {}".format(f["lens"], f["why"]))
+    if f.get("stderr"):
+        print("      " + f["stderr"].splitlines()[0][:160])
+PYFAIL
+  fi
   if [ "$COUNT" -eq 0 ]; then
-    echo "✅ pr-review: no findings across ${#LENSES[@]} lenses. Log: $LOG"
+    if [ "$NFAILED" -gt 0 ]; then
+      echo "❔ pr-review: no findings from the $NRAN lens(es) that ran — $NFAILED did not. Log: $LOG"
+    else
+      echo "✅ pr-review: no findings across $NRAN lenses. Log: $LOG"
+    fi
   else
-    echo "🔎 pr-review: $COUNT finding(s). Log: $LOG"
-    python3 -c "
-import json
-d=json.load(open('$LOG'))
-order={'Critical':0,'High':1,'Medium':2,'Low':3}
-for f in sorted(d['findings'], key=lambda x: order.get(x.get('severity','Low'),9)):
-    print(f\"  [{f.get('severity','?')}/{f.get('lens','?')}] {f.get('file','?')}:{f.get('line','?')}  {f.get('title','')}\")
-    print(f\"      {f.get('detail','')}\")"
+    echo "🔎 pr-review: $COUNT distinct finding(s) from $NRAN lens(es). Log: $LOG"
+    python3 - "$LOG" <<'PYSHOW'
+import json, sys
+d = json.load(open(sys.argv[1]))
+order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+for f in sorted(d["distinct"], key=lambda x: order.get(x.get("severity", "Low"), 9)):
+    print("  [{}/{}] {}:{}  {}".format(f.get("severity", "?"), f.get("lens", "?"),
+                                       f.get("file", "?"), f.get("line", "?"), f.get("title", "")))
+    print("      " + str(f.get("detail", "")))
+PYSHOW
   fi
 fi
+
 [ "$COUNT" -gt 0 ] && exit 7
 exit 0

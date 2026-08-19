@@ -214,5 +214,99 @@ console.log("\npr-open gate behaviour:");
 	}
 }
 
+// --- the findings pr-review's own first run raised against itself (#377) ---
+// Every one of these was a real defect in the first cut, found by running the
+// gate on its own diff before the PR existed. They are tests now so the fixes
+// cannot silently regress.
+console.log("\nself-review regressions:");
+{
+	// E2BIG. The prompt used to be passed as `-p "$prompt"`, and Linux caps ONE
+	// argument at MAX_ARG_STRLEN (131072 bytes) regardless of ARG_MAX. Every lens
+	// failed on a large branch, the script exited 0, and pr-open opened the PR —
+	// so the biggest diffs were exactly the ones never reviewed. Now on stdin.
+	const sb = makeSandbox();
+	const big = "x".repeat(200_000);
+	fs.writeFileSync(path.join(sb.clone, "big.txt"), big + "\n");
+	git(sb.clone, ["add", "-A"]);
+	git(sb.clone, ["commit", "-q", "-m", "big"]);
+	const env = stubs(sb, "clean");
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	const diffBytes = git(sb.clone, ["diff", "--unified=8", "main...HEAD"]).length;
+	check(diffBytes > 131072, `sandbox diff really exceeds MAX_ARG_STRLEN (${diffBytes} bytes)`, "");
+	check(code === 0, "200KB diff → exit 0, lenses actually ran", `got ${code}: ${out}`);
+	check(!/lenses failed/.test(out), "200KB diff → no lens failed (prompt went via stdin)", out);
+}
+{
+	// Coverage and cleanliness are different claims. The first cut printed
+	// "✅ no findings across 3 lenses" on stdout while stderr said 3 of 3 failed —
+	// anything reading the last stdout line recorded a review that never happened.
+	const sb = makeSandbox();
+	const env = stubs(sb, "broken");
+	const { out } = run(PR_REVIEW, sb.clone, env);
+	check(!/✅/.test(out), "all lenses failed → no ✅ claim", out);
+	check(/COVERAGE INCOMPLETE/.test(out), "all lenses failed → says coverage is incomplete", out);
+	check(/no findings from the 0 lens/.test(out), "all lenses failed → reports lenses that RAN, not declared", out);
+}
+{
+	// --json must emit exactly ONE parseable document on every exit path. The
+	// first cut leaked a second summary object on the reviewed path, and printed
+	// a human sentence on the empty-diff path.
+	const sb = makeSandbox();
+	for (const [mode, label] of [["clean", "reviewed"], ["absent", "reviewer-unavailable"]] as const) {
+		const env = stubs(sb, mode);
+		const { out } = run(PR_REVIEW, sb.clone, env, ["--json"]);
+		let parsed: any = null;
+		try { parsed = JSON.parse(out.trim()); } catch { /* left null */ }
+		check(parsed !== null, `--json (${label}) → exactly one parseable document`, out.slice(0, 300));
+		check(parsed?.status !== undefined, `--json (${label}) → carries a status field`, out.slice(0, 200));
+	}
+	{
+		// empty diff: --base HEAD means nothing changed
+		const env = stubs(sb, "clean");
+		const { out } = run(PR_REVIEW, sb.clone, env, ["--json", "--base", "HEAD"]);
+		let parsed: any = null;
+		try { parsed = JSON.parse(out.trim()); } catch { /* left null */ }
+		check(parsed?.status === "no-changes", "--json (no-changes) → JSON, not a human sentence", out.slice(0, 200));
+	}
+}
+{
+	// The experiment's metric is DISTINCT defects. The raw list keeps one entry
+	// per lens on purpose, but the control arm it is compared against is a
+	// deduplicated per-reviewer count, so reporting the raw total would inflate
+	// this arm by up to 3x and corrupt the measurement (btw#59).
+	const sb = makeSandbox();
+	const env = stubs(sb, "findings");
+	const { out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.findings.length === 3, "raw list keeps one entry per lens", String(d.findings.length));
+	check(d.distinctFindings === 1, "distinct count deduplicates by file+line+title", String(d.distinctFindings));
+	check(/1 distinct finding/.test(out), "summary reports the DISTINCT count", out);
+}
+{
+	// A failed lens must carry its cause. The first cut captured each lens's
+	// stderr and then deleted it unread with the EXIT trap, leaving "N of 3
+	// failed" with no way to tell E2BIG from expired auth — while failing open.
+	const sb = makeSandbox();
+	const env = stubs(sb, "broken");
+	run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.failedLenses.length === 3, "every failed lens is recorded", JSON.stringify(d.failedLenses.length));
+	check(typeof d.failedLenses[0]?.why === "string" && d.failedLenses[0].why.length > 0,
+		"a failed lens records WHY it failed", JSON.stringify(d.failedLenses[0]));
+	check(/boom/.test(d.failedLenses[0]?.stderr || ""), "a failed lens keeps the reviewer's stderr",
+		JSON.stringify(d.failedLenses[0]));
+}
+{
+	// A git failure is not an empty diff. `|| true` used to collapse a bogus base,
+	// a corrupt object and a shallow clone into "nothing to review" + exit 0,
+	// which pr-open read as a clean gate.
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	const { code, out } = run(PR_REVIEW, sb.clone, env, ["--base", "no-such-ref-at-all"]);
+	check(code === 3, "unresolvable base → exit 3, not a clean 0", `got ${code}: ${out}`);
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

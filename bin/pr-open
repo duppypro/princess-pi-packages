@@ -54,6 +54,10 @@
 #   6  safety gate refused (diverged branch — a merge-base check that DID run
 #      and found HEAD does not build on origin/$BRANCH — declined to auto
 #      force-push — OR the push itself was rejected by the remote, git exit 1)
+#   7  pr-review found issues — the PR was NOT created (#377). Fix them and
+#      re-run, or accept them with `pr-open --reviewed`. Distinct from 6: 6 is a
+#      git-state refusal that a force-push resolves, 7 is a review refusal that
+#      only a code change or an explicit override resolves.
 # 5 vs 6 is the load-bearing distinction: "I could not check" (5) vs "I
 # checked and it says no" (6). pr-open never leaks git's raw exit status —
 # every push failure is mapped to one of these two.
@@ -122,10 +126,11 @@ esac
 # discovered the branch from cwd — so `pr-open some-other-branch` opened the PR
 # for the CURRENT branch while the caller had named a different one. That is the
 # #209 shape (acting on a target the caller did not name), and it is exactly what
-# bin/pr-reject's `-b` flag exists to prevent. pr-open takes no arguments at all:
+# bin/pr-reject's `-b` flag exists to prevent. pr-open takes no arguments other
+# than `--reviewed` (#377), which is consumed before this check:
 # the branch IS the worktree it runs in, so there is no argument to accept.
 if [ "$#" -gt 0 ]; then
-  echo "pr-open: unexpected argument: $1 — pr-open takes no arguments." >&2
+  echo "pr-open: unexpected argument: $1 — pr-open takes no arguments other than --reviewed." >&2
   echo "  It opens the PR for the branch checked out in the current worktree." >&2
   echo "  To open another branch's PR, run pr-open from that branch's worktree." >&2
   exit 2
