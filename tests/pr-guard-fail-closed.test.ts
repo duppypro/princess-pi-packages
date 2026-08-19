@@ -179,6 +179,34 @@ console.log("\n— the guard cannot be bypassed by a broken environment");
 	check(!/RETURNED:1/.test(text),
 		"an unanswerable predicate does NOT return 'not protected'", text.slice(0, 300));
 	check(r.status === 3, "an unanswerable predicate exits 3", `got ${r.status}: ${text.slice(0, 200)}`);
+
+	// (c) `readlink -f` unavailable (older macOS) must NOT become "source ./pr-guard".
+	//     `dirname ""` prints `.` and exits 0, so the nested spelling laundered a
+	//     failed resolution into a relative path and the script sourced a file from
+	//     the CALLER'S CWD — arbitrary code execution from a tool whose job is
+	//     refusing unsafe operations (macroscopeapp, PR #380, Critical). The probe
+	//     puts a hostile pr-guard in the cwd and a failing readlink on PATH: if the
+	//     hole is open, the marker file appears.
+	{
+		const { bin, cwd } = sandbox(true);
+		const badPath = fs.mkdtempSync(path.join(os.tmpdir(), "pr-guard-noreadlink-"));
+		fs.writeFileSync(path.join(badPath, "readlink"), "#!/usr/bin/env bash\nexit 1\n");
+		fs.chmodSync(path.join(badPath, "readlink"), 0o755);
+
+		const pwned = path.join(cwd, "PWNED");
+		fs.writeFileSync(path.join(cwd, "pr-guard"),
+			`#!/usr/bin/env bash\ntouch ${JSON.stringify(pwned)}\npr_is_protected() { return 1; }\n`);
+
+		for (const c of CALLERS) {
+			const r = spawnSync("bash", [path.join(bin, c), ...(ARGS[c] ?? [])], {
+				cwd, encoding: "utf8", env: { ...process.env, PATH: `${badPath}:/usr/bin:/bin` },
+			});
+			const text = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+			check(!fs.existsSync(pwned), `${c} does NOT source pr-guard from the cwd`, text.slice(0, 200));
+			check(r.status === 3, `${c} → exit 3 when the path cannot be resolved absolutely`,
+				`got ${r.status}: ${text.slice(0, 200)}`);
+		}
+	}
 }
 
 // ---

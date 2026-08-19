@@ -148,14 +148,29 @@ fi
 # inline main/master fallback, because a fallback would restore the four copies
 # pr-guard exists to delete, silently, on exactly the hosts already broken.
 # `readlink -f`, not dirname+pwd: ~/bin copies may be symlinks (bun link), and a
-# link's own directory need not hold pr-guard — so the plain spelling made a
-# symlinked pr-* refuse with exit 3 while pr-guard sat right there beside the
-# real file. Also keeps the resolution INSIDE the if-condition: a bare
-# `X="$(cd ...)"` under `set -euo pipefail` dies with cd's raw status before
-# reaching the message below (both found by macroscopeapp on PR #380).
+# link's own directory need not hold pr-guard — the plain spelling made a
+# symlinked pr-* refuse while pr-guard sat beside the real file.
+#
+# The path is then REQUIRED TO BE ABSOLUTE, and that check is not defensive
+# padding — it closes a code-execution hole (macroscopeapp on PR #380, rated
+# Critical). `readlink -f` is not portable: it fails on older macOS. Nested as
+# `dirname "$(readlink -f "$0")"` that failure is laundered into success, because
+# `dirname ""` prints `.` and exits 0 — so PR_GUARD_LIB became `./pr-guard`, the
+# `if !` never fired, and the script SOURCED a file from the caller's current
+# directory. In a checkout whose contents are not ours, that is arbitrary code
+# execution from a tool whose entire job is refusing unsafe operations.
+#
+# Requiring a leading `/` makes the laundering impossible: `.` never matches, so
+# resolution failure lands in the fail-closed block below instead of picking up a
+# stranger's file. On a host where `readlink -f` does not work, these scripts
+# refuse and say so rather than running with no guard.
+PR_GUARD_SELF="$(readlink -f "$0" 2>/dev/null || true)"
+case "${PR_GUARD_SELF:-}" in
+  /*) PR_GUARD_LIB="${PR_GUARD_SELF%/*}/pr-guard" ;;
+  *)  PR_GUARD_LIB="" ;;
+esac
 # shellcheck source=bin/pr-guard
-if ! PR_GUARD_LIB="$(dirname "$(readlink -f "$0")")/pr-guard" \
-   || [ ! -r "$PR_GUARD_LIB" ] || ! . "$PR_GUARD_LIB"; then
+if [ -z "$PR_GUARD_LIB" ] || [ ! -r "$PR_GUARD_LIB" ] || ! . "$PR_GUARD_LIB"; then
   echo "pr-reject: cannot source the protected-branch guard at $PR_GUARD_LIB." >&2
   echo "   Refusing rather than proceeding without it. Run: install-workflow-tools" >&2
   exit 3
