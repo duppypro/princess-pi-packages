@@ -64,6 +64,21 @@ LENSES=("correctness" "reasoning" "contract")
 # of whoever happened to call it.
 MODEL="${PR_REVIEW_MODEL:-claude-opus-5}"
 LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
+# A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
+# means "no timeout at all", so PR_REVIEW_TIMEOUT=0 silently removed the very
+# protection this variable exists to provide — and a typo like `10m` or `-5`
+# made `timeout` exit 125 immediately, failing every lens open. Refuse up front
+# rather than discover it as three timed-out lenses (macroscopeapp, PR #379).
+case "$LENS_TIMEOUT" in
+  ''|*[!0-9]*) echo "pr-review: PR_REVIEW_TIMEOUT must be a positive whole number of seconds (got '$LENS_TIMEOUT')" >&2; exit 2 ;;
+esac
+[ "$LENS_TIMEOUT" -gt 0 ] || { echo "pr-review: PR_REVIEW_TIMEOUT must be greater than 0 — 'timeout 0' disables the ceiling entirely" >&2; exit 2; }
+# TERM asks; KILL insists. `timeout` sends only TERM, so a reviewer that traps or
+# ignores it keeps the lens wrapper — and the `wait` below — blocked forever,
+# which is precisely the hang the ceiling was added to prevent. The grace is a
+# fixed 30s rather than a fraction of the ceiling: it is time for a well-behaved
+# child to flush and exit, not a second review budget.
+LENS_KILL_AFTER=30
 
 usage() {
   cat <<'EOF'
@@ -195,7 +210,16 @@ command -v python3 >/dev/null 2>&1 || \
 # did not anchor. Neither problem exists if the logs are never in a repo.
 REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
 LOG_DIR="${PR_REVIEW_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/$REPO_NAME}"
-mkdir -p "$LOG_DIR"
+# Mapped, not raw. Under `set -e` a failed mkdir exited with mkdir's own status
+# (1), which is not in this script's table at all — and the spec asserts pr-review
+# is a member of the shared pr-* contract, so an unwritable PR_REVIEW_LOG_DIR
+# documented a code the script did not emit (macroscopeapp, PR #379). 3 is the
+# right row: a precondition the environment failed to meet, not a bad flag.
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+  echo "pr-review: cannot create the log directory '$LOG_DIR'." >&2
+  echo "   Set PR_REVIEW_LOG_DIR to a writable path, or clear it to use the default." >&2
+  exit 3
+fi
 STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 # $$ suffix: the stamp is second-resolution, and two runs in the same second
 # (a retry after fixing a finding) silently overwrote each other. These logs are
@@ -274,7 +298,8 @@ RULES
     # `timeout` so a stalled reviewer cannot wedge pr-open. Expiry is recorded as
     # a failed lens, which is the same treatment as any other failure — never as
     # a clean one.
-    if timeout "$LENS_TIMEOUT" claude -p --output-format json --model "$MODEL" \
+    if timeout --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
+         claude -p --output-format json --model "$MODEL" \
          < "$WORK/$lens.prompt" > "$WORK/$lens.out" 2> "$WORK/$lens.err"; then
       :
     else
@@ -296,8 +321,17 @@ python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "${LENSES[@]}" <<'P
 import json, os, sys
 
 
-def _balanced_object(text):
-    """Span of the first brace-balanced {...}, ignoring braces inside strings."""
+def _balanced_objects(text):
+    """Every top-level brace-balanced {...} span, in order, ignoring braces
+    inside strings.
+
+    Was `_balanced_object`, returning only the FIRST. One `${VAR}` in the
+    reviewer's prose, or any JSON-shaped preamble, therefore won the race against
+    the real payload — and the lens was filed as unparseable, or worse, parsed as
+    an object with no `findings` and counted as a CLEAN review (macroscopeapp,
+    PR #379). Yielding every candidate lets the caller pick the one that is
+    actually a review result instead of trusting position.
+    """
     depth = 0
     start = -1
     in_str = False
@@ -318,10 +352,37 @@ def _balanced_object(text):
                 start = i
             depth += 1
         elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                return start, i
-    return -1, -1
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    yield start, i
+
+
+def _review_payload(text):
+    """The first balanced object that is actually a review result.
+
+    A review result is an object with a `findings` LIST. Both halves matter:
+    `parsed.get("findings", [])` used to default a missing key to empty, so
+    `{"error": "rate limited"}` became a lens that ran and found nothing —
+    a clean review manufactured out of a failure. Requiring the key means a
+    response that never contained one is a FAILED lens, which is the treatment
+    every other unusable response already gets here.
+
+    Returns (span, parsed) or (None, reason).
+    """
+    reason = "response contains no JSON object"
+    for s, e in _balanced_objects(text):
+        reason = "no JSON object in the response carried a 'findings' list"
+        try:
+            parsed = json.loads(text[s:e + 1])
+        except Exception:
+            continue
+        if not isinstance(parsed, dict) or "findings" not in parsed:
+            continue
+        if not isinstance(parsed["findings"], list):
+            return None, (f"findings is {type(parsed['findings']).__name__}, expected list")
+        return (s, e), parsed
+    return None, reason
 
 
 def _clip(text, limit):
@@ -379,20 +440,17 @@ for lens in lenses:
     # ${VAR}, a trailing explanation), and the lens was then filed as "could not
     # look" — downgrading a lens that had actually found defects into
     # coverage-incomplete, with the findings surviving only in the log's raw field.
-    s, e = _balanced_object(text)
-    if s < 0:
+    span, parsed = _review_payload(text)
+    if span is None:
         # "Could not parse the answer" is NOT "the reviewer broke", and the raw
-        # text is kept so a dropped finding stays recoverable.
-        failed.append({"lens": lens, "why": "response not parseable as JSON",
+        # text is kept so a dropped finding stays recoverable. `parsed` carries
+        # the reason string in this branch.
+        failed.append({"lens": lens, "why": str(parsed),
                        "raw": _clip(text, 2000)})
         continue
+    s, e = span
     try:
-        parsed = json.loads(text[s:e + 1])
-        if not isinstance(parsed, dict):
-            raise TypeError(f"payload is {type(parsed).__name__}, expected object")
-        items = parsed.get("findings", [])
-        if not isinstance(items, list):
-            raise TypeError(f"findings is {type(items).__name__}, expected list")
+        items = parsed["findings"]
         # Each finding validated individually: a lens that returns nine good
         # objects and one string keeps its nine.
         good = []
@@ -470,7 +528,8 @@ for i, f in enumerate(d["findings"]):
 PYIDS
   } > "$WORK/cluster.prompt"
 
-  if timeout "$LENS_TIMEOUT" claude -p --output-format json --model "$MODEL" \
+  if timeout --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
+       claude -p --output-format json --model "$MODEL" \
        < "$WORK/cluster.prompt" > "$WORK/cluster.out" 2>"$WORK/cluster.err"; then
     :
   else

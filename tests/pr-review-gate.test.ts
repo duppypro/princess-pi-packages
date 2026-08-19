@@ -69,11 +69,28 @@ function makeSandbox(): Sandbox {
 // exits nonzero; "iserror" returns a well-formed envelope carrying is_error,
 // which must be treated as a FAILED lens rather than a clean one — "found
 // nothing" and "could not look" are different facts.
-type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv";
+type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv"
+	| "prosebrace" | "errorobject";
 function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
-	if (mode === "arrayenv") {
+	if (mode === "prosebrace") {
+		// A reviewer that mentions `${VAR}` (or any brace) BEFORE its payload. The
+		// old collector took the FIRST balanced object, parsed `{VAR}`, and filed a
+		// lens that had actually found a High as "could not look" (macroscopeapp,
+		// PR #379).
+		const payload = `{"findings":[{"severity":"High","file":"feature.sh","line":2,"title":"stub finding","detail":"after prose"}]}`;
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nprintf '%s' '{"is_error":false,"result":${JSON.stringify("Avoid ${VAR} here.\n" + payload)}}'; exit 0\n`,
+			{ mode: 0o755 });
+	} else if (mode === "errorobject") {
+		// A well-formed JSON object that is NOT a review result. `.get("findings", [])`
+		// defaulted the missing key to empty, so this counted as a lens that ran and
+		// found nothing — a clean review manufactured out of a failure.
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nprintf '%s' '{"is_error":false,"result":"{\\"error\\":\\"rate limited\\"}"}'; exit 0\n`,
+			{ mode: 0o755 });
+	} else if (mode === "arrayenv") {
 		// An envelope that parses as an ARRAY, not an object. Used to raise
 		// AttributeError outside the try, kill the collector, and lose all lenses.
 		fs.writeFileSync(path.join(sb.binDir, "claude"),
@@ -442,6 +459,72 @@ console.log("\nround-4 High regressions:");
 	check(d.lensesRan === 3, "all lenses working → lensesRan 3", String(d.lensesRan));
 	check(d.status === "reviewed", "all lenses working → status 'reviewed'", String(d.status));
 	check(Array.isArray(d.lensWarnings), "log carries a lensWarnings array", JSON.stringify(d.lensWarnings));
+}
+
+// --- #379 round 5: the payload must be SELECTED, not assumed to be first ---
+console.log("\nthe review payload is identified, not taken by position:");
+{
+	// Prose containing a brace no longer beats the real payload.
+	const sb = makeSandbox();
+	const env = stubs(sb, "prosebrace");
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	check(code === 7, "prose brace before the payload → still exit 7 (findings seen)", `got ${code}: ${out}`);
+	check(/stub finding/.test(out), "prose brace → the finding survives", out);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.lensesRan === 3, "prose brace → all 3 lenses counted as ran", String(d.lensesRan));
+}
+{
+	// An object with no `findings` key is a FAILED lens, never a clean review.
+	const sb = makeSandbox();
+	const env = stubs(sb, "errorobject");
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	check(/lenses failed/.test(out), "{\"error\":…} → counted as failed, not as a clean review", out);
+	check(code === 0, "{\"error\":…} → still fails open", `got ${code}: ${out}`);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.lensesRan === 0, "{\"error\":…} → lensesRan 0, not 3", String(d.lensesRan));
+	check(d.status === "reviewed-none", "{\"error\":…} → status reviewed-none", String(d.status));
+}
+
+// --- #379 round 5: the timeout is validated, and the log dir maps to a code ---
+console.log("\npreconditions refuse with a code from the shared table:");
+{
+	const sb = makeSandbox();
+	// "" is deliberately absent: ${PR_REVIEW_TIMEOUT:-600} substitutes the default
+	// for empty as well as unset, so an empty value is "use the default", not a typo.
+	for (const bad of ["0", "-5", "10m", "600s"]) {
+		const env = { ...stubs(sb, "clean"), PR_REVIEW_TIMEOUT: bad };
+		const { code, out } = run(PR_REVIEW, sb.clone, env);
+		check(code === 2, `PR_REVIEW_TIMEOUT='${bad}' → exit 2`, `got ${code}: ${out}`);
+		check(/PR_REVIEW_TIMEOUT/.test(out), `PR_REVIEW_TIMEOUT='${bad}' → names the variable`, out);
+	}
+}
+{
+	// An unwritable log dir used to exit with mkdir's raw status (1), a code this
+	// script's table does not contain — while the spec asserts pr-review is a
+	// member of the shared pr-* contract.
+	const sb = makeSandbox();
+	const blocker = path.join(sb.root, "not-a-dir");
+	fs.writeFileSync(blocker, "");
+	const env = { ...stubs(sb, "clean"), PR_REVIEW_LOG_DIR: path.join(blocker, "logs") };
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	check(code === 3, "unwritable PR_REVIEW_LOG_DIR → exit 3 (precondition)", `got ${code}: ${out}`);
+	check(/PR_REVIEW_LOG_DIR/.test(out), "unwritable log dir → names the variable to change", out);
+}
+
+// Both `timeout` invocations carry a kill grace: TERM asks, KILL insists, and a
+// reviewer that ignores TERM would otherwise keep `wait` blocked forever.
+{
+	// Lines where `timeout` STARTS a command — optionally behind `if`. Matching the
+	// bare word anywhere caught this script's own comments and error messages, which
+	// discuss timeouts at length; a check that flags prose gets muted, not fixed.
+	const lines = fs.readFileSync(PR_REVIEW, "utf8").split("\n");
+	const invocations = lines.filter((l) => /^\s*(if\s+)?timeout\s/.test(l));
+	check(invocations.length === 2, `both timeout invocations found (got ${invocations.length})`,
+		invocations.join("\n"));
+	const bare = invocations.filter((l) => !/--kill-after/.test(l));
+	check(bare.length === 0, "no `timeout` invocation without --kill-after", bare.join("\n"));
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
