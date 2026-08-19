@@ -237,8 +237,8 @@ command -v python3 >/dev/null 2>&1 || \
 # It does not; the reason to move the logs out was stronger than stated, not
 # weaker. Verified with git check-ignore rather than by reading .gitignore.)
 dir_verdict() {
-  python3 - "$1" "${2:-leaf}" <<'PYSAFE' 2>/dev/null || true
-import grp, os, pwd, sys
+  python3 - "$1" "${2:-leaf}" <<'PYSAFE' 2>/dev/null || echo "unsafe|the safety check itself could not run"
+import grp, os, pwd, struct, sys
 
 me = os.geteuid()
 # "leaf": we write files here, so anyone else being able to create entries is
@@ -246,6 +246,13 @@ me = os.geteuid()
 # directory inside it, so the sticky rule that protects the ancestors applies here
 # too — otherwise /tmp is condemned and the no-HOME fallback has nowhere to go.
 mode = sys.argv[2] if len(sys.argv) > 2 else "leaf"
+
+ACL_USER, ACL_GROUP, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER = 0x02, 0x08, 0x04, 0x10, 0x20
+
+
+def verdict(text):
+    print(text)
+    raise SystemExit(0)
 
 
 def group_others(gid):
@@ -267,33 +274,80 @@ def group_name(gid):
         return str(gid)
 
 
-def writable_by_others(st):
-    """Who, other than us, can write this directory — or None."""
+def acl_writers(path, st):
+    """Who a POSIX ACL grants write to, beyond what the mode bits show.
+
+    The kernel folds a named-user entry's ceiling into the GROUP bits (the mask),
+    so a directory carrying `u:someone:rwx` reads back as plain g+w — and the
+    group-membership test then clears it, because the owning group really does
+    have no other members (macroscopeapp, PR #379). The mode bits cannot express
+    this; only the ACL can be asked.
+
+    Layout (Linux, POSIX_ACL_XATTR_VERSION 2): u32 version, then 8-byte entries
+    of u16 tag, u16 perm, u32 id. The mask caps USER/GROUP/GROUP_OBJ entries but
+    not USER_OBJ or OTHER.
+    """
+    try:
+        raw = os.getxattr(path, "system.posix_acl_access")
+    except OSError:
+        return set()  # no ACL, or a filesystem that does not carry them
+    if len(raw) < 4 or struct.unpack("<I", raw[:4])[0] != 2:
+        # Unparseable is not proof of safety. Say so rather than assume.
+        return {"an access ACL this script cannot read"}
+    entries = []
+    mask = 7
+    for off in range(4, len(raw) - 7, 8):
+        tag, perm, eid = struct.unpack("<HHI", raw[off:off + 8])
+        entries.append((tag, perm, eid))
+        if tag == ACL_MASK:
+            mask = perm
+    who = set()
+    for tag, perm, eid in entries:
+        eff = perm & mask if tag in (ACL_USER, ACL_GROUP, ACL_GROUP_OBJ) else perm
+        if not eff & 0o2:
+            continue
+        if tag == ACL_USER and eid != me:
+            who.add("uid %d" % eid)
+        elif tag == ACL_GROUP and group_others(eid):
+            who.add("group '%s'" % group_name(eid))
+        elif tag == ACL_GROUP_OBJ and group_others(st.st_gid):
+            who.add("group '%s'" % group_name(st.st_gid))
+        elif tag == ACL_OTHER:
+            who.add("every account on this host")
+    return who
+
+
+def writable_by_others(path, st):
+    """Who, other than us, can write this directory — mode bits AND ACL — or None."""
     if st.st_mode & 0o002:
         return "every account on this host"
     others = group_others(st.st_gid) if st.st_mode & 0o020 else set()
     if others:
         return "group '%s' (%s)" % (group_name(st.st_gid), ", ".join(sorted(others)))
+    acl = acl_writers(path, st)
+    if acl:
+        return "a POSIX ACL grants write to %s" % ", ".join(sorted(acl))
     return None
-
-
-def verdict(text):
-    print(text)
-    raise SystemExit(0)
 
 
 # realpath first: the audit must follow the chain that will actually be walked at
 # write time, not the one the user typed. A resolved path contains no symlinks, so
 # every component below is a real directory.
 d = os.path.realpath(sys.argv[1])
-st = os.stat(d)
+try:
+    st = os.stat(d)
+except OSError as exc:
+    # An answer, never silence. Returning nothing let the caller's "is it unsafe?"
+    # test fall through to "not unsafe", and a missing TMPDIR then died at mktemp
+    # with exit 1 — a code in no table here (macroscopeapp, PR #379).
+    verdict("unsafe|it cannot be examined: %s" % exc.strerror)
 
 # root-owned is fine for a "parent" — we only create a private directory inside
 # it, and root can do anything anyway. /tmp is root-owned, so the leaf rule
 # applied here condemned the default workspace on every host.
 if st.st_uid != me and not (mode == "parent" and st.st_uid == 0):
     verdict("unsafe|it belongs to uid %d, not to you" % st.st_uid)
-who = writable_by_others(st)
+who = writable_by_others(d, st)
 if who and not (mode == "parent" and st.st_mode & 0o1000):
     verdict("unsafe|%s can write to it" % who)
 
@@ -310,12 +364,15 @@ if who and not (mode == "parent" and st.st_mode & 0o1000):
 # creating entries rather than renaming one, and sticky permits that.
 parent = os.path.dirname(d)
 while True:
-    pst = os.lstat(parent)
+    try:
+        pst = os.lstat(parent)
+    except OSError as exc:
+        verdict("unsafe|'%s' above it cannot be examined: %s" % (parent, exc.strerror))
     if pst.st_uid not in (me, 0):
         verdict("unsafe|'%s' above it belongs to uid %d" % (parent, pst.st_uid))
-    who = writable_by_others(pst)
+    who = writable_by_others(parent, pst)
     if who and not pst.st_mode & 0o1000:
-        verdict("unsafe|'%s' above it is writable by %s" % (parent, who))
+        verdict("unsafe|'%s' above it is writable: %s" % (parent, who))
     if os.path.dirname(parent) == parent:
         break
     parent = os.path.dirname(parent)
@@ -331,7 +388,11 @@ PYSAFE
 # here, and every mktemp below uses the audited one.
 TMP_PARENT="${TMPDIR:-/tmp}"
 TMP_VERDICT=$(dir_verdict "$TMP_PARENT" parent)
-if [ "${TMP_VERDICT%%|*}" = "unsafe" ]; then
+# Anything that is not a clean "ok" is treated as unsafe. `= unsafe` let an
+# unanswerable verdict through, and a missing TMPDIR then died at the unguarded
+# mktemp with exit 1 — untabled, and pr-open reads any nonzero as "proceeding
+# unreviewed" (macroscopeapp, PR #379).
+if [ "$TMP_VERDICT" != "ok|" ]; then
   echo "⚠️  pr-review: TMPDIR '$TMP_PARENT' is not safe to work in — ${TMP_VERDICT#*|}." >&2
   echo "   Using /tmp for this run instead." >&2
   TMP_PARENT=/tmp

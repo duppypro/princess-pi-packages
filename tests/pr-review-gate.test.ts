@@ -943,5 +943,78 @@ console.log("\nthe workspace gets the same audit as the log dir:");
 		"the reaped pids are cleared immediately after `wait`", after);
 }
 
+// --- #379 round 12 -----------------------------------------------------------
+// A POSIX ACL grants access the mode bits cannot express. The kernel folds a
+// named-user entry's ceiling into the GROUP bits, so a directory carrying
+// `u:someone:rwx` reads back as plain g+w — and the group-membership test then
+// CLEARS it, because the owning group really does have no other members
+// (macroscopeapp, PR #379). Only the ACL can be asked.
+//
+// setfacl is not installed on this host, so the ACL is written straight to the
+// xattr: u32 version 2, then 8-byte entries of u16 tag, u16 perm, u32 id. The
+// kernel validates it, so a malformed blob fails the setxattr rather than
+// silently testing nothing — and the precondition below asserts it took.
+function setAcl(dir: string, uid: number): boolean {
+	const e = (tag: number, perm: number, id: number) => {
+		const b = Buffer.alloc(8);
+		b.writeUInt16LE(tag, 0); b.writeUInt16LE(perm, 2); b.writeUInt32LE(id, 4);
+		return b;
+	};
+	const ver = Buffer.alloc(4); ver.writeUInt32LE(2, 0);
+	const acl = Buffer.concat([ver,
+		e(0x01, 7, 0xffffffff),  // USER_OBJ  rwx
+		e(0x02, 7, uid),          // USER:uid  rwx  <- the entry that matters
+		e(0x04, 0, 0xffffffff),  // GROUP_OBJ ---
+		e(0x10, 7, 0xffffffff),  // MASK      rwx
+		e(0x20, 0, 0xffffffff)]); // OTHER     ---
+	const r = spawnSync("python3", ["-c",
+		"import os,sys;os.setxattr(sys.argv[1],'system.posix_acl_access',sys.stdin.buffer.read())", dir],
+		{ input: acl });
+	return r.status === 0;
+}
+
+console.log("\nan ACL is access the mode bits cannot show:");
+{
+	const sb = makeSandbox();
+	const dir = path.join(sb.root, "acl-logs");
+	fs.mkdirSync(dir);
+	fs.chmodSync(dir, 0o700);
+	const applied = setAcl(dir, 1); // uid 1 (daemon): not us, need not be a login
+	if (!applied) {
+		check(false, "precondition: a POSIX ACL could be applied",
+			"setxattr failed — this filesystem carries no ACLs, so the case is untested");
+	} else {
+		// The trap, stated as an assertion: the mode bits look fine on their own.
+		const m = fs.statSync(dir).mode & 0o777;
+		check((m & 0o002) === 0, "precondition: the ACL leaves the mode bits looking safe",
+			`mode ${m.toString(8)} is world-writable on its own, so this proves nothing`);
+		const env = { ...stubs(sb, "clean"), PR_REVIEW_LOG_DIR: dir };
+		const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+		check(code === 0, "ACL-widened log dir → still reviews and exits 0", `${code}: ${out}`);
+		check(/NOT logging/.test(out) && /ACL/.test(out),
+			"a log dir an ACL opens to another uid → refused, naming the ACL", out);
+		check(fs.readdirSync(dir).filter((f) => f.endsWith(".json")).length === 0,
+			"…and no log is written into it", JSON.stringify(fs.readdirSync(dir)));
+	}
+}
+{
+	// An unanswerable verdict must not read as "fine". A missing TMPDIR made
+	// dir_verdict print NOTHING, the `= unsafe` test fell through to "not unsafe",
+	// and the unguarded mktemp then died with exit 1 — untabled, and pr-open reads
+	// any nonzero as "proceeding unreviewed", so the gate turned itself off.
+	const sb = makeSandbox();
+	const env = { ...stubs(sb, "clean"), TMPDIR: path.join(sb.root, "no-such-dir") };
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+	check(code === 0, "nonexistent TMPDIR → still reviews and exits 0, not 1",
+		`got ${code}: ${out}`);
+	check(/TMPDIR/.test(out), "nonexistent TMPDIR → says which variable is wrong", out);
+	// The distinction is WHERE it failed, not whether the words "No such file"
+	// appear — the verdict says exactly that, and correctly so.
+	check(!/mktemp: failed/.test(out),
+		"nonexistent TMPDIR → answered by the audit, never by an unguarded mktemp", out);
+	check(/Using \/tmp for this run instead/.test(out),
+		"nonexistent TMPDIR → falls back rather than giving up", out);
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);
