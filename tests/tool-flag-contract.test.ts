@@ -14,6 +14,13 @@
 // "a violation is countable here." No model, no judgement, no prose review — a
 // flag either appears in the artifact or it does not.
 //
+// KNOWN LIMIT, stated because a silent one reads as coverage (macroscopeapp, PR
+// #371): the two classes are NOT checked to the same depth. Workflow scripts get
+// both directions per flag. Manifest-backed commands get only the roster and
+// `--why` — nothing here proves a manifest flag is implemented, or that an
+// implemented flag reached its manifest, because that means parsing the
+// TypeScript. A new or undocumented flag on serve/wtft/yada passes this suite.
+//
 // WHY BOTH DIRECTIONS. A one-way check invites the wrong fix. Checking only
 // "implemented ⇒ documented" lets someone delete a flag from the code to satisfy
 // it; checking only "documented ⇒ implemented" lets someone delete the sentence.

@@ -14,10 +14,25 @@ Since #226 the harness surface is **shell-first**, so the workflow-script row is
 line and the manifest row is the smaller, specialised one. This page used to describe the
 opposite.
 
-Both classes are checked mechanically by `tests/tool-flag-contract.test.ts`: every flag a
-tool implements must appear in a readable artifact, and every flag this page requires must
-be implemented by the tools it names. A claim here that no tool satisfies fails the suite
-rather than sitting true-looking and false for months.
+`tests/tool-flag-contract.test.ts` checks both classes mechanically, but **not to the same
+depth** — worth knowing before relying on it:
+
+- **Workflow scripts: both directions, per flag.** Every flag parsed out of a script's `case`
+  arms must appear in its own `--help` *and* in `docs/dev-workflow-spec.md`; and the roster this
+  page names must exist.
+- **Manifest-backed commands: the roster and `--why` only.** The suite asserts every manifest on
+  disk is listed here, has a non-empty `why[]`, and answers `--why` at exit 0. It does **not**
+  check that each manifest flag is implemented, or that each implemented flag reached the
+  manifest — that would mean parsing the TypeScript, and it is not done. A new or undocumented
+  flag on `serve`/`wtft`/`yada` passes this suite today.
+
+A claim on this page that no tool satisfies fails the suite rather than sitting true-looking and
+false for months — which is what #365 found here, and why the paragraph above states its own
+limits instead of implying uniform coverage.
+
+**A third thing exists that is neither class:** `patch-pi-widgets` is a built CLI in the `bin`
+map with no manifest and no `.ts` twin (it is handwritten `.mjs`). It is out of scope for both
+rows above; see [build & toolchain](build-and-toolchain.md).
 
 ## Workflow scripts (the shell family)
 
