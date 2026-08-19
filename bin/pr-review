@@ -34,6 +34,22 @@
 #   2  usage error
 #   3  precondition — not a git repo, protected branch, or the diff itself failed
 #   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
+#
+# Under `set -euo pipefail` a few unguarded operations can still exit 1 with no
+# message and no JSON: an unwritable log directory, the collector raising, a
+# missing `timeout`. Those are NOT in the table above and this note is the honest
+# statement of that rather than a claim of exhaustiveness the shell cannot keep.
+# pr-open maps every non-7 status to "proceeding unreviewed", so the release path
+# stays safe; a machine caller must therefore treat "no stdout" as "reviewer
+# unavailable" and not as "clean".
+#
+# --- Environment ---
+#   PR_REVIEW_MODEL    model for every lens and the clustering pass (default
+#                      claude-opus-5; explicit, never inherited)
+#   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 600)
+#   PR_REVIEW_LOG_DIR  where run logs land (default
+#                      ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>)
+#   PR_REVIEW_NO_CLUSTER=1  skip the clustering pass; distinct == raw
 # ---
 set -euo pipefail
 
@@ -55,11 +71,16 @@ usage: pr-review [--base <ref>] [--json] [--quiet]
 Reviews the current branch's diff against its merge-base with the primary branch,
 in three parallel lenses (correctness, reasoning, contract), and reports findings.
 
-Findings are written to a JSON log OUTSIDE the repository
-($XDG_STATE_HOME/pr-review/<repo>/), so a later pass can compare what this caught
-against what a paid reviewer still found without the logs ever entering a commit.
+Findings are written to a JSON log OUTSIDE the repository, under
+${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>/ — on a default Linux host
+XDG_STATE_HOME is unset, so that is ~/.local/state/pr-review/<repo>/. Keeping the
+logs out of the tree is what stops `git add -A` committing them.
+
+environment: PR_REVIEW_MODEL (default claude-opus-5) · PR_REVIEW_TIMEOUT (600s)
+             PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage · 3 precondition · 7 findings
+            (set -e can still surface an undocumented 1 — see the header)
 EOF
 }
 
@@ -86,7 +107,16 @@ while [ $# -gt 0 ]; do
     --version) readlink -f "$0"; exit 0 ;;
     --json) JSON_OUT=1; shift ;;
     --quiet) QUIET=1; shift ;;
-    --base) BASE="${2:-}"; [ -n "$BASE" ] || { echo "pr-review: --base needs a ref" >&2; exit 2; }; shift 2 ;;
+    # A flag-shaped value is refused, not consumed (#367, same reason as
+    # pr-reject's -b). `--base --json` used to set BASE=--json and silently drop
+    # the real flag; git diff then failed, emit_status returned 3, and pr-open
+    # read that as "proceeding unreviewed" — a one-token typo turned a usage
+    # error into an unreviewed PR, the exact outcome this gate exists to prevent.
+    --base)
+      BASE="${2:-}"
+      [ -n "$BASE" ] || { echo "pr-review: --base needs a ref" >&2; exit 2; }
+      case "$BASE" in -*) echo "pr-review: --base got a flag-shaped value '$BASE'" >&2; exit 2 ;; esac
+      shift 2 ;;
     *) echo "pr-review: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -96,8 +126,16 @@ done
 # version emitted a human sentence, an empty stdout, and JSON respectively.
 emit_status() {  # emit_status <status> <human message> <exit code>
   if [ "$JSON_OUT" -eq 1 ]; then
-    printf '{"status":"%s","findings":[],"distinctFindings":0,"failedLenses":[],"message":"%s"}\n' \
-      "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')"
+    # Built by a JSON encoder, not `sed 's/"/\\"/g'`. That escaped double quotes
+    # and nothing else, so a backslash, newline or control character in the
+    # message — and $BASE flows in here verbatim from --base — produced an
+    # invalid escape and broke the "exactly one parseable document" contract on
+    # precisely the error paths a machine reader most needs.
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":sys.argv[2]}))' "$1" "$2"
+    else
+      printf '{"status":"%s","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"reviewer unavailable"}\n' "$1"
+    fi
   elif [ "$QUIET" -eq 0 ]; then
     printf '%s\n' "$2" >&2
   fi
@@ -156,7 +194,13 @@ STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 # the evidence artifact for btw#59 — a lost run is lost measurement.
 LOG="$LOG_DIR/${BRANCH//\//-}-$STAMP-$$.json"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
-trap 'rm -rf "$WORK"' EXIT INT TERM
+# EXIT cleans up; INT/TERM additionally kill the lens children and EXIT. A bare
+# handler on INT/TERM returns to the interrupted command, so the background
+# `timeout claude` processes survived as orphans still burning a reviewer call,
+# and the collector then read from a directory that had just been deleted.
+trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"; kill 0 2>/dev/null; exit 130' INT
+trap 'rm -rf "$WORK"; kill 0 2>/dev/null; exit 143' TERM
 printf '%s' "$DIFF" > "$WORK/diff"
 
 lens_prompt() {
@@ -221,6 +265,46 @@ wait
 # with `findings` an integer in one and a list in the other.
 python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "${LENSES[@]}" <<'PYEOF'
 import json, os, sys
+
+
+def _balanced_object(text):
+    """Span of the first brace-balanced {...}, ignoring braces inside strings."""
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                return start, i
+    return -1, -1
+
+
+def _clip(text, limit):
+    """Truncate WITH a marker. A silently clipped stack trace or response reads as
+    complete, and these logs are the recovery path for a dropped finding."""
+    if text is None:
+        return None
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…[truncated {len(text) - limit} of {len(text)} bytes]"
+
+
 work, log, base, branch, stamp, model = sys.argv[1:7]
 lenses = sys.argv[7:]
 findings, failed = [], []
@@ -233,7 +317,7 @@ def fail(lens, why):
         # Keep the CAUSE. It used to be captured and then deleted unread by the
         # EXIT trap, leaving "N of 3 lenses failed" with no way to tell E2BIG
         # from expired auth from a rate limit — while the script failed open.
-        detail = open(err, errors="replace").read().strip()[:500]
+        detail = _clip(open(err, errors="replace").read().strip(), 500)
     failed.append({"lens": lens, "why": why, "stderr": detail})
 
 
@@ -250,47 +334,148 @@ for lens in lenses:
     if env.get("is_error"):
         fail(lens, "reviewer reported is_error"); continue
     text = env.get("result") or ""
-    s, e = text.find("{"), text.rfind("}")
-    if s < 0 or e < 0:
+    # Scan for a BALANCED object rather than first-{ .. last-}. The greedy span
+    # broke on any prose brace before or after the payload (a sentence quoting
+    # ${VAR}, a trailing explanation), and the lens was then filed as "could not
+    # look" — downgrading a lens that had actually found defects into
+    # coverage-incomplete, with the findings surviving only in the log's raw field.
+    s, e = _balanced_object(text)
+    if s < 0:
         # "Could not parse the answer" is NOT "the reviewer broke", and the raw
         # text is kept so a dropped finding stays recoverable.
         failed.append({"lens": lens, "why": "response not parseable as JSON",
-                       "raw": text[:2000]})
+                       "raw": _clip(text, 2000)})
         continue
     try:
         parsed = json.loads(text[s:e + 1])
     except Exception as exc:
         failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",
-                       "raw": text[s:e + 1][:2000]})
+                       "raw": _clip(text[s:e + 1], 2000)})
         continue
     for f in parsed.get("findings", []):
         f["lens"] = lens
         findings.append(f)
 
-# DISTINCT count is the experiment's metric (btw#59). The raw list keeps one
-# entry per lens because two lenses flagging the same line from different angles
-# is signal about that finding — but the control arm it is compared against is a
-# deduplicated per-reviewer count, so reporting the raw total would inflate this
-# arm by up to the lens count and corrupt the very measurement this gate exists
-# to produce.
-seen, distinct = set(), []
-for f in findings:
-    key = (str(f.get("file", "")), str(f.get("line", "")), str(f.get("title", "")).strip().lower())
-    if key not in seen:
-        seen.add(key)
-        distinct.append(f)
+# STATUS distinguishes complete from partial coverage. Collapsing them into
+# "reviewed" let a consumer keying on status record a clean review that never
+# happened — the same merge the human path is explicitly gated against.
+ran = len(lenses) - len(failed)
+status = "reviewed" if not failed else ("reviewed-none" if ran == 0 else "reviewed-partial")
 
-json.dump({"status": "reviewed", "branch": branch, "base": base, "utc": stamp,
+json.dump({"status": status, "branch": branch, "base": base, "utc": stamp,
            "model": model, "lenses": lenses, "failedLenses": failed,
-           "lensesRan": len(lenses) - len(failed),
-           "distinctFindings": len(distinct), "findings": findings,
-           "distinct": distinct},
+           "lensesRan": ran, "findings": findings},
           open(log, "w"), indent=2)
 with open(os.path.join(work, "summary"), "w") as fh:
-    fh.write(f"{len(distinct)} {len(failed)} {len(lenses) - len(failed)}\n")
+    fh.write(f"{len(findings)} {len(failed)} {ran}\n")
 PYEOF
 
-read -r COUNT NFAILED NRAN < "$WORK/summary"
+read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
+
+# --- Clustering pass (#377 round 2) ---
+# The experiment's metric is DISTINCT defects, because the control arm it is
+# compared against (btw#59) is a deduplicated per-reviewer count. String keys
+# cannot produce that: measured on a live 19-finding run, `file+line+title`
+# deduplicated 0%, and no threshold works — genuine duplicate pairs spanned
+# 0.09-0.56 title similarity and 0-260 lines apart, because three lenses run
+# three different prompts and describe the same defect in different words at
+# different lines. Only something that reads the findings can group
+# "fail-open on a missing pr-review is silent" with "Missing pr-review is
+# skipped silently".
+#
+# So: one more call, which is affordable precisely because marginal cost is zero.
+# It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
+# an un-deduplicated number that says so is usable; one that pretends is not.
+if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
+  {
+    cat <<'CRULES'
+You are given code-review findings produced by three independent reviewers with different
+prompts. Several may describe THE SAME underlying defect in different words, at different
+line numbers. Group them.
+
+Two findings belong to the same group only if fixing one necessarily fixes the other.
+Different defects in the same file, or the same symptom with different causes, are separate.
+
+Return ONLY JSON: {"groups":[[0,3],[1],[2,4,5]]} — arrays of the integer ids below.
+Every id must appear exactly once.
+
+FINDINGS:
+CRULES
+    python3 - "$LOG" <<'PYIDS'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for i, f in enumerate(d["findings"]):
+    print(f'{i}: [{f.get("severity","?")}] {f.get("file","?")}:{f.get("line","?")} — '
+          f'{f.get("title","")} :: {str(f.get("detail",""))[:300]}')
+PYIDS
+  } > "$WORK/cluster.prompt"
+
+  if timeout "$LENS_TIMEOUT" claude -p --output-format json --model "$MODEL" \
+       < "$WORK/cluster.prompt" > "$WORK/cluster.out" 2>"$WORK/cluster.err"; then
+    :
+  else
+    : > "$WORK/cluster.fail"
+  fi
+
+  python3 - "$WORK" "$LOG" <<'PYCLUSTER'
+import json, os, sys
+work, log = sys.argv[1], sys.argv[2]
+d = json.load(open(log))
+raw = d["findings"]
+
+
+def finish(distinct, method, note=None):
+    d["distinct"] = distinct
+    d["distinctFindings"] = len(distinct)
+    d["dedup"] = method
+    if note:
+        d["dedupNote"] = note
+    json.dump(d, open(log, "w"), indent=2)
+    with open(os.path.join(work, "distinct"), "w") as fh:
+        fh.write(f"{len(distinct)}\n")
+
+
+if os.path.exists(os.path.join(work, "cluster.fail")):
+    finish(raw, "failed", "clustering call failed; count is RAW, not deduplicated")
+    sys.exit(0)
+try:
+    env = json.load(open(os.path.join(work, "cluster.out")))
+    if env.get("is_error"):
+        raise ValueError("is_error")
+    text = env.get("result") or ""
+    st, en = text.find("{"), text.rfind("}")
+    groups = json.loads(text[st:en + 1])["groups"]
+    seen = sorted(i for g in groups for i in g)
+    # Reject a grouping that does not partition the input. A dropped or repeated
+    # id would silently change the count, which is the number the experiment turns on.
+    if seen != list(range(len(raw))):
+        raise ValueError(f"not a partition: {len(seen)} ids for {len(raw)} findings")
+    # Representative = highest severity in the group, so a High merged with a Low
+    # is still reported as a High.
+    order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+    distinct = []
+    for g in groups:
+        members = [raw[i] for i in g]
+        rep = dict(sorted(members, key=lambda f: order.get(f.get("severity", "Low"), 9))[0])
+        if len(members) > 1:
+            rep["mergedFrom"] = [f"{m.get('lens')}:{m.get('file')}:{m.get('line')}" for m in members]
+        distinct.append(rep)
+    finish(distinct, "clustered")
+except Exception as exc:
+    finish(raw, "failed", f"clustering unusable ({exc}); count is RAW, not deduplicated")
+PYCLUSTER
+  read -r COUNT < "$WORK/distinct"
+else
+  python3 - "$LOG" <<'PYNOCLUSTER'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["distinct"] = d["findings"]
+d["distinctFindings"] = len(d["findings"])
+d["dedup"] = "not-needed" if len(d["findings"]) <= 1 else "disabled"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PYNOCLUSTER
+  COUNT="$RAWCOUNT"
+fi
 
 if [ "$JSON_OUT" -eq 1 ]; then
   cat "$LOG"
@@ -321,7 +506,12 @@ PYFAIL
       echo "✅ pr-review: no findings across $NRAN lenses. Log: $LOG"
     fi
   else
-    echo "🔎 pr-review: $COUNT distinct finding(s) from $NRAN lens(es). Log: $LOG"
+    DEDUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dedup","?"))' "$LOG")
+    if [ "$DEDUP" = "failed" ]; then
+      echo "🔎 pr-review: $COUNT finding(s) from $NRAN lens(es) — NOT deduplicated (clustering failed). Log: $LOG"
+    else
+      echo "🔎 pr-review: $COUNT distinct finding(s) from $NRAN lens(es) [$RAWCOUNT raw]. Log: $LOG"
+    fi
     python3 - "$LOG" <<'PYSHOW'
 import json, sys
 d = json.load(open(sys.argv[1]))

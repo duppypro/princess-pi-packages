@@ -253,6 +253,7 @@ const UNEXPECTED_POSITIONAL: Record<string, string[]> = {
 	"pr-guard": ["some-branch", "zzz-unexpected"], // exactly one branch name
 	"pr-merge": ["some-branch", "zzz-unexpected"],
 	"pr-open": ["zzz-unexpected"], // takes no arguments AT ALL — the #209 shape
+	"pr-review": ["zzz-unexpected"], // flags only; no positional arguments (#377)
 	"pr-reject": [], // variadic: the reason is free text, joined — see section 3
 	"pr-threads": ["1", "owner/repo", "zzz-unexpected"],
 	"repo-gate": [], // variadic: an explicit list of repos to check

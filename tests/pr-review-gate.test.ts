@@ -96,7 +96,12 @@ function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string,
 	}
 	// PATH is REPLACED, not prepended: the real claude and gh on this developer's
 	// PATH would otherwise answer and the test would measure the host.
-	return { PATH: `${sb.binDir}:/usr/bin:/bin`, PR_REVIEW_LOG_DIR: path.join(sb.root, "logs") };
+	// PR_REVIEW_NO_CLUSTER: the clustering pass (#377 round 2) is a fourth real
+	// `claude` call. The stub cannot emit a valid grouping for arbitrary inputs, and
+	// these tests are about gate BEHAVIOUR, not clustering quality — which is
+	// exercised separately below via its documented fail-open contract.
+	return { PATH: `${sb.binDir}:/usr/bin:/bin`, PR_REVIEW_LOG_DIR: path.join(sb.root, "logs"),
+		PR_REVIEW_NO_CLUSTER: "1" };
 }
 
 function run(script: string, cwd: string, env: Record<string, string>, args: string[] = []) {
@@ -280,8 +285,8 @@ console.log("\nself-review regressions:");
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
 	check(d.findings.length === 3, "raw list keeps one entry per lens", String(d.findings.length));
-	check(d.distinctFindings === 1, "distinct count deduplicates by file+line+title", String(d.distinctFindings));
-	check(/1 distinct finding/.test(out), "summary reports the DISTINCT count", out);
+	check(d.dedup === "disabled", "PR_REVIEW_NO_CLUSTER=1 disables clustering", String(d.dedup));
+	check(d.distinctFindings === 3, "with clustering off, distinct == raw (no false dedup)", String(d.distinctFindings));
 }
 {
 	// A failed lens must carry its cause. The first cut captured each lens's
@@ -306,6 +311,68 @@ console.log("\nself-review regressions:");
 	const env = stubs(sb, "clean");
 	const { code, out } = run(PR_REVIEW, sb.clone, env, ["--base", "no-such-ref-at-all"]);
 	check(code === 3, "unresolvable base → exit 3, not a clean 0", `got ${code}: ${out}`);
+}
+
+// --- clustering fails open to a LABELLED raw count (#377 round 2) ---
+// String-key dedup was replaced after measuring it at 0% on a live 19-finding
+// run: three lenses run three different prompts, so the same defect arrives with
+// different words at different lines (true duplicate pairs spanned 0.09-0.56
+// title similarity and 0-260 lines apart). Clustering is a fourth model call, so
+// it can fail — and an un-deduplicated count that SAYS SO is usable, while one
+// that pretends is what corrupts the experiment.
+console.log("\nclustering fail-open:");
+{
+	const sb = makeSandbox();
+	const env = stubs(sb, "findings");
+	delete (env as any).PR_REVIEW_NO_CLUSTER;   // let it try; the stub cannot produce a partition
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(code === 7, "unusable clustering → still exit 7 (findings are not lost)", `got ${code}: ${out}`);
+	check(d.dedup === "failed", "unusable clustering → dedup recorded as 'failed'", String(d.dedup));
+	check(d.distinctFindings === d.findings.length, "unusable clustering → count falls back to raw", 
+		`${d.distinctFindings} vs ${d.findings.length}`);
+	check(/NOT deduplicated/.test(out), "unusable clustering → output SAYS the count is not deduplicated", out);
+	check(typeof d.dedupNote === "string" && d.dedupNote.length > 0, "unusable clustering → records why", String(d.dedupNote));
+}
+{
+	// Partial coverage must be visible on the machine path too, not only the human one.
+	const sb = makeSandbox();
+	const env = stubs(sb, "broken");
+	const { out } = run(PR_REVIEW, sb.clone, env, ["--json"]);
+	const d = JSON.parse(out.trim());
+	check(d.status === "reviewed-none", "all lenses failed → status 'reviewed-none', not 'reviewed'", String(d.status));
+	check(d.lensesRan === 0, "all lenses failed → lensesRan 0", String(d.lensesRan));
+}
+{
+	// A flag-shaped --base value is a usage error, not a silently consumed flag:
+	// `--base --json` used to drop --json, fail the diff, and open an unreviewed PR.
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	const { code, out } = run(PR_REVIEW, sb.clone, env, ["--base", "--json"]);
+	check(code === 2, "--base with a flag-shaped value → exit 2", `got ${code}: ${out}`);
+}
+{
+	// emit_status must produce valid JSON for a message containing a backslash.
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	const { out } = run(PR_REVIEW, sb.clone, env, ["--json", "--base", "a\\qb"]);
+	let parsed: any = null;
+	try { parsed = JSON.parse(out.trim()); } catch { /* left null */ }
+	check(parsed !== null, "backslash in --base → still exactly one parseable document", out.slice(0, 200));
+}
+{
+	// pr-open must be LOUD when pr-review is missing — the one fail-open that used
+	// to produce no output at all.
+	const sb = makeSandbox();
+	const rec = path.join(sb.root, "gh-calls-2");
+	const env = stubs(sb, "clean", rec);
+	fs.rmSync(path.join(sb.binDir, "pr-review"));   // deployed without its pair
+	const { code, out } = run(PR_OPEN, sb.clone, env);
+	check(code === 0, "pr-review missing → pr-open still exits 0", `got ${code}: ${out}`);
+	check(fs.existsSync(rec), "pr-review missing → PR still created (fails open)", "");
+	check(/UNREVIEWED/.test(out), "pr-review missing → says the PR is unreviewed", out);
+	check(/install-workflow-tools/.test(out), "pr-review missing → names the fix", out);
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);

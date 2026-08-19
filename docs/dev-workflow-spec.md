@@ -654,8 +654,8 @@ rationale lives once, in `bin/pr-open`; the others carry a two-line pointer to i
 | Script | What it does |
 |---|---|
 | `wt-new <issue#>-<slug>` | From the main clone: fetches origin, detects `main`/`master`, creates `.claude/worktrees/<branch>` via `git worktree add --no-track -b <branch> <path> origin/<primary>`, then `git push -u origin <branch>` — the upstream trap fix (see [`wt-new` — the one-command form](#wt-new--the-one-command-form-250)). Opens a herdr tab or tmux window at the new path when available (optional; absence isn't an error). Prints the created path on stdout for `EnterWorktree { path: ... }`. |
-| `pr-open [--reviewed]` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `gh pr create`. **Takes no arguments**: a branch name is refused (exit 2, #367), not ignored — until then `pr-open <branch>` opened the *current* branch's PR. To open another branch's PR, run it from that branch's worktree. |
-| `pr-review [--base <ref>] [--json]` | Three-lens review of the branch diff before the PR exists (correctness / reasoning / contract). Exit 7 on findings and `pr-open` refuses to create the PR; fails open when the reviewer is missing or broken (#377) |
+| `pr-open [--reviewed]` | Discovers branch from cwd → fetches (`--prune`) → pushes only if local/remote shas differ, refusing a diverged branch rather than force-pushing (see [Git guardrails](#git-guardrails)) → pre-checks → `pr-review` → `gh pr create`. Takes no arguments other than `--reviewed` (#377); a branch name is refused (exit 2, #367), not ignored — until then `pr-open <branch>` opened the *current* branch's PR. To open another branch's PR, run it from that branch's worktree. Review findings mean **exit 7 and no PR**; `--reviewed` overrides |
+| `pr-review [--base <ref>] [--json] [--quiet]` | Three-lens review of the branch diff before the PR exists (correctness / reasoning / contract). Exit 7 on findings and `pr-open` refuses to create the PR; fails open when the reviewer is missing or broken (#377) |
 | `pr-merge [--no-refresh] [<branch>]` | Discovers PR from `<branch>`, default current branch → asks GitHub for `mergeable`/`mergeStateStatus` and gates on the server's own verdict (#349, correcting #258), reading `pr-threads --json` structurally for unresolved threads → `gh pr merge --squash` (human command). Refuses `DIRTY`/`DRAFT`/`BLOCKED`, an unrecognised status, or unresolved threads; `BEHIND` is eligible. **Head-coverage warns but does not block** — that condition is enforced by no ruleset here, and the old message blaming `required_review_thread_resolution` was withdrawn as false (#349). `UNKNOWN` re-queries, then exits 5 rather than guessing. On success, best-effort refreshes every other open PR targeting the same base (#332 — the ruleset's `strict_required_status_checks_policy` marks them out of date on every merge, otherwise serializing a merge burst behind a manual "Update branch" click per PR); never changes `pr-merge`'s own exit code. `--no-refresh` opts out. |
 | `pr-reject [-b\|--branch <branch>] [reason]` | Discovers PR from `<branch>`, default current branch → `gh pr close` (human command). `-b` and its long form `--branch` are the same flag, space-separated only (`--branch=foo` is refused); the value must not itself be flag-shaped (#367). The reason is every positional joined with single spaces — before or after `--` — so an unquoted multi-word reason arrives whole; it used to keep only the last word, or only the first word after `--`. Quote it to control spacing exactly. |
 | `pr-guard [<branch>]` | The one place "is this branch protected?" is decided (#222) — `main`/`master` today. Sourceable library first (`. pr-guard`, then `pr_is_protected "$BRANCH"`), one-shot CLI second: bare `<branch>` exits 0 protected / 1 not, `--list` prints one per line, `--json` emits `pr-guard/protected@1`. All four `pr-*` scripts source it and **fail closed** (exit 3, naming `install-workflow-tools`) if it is missing — a guard that degrades gracefully is a guard that is absent |
@@ -924,12 +924,12 @@ the [#224 table](#exit-codes--the-shared-pr--contract-224) exactly:
 
 ### Exit codes — the shared pr-* contract (#224)
 
-`pr-cleanup`, `pr-open`, `wt-new`, `pr-merge`, `pr-reject`, and `pr-threads` map every
-failure to one of six codes instead of a bare `exit 1`. The distinction that carries
-weight is **5 vs 6**: "I could not check" versus "I checked and it says no." The rows below are
-deliberately general — each script's own header spells out exactly which of its checks
-lands on which code; a header disagreeing with this table is a bug in the header, not
-license to add a seventh number.
+`pr-cleanup`, `pr-open`, `wt-new`, `pr-merge`, `pr-reject`, `pr-review`, and `pr-threads`
+map every failure to one of these codes instead of a bare `exit 1`. The distinction that
+carries weight is **5 vs 6**: "I could not check" versus "I checked and it says no." The rows
+below are deliberately general — each script's own header spells out exactly which of its
+checks lands on which code; a header disagreeing with this table is a bug in the header, not
+license to invent a code of its own.
 
 | Code | Meaning |
 |---|---|
@@ -939,6 +939,7 @@ license to add a seventh number.
 | 4 | not found — a required piece of local git state or a PR is missing (no main/master worktree registered, no local branch by that name, no `origin` remote configured, no such PR, no open PR for the branch) |
 | 5 | remote/API failure — state could **not** be determined (network down, `gh` outage, an incomplete API response, a local check like `merge-base` that could not even run, or a ref the remote named that was never fetched locally) |
 | 6 | safety gate refused — state **was** determined, and it says no (unmerged work, a diverged or moved remote, a dirty or locked worktree refusing removal, a rejected push, a ref that won't delete, a target path or branch that already exists, ambiguous PR selection, `pr-merge`'s pr-threads gate) |
+| 7 | **review** gate refused — `pr-review` found issues, so `pr-open` did not create the PR (#377). Emitted only by `pr-review` and `pr-open`. Distinct from 6: a 6 is a git-state refusal that a force-push or a cleanup resolves, a 7 is a code-quality refusal that only a code change or an explicit `--reviewed` resolves. It was added rather than folded into 6 because the two demand different actions from the caller, which is the whole reason this table separates 5 from 6. |
 
 `git-overview` and `herdr-tab` are not members, but their unknown-flag refusal uses code `2` with
 this table's meaning (#362) — the only code from it they emit.

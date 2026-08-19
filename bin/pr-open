@@ -363,6 +363,14 @@ if [ "$SKIP_REVIEW" -eq 0 ] && command -v pr-review >/dev/null 2>&1; then
   elif [ "$review_status" -ne 0 ]; then
     echo "pr-open: pr-review exited $review_status — proceeding unreviewed." >&2
   fi
+elif [ "$SKIP_REVIEW" -eq 0 ]; then
+  # LOUD. Every other fail-open path in this design announces itself, and
+  # install-workflow-tools groups the pr-open/pr-review deploy specifically to
+  # prevent this state — "every PR opens unreviewed while pr-open still exits 0",
+  # named there as the failure hardest to notice. Silence here was the one
+  # condition producing no output at all.
+  echo "⚠️  pr-open: 'pr-review' not on PATH — opening the PR UNREVIEWED (#377)." >&2
+  echo "   Fix with: install-workflow-tools" >&2
 fi
 
 # 6. Create the PR
