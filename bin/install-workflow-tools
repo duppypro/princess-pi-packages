@@ -206,6 +206,11 @@ SCRIPTS=(
   # executable bit either way, which deploy() sets.
   pr-guard
   pr-open
+  # Deployed WITH pr-open, not optionally: pr-open calls pr-review by bare name
+  # and skips the gate when it is absent (fail-open). On a host with one and not
+  # the other, every PR opens unreviewed while pr-open still exits 0 — the same
+  # silent half-working failure the herdr pair above is grouped to prevent.
+  pr-review
   pr-merge
   pr-reject
   pr-cleanup
