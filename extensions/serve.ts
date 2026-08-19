@@ -1,4 +1,24 @@
 // ---
+// The Pi face of `serve` — the WIDGET, and nothing else.
+//
+// ADR 0004 (#226) is shell-first: a workflow tool gets a Pi `/command` face only
+// where it needs something the harness alone can give. `serve` splits down that
+// line. The widget needs `ctx.ui.setWidget`, a session-lifetime tick
+// subscription, and per-session visibility state — none of which a shell script
+// can reach. Starting, killing, listing, and publishing a server need a
+// filesystem, a process table, and an HTTP client, all of which bash has.
+//
+// So the command surface lives in `bin/serve.ts` and is invoked as `!serve`.
+// This file may READ what is running (the widget has to know) and may write
+// widget/session state. It may not act on the world — which is enforced by what
+// it is allowed to import, not by discipline: see
+// tests/pi-serve-widget-only.test.ts.
+//
+// What that deleted: handleStart, handleKill, handleUnpub, handleList — ~350
+// lines that duplicated `bin/serve.ts` and were the reason the two faces could
+// drift. `/merge` is what drift looks like when nobody is watching (ADR 0004
+// § Context).
+//
 // Compatibility note: this extension targets Pi Coding Agent's runtime API
 // (pi.registerCommand, pi.on lifecycle events, ctx.ui.setWidget) — these have
 // no equivalent in other agent harnesses. Claude Code, for example, uses a
@@ -9,18 +29,12 @@
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn, exec, execSync } from "node:child_process";
-import { isInsideRepo, KilledServerInstance } from "./lib/serve/domain.js";
-import { discoverServers, resolveIp, checkServerStatus, killServerInstance, scanUnclaimedServerLike, findFreePort, settleStartedServers, type StartedServer } from "./lib/serve/process.js";
-import { registerServer, readRegistry, verifyRecord, unregisterPort, setRecordSubdomain } from "./lib/serve/registry.js";
+import { isInsideRepo } from "./lib/serve/domain.js";
+import { discoverServers } from "./lib/serve/process.js";
 import { getVisibility } from "./lib/serve/store.js";
 import { writeConfig } from "./lib/config.js";
-import { shortenPath } from "./lib/session-path-shortener.js";
-import { updateWidget, buildKilledSummary, buildDiscoveredSummary, buildListSummary, buildNoDirHint, formatServerTable, formatServerCard } from "./lib/serve/tui.js";
-// --- Phase 6B (#66): per-subdomain edge publishing via the Cloudflare API (replaces nginx.js).
-import { parseAclFile, publishSubdomain, unpublishSubdomain, reapOrphans, subdomainToHostname } from "./lib/serve/cloudflare.js";
+import { updateWidget, formatServerTable } from "./lib/serve/tui.js";
 import { formatVersion } from "./lib/build-stamp.ts";
 
 // Track widget visibility state locally (persisted across reloads via session log)
@@ -28,8 +42,6 @@ let isWidgetVisible = true;
 
 // Active instance tracking to self-prune leaked event bus listeners across reloads
 let activeInstanceId = "";
-
-// No local certificates needed. Plain HTTP on loopback is gated securely at the VPS edge.
 
 export default function serveExtension(pi: ExtensionAPI) {
 	const myInstanceId = Math.random().toString(36).substring(2, 11);
@@ -74,45 +86,45 @@ export default function serveExtension(pi: ExtensionAPI) {
 		if (repoServers.length > 0) {
 			const tableText = formatServerTable(repoServers);
 
+			// The ports of the servers ACTUALLY LISTED above, never `--kill all`.
+			// The list is filtered to this repo; `--kill all` is not — it iterates
+			// every server in the registry, so a reminder about three servers here
+			// would stop a preview running for something else entirely
+			// (macroscopeapp on PR #374, verified against bin/serve.ts's handleKill).
+			const killTargets = repoServers.map(s => s.port).join(" ");
+
 			console.log(
 				`\n\x1b[1m\x1b[33m⚠️  REMINDER: You have active background servers running in this repository:\x1b[0m\n\n` +
 				tableText + `\n\n` +
-				`\x1b[33mThese servers will remain active during your "pause". To stop them, resume this session and run:\x1b[0m\n` +
-				`  \x1b[1m/serve --kill\x1b[0m\n`
+				`\x1b[33mThese servers will remain active during your "pause". To stop these ones, run:\x1b[0m\n` +
+				`  \x1b[1m!serve --kill ${killTargets}\x1b[0m\n`
 			);
 		}
 	});
 
-	// --- Command handlers (one per /serve subcommand) ---
+	// --- Command handlers: widget state, and the pointer to the real tool ---
 
-	// #119: --list always shows every server on the box, full paths with ~/ prefix.
-	async function handleList(ctx: any): Promise<void> {
-		const activeServers = await discoverServers();
-		ctx.ui.notify(buildListSummary(activeServers), "info");
-	}
-
+	// The manifest is the single source for both faces' help text, so this stays
+	// manifest-driven (docs/agents/tool-conventions.md) — but it renders under a
+	// banner, because /serve no longer answers most of what the manifest lists.
+	// Printing the full flag table with no banner would teach the retired surface.
 	async function handleHelp(ctx: any): Promise<void> {
 		try {
 			const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
-			const manifestStr = fs.readFileSync(manifestPath, "utf8");
-			const manifest = JSON.parse(manifestStr);
-			const invokedAs = "/serve";
+			const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 
-			let helpText = `\x1b[1m\x1b[36m${manifest.name}\x1b[0m - ${manifest.tagline}\n\n`;
-			helpText += `${manifest.description}\n\n`;
-
-			// Examples first (with mock parameters), full flag enumeration after —
-			// see CLAUDE.md "Manifest-driven --help" convention.
-			helpText += `\x1b[1mExamples:\x1b[0m\n`;
+			let helpText = `\x1b[1m\x1b[36m${manifest.name}\x1b[0m (Pi widget) - ${manifest.tagline}\n\n`;
+			helpText += `${WIDGET_ONLY_BANNER}\n\n`;
+			helpText += `\x1b[1mWidget controls (this command):\x1b[0m\n`;
+			for (const u of WIDGET_FLAGS) {
+				helpText += `  /serve ${u.flags.padEnd(24)} ${u.desc}\n`;
+			}
+			helpText += `\n\x1b[1mEverything else (shell):\x1b[0m\n`;
 			for (const e of manifest.examples) {
-				const fullCmd = e.args ? `${invokedAs} ${e.args}` : invokedAs;
+				const fullCmd = e.args ? `!serve ${e.args}` : "!serve";
 				helpText += `  ${fullCmd.padEnd(30)} ${e.desc}\n`;
 			}
-
-			helpText += `\n\x1b[1mUsage:\x1b[0m\n`;
-			for (const u of manifest.usage) {
-				helpText += `  ${invokedAs} ${(u.flags).padEnd(28)} ${u.desc}\n`;
-			}
+			helpText += `\n  !serve --help                  the full flag table\n`;
 
 			ctx.ui.notify(helpText, "info");
 		} catch (err) {
@@ -136,7 +148,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 			const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
 			ctx.ui.notify(formatVersion("serve", pkg.version, import.meta.url), "info");
 		} catch (err) {
-			ctx.ui.notify(`\u26A0\uFE0F Failed to read package version: ${err}`, "error");
+			ctx.ui.notify(`⚠️ Failed to read package version: ${err}`, "error");
 		}
 	}
 
@@ -144,7 +156,7 @@ export default function serveExtension(pi: ExtensionAPI) {
 		try {
 			const { renderWhy } = await import("./lib/manifest-help.js");
 			const manifestPath = path.join(process.cwd(), "docs", "manifests", "serve-cmd.json");
-			const whyText = renderWhy(manifestPath, "/serve");
+			const whyText = renderWhy(manifestPath, "!serve");
 			ctx.ui.notify(whyText, "info");
 		} catch (err) {
 			ctx.ui.notify(`⚠️ Failed to load command manifest: ${err}`, "error");
@@ -172,339 +184,6 @@ export default function serveExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	async function handleKill(trimmedArgs: string, ctx: any): Promise<void> {
-		const killArgs = trimmedArgs.replace(/^(--kill|--cancel|--off|-k)/, "").trim();
-		const targets = killArgs.split(/\s+/).map(t => t.trim()).filter(t => t.length > 0);
-
-		const activeServers = await discoverServers();
-		const killedList: KilledServerInstance[] = [];
-
-		const killAll = targets.some(t => t.toLowerCase() === "all");
-
-		if (targets.length === 0) {
-			ctx.ui.notify("No targets given — nothing killed. Use --kill <port|dir|all> to target specific servers.", "warning");
-			return;
-		}
-
-		// #181: report server-like processes serve did not start; never kill them. Same
-		// advisory the CLI prints, same source — see scanUnclaimedServerLike().
-		const unclaimed = killAll ? await scanUnclaimedServerLike() : [];
-		const notifyUnclaimed = () => {
-			if (unclaimed.length === 0) return;
-			const lines = unclaimed.map(u => `  PID ${u.pid}${u.port !== null ? ` port ${u.port}` : ""}  ${u.command}`);
-			ctx.ui.notify(
-				`ℹ️ ${unclaimed.length} server-like process(es) NOT started by serve — left running:\n${lines.join("\n")}\n  serve only kills what it started.`,
-				"info",
-			);
-		};
-
-		if (killAll) {
-			if (activeServers.length === 0) {
-				ctx.ui.notify("⚠️ No servers started by serve are currently running.", "warning");
-				notifyUnclaimed();
-				return;
-			}
-
-			for (const server of activeServers) {
-				const statusBefore = await checkServerStatus(server.localUrl || server.url);
-				const killed = await killServerInstance(server);
-				if (!killed) {
-					ctx.ui.notify(`⚠️ Could NOT terminate server on port ${server.port} (PID ${server.pid ?? "unknown"} not found or still running). Skipping.`, "warning");
-					continue;
-				}
-				const statusAfter = await checkServerStatus(server.localUrl || server.url);
-
-				killedList.push({
-					port: server.port,
-					dir: server.dir,
-					url: server.url,
-					localUrl: server.localUrl,
-					subdomain: server.subdomain,
-					title: server.title,
-					statusBefore,
-					statusAfter
-				});
-			}
-		} else {
-			for (const target of targets) {
-				const isPort = /^\d+$/.test(target);
-				let matchedServer = activeServers.find(s => {
-					if (isPort) {
-						return s.port === parseInt(target, 10);
-					} else {
-						return s.dir.replace(/\/$/, "") === target.replace(/\/$/, "") || shortenPath(s.dir, process.cwd()) === target.replace(/\/$/, "");
-					}
-				});
-
-				if (matchedServer) {
-					const statusBefore = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-					const killed = await killServerInstance(matchedServer);
-					if (!killed) {
-						ctx.ui.notify(`⚠️ Could NOT terminate server on port ${matchedServer.port} (PID ${matchedServer.pid ?? "unknown"} not found or still running).`, "warning");
-						continue;
-					}
-
-					const statusAfter = await checkServerStatus(matchedServer.localUrl || matchedServer.url);
-
-					killedList.push({
-						port: matchedServer.port,
-						dir: matchedServer.dir,
-						url: matchedServer.url,
-						localUrl: matchedServer.localUrl,
-						subdomain: matchedServer.subdomain,
-						title: matchedServer.title,
-						statusBefore,
-						statusAfter
-					});
-				} else {
-					ctx.ui.notify(`⚠️ Could not find any active server matching "${target}".`, "warning");
-				}
-			}
-		}
-
-		if (killedList.length === 0) {
-			ctx.ui.notify("No servers were terminated.", "warning");
-			notifyUnclaimed();
-			return;
-		}
-
-		// --- Phase 6B (#66): unpublish each killed sub-domain from the edge (ingress + Access app).
-		// Best-effort — a CF failure must not mask a successful local kill.
-		const killedSubdomains = [...new Set(killedList.map(k => k.subdomain).filter((s): s is string => !!s))];
-		for (const subdomain of killedSubdomains) {
-			try {
-				await unpublishSubdomain({ subdomain });
-			} catch (err) {
-				ctx.ui.notify(`⚠️ Killed local origin for "${subdomain}" but failed to unpublish from Cloudflare: ${(err as Error).message}`, "warning");
-			}
-		}
-
-		const remainingServers = await discoverServers();
-		updateWidget(ctx, remainingServers, isWidgetVisible);
-
-		const fullSummary = buildKilledSummary(killedList);
-		ctx.ui.notify(fullSummary, "info");
-		notifyUnclaimed();
-	}
-
-	async function handleStart(trimmedArgs: string, ctx: any): Promise<void> {
-		let dirs = trimmedArgs.split(/\s+/).map(d => d.trim()).filter(d => d.length > 0);
-		const isStatic = dirs.includes("--static") || dirs.includes("-s");
-		dirs = dirs.filter(d => d !== "--static" && d !== "-s");
-
-		// --- Phase 6B (#66): optional subdomain override. `/serve <dir> --pub <subdomain>` publishes at
-		// <subdomain>.princess-pi.dev instead of the repo-derived subdomain. One override names one
-		// hostname, so it requires exactly one target dir.
-		let overrideSubdomain: string | null = null;
-		let pubIdx = dirs.indexOf("--pub");
-		if (pubIdx === -1) pubIdx = dirs.indexOf("-P");
-		const asIdx = dirs.indexOf("--as");
-		const idx = pubIdx !== -1 ? pubIdx : asIdx;
-		if (idx !== -1) {
-			const val = dirs[idx + 1];
-			if (val && !val.startsWith("-")) { overrideSubdomain = val; dirs.splice(idx, 2); }
-			else { ctx.ui.notify("⚠️ --pub needs a sub-domain value (e.g. --pub my-preview); ignoring.", "warning"); dirs.splice(idx, 1); }
-		}
-
-		// #117: no default dirs anymore (public/+docs/ rarely fit a given repo). With no target —
-		// bare /serve or flags-only (e.g. --static) — list what's already running here, then
-		// suggest an agent prompt to find a servable dir. Start nothing; serving needs an explicit dir.
-		if (dirs.length === 0) {
-			const activeServers = await discoverServers();
-			ctx.ui.notify(`${buildListSummary(activeServers)}\n\n${buildNoDirHint()}`, "info");
-			return;
-		}
-
-		if (overrideSubdomain && dirs.length !== 1) {
-			ctx.ui.notify(`⚠️ --pub ${overrideSubdomain} ignored: it requires exactly one target directory (${dirs.length} given).`, "warning");
-			overrideSubdomain = null;
-		}
-
-		let startPort = 8080;
-		const startedPorts: number[] = [];
-		// #307: the child handles, so the summary can ask "did it come up?" instead of sleeping.
-		const started: StartedServer[] = [];
-		const ip = await resolveIp();
-
-		// --- Phase 6B (#66): reap edge entries orphaned by a crash-without-kill before
-		// publishing new state (stale allow-list live at the edge = security drift).
-		// #306: reap needs a second fact besides a silent port — the registry's verdict on the
-		// process serve spawned for it. Silent + no record → left published and said out loud.
-		try {
-			const evidence = readRegistry().map(r => ({ port: r.port, hostname: r.subdomain ? subdomainToHostname(r.subdomain) : null, verdict: verifyRecord(r) }));
-			const reaped = await reapOrphans({
-				evidence,
-				onReaped: (_hostname, port) => unregisterPort(port),
-				onUnverified: (hostname, port) => ctx.ui.notify(`⚠️ ${hostname} → 127.0.0.1:${port} is not answering, but serve has no record of spawning it — left published (a service tenant mid-restart looks like this). Use --unpub if it is gone.`, "warning"),
-			});
-			if (reaped.length) ctx.ui.notify(`🧹 Reaped ${reaped.length} orphaned preview(s): ${reaped.join(", ")}`, "info");
-		} catch (err) {
-			ctx.ui.notify(`⚠️ Orphan reap skipped: ${(err as Error).message}`, "warning");
-		}
-
-		// Labels published this run — a second dir colliding on the same flattened label is refused.
-		const activeLabels = new Set<string>();
-
-		for (const rawDir of dirs) {
-			const targetDir = path.resolve(process.cwd(), rawDir);
-
-			if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
-				ctx.ui.notify(`⚠️ Warning: Directory "${rawDir}" does not exist. Skipping.`, "warning");
-				continue;
-			}
-
-			const activeServers = await discoverServers();
-			const existingServer = activeServers.find(s =>
-				path.resolve(process.cwd(), s.dir) === targetDir &&
-				!!s.isLive === !isStatic
-			);
-
-			if (existingServer) {
-				if (overrideSubdomain) {
-					// Publish the new subdomain to the existing server's port (#119)
-					try {
-						const emails = parseAclFile(targetDir);
-						const hostname = await publishSubdomain({ subdomain: overrideSubdomain, port: existingServer.port, emails, activeLabels });
-					setRecordSubdomain(existingServer.port, overrideSubdomain); // reap evidence is hostname-bound (#318)
-						activeLabels.add(hostname.split(".")[0]);
-						ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed) on existing port ${existingServer.port}.\n\n${formatServerCard({ ...existingServer, url: `https://${hostname}/` })}`, "info");
-					} catch (err) {
-						ctx.ui.notify(`⚠️ Directory "${rawDir}" already served on port ${existingServer.port}, but edge publish failed: ${(err as Error).message}`, "warning");
-					}
-				} else {
-					const typeLabel = isStatic ? "statically" : "live-reloading";
-					ctx.ui.notify(`ℹ️ Note: Directory "${rawDir}" is already being served ${typeLabel}. Skipping.`, "info");
-				}
-				continue;
-			}
-
-			const envPath = path.join(targetDir, ".env");
-			if (fs.existsSync(envPath)) {
-				const proceed = await ctx.ui.confirm(
-					"⚠️ Secret Warning",
-					`Found .env file in "${rawDir}"! This directory may contain sensitive secrets.\nAre you sure you want to serve it?`
-				);
-				if (!proceed) {
-					ctx.ui.notify(`Skipped directory "${rawDir}" due to secret warning.`, "info");
-					continue;
-				}
-			}
-
-			// #181: ask the port, not the process table. Discovery only knows about servers WE
-			// started, so it cannot tell us a systemd tenant or a hand-started server already
-			// holds this port — only a bind attempt can.
-			const port = await findFreePort(startPort);
-			if (port === null) {
-				ctx.ui.notify(`⚠️ No free loopback port found at or above ${startPort}; skipping "${rawDir}".`, "warning");
-				continue;
-			}
-			startPort = port + 1;
-
-			// #66: publishing is opt-in via --pub. A subdomain ⟺ published to the edge; it flows to
-			// the runner's --subdomain (watcher target) AND the publish call. No --pub → local only.
-			const subdomain = overrideSubdomain; // null unless --pub given
-
-			const __filename = fileURLToPath(import.meta.url);
-			const __dirname = path.dirname(__filename);
-			const runnerPath = path.resolve(__dirname, "lib/serve/run-live-server.js");
-
-			const spawnCmd = isStatic ? "npx" : "node";
-			const spawnArgs = isStatic ? [
-				"--",
-				"http-server",
-				targetDir,
-				"-p", String(port),
-				"-a", "127.0.0.1"
-			] : [
-				runnerPath,
-				targetDir,
-				...(subdomain ? ["--subdomain", subdomain] : []),
-				"-p", String(port),
-				"-a", "127.0.0.1"
-			];
-
-			const serverProcess = spawn(spawnCmd, spawnArgs, {
-				detached: true,
-				stdio: "ignore"
-			});
-
-			serverProcess.unref();
-			startedPorts.push(port);
-			const startedEntry: StartedServer = { port, child: serverProcess, dir: rawDir, subdomain: null };
-			started.push(startedEntry);
-
-			// #181: record identity NOW, while this PID is unambiguously ours. Discovery reads
-			// this instead of guessing from a `ps` substring, and `--kill` targets only what is
-			// recorded here.
-			if (serverProcess.pid) {
-				registerServer({
-					pid: serverProcess.pid,
-					port,
-					dir: path.resolve(process.cwd(), targetDir),
-					kind: isStatic ? "static" : "live",
-					subdomain,
-				});
-			}
-
-			// --- Phase 6B (#66): publish to the edge ONLY when --pub or --as names a sub-domain — tunnel
-			// ingress rule + per-subdomain Access app carrying the .serve-acl allow-list. Best-
-			// effort: the loopback origin is already up, so any failure warns and leaves it up.
-			if (subdomain) {
-				try {
-					const emails = parseAclFile(targetDir);
-					const hostname = await publishSubdomain({ subdomain, port, emails, activeLabels });
-					activeLabels.add(hostname.split(".")[0]);
-					startedEntry.subdomain = subdomain; // published — an early exit must take this back down
-					ctx.ui.notify(`🌐 Published https://${hostname} (Access-gated, ${emails.length} allow-listed).`, "info");
-				} catch (err) {
-					ctx.ui.notify(`⚠️ Serving "${rawDir}" locally on 127.0.0.1:${port}, but edge publish failed: ${(err as Error).message}`, "warning");
-				}
-			} else {
-				ctx.ui.notify(`ℹ️ Serving "${rawDir}" locally. Pass --pub <name> to publish a gated preview at <name>.princess-pi.dev.`, "info");
-			}
-		}
-
-		// #307: no fixed sleep. Ask each spawn whether it came up — port answers, child exited,
-		// or still pending at the ceiling — and say which. A dead child is retired from the
-		// registry here.
-		const SERVER_START_CEILING_MS = 10_000;
-		const pendingPorts: number[] = [];
-		for (const { server: s, result: r, unpublish, unpublishError } of await settleStartedServers(started, SERVER_START_CEILING_MS)) {
-			if (r.state === "exited") {
-				const how = r.signalCode ? `on ${r.signalCode}` : `with code ${r.exitCode}`;
-				const tail = unpublish === "done" ? ` Unpublished ${s.subdomain}.princess-pi.dev.` : unpublish === "failed" ? ` ⚠️ Could not unpublish ${s.subdomain}.princess-pi.dev (${unpublishError}); left for the next reap.` : "";
-				ctx.ui.notify(`❌ Server for "${s.dir}" exited ${how} before answering on 127.0.0.1:${s.port} (after ${r.elapsedMs} ms).${tail}`, "error");
-			} else if (r.state === "pending") {
-				pendingPorts.push(s.port);
-				ctx.ui.notify(`⏳ Server for "${s.dir}" started but is not answering on 127.0.0.1:${s.port} yet (${r.elapsedMs} ms) — it may still be booting; check with --list.`, "warning");
-			}
-		}
-
-		const allActiveServers = await discoverServers();
-		const newServers = allActiveServers.filter(s => startedPorts.includes(s.port) && !pendingPorts.includes(s.port));
-
-		if (allActiveServers.length === 0) {
-			ctx.ui.notify("No active directories are currently being served.", "warning");
-			return;
-		}
-
-		updateWidget(ctx, allActiveServers, isWidgetVisible);
-
-		if (newServers.length > 0) {
-			const fullSummary = buildDiscoveredSummary(newServers);
-			ctx.ui.notify(fullSummary, "info");
-		}
-	}
-
-	async function handleUnpub(subdomain: string, ctx: any): Promise<void> {
-		try {
-			await unpublishSubdomain({ subdomain });
-			ctx.ui.notify(`🌐 Unpublished ${subdomain}.princess-pi.dev`, "info");
-		} catch (err) {
-			ctx.ui.notify(`⚠️ Failed to unpublish ${subdomain}: ${(err as Error).message}`, "warning");
-		}
-	}
-
 	async function handleEmojiToggle(enabled: boolean, ctx: any): Promise<void> {
 		writeConfig("serve", { emojiDisabled: !enabled });
 		const servers = await discoverServers();
@@ -513,10 +192,24 @@ export default function serveExtension(pi: ExtensionAPI) {
 		ctx.ui.notify(`Emoji icons in widgets have been ${statusText}.`, "info");
 	}
 
-	// --- Dispatch table: matches the raw trimmed args to the right subcommand handler ---
-	// `--kill` needs a prefix-match (it carries trailing target args); the rest are exact flags.
+	// Anything this command no longer answers is REFUSED with the shell spelling,
+	// never silently ignored (#226 step 2 — the same treatment /merge got). A
+	// surface that accepts an argument and does nothing is worse than the
+	// duplication it replaced: the user believes a server started.
+	async function handleRetired(trimmedArgs: string, ctx: any): Promise<void> {
+		ctx.ui.notify(
+			`/serve no longer starts, stops, lists, or publishes servers — that is one` +
+			` implementation now, in the shell (ADR 0004).\n\n` +
+			`  Run: \x1b[1m!serve ${trimmedArgs}\x1b[0m\n\n` +
+			`/serve still owns the widget: --hide, --show, --emoji, --no-emoji.`,
+			"warning",
+		);
+	}
+
+	// --- Dispatch table: every route here writes widget or session state, which is
+	// the whole justification for this command still existing. Anything else falls
+	// through to handleRetired.
 	const routes: { test: (args: string) => boolean; handler: (args: string, ctx: any) => Promise<void> }[] = [
-		{ test: (a) => a === "--list" || a === "-L", handler: (_a, ctx) => handleList(ctx) },
 		{ test: (a) => a === "--help" || a === "-h", handler: (_a, ctx) => handleHelp(ctx) },
 		{ test: (a) => a === "--version", handler: (_a, ctx) => handleVersion(ctx) },
 		{ test: (a) => a === "--why", handler: (_a, ctx) => handleWhy(ctx) },
@@ -524,25 +217,30 @@ export default function serveExtension(pi: ExtensionAPI) {
 		{ test: (a) => a === "--show" || a === "-S", handler: (_a, ctx) => handleShow(ctx) },
 		{ test: (a) => a === "--no-emojii" || a === "--no-emoji", handler: (_a, ctx) => handleEmojiToggle(false, ctx) },
 		{ test: (a) => a === "--emojii" || a === "--emoji", handler: (_a, ctx) => handleEmojiToggle(true, ctx) },
-		{ test: (a) => /^(--kill|--cancel|--off|-k)(\s|$)/.test(a), handler: handleKill },
-		{ test: (a) => /^(--unpub|-U)(\s|$)/.test(a), handler: (args, ctx) => {
-			const subdomain = args.replace(/^(--unpub|-U)/, "").trim();
-			if (!subdomain) { ctx.ui.notify("Usage: --unpub <subdomain>", "warning"); return; }
-			return handleUnpub(subdomain, ctx);
-		}},
 	];
 
-	// 3. Define the /serve command
+	// 3. Define the /serve command — widget controls only.
 	pi.registerCommand("serve", {
-		description: "Serve one or more directories securely over HTTPS with helper controls (bare /serve lists running servers and suggests how to find one)",
+		description: "Show/hide the active-server widget (start and stop servers with !serve — ADR 0004)",
 		handler: async (args, ctx) => {
 			const trimmedArgs = args.trim();
 			const route = routes.find(r => r.test(trimmedArgs));
 			if (route) {
 				await route.handler(trimmedArgs, ctx);
 			} else {
-				await handleStart(trimmedArgs, ctx);
+				await handleRetired(trimmedArgs, ctx);
 			}
 		}
 	});
 }
+
+const WIDGET_ONLY_BANNER =
+	"This command is the WIDGET only. Servers are started, stopped, listed and\n" +
+	"published with \x1b[1m!serve\x1b[0m — one implementation, in the shell (ADR 0004).";
+
+const WIDGET_FLAGS = [
+	{ flags: "--hide, -H", desc: "hide the active-server widget" },
+	{ flags: "--show, -S", desc: "show it again, refreshed" },
+	{ flags: "--emoji / --no-emoji", desc: "toggle emoji icons in the widget" },
+	{ flags: "--help, --version, --why", desc: "this text, the running version, the rationale" },
+];

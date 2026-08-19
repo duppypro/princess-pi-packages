@@ -320,12 +320,19 @@ console.log("\nD. The shipped code carries the change");
 	const extTs = fs.readFileSync(path.join(REPO_ROOT, "extensions/serve.ts"), "utf8");
 	const cfJs = fs.readFileSync(path.join(REPO_ROOT, "extensions/lib/serve/cloudflare.js"), "utf8");
 	assert("bin/serve.ts no longer sleeps 1200 ms after spawn", !/setTimeout\(r, 1200\)/.test(serveTs));
-	assert("extensions/serve.ts no longer sleeps 1200 ms after spawn", !/setTimeout\(r, 1200\)/.test(extTs));
 	assert("bin/serve.ts settles server state instead (concurrently)", /settleStartedServers\(/.test(serveTs));
-	assert("extensions/serve.ts settles server state instead (concurrently)", /settleStartedServers\(/.test(extTs));
 	assert("bin/serve.ts hands reap the registry evidence", /reapOrphans\(\{\s*evidence/.test(serveTs));
-	assert("extensions/serve.ts hands reap the registry evidence", /reapOrphans\(\{\s*evidence/.test(extTs));
 	assert("reapOrphans routes the decision through classifyReapCandidate", /classifyReapCandidate\(\{/.test(cfJs) && /export async function reapOrphans\(\{/.test(cfJs));
+
+	// These three used to be asserted against extensions/serve.ts too — the pair was
+	// the point, because both faces started servers and either could regress alone.
+	// #226 / ADR 0004 removed that half: the extension is the widget now, and starting
+	// a server is one implementation in bin/serve.ts. The right pin for the extension
+	// is the inverse — that it CANNOT reach this code — and it lives in
+	// tests/pi-serve-widget-only.test.ts. Asserted here as well so the deletion of the
+	// three checks above reads as a decision, not as coverage quietly lost.
+	assert("extensions/serve.ts does not start servers at all (ADR 0004)",
+		!/settleStartedServers\(/.test(extTs) && !/reapOrphans\(/.test(extTs) && !/setTimeout\(r, 1200\)/.test(extTs));
 }
 
 console.log(`\n${failed === 0 ? GREEN : RED}${passed} passed, ${failed} failed${RESET}`);
