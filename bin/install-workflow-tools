@@ -220,6 +220,13 @@ SCRIPTS=(
   # if it finds neither (#288). Copying the policy to ~/bin would fork it from the
   # tracked one, and a governance baseline with two copies has no baseline.
   repo-gate
+  # The `.iarts` client-clone mirror (#384). It was untracked host-only tooling in
+  # ~/bin until then, which is how a real defect in it went unreviewed: the bare
+  # repo ran the fetch, so the CLONE's `refs/remotes/mirror/*` never moved and the
+  # prompt reported mirrored work as unmirrored. It guards branches that exist in
+  # exactly two places and are never pushed to the client, so "it only lives on the
+  # host that happened to write it" was the wrong home for it.
+  iarts-mirror
   # Itself (#263): the one script whose job is putting the others on PATH was
   # the only one you couldn't run by bare name — you had to know its repo
   # path. deploy() below always writes via temp-file-then-rename, which is

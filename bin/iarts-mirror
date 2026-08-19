@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# iarts-mirror — refresh the private mirrors of the never-pushed `iarts/local`
+# branches in the client clones (the `.iarts` convention).
+#
+# These branches exist in exactly two places: the clone, and the bare mirror
+# under ~/git-remotes. They are never pushed to the client's `origin`. This
+# script is the only thing between them and total loss, which is why it is
+# owned here rather than living untracked in ~/bin (#384).
+#
+# Why fetch, not push: `git push mirror iarts/local` would work identically --
+# the guardrails hook is destination-aware and permits it. The fetch direction
+# is kept because it names its source as a path and has no concept of `origin`,
+# so it cannot be mis-aimed at the client repo. A push has to be aimed.
+#
+# Usage: run `iarts-mirror --help`. Deliberately NOT restated here — one copy,
+# reachable from the command line (the #362 lesson).
+set -uo pipefail
+
+# #367: -h/--help/--version are terminal — they take no other arguments.
+for a in "$@"; do
+  if [ "$a" = "--" ]; then break; fi
+  case "$a" in
+    -h|--help|--version)
+      if [ "$#" -ne 1 ]; then
+        echo "iarts-mirror: $a takes no other arguments (got: $*)" >&2
+        exit 2
+      fi ;;
+  esac
+done
+
+# #178: resolved absolute path of the running copy — install-workflow-tools
+# deploys this to ~/bin, so a bare `iarts-mirror` runs whatever was last
+# installed there, not a worktree's copy.
+case "${1:-}" in
+  --version) readlink -f "$0"; exit 0 ;;
+  -h|--help)
+    cat <<'USAGE'
+usage: iarts-mirror
+       iarts-mirror -h | --help
+       iarts-mirror --version
+
+Refresh the private bare mirrors of the never-pushed `iarts/local` branches in
+the client clones. Run it before ending a session in a client clone: that
+branch exists only in the clone and in the mirror, and is never pushed to the
+client's origin.
+
+For each repo it fetches `iarts/local` FROM the clone INTO the bare mirror,
+then refreshes the clone's own `refs/remotes/mirror/*` so the shell prompt
+stops reporting mirrored work as unmirrored (#384).
+
+Takes no arguments. Any argument is refused (exit 2).
+
+Output: headerless whitespace records, one per repo — `repo branch sha status`.
+Parse by column; `status` is one of:
+
+  updated          the mirror fast-forwarded to a new sha
+  unchanged        the mirror already held this sha
+  rewritten        the mirror moved to a sha that does NOT contain its previous
+                   tip — an amend, rebase or reset in the clone. The work is
+                   mirrored; the tip it replaced is still reachable in the
+                   mirror's reflog:
+                     git -C ~/git-remotes/<repo>.git reflog refs/heads/iarts/local
+                   Expected after a rebase onto the client's main. Unexpected
+                   otherwise, and that is the moment to look.
+  no-clone         the clone directory is missing
+  no-branch        the clone has no `iarts/local`
+  fetch-failed     the mirror could not be updated — THE WORK IS NOT MIRRORED
+
+`updated`, `unchanged` and `rewritten` may carry a `-refstale` suffix (e.g.
+`updated-refstale`): THE MIRROR IS CORRECT AND THE WORK IS SAFE — the branch was
+copied. What failed is this clone's own view of the mirror, either because the
+`mirror` fetch errored (its prompt may still report drift that is not real) or
+because the clone has no `mirror` remote at all (it cannot observe the mirror in
+either direction). Investigate the suffix; do not re-run for safety.
+Exact-matching `updated` therefore treats a half-done run as incomplete, which is
+the intended reading.
+
+Environment:
+  IARTS_MIRROR_ROOT  bare mirrors        (default: ~/git-remotes)
+  IARTS_CLONE_ROOT   client clones       (default: ~/git-projects)
+
+Exit: 0 if every repo succeeded, 1 if any did not, 2 for an unknown flag or
+unexpected argument.
+
+  -h, --help  this text.
+  --version   resolved path of the running copy.
+USAGE
+    exit 0 ;;
+  -*) echo "iarts-mirror: unknown flag: $1 (try --help)" >&2; exit 2 ;;
+  # `case "${1:-}"` maps "no arguments" and "one empty argument" to the same
+  # "", so this arm tells them apart with $# (the PR #370 shape).
+  "")
+    if [ "$#" -gt 0 ]; then
+      echo "iarts-mirror: unexpected empty argument — iarts-mirror takes none (try --help)" >&2
+      exit 2
+    fi ;;
+  *) echo "iarts-mirror: unexpected argument: $1 — iarts-mirror takes none (try --help)" >&2; exit 2 ;;
+esac
+
+MIRROR_ROOT="${IARTS_MIRROR_ROOT:-$HOME/git-remotes}"
+CLONE_ROOT="${IARTS_CLONE_ROOT:-$HOME/git-projects}"
+BRANCH="iarts/local"
+REPOS=(robotic_hardware rusty-robots)
+
+rc=0
+for repo in "${REPOS[@]}"; do
+    bare="$MIRROR_ROOT/$repo.git"
+    clone="$CLONE_ROOT/$repo"
+
+    if [[ ! -d "$clone" ]]; then
+        printf '%s\t%s\t-\tno-clone\n' "$repo" "$BRANCH"; rc=1; continue
+    fi
+    if ! git -C "$clone" rev-parse --verify --quiet "$BRANCH" >/dev/null; then
+        printf '%s\t%s\t-\tno-branch\n' "$repo" "$BRANCH"; rc=1; continue
+    fi
+    [[ -d "$bare" ]] || git init --bare --quiet --initial-branch="$BRANCH" "$bare"
+    # Set every run, not only at creation, so mirrors made before this change get
+    # it too. A bare repo defaults core.logAllRefUpdates to FALSE — verified: a
+    # fresh `git init --bare` has it unset and keeps no reflog at all. That
+    # default is fine for a serving mirror and wrong for the only second copy of
+    # a branch, because the forced fetch below can move the ref backwards and
+    # nothing would record where it had been.
+    #
+    # The expiry settings matter as much as the reflog. Unreachable objects held
+    # only by a reflog are pruned after 30 days by default, so without these the
+    # recovery window would quietly close a month after the mistake.
+    git -C "$bare" config core.logAllRefUpdates true 2>/dev/null || true
+    git -C "$bare" config gc.reflogExpire never 2>/dev/null || true
+    git -C "$bare" config gc.reflogExpireUnreachable never 2>/dev/null || true
+
+    # READ BACK, do not trust the exit codes. This script runs `set -uo pipefail`
+    # with no `-e`, so a `git config` that failed — a stale `config.lock` from an
+    # interrupted git is the ordinary way — left the mirror with no retention while
+    # the run reported success (macroscopeapp, PR #385). Reading the values proves
+    # the state; the write's exit code only claims it.
+    retention=1
+    [[ "$(git -C "$bare" config --get core.logAllRefUpdates 2>/dev/null || true)" == "true" ]] || retention=0
+    [[ "$(git -C "$bare" config --get gc.reflogExpire 2>/dev/null || true)" == "never" ]] || retention=0
+    [[ "$(git -C "$bare" config --get gc.reflogExpireUnreachable 2>/dev/null || true)" == "never" ]] || retention=0
+
+    # THE INVARIANT: never force without a way back.
+    #
+    # With retention, `+` is safe — a displaced tip stays in the reflog. Without
+    # it, forcing would make the displaced tip unrecoverable, which is the precise
+    # loss the reflog was added to prevent. So retention decides the refspec.
+    #
+    # NOT "refuse to mirror at all", which is what the report proposed. A
+    # fast-forward displaces nothing — the old tip is an ancestor of the new one
+    # and stays reachable through the branch itself — so it never needed the
+    # reflog and is still perfectly safe to mirror. Refusing it would turn a
+    # config hiccup into NO BACKUP on the one branch that exists nowhere else,
+    # failing closed on the case that was never in danger.
+    #
+    # Dropping `+` makes the outcome self-reporting: a fast-forward still lands and
+    # reads `updated`, while a rewrite is rejected by git and reads `fetch-failed`
+    # — which is then literally true, the mirror could not be updated. No new
+    # status, and no run claims a safety it does not have.
+    refspec="+refs/heads/$BRANCH:refs/heads/$BRANCH"
+    if [[ "$retention" -eq 0 ]]; then
+        refspec="refs/heads/$BRANCH:refs/heads/$BRANCH"
+        echo "iarts-mirror: $repo — reflog retention could not be set on $bare," >&2
+        echo "   so this run will NOT force. Ordinary new commits still mirror; a rebased" >&2
+        echo "   or amended branch will report fetch-failed instead of overwriting a tip" >&2
+        echo "   nothing could recover. Check for a stale lock: rm -f '$bare/config.lock'" >&2
+    fi
+
+    # Fully qualified on BOTH sides. `rev-parse iarts/local` resolves refs/tags/
+    # BEFORE refs/heads/ (gitrevisions), so a tag of that name in the mirror wins
+    # — and `--verify --quiet` reports it with the ambiguity warning suppressed,
+    # which makes this the silent half of the pair. Measured: branch 3343477,
+    # tag e35fd13, and both `rev-parse` forms returned the tag.
+    #
+    # Fixing only `after` (the reported line) would be WORSE than fixing neither:
+    # before=tag, after=branch never match, so every run would report `updated`.
+    before=$(git -C "$bare" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo -)
+    # Leading `+`. Without it git requires a fast-forward and rejects the fetch
+    # outright — measured: `! [rejected] iarts/local -> iarts/local
+    # (non-fast-forward)`, exit 1, mirror left at the stale tip. That fires on the
+    # DOCUMENTED workflow, not an edge case: the `.iarts` convention pulls client
+    # updates with `git fetch origin && git rebase origin/main`, so every rebase
+    # broke the backup and reported `fetch-failed` (macroscopeapp, PR #385).
+    #
+    # Forcing is only safe because of the reflog configured above. A backup that
+    # force-overwrites and keeps no history turns a mistaken `reset --hard` in the
+    # clone into permanent loss in the one place it was supposed to be recoverable
+    # from. With the reflog on, the previous tip stays reachable:
+    #   git -C ~/git-remotes/<repo>.git reflog refs/heads/iarts/local
+    if ! git -C "$bare" fetch --quiet --no-tags "$clone" "$refspec" 2>/dev/null; then
+        printf '%s\t%s\t%s\tfetch-failed\n' "$repo" "$BRANCH" "$before"; rc=1; continue
+    fi
+    after=$(git -C "$bare" rev-parse "refs/heads/$BRANCH")
+
+    # #384: the BARE repo ran that fetch, so only its refs moved. Git updates
+    # `refs/remotes/<remote>/*` solely in the repository that runs the transfer,
+    # and the clone ran nothing — so its `refs/remotes/mirror/*` stays frozen at
+    # whatever it was when someone last fetched by hand. The prompt then reports
+    # unmirrored work that IS mirrored, drifting further with every commit, which
+    # teaches the reader to ignore the one indicator that matters on a branch
+    # this clone never pushes. Refresh via the remote's own refspec rather than
+    # writing the ref directly, so this cannot drift from how `mirror` is set up.
+    #
+    # A clone with NO `mirror` remote is `-refstale` as well. Not for the reason
+    # a failed fetch is: with no remote there is no upstream, so `git status -sb`
+    # prints a bare `## iarts/local` and the prompt reports nothing at all rather
+    # than reporting drift (verified against both live clones, which track
+    # `mirror/iarts/local`). The reason is stronger than a lying prompt — such a
+    # clone cannot observe the mirror AT ALL, so the one property this tool
+    # exists to give the reader ("you can see whether you are ahead of your only
+    # second copy") is unavailable. Reporting a bare `updated` would claim a
+    # completeness the run does not have.
+    #
+    # EXPLICIT refspec, then CHECK THE REF. A bare `git fetch mirror` uses the
+    # configured `remote.mirror.fetch`, so a remote set up to track something
+    # narrower than `+refs/heads/*:refs/remotes/mirror/*` exits 0 while never
+    # touching this branch's tracking ref (macroscopeapp, PR #385). Both live
+    # clones happen to carry the wildcard refspec today, so this is a guarantee
+    # being made explicit rather than a bug being repaired — but the record claims
+    # the ref was refreshed, and an exit code does not prove that.
+    #
+    # The rev-parse after it is the actual guarantee: it asks whether the ref now
+    # HOLDS the mirrored sha, which is the property `-refstale` is about, and
+    # catches any cause rather than the one cause we thought of.
+    refstale=
+    if git -C "$clone" remote get-url mirror >/dev/null 2>&1; then
+        if git -C "$clone" fetch --quiet --no-tags mirror \
+                "+refs/heads/$BRANCH:refs/remotes/mirror/$BRANCH" 2>/dev/null; then
+            [[ "$(git -C "$clone" rev-parse --verify --quiet "refs/remotes/mirror/$BRANCH" || echo -)" == "$after" ]] \
+                || refstale=-refstale
+        else
+            refstale=-refstale
+        fi
+    else
+        refstale=-refstale
+    fi
+
+    # `rewritten` rather than a second suffix: it is mutually exclusive with a
+    # fast-forward `updated`, so it takes the same column slot and nothing has to
+    # parse `updated-rewritten-refstale`. The distinction is the whole value of
+    # keeping the reflog — a forced update is the one moment recovery is easy, and
+    # a reader who sees `updated` will never think to look.
+    if [[ "$before" == "$after" ]]; then
+        status=unchanged
+    elif [[ "$before" != "-" ]] && ! git -C "$bare" merge-base --is-ancestor "$before" "$after"; then
+        status=rewritten
+    else
+        status=updated
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$repo" "$BRANCH" "$after" "$status$refstale"
+done
+exit $rc

@@ -248,6 +248,7 @@ const UNEXPECTED_POSITIONAL: Record<string, string[]> = {
 	"git-overview": ["zzz-unexpected"],
 	"herdr-reap": ["zzz-unexpected"],
 	"herdr-tab": ["/tmp", "a-label", "zzz-unexpected"],
+	"iarts-mirror": ["zzz-unexpected"], // takes no arguments AT ALL, like pr-open
 	"install-workflow-tools": ["zzz-unexpected"],
 	"pr-cleanup": ["some-branch", "zzz-unexpected"],
 	"pr-guard": ["some-branch", "zzz-unexpected"], // exactly one branch name
