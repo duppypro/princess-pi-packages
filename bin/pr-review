@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# ---
+# pr-review — review this branch's diff before it becomes a PR.
+#
+# The intervention arm of duppypro/btw#59. That issue measured Macroscope at
+# $143.56 over 8 days and $1.28 per PR, billed per review run at a $0.50 floor.
+# This runs our own review first, where the marginal cost is zero.
+#
+# --- Why three lenses and not one pass ---
+# Across three rounds on btw#61 Macroscope raised 11 findings, all real. The two
+# that changed published numbers were not code defects — a power calculation that
+# solved for point-estimate significance instead of statistical power, and a
+# baseline inflated by counting findings from outside its own billing window. A
+# linter, a type checker and a diff reader all pass that code. So one lens reads
+# the code, one reads the CLAIMS against the code, and one reads the failure
+# paths. Distinct lenses beat a repeated pass: redundancy finds the same things.
+#
+# --- Why it blocks ---
+# Findings mean exit 7 and no PR. A gate that prints and proceeds is a gate an
+# agent walks straight through, and the question this experiment asks is whether
+# findings get ACTED ON before the PR opens, not whether they get printed.
+# `--reviewed` is the escape hatch, and it is deliberately a separate word rather
+# than a silent default.
+#
+# --- Why it fails open ---
+# `claude` missing, unauthenticated or erroring means the PR still gets created.
+# A broken reviewer must never become a broken release path. The asymmetry is the
+# same one git-checkpoint uses for its open-PR check: a missed review costs a
+# $0.50 Macroscope finding, a wedged pr-open costs the workflow.
+#
+# --- Exit codes ---
+#   0  reviewed, nothing found (or fail-open: reviewer unavailable)
+#   2  usage error
+#   3  precondition — not in a git repo, or on a protected branch
+#   7  findings — the PR was NOT created; fix them or re-run with --reviewed
+# ---
+set -euo pipefail
+
+LENSES=("correctness" "reasoning" "contract")
+LOG_DIR="${PR_REVIEW_LOG_DIR:-.claude/pr-review}"
+MODEL="${PR_REVIEW_MODEL:-}"
+
+usage() {
+  cat <<'EOF'
+usage: pr-review [--base <ref>] [--json] [--quiet]
+       pr-review -h | --help
+
+Reviews the current branch's diff against its merge-base with the primary branch,
+in three parallel lenses (correctness, reasoning, contract), and reports findings.
+
+Findings are written to .claude/pr-review/<branch>-<utc>.json regardless of outcome,
+so a later pass can compare what this caught against what a paid reviewer still found.
+
+exit codes: 0 clean (or reviewer unavailable) · 2 usage · 3 precondition · 7 findings
+EOF
+}
+
+JSON_OUT=0
+QUIET=0
+BASE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --json) JSON_OUT=1; shift ;;
+    --quiet) QUIET=1; shift ;;
+    --base) BASE="${2:-}"; [ -n "$BASE" ] || { echo "pr-review: --base needs a ref" >&2; exit 2; }; shift 2 ;;
+    *) echo "pr-review: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+  echo "pr-review: not inside a git repository." >&2; exit 3; }
+
+BRANCH=$(git branch --show-current)
+if [ -z "$BRANCH" ] || [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "pr-review: on '${BRANCH:-detached HEAD}' — there is no feature diff to review." >&2
+  exit 3
+fi
+
+# Merge-base against the primary branch, not the branch tip: reviewing
+# `origin/main..HEAD` would include whatever landed on main since this branch
+# started, and every one of those commits has already been reviewed.
+if [ -z "$BASE" ]; then
+  PRIMARY=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo "origin/main")
+  BASE=$(git merge-base "$PRIMARY" HEAD 2>/dev/null || true)
+fi
+[ -n "$BASE" ] || { echo "pr-review: cannot determine a base to diff against." >&2; exit 3; }
+
+DIFF=$(git diff --unified=8 "$BASE"...HEAD 2>/dev/null || true)
+if [ -z "$DIFF" ]; then
+  [ "$QUIET" -eq 1 ] || echo "🔍 pr-review: no changes against $BASE — nothing to review."
+  exit 0
+fi
+
+# Fail open, loudly. `command -v` first so the common "not installed" case does
+# not pay for a subprocess, and so the message names the real cause.
+if ! command -v claude >/dev/null 2>&1; then
+  echo "⚠️  pr-review: 'claude' not on PATH — skipping review, opening the PR unreviewed." >&2
+  exit 0
+fi
+
+mkdir -p "$LOG_DIR"
+STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+LOG="$LOG_DIR/${BRANCH//\//-}-$STAMP.json"
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
+trap 'rm -rf "$WORK"' EXIT INT TERM
+printf '%s' "$DIFF" > "$WORK/diff"
+
+lens_prompt() {
+  case "$1" in
+    correctness)
+      echo "Review this diff for CORRECTNESS defects: logic errors, wrong conditions, off-by-one, \
+unhandled inputs, race conditions, resource leaks, incorrect algorithms." ;;
+    reasoning)
+      echo "Review this diff for REASONING defects — the class a linter cannot see. Check every \
+CLAIM the change makes (in comments, docstrings, documentation, commit messages, printed output, \
+variable names) against what the code ACTUALLY computes. Verify arithmetic, statistics, units, \
+percentages, sample sizes, thresholds and cited figures by recomputing them yourself. A number \
+that is stated but not derivable from the code is a finding. Stated guarantees the code does not \
+enforce are findings." ;;
+    contract)
+      echo "Review this diff for CONTRACT and failure-path defects: swallowed errors, \
+'|| true' hiding real failures, unchecked exit statuses, silent truncation or partial results \
+reported as complete, missing pagination, fixed /tmp paths, missing machine-readable output, \
+exit codes that contradict documentation, and rules stated in prose but never enforced in code." ;;
+  esac
+}
+
+# One agent per lens, in parallel. Marginal cost is zero under the subscription,
+# so there is no reason to serialise or to run fewer.
+for lens in "${LENSES[@]}"; do
+  {
+    prompt="$(lens_prompt "$lens")
+
+Return ONLY a JSON object, no prose around it:
+{\"findings\":[{\"severity\":\"Critical|High|Medium|Low\",\"file\":\"path\",\"line\":123,\"title\":\"short\",\"detail\":\"what is wrong and why it matters\"}]}
+Return {\"findings\":[]} if you find nothing. Do not invent findings to seem useful; a clean diff is a valid result.
+
+DIFF (base $BASE, branch $BRANCH):
+$(cat "$WORK/diff")"
+    args=(-p "$prompt" --output-format json)
+    [ -n "$MODEL" ] && args+=(--model "$MODEL")
+    if out=$(claude "${args[@]}" 2>"$WORK/$lens.err"); then
+      printf '%s' "$out" > "$WORK/$lens.out"
+    else
+      printf 'FAILED' > "$WORK/$lens.fail"
+    fi
+  } &
+done
+wait
+
+# Collect. A lens that failed is reported as a failed lens, never as a clean one —
+# "no findings" and "could not look" are different facts and must not merge.
+python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "${LENSES[@]}" <<'PYEOF'
+import json, os, sys
+work, log, base, branch, stamp = sys.argv[1:6]
+lenses = sys.argv[6:]
+findings, failed = [], []
+for lens in lenses:
+    if os.path.exists(os.path.join(work, f"{lens}.fail")):
+        failed.append(lens); continue
+    path = os.path.join(work, f"{lens}.out")
+    if not os.path.exists(path):
+        failed.append(lens); continue
+    try:
+        env = json.load(open(path))
+        text = env.get("result") or ""
+        if env.get("is_error"):
+            failed.append(lens); continue
+        # The model may fence the JSON; take the outermost object.
+        s, e = text.find("{"), text.rfind("}")
+        if s < 0 or e < 0:
+            failed.append(lens); continue
+        for f in json.loads(text[s:e+1]).get("findings", []):
+            f["lens"] = lens
+            findings.append(f)
+    except Exception:
+        failed.append(lens)
+json.dump({"branch": branch, "base": base, "utc": stamp,
+           "lenses": lenses, "failedLenses": failed, "findings": findings},
+          open(log, "w"), indent=2)
+print(json.dumps({"findings": len(findings), "failed": failed}))
+PYEOF
+SUMMARY=$(python3 -c "import json,sys;d=json.load(open('$LOG'));print(len(d['findings']),len(d['failedLenses']))")
+COUNT=${SUMMARY% *}
+NFAILED=${SUMMARY#* }
+
+if [ "$JSON_OUT" -eq 1 ]; then cat "$LOG"; else
+  [ "$NFAILED" -gt 0 ] && echo "⚠️  pr-review: $NFAILED of ${#LENSES[@]} lenses failed — coverage is incomplete." >&2
+  if [ "$COUNT" -eq 0 ]; then
+    echo "✅ pr-review: no findings across ${#LENSES[@]} lenses. Log: $LOG"
+  else
+    echo "🔎 pr-review: $COUNT finding(s). Log: $LOG"
+    python3 -c "
+import json
+d=json.load(open('$LOG'))
+order={'Critical':0,'High':1,'Medium':2,'Low':3}
+for f in sorted(d['findings'], key=lambda x: order.get(x.get('severity','Low'),9)):
+    print(f\"  [{f.get('severity','?')}/{f.get('lens','?')}] {f.get('file','?')}:{f.get('line','?')}  {f.get('title','')}\")
+    print(f\"      {f.get('detail','')}\")"
+  fi
+fi
+[ "$COUNT" -gt 0 ] && exit 7
+exit 0

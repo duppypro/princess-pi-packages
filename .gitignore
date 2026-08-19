@@ -40,3 +40,10 @@ infra/deploy/oauth2-proxy-live-serve.cfg
 # `git diff --exit-code -- bin/` empty, which a per-build file in a tracked
 # path would break forever.
 bin/build-stamp.json
+
+# pr-review writes one JSON log per run (#377). They are evidence for the btw#59
+# experiment, not source: kept on disk so a later pass can diff what our gate
+# caught against what a paid reviewer still found, but never committed —
+# git-checkpoint's `git add -A` would otherwise sweep every run into the branch
+# it was reviewing.
+.claude/pr-review/

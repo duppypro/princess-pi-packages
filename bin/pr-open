@@ -82,20 +82,27 @@ done
 
 # -h/--help prints usage and exits 0 (#310) — a flag is never a branch name or a
 # message, and "pr-open --help" used to be treated as one.
+SKIP_REVIEW=0
+if [ "${1:-}" = "--reviewed" ]; then SKIP_REVIEW=1; shift; fi
 case "${1:-}" in
   -h|--help)
     cat <<'EOF'
 usage: pr-open
+       pr-open --reviewed
        pr-open -h | --help
        pr-open --version
 
 Create the PR for the CURRENT feature branch (from its worktree): pushes,
 then `gh pr create` with the branch's commits as the body.
 
-Takes no arguments: a branch name or any other argument is REFUSED (exit 2),
+Runs 'pr-review' first and REFUSES to open the PR if it finds anything (#377).
+--reviewed skips that gate and opens the PR anyway.
+
+Takes no other arguments: a branch name or anything else is REFUSED (exit 2),
 not ignored (#367). To open another branch's PR, run this from its worktree.
 
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
+            7 review found issues, PR not created
 EOF
     exit 0 ;;
   # #178: resolved absolute path of the running copy — install-workflow-tools
@@ -324,6 +331,33 @@ if [ -n "$STACKED_ON" ]; then
   echo "   while that parent still exists — a stale boundary replays its commits." >&2
   echo "   Proceeding — stacking is sometimes right. See docs/dev-workflow-spec.md" >&2
   echo "   → 'A stacked PR conflicts after its parent merges'." >&2
+fi
+
+# 5.5 Review before opening (#377, the intervention arm of btw#59)
+#
+# Runs BEFORE `gh pr create`, because the whole point is that findings are fixed
+# while the PR does not yet exist. Reviewing after it opens would already have
+# paid the per-run charge this is meant to avoid.
+#
+# BLOCKS on findings (exit 7 from pr-review) rather than printing and proceeding:
+# a gate an agent can walk through is not a gate, and the experiment asks whether
+# findings get acted on, not whether they get displayed. `--reviewed` is the
+# escape hatch and is deliberately an explicit word.
+#
+# FAILS OPEN on anything else. pr-review returns 0 when `claude` is absent or the
+# reviewer breaks, so a broken reviewer can never become a broken release path.
+if [ "$SKIP_REVIEW" -eq 0 ] && command -v pr-review >/dev/null 2>&1; then
+  echo "🔍 Reviewing before opening (pr-review, 3 lenses)..."
+  review_status=0
+  pr-review || review_status=$?
+  if [ "$review_status" -eq 7 ]; then
+    echo "" >&2
+    echo "pr-open: review found issues — the PR was NOT created (#377)." >&2
+    echo "  Fix them and re-run 'pr-open', or accept them with 'pr-open --reviewed'." >&2
+    exit 7
+  elif [ "$review_status" -ne 0 ]; then
+    echo "pr-open: pr-review exited $review_status — proceeding unreviewed." >&2
+  fi
 fi
 
 # 6. Create the PR
