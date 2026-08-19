@@ -748,7 +748,7 @@ pattern the Agent-First Output standard forbids, in a repo that owns the produce
 
   | Field | Type | Since |
   |---|---|---|
-  | `schema` | string, `"pr-threads/list@2"` | #232 |
+  | `schema` | string, `"pr-threads/list@2"` | field #232; **this value** #372 |
   | `repo` | string | #232 |
   | `pr` | number | #232 |
   | `totalCount` | number | #232 |
