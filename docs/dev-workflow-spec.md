@@ -661,7 +661,7 @@ rationale lives once, in `bin/pr-open`; the others carry a two-line pointer to i
 | `pr-threads <pr#> [owner/repo] [--json]` | Review state for a PR: unresolved-conversation count AND whether any **independent** review covers the current head (#254, #269 — the author's own thread replies do not count). Exit 0 = clean; exit 1 = checked and found a problem — see the [exit-code contract](#exit-codes--the-shared-pr--contract-224) below. `--json` emits thread bodies/ids, `trusted`/`trustLevel` flags, `head`/`reviewedHead`/`latestReviewCommit`, and `unknownAuthorReviewCount`/`prAuthor`. `--resolve <thread-id> [--reply <text>]` closes the loop — see [`--resolve`](#pr-threads---resolve--closing-the-review-loop-232) below. A third positional is refused (exit 2, #367) rather than dropped — two PR numbers is a typo, and which one was meant is unknowable. |
 | `herdr-tab` | Sourceable guard (`. herdr-tab` → `herdr_available`, `herdr_tab <cwd> <label>`; also runs as a one-shot CLI). The `$HERDR_PANE_ID` predicate and the `return 0`-on-every-path discipline live here once instead of in three copies — see [the herdr half](#the-herdr-half-herdr-tab-and-why-the-guard-is-herdr_pane_id-277). Reports its outcome in `$HERDR_TAB_RESULT`, never in an exit code. In CLI mode both arguments are guarded: a dash-leading `<label>` used to pass while a dash-leading `<cwd>` was refused, and `herdr-tab -- <cwd> <label>` is the escape for a value that really starts with `-` (#367). |
 | `herdr-reap [--dry-run] [--json]` | Closes herdr tabs whose panes **all** point at a directory that no longer exists; spares its own tab, any tab with a live agent, and any tab with an unknown cwd. Called by `pr-cleanup`; also correct standalone after `git worktree remove`/`prune`. Exit 0 covers "not inside herdr" and "nothing stale" (`--json`'s `status` tells them apart), 5 = could not determine, 6 = a close was refused. |
-| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). A flag is never a message (#310): `-h`/`--help` prints usage (exit 0), any other leading `-` is refused (exit 1) — `git-checkpoint --help` once committed *and pushed* the message `--help`; use `git-checkpoint -- "-dash-leading message"` for the rare real case. The message is **one quoted argument**: an unquoted multi-word message is refused (exit 1, #367) rather than committed and pushed as its first word alone. Every script in this table answers `-h`/`--help` with usage — most since #310, `pr-threads` and `git-overview` since #362. |
+| `git-checkpoint "msg"` | `git add -A && git commit -m "msg 👑π🐱" && git push` — refuses (exit 3) on main/master/detached HEAD before staging anything (#225 gap 1). A flag is never a message (#310): `-h`/`--help` prints usage (exit 0), any other leading `-` is refused (**exit 2** since #366, was 1) — `git-checkpoint --help` once committed *and pushed* the message `--help`; use `git-checkpoint -- "-dash-leading message"` for the rare real case. The message is **one quoted argument**: an unquoted multi-word message is refused (exit 2, #367) rather than committed and pushed as its first word alone. Every script in this table answers `-h`/`--help` with usage — most since #310, `pr-threads` and `git-overview` since #362. |
 | `git-overview` | Four sections in one call: `git branch --show-current` (blank when HEAD is detached), `git status --short`, `git diff --stat` (**unstaged only** — a fully staged change prints an empty section), `git log --oneline -5` (fixed at 5). Takes no arguments: leading-dash refused since #362, non-dash since #367 (both exit 2). Exits 0, 2, or 128 when git itself fails. |
 | `install-workflow-tools [--check]` | Makes this host match the repo: every script in this table — itself included (#263) — from `bin/` → `~/bin/`, the guardrail hooks from `hooks/` → `~/.claude/hooks/` (#249), and the statusline scripts from `statusline/` → `~/.claude/` (#227). Deploys write via temp-file-then-rename (#263), which is what makes it safe for this entry to overwrite the very file that may be executing it. Never writes configuration or prose — `settings.json`, `~/.claude/CLAUDE.md`, `~/git-projects/CLAUDE.md` are dotfiles-doctor's under ADR 0001. Reports (does not delete) any stale copy of a retired tool it finds on `PATH` (#235). `--check` writes nothing and exits 1 when anything on the host differs from source. |
 
@@ -917,6 +917,22 @@ license to add a seventh number.
 
 `git-overview` and `herdr-tab` are not members, but their unknown-flag refusal uses code `2` with
 this table's meaning (#362) — the only code from it they emit.
+
+**One usage-error vocabulary, one documented exception (#366).** Three were in use for the same
+event — "you passed an argument I don't know": `2` (ten scripts), `1` (`git-checkpoint`), `64`
+(`install-workflow-tools`). All three refused safely, so this was a contract inconsistency rather
+than a bug, and three tables for one event is exactly what the Agent-First standard's *documented
+exit-code table* exists to prevent. The split now follows **who runs the script**:
+
+- **Agent-called → `2`.** Every shipped script, `git-checkpoint` included. Its `1` was documented
+  here, so moving it was a documented-behaviour change, not a cleanup; a caller keying on `1`
+  breaks, and none was found in this repo.
+- **Human-run → `sysexits.h`.** `install-workflow-tools` keeps `EX_USAGE` (`64`). It is the one
+  script a human runs from a shell, where that convention is the local idiom. This is **policy**,
+  not an accident — stated here so it is not re-discovered a third time.
+
+`tests/shipped-script-help.test.ts` carries the exception as a one-entry named allowlist. A
+loosened assertion (`status !== 0`) would hide the divergence; the allowlist keeps it countable.
 
 **`pr-threads` reserves exit `1` specially, outside this table.** It predates #224 —
 #232's `--json` already shipped depending on it: `1` means "the check succeeded and
