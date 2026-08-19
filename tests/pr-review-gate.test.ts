@@ -860,5 +860,88 @@ console.log("\nthe path above the log dir is audited too:");
 		`clobbered: ${JSON.stringify(fs.readFileSync(victim, "utf8"))}`);
 }
 
+// --- #379 round 11 -----------------------------------------------------------
+// $WORK is not a scratch area, it is the review itself: the diff, the prompts, and
+// every lens's raw output. An account that can rename TMPDIR substitutes a lens's
+// .out and FABRICATES findings — worse than reading them, because a manufactured
+// clean review opens the PR (macroscopeapp, PR #379). Same audit as the log dir.
+console.log("\nthe workspace gets the same audit as the log dir:");
+{
+	const sb = makeSandbox();
+	const bad = path.join(sb.root, "loose-tmp");
+	fs.mkdirSync(bad);
+	spawnSync("chmod", ["777", bad]); // world-writable, NOT sticky
+	const env = { ...stubs(sb, "clean"), TMPDIR: bad };
+	// Report the real workspace from inside a lens: stdin is $WORK/<lens>.prompt.
+	const seen = path.join(sb.root, "WORKSEEN");
+	fs.writeFileSync(path.join(sb.binDir, "claude"),
+		`#!/usr/bin/env bash\nreadlink -f /proc/self/fd/0 >> ${JSON.stringify(seen)}\n`
+		+ `printf '%s' '{"is_error":false,"result":"{\\"findings\\":[]}"}'; exit 0\n`,
+		{ mode: 0o755 });
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+	const witness = fs.existsSync(seen)
+		? fs.readFileSync(seen, "utf8").trim().split("\n").filter(Boolean) : [];
+
+	check(code === 0, "unsafe TMPDIR → still reviews and exits 0", `got ${code}: ${out}`);
+	check(/TMPDIR/.test(out) && /not safe to work in/.test(out),
+		"unsafe TMPDIR → says so, naming the variable", out);
+	// Where the workspace ACTUALLY went, not merely where it no longer is: the
+	// EXIT trap deletes it either way, so an empty directory afterwards is true
+	// whether or not the fix works. The stub reports its own stdin, which IS
+	// $WORK/<lens>.prompt, so the recorded path names the real workspace.
+	check(!witness.some((w) => w.startsWith(bad)),
+		"unsafe TMPDIR → the workspace is not created in it",
+		`workspace landed in the unsafe dir: ${witness.join(", ")}`);
+	check(witness.length === 3, "…and the witness actually observed all three lenses",
+		`saw ${witness.length}: ${witness.join(", ")}`);
+}
+{
+	// /tmp is root-owned, world-writable and sticky — the default workspace on
+	// every host. An audit that condemns it condemns the tool, so this is the
+	// case that keeps the parent rule honest rather than merely strict.
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	const { code, out } = runUmask("002", PR_REVIEW, sb.clone, env);
+	check(code === 0 && !/not safe to work in/.test(out),
+		"default TMPDIR (/tmp: root-owned, sticky) → accepted", `${code}: ${out}`);
+}
+{
+	// A log identifies the exact input that produced it. `base` alone did not:
+	// with --base it is whatever ref the caller typed, and refs move. Recording
+	// the two SHAs reproduces the diff exactly without embedding it — a diff is
+	// unbounded, and these logs are already tens of KB.
+	const sb = makeSandbox();
+	const env = stubs(sb, "findings");
+	runUmask("002", PR_REVIEW, sb.clone, env);
+	const dir = env.PR_REVIEW_LOG_DIR;
+	const d = JSON.parse(fs.readFileSync(path.join(dir,
+		fs.readdirSync(dir).filter((f) => f.endsWith(".json"))[0]), "utf8"));
+	const head = git(sb.clone, ["rev-parse", "HEAD"]);
+	check(d.schema === "pr-review/run@1", "the log declares its schema",
+		JSON.stringify(d.schema));
+	check(d.headSha === head, "the log records the head sha it reviewed",
+		`${d.headSha} != ${head}`);
+	check(/^[0-9a-f]{40}$/.test(d.baseSha || ""), "…and a resolved base sha",
+		JSON.stringify(d.baseSha));
+	check(d.baseSha !== d.headSha, "…which is not the head", `${d.baseSha}`);
+	// The pair must actually reproduce a diff, or it is decoration.
+	const rt = spawnSync("git", ["-C", sb.clone, "diff", "--stat", `${d.baseSha}..${d.headSha}`],
+		{ encoding: "utf8" });
+	check(rt.status === 0 && /feature\.sh/.test(rt.stdout),
+		"…and the pair reproduces the reviewed diff", `${rt.status}: ${rt.stdout}`);
+}
+{
+	// After `wait` the lens pids are reaped and the numbers are the OS's to reuse.
+	// kill_lenses walks each pid's DESCENDANTS, so a stale entry can take out an
+	// unrelated process tree — and clustering, which runs after the wait, is
+	// another reviewer call and another chance to be interrupted.
+	const src = fs.readFileSync(PR_REVIEW, "utf8").split("\n");
+	const waitAt = src.findIndex((l) => /^wait$/.test(l));
+	check(waitAt !== -1, "the lens fan-out still ends in a bare `wait`", "");
+	const after = src.slice(waitAt + 1, waitAt + 12).join("\n");
+	check(/^LENS_PIDS=\(\)$/m.test(after),
+		"the reaped pids are cleared immediately after `wait`", after);
+}
+
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
 process.exit(failures > 0 ? 1 : 0);

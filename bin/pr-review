@@ -105,6 +105,10 @@ directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 environment: PR_REVIEW_MODEL (default claude-opus-5) · PR_REVIEW_TIMEOUT (600s)
              PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
 
+--json emits that log verbatim: schema `pr-review/run@1`, carrying status,
+baseSha/headSha (the exact input, reproducible with `git diff BASE..HEAD`),
+lenses, lensesRan, failedLenses, findings and distinct.
+
 exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
             3 precondition (protected branch, diff failed) · 7 findings
             (set -e can still surface an undocumented 1 — see the header)
@@ -188,6 +192,16 @@ if [ -z "$BASE" ]; then
 fi
 [ -n "$BASE" ] || emit_status "precondition" "pr-review: cannot determine a base to diff against." 3
 
+# Both ends resolved to SHAs, so the log identifies the EXACT input that produced
+# its findings (macroscopeapp, PR #379). `base` alone did not: with --base it is
+# whatever ref the caller typed, and a ref moves. Recording the sha rather than
+# embedding the diff is deliberate — a diff is unbounded (the E2BIG comment below
+# exists because branches above 128KB are real), these logs already run to tens of
+# KB, and the pair below reproduces it exactly with `git diff BASE_SHA..HEAD_SHA`
+# for as long as the objects live, which for a merged PR is as long as GitHub does.
+BASE_SHA=$(git rev-parse --verify --quiet "$BASE^{commit}" 2>/dev/null || echo "")
+HEAD_SHA=$(git rev-parse --verify --quiet "HEAD^{commit}" 2>/dev/null || echo "")
+
 # Status checked SEPARATELY from emptiness. `|| true` used to collapse every git
 # failure — a bogus --base, an unreadable object, a shallow clone — into an empty
 # diff, which then read as "nothing to review" and exit 0, which pr-open read as
@@ -222,6 +236,112 @@ command -v python3 >/dev/null 2>&1 || \
 # (An earlier version of this comment said princess-pi-packages ignored the path.
 # It does not; the reason to move the logs out was stronger than stated, not
 # weaker. Verified with git check-ignore rather than by reading .gitignore.)
+dir_verdict() {
+  python3 - "$1" "${2:-leaf}" <<'PYSAFE' 2>/dev/null || true
+import grp, os, pwd, sys
+
+me = os.geteuid()
+# "leaf": we write files here, so anyone else being able to create entries is
+# disqualifying and sticky does not help. "parent": we only mktemp -d a private
+# directory inside it, so the sticky rule that protects the ancestors applies here
+# too — otherwise /tmp is condemned and the no-HOME fallback has nowhere to go.
+mode = sys.argv[2] if len(sys.argv) > 2 else "leaf"
+
+
+def group_others(gid):
+    """Members of gid other than us, by supplementary AND primary membership."""
+    names = set()
+    try:
+        names |= set(grp.getgrgid(gid).gr_mem)
+    except KeyError:
+        pass
+    names |= {p.pw_name for p in pwd.getpwall() if p.pw_gid == gid}
+    names.discard(pwd.getpwuid(me).pw_name)
+    return names
+
+
+def group_name(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+def writable_by_others(st):
+    """Who, other than us, can write this directory — or None."""
+    if st.st_mode & 0o002:
+        return "every account on this host"
+    others = group_others(st.st_gid) if st.st_mode & 0o020 else set()
+    if others:
+        return "group '%s' (%s)" % (group_name(st.st_gid), ", ".join(sorted(others)))
+    return None
+
+
+def verdict(text):
+    print(text)
+    raise SystemExit(0)
+
+
+# realpath first: the audit must follow the chain that will actually be walked at
+# write time, not the one the user typed. A resolved path contains no symlinks, so
+# every component below is a real directory.
+d = os.path.realpath(sys.argv[1])
+st = os.stat(d)
+
+# root-owned is fine for a "parent" — we only create a private directory inside
+# it, and root can do anything anyway. /tmp is root-owned, so the leaf rule
+# applied here condemned the default workspace on every host.
+if st.st_uid != me and not (mode == "parent" and st.st_uid == 0):
+    verdict("unsafe|it belongs to uid %d, not to you" % st.st_uid)
+who = writable_by_others(st)
+if who and not (mode == "parent" and st.st_mode & 0o1000):
+    verdict("unsafe|%s can write to it" % who)
+
+# Ancestors matter too, and for a different reason (macroscopeapp, PR #379): an
+# account that can RENAME a parent can move our directory aside and leave a
+# symlink where it stood, and every later write follows the new path. Checking the
+# leaf alone would miss that entirely. This is the same audit OpenSSH does for
+# ~/.ssh under StrictModes, and for the same reason.
+#
+# Sticky is the exception that matters: on a sticky directory a non-owner cannot
+# rename or delete an entry it does not own, which IS this attack — and it is what
+# keeps /tmp usable, including by our own mktemp -d fallback. The exception is
+# deliberately NOT extended to the log directory itself, where the concern is
+# creating entries rather than renaming one, and sticky permits that.
+parent = os.path.dirname(d)
+while True:
+    pst = os.lstat(parent)
+    if pst.st_uid not in (me, 0):
+        verdict("unsafe|'%s' above it belongs to uid %d" % (parent, pst.st_uid))
+    who = writable_by_others(pst)
+    if who and not pst.st_mode & 0o1000:
+        verdict("unsafe|'%s' above it is writable by %s" % (parent, who))
+    if os.path.dirname(parent) == parent:
+        break
+    parent = os.path.dirname(parent)
+
+verdict("readable|" if mode == "leaf" and st.st_mode & 0o077 else "ok|")
+PYSAFE
+}
+
+# Every mktemp in this script lands in TMPDIR, and $WORK holds the diff, the
+# prompts AND every lens's raw output — an account that can rename TMPDIR can
+# substitute a lens's .out file and FABRICATE the review, which is worse than
+# merely reading it (macroscopeapp, PR #379). So the temp parent is audited once,
+# here, and every mktemp below uses the audited one.
+TMP_PARENT="${TMPDIR:-/tmp}"
+TMP_VERDICT=$(dir_verdict "$TMP_PARENT" parent)
+if [ "${TMP_VERDICT%%|*}" = "unsafe" ]; then
+  echo "⚠️  pr-review: TMPDIR '$TMP_PARENT' is not safe to work in — ${TMP_VERDICT#*|}." >&2
+  echo "   Using /tmp for this run instead." >&2
+  TMP_PARENT=/tmp
+  if [ "$(dir_verdict "$TMP_PARENT" parent)" != "ok|" ]; then
+    echo "pr-review: /tmp is not safe to work in either." >&2
+    echo "   Set TMPDIR to a directory only you can write." >&2
+    exit 3
+  fi
+fi
+
 REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
 # Resolved in steps rather than by nested `${A:-${B:-$C}}`, because HOME is not
 # guaranteed. Under `set -u` the nested form aborted the whole script on
@@ -243,7 +363,7 @@ elif [ -n "${XDG_STATE_HOME:-}" ]; then
 elif [ -n "${HOME:-}" ]; then
   LOG_DIR="$HOME/.local/state/pr-review/$REPO_NAME"
 else
-  LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-review-$REPO_NAME.XXXXXXXX") || {
+  LOG_DIR=$(mktemp -d "$TMP_PARENT/pr-review-$REPO_NAME.XXXXXXXX") || {
     echo "pr-review: HOME, XDG_STATE_HOME and PR_REVIEW_LOG_DIR are all unset," >&2
     echo "   and a temporary log directory could not be created either." >&2
     echo "   Set PR_REVIEW_LOG_DIR to a writable path." >&2
@@ -287,84 +407,7 @@ fi
 # Group-writable is judged by whether the group HAS another member. A per-user
 # group is the Debian/Ubuntu default that makes umask 002 ordinary, and treating
 # g+w as a hole there would exile everyone's logs to /tmp for no gain.
-LOG_DIR_VERDICT=$(python3 - "$LOG_DIR" <<'PYSAFE' 2>/dev/null || true
-import grp, os, pwd, sys
-
-me = os.geteuid()
-
-
-def group_others(gid):
-    """Members of gid other than us, by supplementary AND primary membership."""
-    names = set()
-    try:
-        names |= set(grp.getgrgid(gid).gr_mem)
-    except KeyError:
-        pass
-    names |= {p.pw_name for p in pwd.getpwall() if p.pw_gid == gid}
-    names.discard(pwd.getpwuid(me).pw_name)
-    return names
-
-
-def group_name(gid):
-    try:
-        return grp.getgrgid(gid).gr_name
-    except KeyError:
-        return str(gid)
-
-
-def writable_by_others(st):
-    """Who, other than us, can write this directory — or None."""
-    if st.st_mode & 0o002:
-        return "every account on this host"
-    others = group_others(st.st_gid) if st.st_mode & 0o020 else set()
-    if others:
-        return "group '%s' (%s)" % (group_name(st.st_gid), ", ".join(sorted(others)))
-    return None
-
-
-def verdict(text):
-    print(text)
-    raise SystemExit(0)
-
-
-# realpath first: the audit must follow the chain that will actually be walked at
-# write time, not the one the user typed. A resolved path contains no symlinks, so
-# every component below is a real directory.
-d = os.path.realpath(sys.argv[1])
-st = os.stat(d)
-
-if st.st_uid != me:
-    verdict("unsafe|it belongs to uid %d, not to you" % st.st_uid)
-who = writable_by_others(st)
-if who:
-    verdict("unsafe|%s can write to it" % who)
-
-# Ancestors matter too, and for a different reason (macroscopeapp, PR #379): an
-# account that can RENAME a parent can move our directory aside and leave a
-# symlink where it stood, and every later write follows the new path. Checking the
-# leaf alone would miss that entirely. This is the same audit OpenSSH does for
-# ~/.ssh under StrictModes, and for the same reason.
-#
-# Sticky is the exception that matters: on a sticky directory a non-owner cannot
-# rename or delete an entry it does not own, which IS this attack — and it is what
-# keeps /tmp usable, including by our own mktemp -d fallback. The exception is
-# deliberately NOT extended to the log directory itself, where the concern is
-# creating entries rather than renaming one, and sticky permits that.
-parent = os.path.dirname(d)
-while True:
-    pst = os.lstat(parent)
-    if pst.st_uid not in (me, 0):
-        verdict("unsafe|'%s' above it belongs to uid %d" % (parent, pst.st_uid))
-    who = writable_by_others(pst)
-    if who and not pst.st_mode & 0o1000:
-        verdict("unsafe|'%s' above it is writable by %s" % (parent, who))
-    if os.path.dirname(parent) == parent:
-        break
-    parent = os.path.dirname(parent)
-
-verdict("readable|" if st.st_mode & 0o077 else "ok|")
-PYSAFE
-)
+LOG_DIR_VERDICT=$(dir_verdict "$LOG_DIR")
 case "${LOG_DIR_VERDICT%%|*}" in
   unsafe)
     echo "⚠️  pr-review: NOT logging to '$LOG_DIR' — ${LOG_DIR_VERDICT#*|}." >&2
@@ -372,7 +415,7 @@ case "${LOG_DIR_VERDICT%%|*}" in
     echo "   this script creates it and the moment it writes, so 0600 on the file" >&2
     echo "   would guarantee nothing. This run goes to a private temporary directory" >&2
     echo "   instead and is NOT durable." >&2
-    LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-review-$REPO_NAME.XXXXXXXX") || {
+    LOG_DIR=$(mktemp -d "$TMP_PARENT/pr-review-$REPO_NAME.XXXXXXXX") || {
       echo "pr-review: and a temporary log directory could not be created either." >&2
       echo "   Set PR_REVIEW_LOG_DIR to a directory only you can write." >&2
       exit 3
@@ -414,7 +457,7 @@ if ! ( set -C; umask 077; : > "$LOG" ) 2>/dev/null; then
   echo "   or the directory is not writable. Set PR_REVIEW_LOG_DIR to a writable path." >&2
   exit 3
 fi
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
+WORK=$(mktemp -d "$TMP_PARENT/pr-review.XXXXXXXX")
 # EXIT cleans up; INT/TERM additionally kill the lens children and EXIT. A bare
 # handler on INT/TERM returns to the interrupted command, so the background
 # `timeout claude` processes survived as orphans still burning a reviewer call,
@@ -527,6 +570,12 @@ RULES
   LENS_PIDS+=($!)
 done
 wait
+# Cleared, not left to rot: after `wait` these pids are reaped and the OS is free
+# to hand the numbers to somebody else. Clustering below is another reviewer call
+# and another chance to be interrupted, and kill_lenses walks the DESCENDANTS of
+# each pid — so a stale entry does not merely signal the wrong process, it can
+# take out an unrelated tree (macroscopeapp, PR #379).
+LENS_PIDS=()
 
 # Collector. Paths go through argv, never string interpolation into `python3 -c`:
 # git permits apostrophes in ref names and PR_REVIEW_LOG_DIR is unvalidated, so
@@ -534,7 +583,7 @@ wait
 # execution in the release path at worst. Its summary goes to a FILE, not stdout,
 # because an unredirected print made `--json` emit two concatenated documents
 # with `findings` an integer in one and a list in the other.
-python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "${LENSES[@]}" <<'PYEOF'
+python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "$BASE_SHA" "$HEAD_SHA" "${LENSES[@]}" <<'PYEOF'
 import json, os, sys
 
 def _open_private(path):
@@ -623,8 +672,8 @@ def _clip(text, limit):
     return text[:limit] + f"\n…[truncated {len(text) - limit} of {len(text)} bytes]"
 
 
-work, log, base, branch, stamp, model = sys.argv[1:7]
-lenses = sys.argv[7:]
+work, log, base, branch, stamp, model, base_sha, head_sha = sys.argv[1:9]
+lenses = sys.argv[9:]
 findings, failed, warnings = [], [], []
 
 
@@ -708,7 +757,12 @@ for lens in lenses:
 ran = len(lenses) - len(failed)
 status = "reviewed" if not failed else ("reviewed-none" if ran == 0 else "reviewed-partial")
 
-json.dump({"status": status, "branch": branch, "base": base, "utc": stamp,
+# `schema` first, like every other --json in bin/. This log IS the --json output,
+# and it had no version key at all: a consumer had to guess the shape and would
+# never learn it changed. Additive fields keep @1; a removal or a retype is @2.
+json.dump({"schema": "pr-review/run@1",
+           "status": status, "branch": branch, "base": base,
+           "baseSha": base_sha or None, "headSha": head_sha or None, "utc": stamp,
            "model": model, "lenses": lenses, "failedLenses": failed,
            "lensWarnings": warnings, "lensesRan": ran, "findings": findings},
           _open_private(log), indent=2)
