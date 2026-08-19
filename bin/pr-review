@@ -32,7 +32,10 @@
 # --- Exit codes ---
 #   0  reviewed, nothing found (or fail-open: reviewer unavailable)
 #   2  usage error
-#   3  precondition — not a git repo, protected branch, or the diff itself failed
+#   2  usage error — bad flags, or not run inside a git repository at all (the
+#      shared #224 table assigns that condition 2, and this file amends that
+#      table, so disagreeing with it here would ship the contradiction it fixes)
+#   3  precondition — on a protected branch, or the diff itself failed
 #   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
 #
 # Under `set -euo pipefail` a few unguarded operations can still exit 1 with no
@@ -79,7 +82,8 @@ logs out of the tree is what stops `git add -A` committing them.
 environment: PR_REVIEW_MODEL (default claude-opus-5) · PR_REVIEW_TIMEOUT (600s)
              PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
 
-exit codes: 0 clean (or reviewer unavailable) · 2 usage · 3 precondition · 7 findings
+exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
+            3 precondition (protected branch, diff failed) · 7 findings
             (set -e can still surface an undocumented 1 — see the header)
 EOF
 }
@@ -142,8 +146,12 @@ emit_status() {  # emit_status <status> <human message> <exit code>
   exit "$3"
 }
 
+# Code 2, not 3: the shared pr-* table (#224, docs/dev-workflow-spec.md) puts
+# "not run inside a git repository at all" under usage error, and this change is
+# the one amending that table — shipping a header that contradicts it would
+# recreate the exact defect the exit-7 row was added to resolve.
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
-  emit_status "precondition" "pr-review: not inside a git repository." 3
+  emit_status "not-a-repo" "pr-review: not inside a git repository." 2
 
 BRANCH=$(git branch --show-current)
 if [ -z "$BRANCH" ] || [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
@@ -198,9 +206,15 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/pr-review.XXXXXXXX")
 # handler on INT/TERM returns to the interrupted command, so the background
 # `timeout claude` processes survived as orphans still burning a reviewer call,
 # and the collector then read from a directory that had just been deleted.
+# Children are killed BY PID, never with `kill 0`. This script is not a process
+# group leader when invoked normally, so `kill 0` signals the caller's entire
+# group — pr-open, the shell that ran it, and any sibling job. Killing exactly
+# what this script started is the only version that is safe to ship.
+LENS_PIDS=()
+kill_lenses() { for pid in ${LENS_PIDS+"${LENS_PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done; }
 trap 'rm -rf "$WORK"' EXIT
-trap 'rm -rf "$WORK"; kill 0 2>/dev/null; exit 130' INT
-trap 'rm -rf "$WORK"; kill 0 2>/dev/null; exit 143' TERM
+trap 'kill_lenses; rm -rf "$WORK"; exit 130' INT
+trap 'kill_lenses; rm -rf "$WORK"; exit 143' TERM
 printf '%s' "$DIFF" > "$WORK/diff"
 
 lens_prompt() {
@@ -254,6 +268,7 @@ RULES
       : > "$WORK/$lens.fail"
     fi
   } &
+  LENS_PIDS+=($!)
 done
 wait
 
@@ -327,13 +342,24 @@ for lens in lenses:
     path = os.path.join(work, f"{lens}.out")
     if not os.path.exists(path):
         fail(lens, "no output"); continue
+    # EVERY shape check lives inside the try. `env.get(...)` used to sit outside
+    # it, so an envelope that parsed as a JSON array rather than an object raised
+    # AttributeError, killed the whole collector, and left no log and no summary
+    # file — `read < "$WORK/summary"` then failed under `set -e` and pr-review
+    # exited 1. pr-open maps 1 to "proceeding unreviewed", so ONE malformed lens
+    # response discarded the findings of all three and opened the PR. A bad lens
+    # may only ever cost its own lens.
     try:
         env = json.load(open(path))
+        if not isinstance(env, dict):
+            raise TypeError(f"envelope is {type(env).__name__}, expected object")
+        if env.get("is_error"):
+            raise ValueError("reviewer reported is_error")
+        text = env.get("result")
+        if not isinstance(text, str):
+            raise TypeError(f"result is {type(text).__name__}, expected string")
     except Exception as exc:
-        fail(lens, f"envelope not JSON: {exc}"); continue
-    if env.get("is_error"):
-        fail(lens, "reviewer reported is_error"); continue
-    text = env.get("result") or ""
+        fail(lens, f"unusable envelope: {exc}"); continue
     # Scan for a BALANCED object rather than first-{ .. last-}. The greedy span
     # broke on any prose brace before or after the payload (a sentence quoting
     # ${VAR}, a trailing explanation), and the lens was then filed as "could not
@@ -348,13 +374,26 @@ for lens in lenses:
         continue
     try:
         parsed = json.loads(text[s:e + 1])
+        if not isinstance(parsed, dict):
+            raise TypeError(f"payload is {type(parsed).__name__}, expected object")
+        items = parsed.get("findings", [])
+        if not isinstance(items, list):
+            raise TypeError(f"findings is {type(items).__name__}, expected list")
+        # Each finding validated individually: a lens that returns nine good
+        # objects and one string keeps its nine.
+        good = []
+        for f in items:
+            if isinstance(f, dict):
+                f["lens"] = lens
+                good.append(f)
+        findings.extend(good)
+        if len(good) != len(items):
+            failed.append({"lens": lens, "why": f"dropped {len(items) - len(good)} malformed finding(s)",
+                           "raw": _clip(text[s:e + 1], 2000)})
     except Exception as exc:
         failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",
                        "raw": _clip(text[s:e + 1], 2000)})
         continue
-    for f in parsed.get("findings", []):
-        f["lens"] = lens
-        findings.append(f)
 
 # STATUS distinguishes complete from partial coverage. Collapsing them into
 # "reviewed" let a consumer keying on status record a clean review that never

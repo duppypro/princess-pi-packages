@@ -69,11 +69,16 @@ function makeSandbox(): Sandbox {
 // exits nonzero; "iserror" returns a well-formed envelope carrying is_error,
 // which must be treated as a FAILED lens rather than a clean one — "found
 // nothing" and "could not look" are different facts.
-type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent";
+type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv";
 function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
-	if (mode !== "absent") {
+	if (mode === "arrayenv") {
+		// An envelope that parses as an ARRAY, not an object. Used to raise
+		// AttributeError outside the try, kill the collector, and lose all lenses.
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nprintf '%s' '[{"type":"message"}]'; exit 0\n`, { mode: 0o755 });
+	} else if (mode !== "absent") {
 		const payload =
 			mode === "findings"
 				? `{"findings":[{"severity":"High","file":"feature.sh","line":2,"title":"stub finding","detail":"stubbed"}]}`
@@ -373,6 +378,49 @@ console.log("\nclustering fail-open:");
 	check(fs.existsSync(rec), "pr-review missing → PR still created (fails open)", "");
 	check(/UNREVIEWED/.test(out), "pr-review missing → says the PR is unreviewed", out);
 	check(/install-workflow-tools/.test(out), "pr-review missing → names the fix", out);
+}
+
+// --- round-3 Highs: a bad lens costs only its own lens, and only our children die ---
+console.log("\nround-3 High regressions:");
+{
+	// One malformed envelope must not discard the other lenses' findings, and must
+	// not take the whole collector down with it.
+	const sb = makeSandbox();
+	const env = stubs(sb, "arrayenv");
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	check(code === 0, "array envelope → exit 0, collector survived", `got ${code}: ${out}`);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	check(files.length === 1, "array envelope → a log was still written", JSON.stringify(files));
+	if (files.length) {
+		const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+		check(d.failedLenses.length === 3, "array envelope → each lens fails on its own", String(d.failedLenses.length));
+		check(/unusable envelope/.test(d.failedLenses[0]?.why || ""),
+			"array envelope → the reason names the shape problem", JSON.stringify(d.failedLenses[0]?.why));
+	}
+}
+{
+	// Not a git repository is a USAGE error (2) per the shared #224 table this
+	// change amends — shipping a header that disagreed would recreate the exact
+	// contradiction the exit-7 row was added to resolve.
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	const plain = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-norepo-"));
+	const { code } = run(PR_REVIEW, plain, env);
+	check(code === 2, "not a git repo → exit 2 (matches the #224 table)", `got ${code}`);
+	fs.rmSync(plain, { recursive: true, force: true });
+}
+{
+	// `kill 0` would signal the CALLER's whole process group. The traps must name
+	// the script's own children by pid.
+	// Comment lines are excluded: the file explains at length WHY `kill 0` is
+	// wrong, and matching that prose would make this assertion unfalsifiable.
+	const codeLines = fs.readFileSync(PR_REVIEW, "utf8")
+		.split("\n")
+		.filter((l) => !l.trim().startsWith("#"));
+	check(!/\bkill 0\b/.test(codeLines.join("\n")),
+		"no bare `kill 0` in code — it would kill the caller's process group", "");
+	const src = codeLines.join("\n");
+	check(/LENS_PIDS\+=\(\$!\)/.test(src), "lens pids are tracked for a targeted kill", "");
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
