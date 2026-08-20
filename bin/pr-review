@@ -63,11 +63,14 @@ LENSES=("correctness" "reasoning" "contract")
 # is judgment work; sonnet is the right tier. An earlier version pinned claude-opus-5
 # with the reasoning "marginal cost is zero" — true for tokens, false for time.
 # Lenses run in parallel; cycle time = max(lens) + clustering. opus measured
-# 3–8 min/lens, so cycles ran 9–10 min total (6 cycles on ppp#378 = ~54–60 min
-# of agent wait). sonnet-5 cuts each lens to 30–90 s and the full cycle to ~2–3 min.
-# Overriding to a slower model requires also raising PR_REVIEW_TIMEOUT — the
-# default 180s will timeout an opus lens (180–480 s measured), which silently
-# opens the PR unreviewed (all lenses failed → COUNT=0 → exit 0).
+# 3–8 min/lens; cycles ran 9–10 min wall-clock (6 cycles on ppp#378 = ~54–60 min
+# of agent wait). sonnet-5 measured 30–90 s/lens; full cycle ~2–3 min.
+# Overriding to a slower model requires also raising PR_REVIEW_TIMEOUT (see header).
+# At the 180s default, a lens that exceeds the ceiling is counted as failed; if all
+# three fail, COUNT=0 → exit 0, which pr-open maps to "reviewer unavailable". That
+# path is NOT silent — pr-review prints COVERAGE INCOMPLETE to stderr and pr-open
+# forwards it — but it does not block the PR, so the gate effectively did not run.
+# An opus lens at 180–480 s will time out at most of that range under this ceiling.
 MODEL="${PR_REVIEW_MODEL:-claude-sonnet-5}"
 LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-180}"
 # A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
@@ -82,9 +85,10 @@ esac
 # TERM asks; KILL insists. `timeout` sends only TERM, so a reviewer that traps or
 # ignores it keeps the lens wrapper — and the `wait` below — blocked forever,
 # which is precisely the hang the ceiling was added to prevent. The grace is a
-# fixed 30s: at the 180s default the real per-lens ceiling is 210s (17% over the
-# stated figure). Scaling the grace to the ceiling would make it a second review
-# budget on slow models rather than a flush window.
+# fixed 30s: a well-behaved `claude` exits at TERM and the grace is never reached;
+# a TERM-ignoring child is killed after the extra 30s, so the worst-case wrapper
+# wall-clock is ceiling+30. Scaling the grace to the ceiling would make it a second
+# review budget on slow models rather than a flush window.
 LENS_KILL_AFTER=30
 
 usage() {
@@ -109,8 +113,9 @@ temporary directory, because no file mode survives a writable directory. With HO
 too (cron, systemd, containers) the run still happens, into a private temporary
 directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
-environment: PR_REVIEW_MODEL (default claude-opus-5) · PR_REVIEW_TIMEOUT (600s)
-             PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
+environment: PR_REVIEW_MODEL (default claude-sonnet-5) · PR_REVIEW_TIMEOUT (default 180s,
+             bounds every claude call including clustering; override to a slower model
+             requires raising this too — see header) · PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
 
 --json emits that log verbatim: schema `pr-review/run@1`, carrying status,
 baseSha/headSha (the exact input, reproducible with `git diff BASE..HEAD`),
@@ -869,7 +874,9 @@ read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
 # "fail-open on a missing pr-review is silent" with "Missing pr-review is
 # skipped silently".
 #
-# So: one more call, which is affordable precisely because marginal cost is zero.
+# So: one more call. It sits serially after the parallel lenses; at 30–90 s per
+# call the total cycle time is max(lens) + clustering. The cost is wall-clock, not
+# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 72).
 # It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
 # an un-deduplicated number that says so is usable; one that pretends is not.
 if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
