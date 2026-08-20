@@ -524,6 +524,18 @@ check(
 	harness.includes("overlay_digest=%s") && harness.includes("OVERLAY_DIGEST="),
 );
 check(
+	"the corpus is validated BEFORE anything touches OUT — otherwise a bad marker deletes and then fails",
+	harness.includes("must exist before this script touches its output directory") &&
+		harness.indexOf("cannot resolve") < harness.indexOf('rm -f "$OUT"/*.md'),
+);
+check(
+	"the overlay digest is NUL-delimited and covers paths, not just bytes",
+	harness.includes("overlay_digest_stream") &&
+		harness.includes("find . -type f -print0 | LC_ALL=C sort -z") &&
+		harness.includes(`printf '%s\\0' "$f"`) &&
+		!harness.includes("| xargs cat |"),
+);
+check(
 	"the reproducibility warning sees UNTRACKED files too — the likeliest way the overlay drifts",
 	harness.includes("--untracked-files=all") && !harness.includes('diff --quiet -- "$HERE/fixtures/host"'),
 );

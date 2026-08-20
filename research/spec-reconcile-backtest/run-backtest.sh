@@ -90,6 +90,20 @@ FIXTURE_SHA="${FIXTURE_SHA:-$ROUND_SHA}"
 # Compare RESOLVED objects, not the strings: the full 40-char spelling of the round's own
 # commit is the unambiguous way to name the corpus and was being refused as a contradiction.
 resolve() { git -C "$REPO" rev-parse --verify --quiet "$1^{commit}" 2>/dev/null || echo "unresolvable:$1"; }
+
+# --- Validate the corpus BEFORE anything touches OUT. Measured: with an unresolvable
+#     marker the script deleted OUT's transcripts and SCORES.tsv, THEN failed on
+#     `git archive`, leaving no replacement run — the same evidence loss (#390) three
+#     guards above this one exist to prevent, reached by ordering instead.
+for sha_check in "$ROUND_SHA" "${FIXTURE_SHA:-$ROUND_SHA}"; do
+	case "$(resolve "$sha_check")" in
+		unresolvable:*)
+			echo "cannot resolve '$sha_check' to a commit in $REPO." >&2
+			echo "A round's corpus must exist before this script touches its output directory." >&2
+			exit 3
+			;;
+	esac
+done
 SHA_OVERRIDDEN=no
 if [ "$(resolve "$FIXTURE_SHA")" != "$(resolve "$ROUND_SHA")" ] && [ "${OVERRIDE_SHA:-0}" != "1" ]; then
 	echo "FIXTURE_SHA=$FIXTURE_SHA contradicts round $ROUND's marker ($ROUND_SHA)." >&2
@@ -133,6 +147,15 @@ STATUS="$OUT/STATUS.tsv"
 #     Wreckage is therefore the narrow case: a STATUS.tsv that says the run failed, or that
 #     is malformed. A row whose exit column is not a plain integer counts as failed — a
 #     truncated write must not read as a clean auditor.
+# Emit every staged overlay file as "<path>\0<contents>", NUL-delimited and C-sorted, so
+# the digest covers names as well as bytes and tolerates whitespace in either.
+overlay_digest_stream() {
+	find . -type f -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' f; do
+		printf '%s\0' "$f"
+		cat "$f"
+	done
+}
+
 holds_record() {
 	if [ ! -f "$STATUS" ]; then
 		# Legacy record iff transcripts are present.
@@ -228,7 +251,12 @@ if [ -f "$PROMPT_DIR/STAGE_HOST" ]; then
 	# from the working tree, so an uncommitted edit to the fixture would silently change the
 	# artifact the whole round is scored on. Record a digest so a transcript set carries the
 	# identity of the fixture it saw.
-	OVERLAY_DIGEST="$(cd "$WORK/host" && find . -type f | LC_ALL=C sort | xargs cat | cksum | awk '{print $1"-"$2}')"
+	# NUL-delimited throughout: `find` emits newline-separated names, so a fixture called
+	# `policy draft.md` split into two words and the digest step died before any auditor ran.
+	# Each PATH is hashed alongside its contents, so a rename or a move changes the digest —
+	# otherwise two layouts with the same bytes were indistinguishable, and a transcript set
+	# could look reproducible against the wrong fixture.
+	OVERLAY_DIGEST="$(cd "$WORK/host" && overlay_digest_stream | cksum | awk '{print $1"-"$2}')"
 	# `git diff` sees TRACKED paths only, so the most likely way the overlay stops being
 	# reproducible — dropping a new file into fixtures/host — fired no warning at all while
 	# `cp -R` copied it straight into the corpus. `status --short -uall` sees both.
