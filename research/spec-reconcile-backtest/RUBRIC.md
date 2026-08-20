@@ -137,6 +137,28 @@ reach it, then change the skill.
 | Scores are machine-readable (every round but 1-2) | `runs/<round>/SCORES.tsv` carries the per-arm, per-fixture verdict and the labelled/scoreable counts this file quotes in prose. The test asserts the two agree, so a rescoring cannot drift from the record. Rounds 1-2 are grandfathered **by name** in `tests/spec-163-spec-reconcile.test.ts`, so a round 4 shipping without these files fails the suite rather than shipping unscored |
 | Auditor actually ran (every round but 1-2) | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor, and its `#` header records the round, corpus SHA, model, and whether the host overlay was staged — the fact F5's validity rests on. Rounds 1-2 predate the file and are exempt by name; every later round is required to carry it. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
 
+## Auditors are wrong sometimes, and the transcripts keep the proof
+
+**Transcripts are never edited to remove a wrong claim.** The standing rule cuts both
+ways: *a miss is a finding about the skill, never about the score* — and a false positive
+is a finding about the **auditor**, which only stays visible while the transcript stays
+verbatim. Correcting one is fixing the score in the other direction.
+
+Two false sub-claims are on the record for round 3, both raised as review threads on PR
+#393 and both verified before being recorded here:
+
+| Where | The claim | What is actually true |
+|---|---|---|
+| `C1` A14 | `cd /tmp/ggt/{repo}` expands to `/tmp/ggt/repo` | Brace expansion needs a comma list or a `..` sequence; a lone word stays literal and the `cd` fails |
+| `C2` line 117 | the `:110-130` line-state banner is behaviourally accurate | It is not — `git checkout main && git commit` is allowed, which became **#399** |
+
+So the round's yield is: four filed issues (#389, #391, #392, #399) and two demonstrably
+false sub-claims, out of 111 labelled findings across both arms. **That ratio is the reason
+§5's "quote the contradicting code as `path:line`" clause exists** — every finding arrives
+with the means to check it, and the ones above were caught precisely because they did.
+Adopt a finding when you have verified it against the code, never because an auditor said
+it well.
+
 ## Result log
 
 > **Round 3 also paid for itself outside the fixture** — four issues, each **re-probed
