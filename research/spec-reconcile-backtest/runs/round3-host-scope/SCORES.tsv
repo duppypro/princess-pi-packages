@@ -7,7 +7,7 @@
 # labelled = entries the transcript numbers; scoreable = labelled minus entries the
 # transcript itself declares "not a finding".
 arm	fixture	verdict	labelled	scoreable	note
-C1-guardrails-repo-only-control	F5	not-surfaced	60	59	zero mentions of host/ — the file was in its corpus and it never opened it
+C1-guardrails-repo-only-control	F5	not-surfaced	60	59	zero mentions of host/ — the file was in its corpus and it reported nothing from it
 C2-guardrails-host-scoped	F5	surfaced	53	52	A1 quotes host/git-projects-CLAUDE.md:24 against block-dangerous-git.sh:477, measured
 C1-guardrails-repo-only-control	absence-declared	not-scored	60	59	C1's prompt never names the absent host files; RUBRIC marks the row C2-only
 C2-guardrails-host-scoped	absence-declared	surfaced	53	52	names ./host/claude-CLAUDE.md and ./host/claude-settings.json as absent

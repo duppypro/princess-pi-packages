@@ -152,8 +152,11 @@ Two false sub-claims are on the record for round 3, both raised as review thread
 | `C1` A14 | `cd /tmp/ggt/{repo}` expands to `/tmp/ggt/repo` | Brace expansion needs a comma list or a `..` sequence; a lone word stays literal and the `cd` fails |
 | `C2` line 117 | the `:110-130` line-state banner is behaviourally accurate | It is not — `git checkout main && git commit` is allowed, which became **#399** |
 
-So the round's yield is: four filed issues (#389, #391, #392, #399) and two demonstrably
-false sub-claims, out of 111 labelled findings across both arms. **That ratio is the reason
+So the round's yield is **five filed issues** — #389, #390, #391, #392, #399 — and two
+demonstrably false sub-claims, out of **113 labelled findings across both arms** (60 + 53;
+the scoreable total is 111). #390 is in that five with an asterisk: it came from the
+superseded first run, and the re-run that replaced it erased its transcript, so it is the
+one issue here you cannot trace to a committed artifact. **That ratio is the reason
 §5's "quote the contradicting code as `path:line`" clause exists** — every finding arrives
 with the means to check it, and the ones above were caught precisely because they did.
 Adopt a finding when you have verified it against the code, never because an auditor said
@@ -161,7 +164,7 @@ it well.
 
 ## Result log
 
-> **Round 3 also paid for itself outside the fixture** — four issues, each **re-probed
+> **Round 3 also paid for itself outside the fixture** — five issues, each **re-probed
 > against current `main`** before filing rather than taken from a transcript:
 >
 > | Issue | What | Which arm found it |
@@ -171,6 +174,7 @@ it well.
 > | **#391** | `git revert` advances `main` without a PR | **both arms** (`C1` D12, `C2` A15) — not host-scoped |
 > | **#392** (banner half) | the hook's banner misquotes the host doc it cites | **host-scoped arm only** (`C2` A16) — one of the two contradicting documents is in no repo |
 > | **#392** (spec half) | `dev-workflow-spec.md:337` says nothing hooks `git worktree remove` | **both arms** (`C1` D8, `C2` B1) — an ordinary tracked-artifact drift |
+> | **#399** | `git checkout main && git commit` lands a commit on `main` | raised by a `macroscopeapp` thread on PR #393 as a worktree case; the plain-clone repro that actually commits is mine |
 >
 > **Caveat, recorded rather than tidied away.** #390 was surfaced by the *first* round-3
 > run, whose transcripts the corrected re-run **overwrote** — neither committed transcript

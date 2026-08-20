@@ -435,8 +435,13 @@ The corpus, the prompts as run, and the scoring rubric are in
 changes nothing about a re-run's score, and a weakened §4 can post four-of-four forever.
 Two consequences, both load-bearing:
 
-- **Changing §4 means changing the round prompts to match, by hand, in the same commit.**
-  Otherwise the corpus measures a skill that no longer exists.
+- **Changing §4 means the CURRENT round's prompts change to match, by hand, in the same
+  commit** — or, more usually, that you add a new round. Otherwise the corpus measures a
+  skill that no longer exists.
+  **Never retrofit a historical round.** Round 1 is *"the skill as written during #158"* and
+  round 2 is the post-#163 wording as scored on 2026-08-10; §7's headline result — two of
+  four, then four of four — is a before/after comparison and editing either side erases it.
+  `RUBRIC.md` states the same constraint for their corpora.
 - `tests/spec-163-spec-reconcile.test.ts` pins that the measured clauses still *appear* in
   this file. That catches a **deletion**; nothing catches a **weakening**. Neither the test
   nor the backtest is a wording regression detector, and treating either as one is how a
@@ -462,13 +467,18 @@ official", because a second run produces different transcripts than the ones you
 
 ```
 R=research/spec-reconcile-backtest/runs/<round>
-rm -f "$R"/*.md "$R"/STATUS.tsv "$R"/SCORES.tsv
+rm -f "$R"/*.md "$R"/STATUS.tsv      # NOT SCORES.tsv — see below
 cp "$S"/<round>/* "$R"/
 ```
 
-Then hand-edit two records so they describe what you just promoted: `RUBRIC.md`'s result
-log, and `$R/SCORES.tsv`. `tests/spec-163-spec-reconcile.test.ts` asserts the two agree, so
-forgetting either one fails the suite rather than shipping a record that contradicts itself.
+`SCORES.tsv` is **hand-authored** — `run-backtest.sh` writes only `*.md` and `STATUS.tsv`,
+so a `cp` cannot restore it. Leave the old one in place and **edit it** to describe the
+transcripts you just promoted; deleting it first leaves the round failing the suite's
+"every non-grandfathered round ships both" check with no template to work from.
+
+Then update `RUBRIC.md`'s result log to match. `tests/spec-163-spec-reconcile.test.ts`
+asserts the counts in `SCORES.tsv`, `RUBRIC.md` and this file all agree, so forgetting one
+fails the suite rather than shipping a record that contradicts itself.
 
 `run-backtest.sh --help` carries the exit-code table. **Adopting a re-run destroys the
 transcript the previous record cites** — the #383 run did exactly that and erased the

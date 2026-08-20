@@ -29,7 +29,7 @@
 #   ROUND         which prompts/<round>/ to run (default round2-fixed)
 #   OUT           where transcripts land (default runs/$ROUND — the TRACKED record)
 #   FIXTURE_SHA   must equal the round's own marker unless OVERRIDE_SHA=1
-#   OVERWRITE=1   replace a SCORED record in OUT (a failed run is replaced without it)
+#   OVERWRITE=1   replace a COMPLETED run in OUT (a failed/partial one is replaced without it)
 #   MODEL / REPO  auditor model (default opus) · repo the corpus is archived from
 #
 # exit codes:
@@ -37,10 +37,13 @@
 #   1  at least one auditor exited non-zero, or wrote fewer than 200 bytes — see STATUS.tsv
 #   2  usage — no such round, round has no *.txt prompts, round has no/blank FIXTURE_SHA,
 #      unknown argument
-#   3  corpus — not a git repo, `git archive`/`tar` failed, overlay missing, corpus already
-#      carries host/
-#   4  refused — OUT already holds a SCORED record; set OVERWRITE=1 or OUT=<path>.
-#      A round with transcripts but no STATUS.tsv counts as a record (rounds 1-2 predate it).
+#   3  corpus or output setup — not a git repo, `git archive`/`tar` failed, overlay
+#      missing, corpus already carries host/, OUT or STATUS.tsv not writable
+#   4  refused — OUT already holds a COMPLETED run; set OVERWRITE=1 or OUT=<path>.
+#      "Completed" is what this script can test: every declared auditor ran and exited 0.
+#      Whether anyone SCORED it lives in SCORES.tsv, which is hand-authored and which this
+#      script never reads or writes. A round with transcripts but no STATUS.tsv counts as
+#      completed too — rounds 1-2 predate the file.
 #   5  sha — env FIXTURE_SHA contradicts the round's marker; set OVERRIDE_SHA=1
 # ---
 set -euo pipefail
@@ -94,7 +97,7 @@ STATUS="$OUT/STATUS.tsv"
 # --- Is OUT a SCORED RECORD, or wreckage? Never decided by transcript text, which an
 #     auditor may legitimately quote.
 #
-#     Two ways to be a record:
+#     Two ways to count as a completed run:
 #       1. STATUS.tsv is present, has auditor rows, and EVERY row is a clean exit 0.
 #       2. There is no STATUS.tsv but there ARE transcripts — a LEGACY record. Rounds 1-2
 #          were scored in 2026-08-10, before STATUS.tsv existed, and RUBRIC's result log
@@ -113,9 +116,16 @@ holds_record() {
 		[ -n "${mds[0]:-}" ] && return 0
 		return 1
 	fi
-	local rows
+	local rows declared
 	rows="$(grep -v '^#' "$STATUS" | tail -n +2 || true)"
 	[ -n "$rows" ] || return 1
+	# STATUS.tsv rows are appended as the loop progresses, so a run interrupted after
+	# auditor 1 of 2 leaves a file shaped exactly like a clean complete one. The header
+	# records how many auditors the round DECLARED; require every one of them to be there.
+	declared="$(sed -n 's/^#.*[[:space:]]auditors=\([0-9][0-9]*\).*/\1/p' "$STATUS" | head -1)"
+	if [ -n "$declared" ]; then
+		[ "$(printf '%s\n' "$rows" | grep -c .)" -eq "$declared" ] || return 1
+	fi
 	printf '%s\n' "$rows" | awk -F'\t' '
 		$2 !~ /^[0-9]+$/ { bad = 1 }
 		$2 + 0 != 0      { bad = 1 }
@@ -127,16 +137,16 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 	if holds_record; then
 		if [ "${OVERWRITE:-0}" != "1" ]; then
 			if [ -f "$STATUS" ]; then
-				echo "$OUT already holds a scored record (STATUS.tsv: every auditor exit 0)." >&2
+				echo "$OUT already holds a completed run (STATUS.tsv: all $(( $(grep -cv '^#' "$STATUS") - 1 )) declared auditors exit 0)." >&2
 			else
-				echo "$OUT holds a legacy scored record (transcripts, no STATUS.tsv — it predates the file)." >&2
+				echo "$OUT holds a legacy completed run (transcripts, no STATUS.tsv — it predates the file)." >&2
 			fi
 			echo "Set OVERWRITE=1 to replace it, or OUT=<path> to write elsewhere." >&2
 			exit 4
 		fi
 		echo "OVERWRITE=1 — replacing the scored record in $OUT" >&2
 	else
-		echo "$OUT holds no scored record (missing/failed STATUS.tsv) — replacing it" >&2
+		echo "$OUT holds no completed run (missing, failed, or partial STATUS.tsv) — replacing it" >&2
 	fi
 	# Clear first either way: a re-run with renamed or fewer prompts would otherwise leave
 	# stale transcripts beside the new ones, with STATUS.tsv describing only the new set.
@@ -144,7 +154,7 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 	# exist, which is the same defect one file over.
 	rm -f "$OUT"/*.md "$OUT"/STATUS.tsv "$OUT"/SCORES.tsv
 fi
-mkdir -p "$OUT"
+mkdir -p "$OUT" || { echo "could not create the output directory $OUT" >&2; exit 3; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/spec-reconcile-backtest-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -181,9 +191,10 @@ echo "model     : $MODEL"
 
 # --- F5's validity rests on the overlay having been staged, so the transcript set records
 #     it alongside the corpus it was measured against.
-printf '# round=%s fixture_sha=%s model=%s host_overlay=%s\n' \
-	"$ROUND" "$FIXTURE_SHA" "$MODEL" "$HOST_OVERLAY" > "$STATUS"
-printf 'auditor\texit\tbytes\n' >> "$STATUS"
+printf '# round=%s fixture_sha=%s model=%s host_overlay=%s auditors=%s\n' \
+	"$ROUND" "$FIXTURE_SHA" "$MODEL" "$HOST_OVERLAY" "${#PROMPTS[@]}" > "$STATUS" \
+	|| { echo "could not write $STATUS" >&2; exit 3; }
+printf 'auditor\texit\tbytes\n' >> "$STATUS" || { echo "could not write $STATUS" >&2; exit 3; }
 
 # --- Each auditor is a separate `claude -p` PROCESS, not an in-session subagent. That is
 #     the strictest available reading of §4's "no session history": a fresh process cannot

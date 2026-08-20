@@ -70,6 +70,16 @@ function readRepo(relPath: string): string {
 	return fs.readFileSync(path.join(REPO, relPath), "utf8");
 }
 
+// --- shared readers. Declared here because several sections below consume them, and
+//     a const arrow is not hoisted: first use must follow the declaration. ---
+const safeRead = (rel: string): string =>
+	fs.existsSync(path.join(REPO, rel)) ? readRepo(rel) : "";
+const PROMPT_ROOT = path.join(REPO, "research/spec-reconcile-backtest/prompts");
+const rounds = fs.existsSync(PROMPT_ROOT) ? fs.readdirSync(PROMPT_ROOT).sort() : [];
+const roundSha = (round: string): string =>
+	safeRead(`research/spec-reconcile-backtest/prompts/${round}/FIXTURE_SHA`).trim();
+
+
 // ---
 // 1. The corpus is still reachable and still contains all four fixtures.
 //    Each assertion mirrors one row of research/spec-reconcile-backtest/RUBRIC.md.
@@ -185,6 +195,13 @@ function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "
 			// `timeout 900` for the same reason; a stalled suite reports nothing at all.
 			timeout: 30_000,
 		});
+		if (res.error) {
+			// spawnSync also returns status null when the child could not be spawned at
+			// all (bash missing, noexec tmpdir). Reporting that as a timeout points the
+			// reader at the 30s ceiling and the frozen hook instead of the real cause.
+			f5ProbeError = `probe could not run: ${res.error.message}`;
+			return "error";
+		}
 		if (res.status === null) {
 			f5ProbeError = `probe timed out or was killed: ${res.signal ?? "unknown signal"}`;
 			return "error";
@@ -207,22 +224,36 @@ function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "
 // shape were wrong and the hook silently fell back to this process's own cwd. The pair
 // below is branch-sensitive and fails loudly in that case — it proves the probe harness,
 // not the hook.
-const onMain = hookVerdictAtF5("git commit -m x", "main");
-const onFeature = hookVerdictAtF5("git commit -m x", "42-feat");
+// Capture each probe's own cause at the moment it ran. f5ProbeError is module-scoped and
+// reset per call, so reading it later — or on a short-circuited `&&` — attributes some
+// other probe's failure to this check (#383 review).
+const probe = (cmd: string, branch: string): { verdict: string; why: string } => {
+	const verdict = hookVerdictAtF5(cmd, branch);
+	return { verdict, why: f5ProbeError };
+};
+const onMain = probe("git commit -m x", "main");
+const onFeature = probe("git commit -m x", "42-feat");
 check(
 	"F5 probe harness: the injected cwd is honoured (commit blocked on main, allowed on a feature branch)",
-	onMain === "block" && onFeature === "allow",
-	f5ProbeError || `on main: ${onMain}, on feature: ${onFeature}`,
+	onMain.verdict === "block" && onFeature.verdict === "allow",
+	[onMain.why, onFeature.why].filter(Boolean).join(" / ") ||
+		`on main: ${onMain.verdict}, on feature: ${onFeature.verdict}`,
 );
+const pushFeature = f5Reachable
+	? probe("git push origin 42-feat", "42-feat")
+	: { verdict: "not-run", why: `corpus ${F5_SHA} unreachable` };
 check(
 	"F5: the hook at that SHA in fact ALLOWED a feature-branch push (measured, not read)",
-	f5Reachable && hookVerdictAtF5("git push origin 42-feat", "42-feat") === "allow",
-	f5ProbeError,
+	pushFeature.verdict === "allow",
+	pushFeature.why || `verdict: ${pushFeature.verdict}`,
 );
+const pushMain = f5Reachable
+	? probe("git push origin main", "42-feat")
+	: { verdict: "not-run", why: `corpus ${F5_SHA} unreachable` };
 check(
 	"F5: …and blocked a push whose destination was main — so the gate was on DESTINATION",
-	f5Reachable && hookVerdictAtF5("git push origin main", "42-feat") === "block",
-	f5ProbeError,
+	pushMain.verdict === "block",
+	pushMain.why || `verdict: ${pushMain.verdict}`,
 );
 // The control's F5-clean result is only evidence if the claim was absent from the WHOLE
 // tracked tree, not merely contradicted in one file. `git grep` at the frozen SHA is the
@@ -418,12 +449,7 @@ for (const rel of [
 	check(`present and non-empty: ${rel}`, bytes > 0, bytes === 0 ? "0 bytes" : "missing");
 }
 
-const safeRead = (rel: string): string =>
-	fs.existsSync(path.join(REPO, rel)) ? readRepo(rel) : "";
-
 const harness = safeRead("research/spec-reconcile-backtest/run-backtest.sh");
-const roundSha = (round: string): string =>
-	safeRead(`research/spec-reconcile-backtest/prompts/${round}/FIXTURE_SHA`).trim();
 // The old form was `harness.includes(CORPUS_SHA)`, which the harness's own prose comments
 // satisfy — a pin that a comment can keep green is not a pin. The SHA now lives in the
 // round markers, so assert their VALUES (#383 review).
@@ -474,49 +500,113 @@ check(
 // control. The harness's own error path appends a marker to the transcript, so "non-empty"
 // alone cannot tell the two apart — check the recorded exit status and the marker.
 const R3 = "research/spec-reconcile-backtest/runs/round3-host-scope";
-const statusPath = path.join(REPO, R3, "STATUS.tsv");
-const statusText = fs.existsSync(statusPath) ? readRepo(`${R3}/STATUS.tsv`) : "";
-const statusRows = statusText
-	.trim()
-	.split("\n")
-	.filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("auditor\t"));
-const statusFor = (arm: string): string[] | undefined =>
-	statusRows.map((r) => r.split("\t")).find((c) => c[0] === arm);
+const RUNS = "research/spec-reconcile-backtest/runs";
+const PROMPTS_DIR = "research/spec-reconcile-backtest/prompts";
+
+// Rounds 1-2 were scored on 2026-08-10, before STATUS.tsv and SCORES.tsv existed. Every
+// LATER round must carry both, and their CONTENTS must hold up — an earlier revision bound
+// every content check to round 3 by name, so a fabricated round 4 (bogus STATUS.tsv, no
+// transcripts, invented counts) passed the whole suite. That is the failure mode this issue
+// exists to close, reproduced inside its own gate.
+const GRANDFATHERED = new Set(["round1-as-written", "round2-fixed"]);
+
+interface RoundAudit {
+	statusText: string;
+	rows: string[][];
+	scores: string[][];
+	rowFor(arm: string): string[] | undefined;
+}
+
+function auditRound(round: string): RoundAudit {
+	const statusText = safeRead(`${RUNS}/${round}/STATUS.tsv`);
+	const rows = statusText
+		.split("\n")
+		.filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("auditor\t"))
+		.map((l) => l.split("\t"));
+	const scores = safeRead(`${RUNS}/${round}/SCORES.tsv`)
+		.split("\n")
+		.filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("arm\t"))
+		.map((l) => l.split("\t"));
+	return { statusText, rows, scores, rowFor: (arm) => rows.find((c) => c[0] === arm) };
+}
+
+const scoredRounds = rounds.filter((r) => !GRANDFATHERED.has(r));
 check(
-	"round 3's STATUS.tsv records the corpus AND that the host overlay was staged — F5 rests on it",
-	/^# round=round3-host-scope fixture_sha=bf4d104 model=\S+ host_overlay=yes$/m.test(statusText),
-	statusText.split("\n")[0] ?? "(empty)",
+	"there is at least one non-grandfathered round to check — otherwise this section is vacuous",
+	scoredRounds.length > 0,
 );
-check(
-	"round 3 recorded a per-auditor exit status for both arms",
-	statusRows.length === 2,
-	`STATUS.tsv rows: ${statusRows.length}`,
-);
-check(
-	"every round-3 auditor exited 0 — a killed auditor is not a result",
-	statusRows.length > 0 && statusRows.every((r) => r.split("\t")[1]?.trim() === "0"),
-	statusRows.join(" | "),
-);
-// Whether a transcript is scoreable is STATUS.tsv's answer, not a string inside the
-// transcript — an earlier revision looked for a marker the harness no longer writes, and
-// an auditor could quote it anyway. Assert the recorded exit AND the recorded size.
-for (const arm of ["C1-guardrails-repo-only-control", "C2-guardrails-host-scoped"]) {
-	const row = statusFor(arm);
+
+for (const round of scoredRounds) {
+	const a = auditRound(round);
+	const promptCount = fs.existsSync(path.join(REPO, PROMPTS_DIR, round))
+		? fs.readdirSync(path.join(REPO, PROMPTS_DIR, round)).filter((f) => f.endsWith(".txt")).length
+		: 0;
+
 	check(
-		`${arm}: STATUS.tsv records a clean exit and a transcript worth scoring`,
-		!!row && row[1] === "0" && Number(row[2]) >= 200,
-		row ? `exit ${row[1]}, ${row[2]} bytes` : "no STATUS.tsv row",
+		`${round}: STATUS.tsv header records round, corpus SHA, overlay and auditor count`,
+		new RegExp(
+			`^# round=${round} fixture_sha=\\S+ model=\\S+ host_overlay=(yes|no) auditors=\\d+$`,
+			"m",
+		).test(a.statusText),
+		a.statusText.split("\n")[0] ?? "(empty)",
 	);
-	const rel = `${R3}/${arm}.md`;
-	const bytes = fs.existsSync(path.join(REPO, rel))
-		? fs.statSync(path.join(REPO, rel)).size
-		: -1;
 	check(
-		`${arm}: the transcript on disk is the size STATUS.tsv recorded`,
-		!!row && bytes === Number(row[2]),
-		`on disk ${bytes}, recorded ${row?.[2]}`,
+		`${round}: STATUS.tsv's corpus SHA is the one the round's own marker declares`,
+		a.statusText.includes(`fixture_sha=${roundSha(round)}`) && roundSha(round).length > 0,
+	);
+	check(
+		`${round}: one STATUS row per prompt — a partial run must not read as a complete one`,
+		promptCount > 0 && a.rows.length === promptCount,
+		`${a.rows.length} rows, ${promptCount} prompts`,
+	);
+	check(
+		`${round}: the header's declared auditor count matches the rows present`,
+		a.rows.length === Number(/auditors=(\d+)/.exec(a.statusText)?.[1] ?? -1),
+	);
+	check(
+		`${round}: every auditor exited 0 — a killed auditor is not a result`,
+		a.rows.length > 0 && a.rows.every((c) => c[1] === "0"),
+		a.rows.map((c) => c.join(":")).join(" | "),
+	);
+	for (const row of a.rows) {
+		const rel = `${RUNS}/${round}/${row[0]}.md`;
+		const onDisk = fs.existsSync(path.join(REPO, rel))
+			? fs.statSync(path.join(REPO, rel)).size
+			: -1;
+		check(
+			`${round}/${row[0]}: transcript exists, is worth scoring, and is the size recorded`,
+			onDisk >= 200 && onDisk === Number(row[2]),
+			`on disk ${onDisk}, recorded ${row[2]}`,
+		);
+	}
+	check(
+		`${round}: SCORES.tsv names only arms STATUS.tsv recorded, and covers every one`,
+		a.scores.length > 0 &&
+			a.scores.every((c) => a.rowFor(c[0]) !== undefined) &&
+			a.rows.every((r) => a.scores.some((c) => c[0] === r[0])),
+		`status arms ${JSON.stringify(a.rows.map((r) => r[0]))}, score arms ${JSON.stringify([...new Set(a.scores.map((c) => c[0]))])}`,
+	);
+	check(
+		`${round}: every SCORES verdict is one of the three the file documents`,
+		a.scores.every((c) => ["surfaced", "not-surfaced", "not-scored"].includes(c[2])),
+		JSON.stringify(a.scores.map((c) => c[2])),
+	);
+	check(
+		`${round}: SCORES counts are plausible — scoreable never exceeds labelled`,
+		a.scores.every(
+			(c) => Number(c[4]) > 0 && Number(c[3]) > 0 && Number(c[4]) <= Number(c[3]),
+		),
+		JSON.stringify(a.scores.map((c) => `${c[4]}/${c[3]}`)),
 	);
 }
+
+const status3 = auditRound("round3-host-scope");
+const statusRows = status3.rows.map((c) => c.join("\t"));
+const statusFor = (arm: string): string[] | undefined => status3.rowFor(arm);
+check(
+	"round 3 staged the host overlay — F5's validity rests on it",
+	status3.statusText.includes("host_overlay=yes"),
+);
 
 // The manipulation between the two arms must be scope and nothing else. If they differ
 // anywhere but the host-document block, the round measures prompt wording, not scope.
@@ -579,8 +669,6 @@ check(
 	`round 3 declares ${F5_SHA} as its corpus`,
 	roundSha("round3-host-scope") === F5_SHA,
 );
-const PROMPT_ROOT = path.join(REPO, "research/spec-reconcile-backtest/prompts");
-const rounds = fs.existsSync(PROMPT_ROOT) ? fs.readdirSync(PROMPT_ROOT).sort() : [];
 check(
 	"every round directory declares its own corpus SHA — the rule RUBRIC states",
 	rounds.length >= 3 &&
@@ -588,8 +676,8 @@ check(
 	`rounds without FIXTURE_SHA: ${JSON.stringify(rounds.filter((r) => !fs.existsSync(path.join(PROMPT_ROOT, r, "FIXTURE_SHA"))))}`,
 );
 check(
-	"the harness refuses to overwrite a scored transcript set",
-	harness.includes("already holds a scored record") && harness.includes('"${OVERWRITE:-0}"'),
+	"the harness refuses to overwrite a completed run",
+	harness.includes("already holds a completed run") && harness.includes('"${OVERWRITE:-0}"'),
 );
 check(
 	"the harness ships an exit-code table and a --help that prints it",
@@ -602,7 +690,20 @@ check(
 check(
 	"a round with transcripts but no STATUS.tsv is a LEGACY RECORD, not wreckage to delete",
 	harness.includes("Legacy record iff transcripts are present") &&
-		harness.includes("holds a legacy scored record"),
+		harness.includes("holds a legacy completed run"),
+);
+check(
+	"a run interrupted mid-way cannot masquerade as complete — the header declares the count",
+	harness.includes("auditors=%s") && harness.includes('-eq "$declared"'),
+);
+check(
+	"output-setup failures report as a corpus problem, not as 'an auditor failed'",
+	harness.includes("could not create the output directory") && harness.includes("could not write $STATUS"),
+);
+check(
+	"the refusal says what the predicate actually tests — a completed run, not a scored one",
+	harness.includes("Whether anyone SCORED it lives in SCORES.tsv") &&
+		!harness.includes("already holds a SCORED record"),
 );
 check(
 	"a malformed exit column counts as a failed row, not a clean auditor",
@@ -650,23 +751,15 @@ check(
 // or a miscount was invisible to `bun run test`. SCORES.tsv is the structured surface; this
 // asserts it agrees with the prose that quotes it.
 const scoresText = safeRead(`${R3}/SCORES.tsv`);
-const scoreRows = scoresText
-	.split("\n")
-	.filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("arm\t"))
-	.map((l) => l.split("\t"));
+const scoreRows = status3.scores;
 const scoreOf = (arm: string, fixture: string): string[] | undefined =>
 	scoreRows.find((c) => c[0] === arm && c[1] === fixture);
 
-// The RUBRIC rows say "round 3 on". Rounds 1-2 are grandfathered BY NAME so that a
-// round 4 added without STATUS.tsv/SCORES.tsv fails here rather than shipping unscored.
-const GRANDFATHERED = new Set(["round1-as-written", "round2-fixed"]);
-const missingArtifacts = rounds
-	.filter((r) => !GRANDFATHERED.has(r))
-	.filter(
-		(r) =>
-			!fs.existsSync(path.join(REPO, `research/spec-reconcile-backtest/runs/${r}/STATUS.tsv`)) ||
-			!fs.existsSync(path.join(REPO, `research/spec-reconcile-backtest/runs/${r}/SCORES.tsv`)),
-	);
+const missingArtifacts = scoredRounds.filter(
+	(r) =>
+		!fs.existsSync(path.join(REPO, `${RUNS}/${r}/STATUS.tsv`)) ||
+		!fs.existsSync(path.join(REPO, `${RUNS}/${r}/SCORES.tsv`)),
+);
 check(
 	"every non-grandfathered round ships both STATUS.tsv and SCORES.tsv",
 	missingArtifacts.length === 0,
@@ -685,13 +778,9 @@ check(
 	"SCORES.tsv: the control did NOT — which is the result, not a miss",
 	scoreOf("C1-guardrails-repo-only-control", "F5")?.[2] === "not-surfaced",
 );
-check(
-	"SCORES.tsv names an arm for every auditor STATUS.tsv recorded",
-	statusRows.length > 0 &&
-		statusRows.every((r) => scoreRows.some((c) => c[0] === r.split("\t")[0])),
-);
 {
-	// The counts RUBRIC quotes in prose must be the counts SCORES.tsv publishes.
+	// The counts RUBRIC quotes in prose must be the counts SCORES.tsv publishes — per arm
+	// AND as the cross-arm totals, since a total is a third place the numbers can drift.
 	const rubric = safeRead("research/spec-reconcile-backtest/RUBRIC.md");
 	const c1 = scoreOf("C1-guardrails-repo-only-control", "F5");
 	const c2 = scoreOf("C2-guardrails-host-scoped", "F5");
@@ -705,10 +794,16 @@ check(
 			rubric.includes(`${c2[3]} labelled`),
 		`SCORES: C1 ${c1?.[4]}/${c1?.[3]}, C2 ${c2?.[4]}/${c2?.[3]}`,
 	);
-	// The skill quotes the control's pair too, and was cross-checked against nothing.
+	check(
+		"RUBRIC's cross-arm total is the LABELLED total, computed from SCORES.tsv",
+		!!c1 && !!c2 && rubric.includes(`${Number(c1[3]) + Number(c2[3])} labelled findings across both arms`),
+		`expected ${Number(c1?.[3]) + Number(c2?.[3])} labelled across both arms`,
+	);
+	// The skill quotes the control's pair too. Whitespace-collapsed, because a reflow of
+	// that paragraph is not a regression — the same reason the CLAUSES loop uses flat().
 	check(
 		"the skill's quoted counts match SCORES.tsv as well",
-		!!c1 && skill.includes(`${c1[4]}\nscoreable findings (${c1[3]} labelled)`),
+		!!c1 && flatSkill.includes(flat(`${c1[4]} scoreable findings (${c1[3]} labelled)`)),
 		`skill must carry "${c1?.[4]} scoreable findings (${c1?.[3]} labelled)"`,
 	);
 }
