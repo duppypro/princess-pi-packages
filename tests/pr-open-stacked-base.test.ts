@@ -79,6 +79,7 @@ interface Sandbox {
 	clone: string;
 	binDir: string;
 	argvLog: string;
+	claudeMarker: string;
 }
 
 /**
@@ -113,11 +114,19 @@ echo "https://github.com/duppypro/princess-pi-packages/pull/999"
 	// ~/.local/state/pr-review/clone/ from the test suite alone. The stub reports a
 	// clean review, which is what these cases assume: they are about the stacked-
 	// base warning, not the gate.
+	//
+	// Unlike `gh`, nothing else here proves the stub is the one that ran: every
+	// case's assertions pass identically whether this stub answered or the
+	// host's real reviewer did, so a future PATH change or a lost `chmod` could
+	// re-bill real calls silently with the suite still green. `claudeMarker`
+	// closes that — runPrOpen() asserts it whenever a PR gets created.
+	const claudeMarker = path.join(root, "claude-called");
 	fs.writeFileSync(path.join(binDir, "claude"),
-		`#!/usr/bin/env bash\ncat >/dev/null\nprintf '%s' '{"is_error":false,"result":"{\\"findings\\":[]}"}'\n`,
+		`#!/usr/bin/env bash\necho called >> ${JSON.stringify(claudeMarker)}\ncat >/dev/null\n` +
+		`printf '%s' '{"is_error":false,"result":"{\\"findings\\":[]}"}'\n`,
 		{ mode: 0o755 });
 
-	return { root, clone, binDir, argvLog };
+	return { root, clone, binDir, argvLog, claudeMarker };
 }
 
 /**
@@ -130,14 +139,18 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
-		// PATH is REPLACED, not prepended, for the two controlled entries — see the
-		// `claude` stub above. sb.binDir and REPO_BIN come before the host's own
-		// PATH so pr-open finds pr-review as the copy under test rather than the
-		// one deployed to ~/bin, while the host's PATH stays available after them
-		// for python3/timeout — hardcoding "/usr/bin:/bin" broke on any host that
-		// installs those elsewhere (homebrew, nix, asdf). `pr-guard` is unaffected
-		// either way: it is sourced by `readlink -f "$0"` from beside pr-open, not
-		// resolved through PATH, so it was always the repo's copy.
+		// sb.binDir (the `claude`/`gh` stubs) and REPO_BIN are PREPENDED to the
+		// host's own PATH, in that order — see the `claude` stub above. The
+		// host's PATH was always behind sb.binDir; the real `claude` used to run
+		// not because of PATH ordering but because sb.binDir carried no `claude`
+		// stub at all until now. REPO_BIN is the actual fix here: it makes
+		// `command -v pr-review` resolve the repo's own copy ahead of any
+		// `pr-review` installed to ~/bin. `pr-guard` is unaffected either way —
+		// it is sourced by `readlink -f "$0"` from beside pr-open, never
+		// resolved through PATH. The host's PATH is kept, not replaced with a
+		// hardcoded list: pr-review also needs python3/timeout resolvable, and a
+		// fixed "/usr/bin:/bin" allowlist broke on any host that installs those
+		// elsewhere (homebrew, nix, asdf).
 		env: {
 			...process.env, ...GIT_ENV,
 			PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
@@ -146,6 +159,15 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 	});
 	const out = `${r.stdout || ""}${r.stderr || ""}`;
 	const createdPr = fs.readFileSync(sb.argvLog, "utf8").includes("pr create");
+	// Gated on createdPr: a created PR cannot happen without pr-review having
+	// run and reported clean, so this is a real canary for the `claude` stub's
+	// own comment above — not vacuous, and not a false failure on a case that
+	// legitimately never reaches pr-review.
+	if (createdPr) {
+		check(fs.existsSync(sb.claudeMarker),
+			"pr created → the stubbed claude actually ran (not the host's real reviewer)",
+			`missing ${sb.claudeMarker}`);
+	}
 	return { code: r.status ?? -1, out, createdPr };
 }
 

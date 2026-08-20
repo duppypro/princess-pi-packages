@@ -685,9 +685,17 @@ def objects(text):
             # brace, with the real payload nested one line down.
             failed += 1
             if failed > MAX_FAILED_CANDIDATES:
-                yield None, RuntimeError(
+                # Tagged, not just raised: `payload_with` used to keep only the
+                # FIRST decode error it saw, so this — the reason the scan
+                # stopped at all, and the one case where a real payload may sit
+                # unread past the cutoff — lost to whatever unrelated stray
+                # brace failed first. The attribute lets payload_with recognise
+                # and prefer this one specifically.
+                capped = RuntimeError(
                     f"gave up after {MAX_FAILED_CANDIDATES} unparseable '{{' — "
                     "response too dense with malformed JSON to scan safely")
+                capped.scan_capped = True
+                yield None, capped
                 return
             yield None, exc
             i = start + 1
@@ -721,8 +729,13 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
     response that closes by repeating its own instructions defeated the LAST
     rule exactly the way one that opens with them defeated the FIRST rule:
     `payload_with('{"findings":[{"title":"REAL","detail":"d"}]}\\nRemember: '
-    'return {"findings":[]} if you find nothing.', "findings")` handed the
-    answer to the trailing echo under LAST-wins. Comparing by VALUE instead
+    'return {"findings":[]} if you find nothing.', "findings", FINDINGS_ECHOES_HARD, '
+    'FINDINGS_ECHOES_SOFT)` handed the answer to the trailing echo under
+    LAST-wins (the echo arguments matter here: called with none, as this
+    function's own default, the trailing `{"findings":[]}` is just a SECOND
+    genuine candidate and the call reports a disagreement instead — still
+    wrong, but a different wrong; the echo constants are what makes it
+    recognisable as an echo at all). Comparing by VALUE instead
     removes position from the decision: a candidate is disqualified only when
     it is byte-for-byte (structurally — key order and whitespace do not
     matter, `dict` equality already ignores both) one of the objects the
@@ -753,6 +766,7 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
     """
     reason = None
     decode_error = None
+    capped_error = None
     saw_echo = False
     genuine = []
     soft = []
@@ -761,8 +775,14 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
             # Kept, and reported only if nothing better turns up: "could not be
             # decoded" and "carried no findings" are different repairs, and this
             # string is what the log's `why` and `dedupNote` show the human who
-            # is looking for a dropped finding.
-            if decode_error is None:
+            # is looking for a dropped finding. The scan-capped error (tagged by
+            # objects()) is kept SEPARATELY and always wins over an ordinary
+            # decode error below — it means the scan gave up before reaching
+            # the end of the response, which is a different, more urgent fact
+            # than "one candidate near the start failed to parse".
+            if getattr(parsed, "scan_capped", False):
+                capped_error = parsed
+            elif decode_error is None:
                 decode_error = parsed
             continue
         if not isinstance(parsed, dict) or key not in parsed:
@@ -779,7 +799,15 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
             saw_echo = True
             soft.append((span, parsed))
             continue
-        genuine.append((span, parsed))
+        # Deduplicated by VALUE, not counted as-is: a model that states its
+        # answer and then repeats it verbatim ("Here is my answer: {...} ...
+        # In summary, {...}") produces two structurally EQUAL candidates, and
+        # counting both as "genuine" read that as a disagreement and dropped
+        # the lens — a real regression the FIRST-match code never had, since
+        # a repeated payload is not a contradiction, it is the same answer
+        # said twice.
+        if not any(parsed == g for _, g in genuine):
+            genuine.append((span, parsed))
     if len(genuine) == 1:
         return genuine[0]
     if len(genuine) > 1:
@@ -787,19 +815,30 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
                       "cannot tell which is the answer")
     if soft:
         return soft[0]
+    # saw_echo wins over `reason` even when `reason` is already set: an
+    # earlier non-payload candidate (a preamble object with the wrong key or
+    # type) used to win this message unconditionally, which pointed the human
+    # reading the log at "no object carried the key" when one actually did —
+    # and was rejected as the prompt's own placeholder, a different repair.
+    if saw_echo:
+        return None, f"the only '{key}' object in the response was the prompt's own schema, echoed back"
+    if capped_error is not None:
+        return None, str(capped_error)
     if reason is None:
-        reason = (f"the only '{key}' object in the response was the prompt's own schema, echoed back"
-                  if saw_echo else
-                  "response contains no JSON object" if decode_error is None
+        reason = ("response contains no JSON object" if decode_error is None
                   else f"no JSON object in the response could be decoded ({decode_error})")
     return None, reason
 
 
 # The exact schema examples shown to the model in the lens prompt (RULES,
-# below) and in the clustering prompt (CLUSTER_PROMPT, below) — duplicated
-# here rather than interpolated, because the heredoc that writes this whole
-# file is quote-delimited and takes no shell substitution. If either prompt's
-# example changes, this must change with it or an echo stops being caught.
+# below) and in the clustering prompt (CRULES, below) — duplicated here
+# rather than interpolated, because the heredoc that writes this whole file
+# is quote-delimited and takes no shell substitution. Nothing enforces the
+# two staying in sync — tests/pr-review-gate.test.ts's hazard cases hardcode
+# these same literals independently, so a reworded prompt would keep every
+# existing check green while a real echo silently stopped being caught. If
+# either prompt's example changes, these constants — and the hazard prose in
+# that test file — must change with it.
 #
 # The empty findings list is a SOFT echo: unlike the placeholder finding or
 # the placeholder grouping, it doubles as the one correct answer for "ran,
@@ -1140,7 +1179,17 @@ try:
         cause = open(errpath, errors="replace").read().strip() if os.path.exists(errpath) else ""
         note = "clustering call failed; count is RAW, not deduplicated"
         if cause:
-            note += ": " + cause.splitlines()[0][:300]
+            # Clipped WITH a marker, not silently to one line: `_clip()` in the
+            # collector below states the same rule ("a silently clipped stack
+            # trace or response reads as complete, and these logs are the
+            # recovery path"), but this is a separate python3 process and
+            # cannot import that helper — a rate-limit message with the actual
+            # cause on line 2, or a multi-line auth error, used to lose
+            # everything past the first line with no sign anything was cut.
+            CAUSE_LIMIT = 500
+            note += ": " + (cause if len(cause) <= CAUSE_LIMIT else
+                            cause[:CAUSE_LIMIT] +
+                            f"\n…[truncated {len(cause) - CAUSE_LIMIT} of {len(cause)} bytes]")
         finish(raw, "failed", note)
     else:
         sys.path.insert(0, work)
@@ -1156,13 +1205,15 @@ try:
         # reverted to RAW — the arm btw#59 compares against a DEDUPLICATED
         # control (#378). GROUPS_ECHOES_HARD keeps a trailing recap of this
         # same prompt's own example grouping from winning by content, not just
-        # by position: an echoed `{"groups":[[0,3],[1],[2,4,5]]}` is a valid
-        # partition ONLY when raw happens to carry exactly 6 findings, which a
-        # position-only fix would still get wrong silently. Unlike the empty
-        # findings list, no grouping example doubles as a legitimate answer on
-        # its own, so it is excluded unconditionally — HARD, not soft. The
-        # reason string is raised so it reaches `dedupNote`.
-        span, parsed = payload_with(text, "groups", GROUPS_ECHOES_HARD)
+        # by position: an echoed `{"groups":[[0,3],[1],[2,4,5]]}` reads as the
+        # prompt's own placeholder almost always — EXCEPT when `raw` genuinely
+        # holds exactly 6 findings, where it is also the one shape a real,
+        # correct partition could legitimately take. Applying the exclusion
+        # only when it cannot possibly be genuine (`len(raw) != 6`) keeps the
+        # echo caught without discarding that coincidence's only good answer.
+        # The reason string is raised so it reaches `dedupNote`.
+        groups_echoes = GROUPS_ECHOES_HARD if len(raw) != 6 else ()
+        span, parsed = payload_with(text, "groups", groups_echoes)
         if span is None:
             raise ValueError(parsed)
         groups = parsed["groups"]
@@ -1245,7 +1296,12 @@ PYFAIL
     fi
   else
     DEDUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dedup","?"))' "$LOG")
-    if [ "$DEDUP" = "failed" ]; then
+    # "?" is the read-guard fallback path: the PYCLUSTER block died before
+    # finish() ever ran (log unreadable, or finish() itself raising), $WORK/distinct
+    # was never written, COUNT fell back to $RAWCOUNT, and $LOG carries no `dedup`
+    # key at all. That is exactly the "clustering call failed" case, not a
+    # successful dedup that happens to look unlabeled — treat it the same way.
+    if [ "$DEDUP" = "failed" ] || [ "$DEDUP" = "?" ]; then
       echo "🔎 pr-review: $COUNT finding(s) from $NRAN lens(es) — NOT deduplicated (clustering failed). Log: $LOG"
     else
       echo "🔎 pr-review: $COUNT distinct finding(s) from $NRAN lens(es) [$RAWCOUNT raw]. Log: $LOG"
@@ -1254,7 +1310,14 @@ PYFAIL
 import json, sys
 d = json.load(open(sys.argv[1]))
 order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
-for f in sorted(d["distinct"], key=lambda x: order.get(x.get("severity", "Low"), 9)):
+# `.get(...)`, not `d["distinct"]`: the read-guard fallback above covers the
+# shell's COUNT variable but cannot repair $LOG itself when the crash happened
+# before finish() ran, so `distinct` may be absent here. A bare [] would print
+# nothing for a run that DID have findings; falling back to `findings` (the
+# raw, undeduplicated list) keeps them visible instead of a KeyError taking
+# this whole block down under `set -e` — exit 1, never reaching `exit 7` below,
+# with the PR opened unreviewed despite $LOG already holding real findings.
+for f in sorted(d.get("distinct", d.get("findings", [])), key=lambda x: order.get(x.get("severity", "Low"), 9)):
     print("  [{}/{}] {}:{}  {}".format(f.get("severity", "?"), f.get("lens", "?"),
                                        f.get("file", "?"), f.get("line", "?"), f.get("title", "")))
     print("      " + str(f.get("detail", "")))
