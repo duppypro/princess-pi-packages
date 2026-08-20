@@ -35,7 +35,8 @@
 #   2  usage error — bad flags, or not run inside a git repository at all (the
 #      shared #224 table assigns that condition 2, and this file amends that
 #      table, so disagreeing with it here would ship the contradiction it fixes)
-#   3  precondition — on a protected branch, or the diff itself failed
+#   3  precondition — on a protected branch, the diff itself failed, or the work
+#      dir would not take the shared parser the review passes import
 #   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
 #
 # Under `set -euo pipefail` a few unguarded operations can still exit 1 with no
@@ -589,6 +590,94 @@ trap 'kill_lenses; rm -rf "$WORK"; exit 130' INT
 trap 'kill_lenses; rm -rf "$WORK"; exit 143' TERM
 printf '%s' "$DIFF" > "$WORK/diff"
 
+# --- One JSON-span scanner, imported by both python blocks ---
+# The collector and the clustering pass both read a model response that may carry
+# prose around its payload, and both got it wrong in the same way. The collector's
+# greedy `first-{ .. last-}` was replaced with a balanced scan in #379; the
+# clustering pass kept the greedy span and so discarded a perfectly good grouping
+# whenever the model mentioned a ${VAR} or a {placeholder} while explaining itself
+# (#378). They are separate `python3` processes and cannot share a namespace any
+# other way, so the scanner is written ONCE into this run's private work dir and
+# imported by both — a copy-pasted twin is a fix that lands in one place and rots
+# in the other, which is how the two copies diverged to begin with.
+cat > "$WORK/prjson.py" <<'PYJSON' || { echo "pr-review: cannot write the shared parser into '$WORK'." >&2; exit 3; }
+"""Brace-balanced JSON extraction from a model response.
+
+Written by pr-review into its own work dir; imported by the collector and by the
+clustering pass. Not installed, not importable from anywhere else.
+"""
+import json
+
+
+def balanced_objects(text):
+    """Every top-level brace-balanced {...} span, in order, ignoring braces
+    inside strings.
+
+    Was `_balanced_object`, returning only the FIRST. One `${VAR}` in the
+    reviewer's prose, or any JSON-shaped preamble, therefore won the race against
+    the real payload — and the lens was filed as unparseable, or worse, parsed as
+    an object with no `findings` and counted as a CLEAN review (macroscopeapp,
+    PR #379). Yielding every candidate lets the caller pick the one that is
+    actually the payload instead of trusting position.
+
+    A '}' at depth 0 is skipped rather than decremented past. Letting depth go
+    negative meant one stray closing brace in the prose hid every object after
+    it — the same downgrade this scanner exists to prevent, reached from the
+    other side (#378).
+    """
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    yield start, i
+
+
+def payload_with(text, key):
+    """The first balanced object that is actually the payload: a dict whose `key`
+    is a LIST.
+
+    Both halves matter. `parsed.get(key, [])` used to default a missing key to
+    empty, so `{"error": "rate limited"}` became a lens that ran and found
+    nothing — a clean review manufactured out of a failure. Requiring the key
+    means a response that never contained one is a FAILURE, which is the
+    treatment every other unusable response already gets.
+
+    Returns (span, parsed) or (None, reason).
+    """
+    reason = "response contains no JSON object"
+    for s, e in balanced_objects(text):
+        reason = f"no JSON object in the response carried a '{key}' list"
+        try:
+            parsed = json.loads(text[s:e + 1])
+        except Exception:
+            continue
+        if not isinstance(parsed, dict) or key not in parsed:
+            continue
+        if not isinstance(parsed[key], list):
+            return None, (f"{key} is {type(parsed[key]).__name__}, expected list")
+        return (s, e), parsed
+    return None, reason
+PYJSON
+
 lens_prompt() {
   case "$1" in
     correctness)
@@ -672,70 +761,6 @@ def _open_private(path):
 
 
 
-def _balanced_objects(text):
-    """Every top-level brace-balanced {...} span, in order, ignoring braces
-    inside strings.
-
-    Was `_balanced_object`, returning only the FIRST. One `${VAR}` in the
-    reviewer's prose, or any JSON-shaped preamble, therefore won the race against
-    the real payload — and the lens was filed as unparseable, or worse, parsed as
-    an object with no `findings` and counted as a CLEAN review (macroscopeapp,
-    PR #379). Yielding every candidate lets the caller pick the one that is
-    actually a review result instead of trusting position.
-    """
-    depth = 0
-    start = -1
-    in_str = False
-    esc = False
-    for i, ch in enumerate(text):
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start >= 0:
-                    yield start, i
-
-
-def _review_payload(text):
-    """The first balanced object that is actually a review result.
-
-    A review result is an object with a `findings` LIST. Both halves matter:
-    `parsed.get("findings", [])` used to default a missing key to empty, so
-    `{"error": "rate limited"}` became a lens that ran and found nothing —
-    a clean review manufactured out of a failure. Requiring the key means a
-    response that never contained one is a FAILED lens, which is the treatment
-    every other unusable response already gets here.
-
-    Returns (span, parsed) or (None, reason).
-    """
-    reason = "response contains no JSON object"
-    for s, e in _balanced_objects(text):
-        reason = "no JSON object in the response carried a 'findings' list"
-        try:
-            parsed = json.loads(text[s:e + 1])
-        except Exception:
-            continue
-        if not isinstance(parsed, dict) or "findings" not in parsed:
-            continue
-        if not isinstance(parsed["findings"], list):
-            return None, (f"findings is {type(parsed['findings']).__name__}, expected list")
-        return (s, e), parsed
-    return None, reason
-
-
 def _clip(text, limit):
     """Truncate WITH a marker. A silently clipped stack trace or response reads as
     complete, and these logs are the recovery path for a dropped finding."""
@@ -748,6 +773,11 @@ def _clip(text, limit):
 
 work, log, base, branch, stamp, model, base_sha, head_sha = sys.argv[1:9]
 lenses = sys.argv[9:]
+# The scanner lives in this run's work dir, written by the shell above, so the
+# clustering pass gets the same one. The path goes on sys.path only after argv is
+# unpacked, because `work` IS argv[1].
+sys.path.insert(0, work)
+from prjson import payload_with  # noqa: E402
 def _usable(f):
     """A finding has to SAY something.
 
@@ -808,7 +838,7 @@ for lens in lenses:
     # ${VAR}, a trailing explanation), and the lens was then filed as "could not
     # look" — downgrading a lens that had actually found defects into
     # coverage-incomplete, with the findings surviving only in the log's raw field.
-    span, parsed = _review_payload(text)
+    span, parsed = payload_with(text, "findings")
     if span is None:
         # "Could not parse the answer" is NOT "the reviewer broke", and the raw
         # text is kept so a dropped finding stays recoverable. `parsed` carries
@@ -926,6 +956,10 @@ def _open_private(path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
 
 work, log = sys.argv[1], sys.argv[2]
+# Same scanner the collector uses, from the same file — see the PYJSON block.
+sys.path.insert(0, work)
+from prjson import payload_with  # noqa: E402
+
 d = json.load(open(log))
 raw = d["findings"]
 
@@ -949,8 +983,15 @@ try:
     if env.get("is_error"):
         raise ValueError("is_error")
     text = env.get("result") or ""
-    st, en = text.find("{"), text.rfind("}")
-    groups = json.loads(text[st:en + 1])["groups"]
+    # Balanced scan, not `first-{ .. last-}`: the greedy span ran from a brace in
+    # the model's preamble to a brace in its sign-off and parsed as neither, so a
+    # usable grouping was filed unusable and the count reverted to RAW — the arm
+    # btw#59 compares against a DEDUPLICATED control, inflated by up to the lens
+    # count (#378). The reason string is raised so it reaches `dedupNote`.
+    span, parsed = payload_with(text, "groups")
+    if span is None:
+        raise ValueError(parsed)
+    groups = parsed["groups"]
     seen = sorted(i for g in groups for i in g)
     # Reject a grouping that does not partition the input. A dropped or repeated
     # id would silently change the count, which is the number the experiment turns on.

@@ -70,11 +70,30 @@ function makeSandbox(): Sandbox {
 // which must be treated as a FAILED lens rather than a clean one — "found
 // nothing" and "could not look" are different facts.
 type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv"
-	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly";
+	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly" | "clusterprose";
 function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
-	if (mode === "prosebrace") {
+	if (mode === "clusterprose") {
+		// The same prose-brace hazard as "prosebrace", one call further on — the
+		// clustering pass. The lenses answer with findings; the clustering call is
+		// the only prompt carrying "FINDINGS:", and it answers with a brace in the
+		// prose BEFORE its payload and another AFTER it, which is what a model does
+		// whenever it names a variable or points at a placeholder. `find("{")` /
+		// `rfind("}")` spans from the first brace to the last, which is neither the
+		// payload nor valid JSON, so the grouping is filed unusable and the count
+		// reverts to RAW (#378).
+		const payload = `{"findings":[{"severity":"High","file":"feature.sh","line":2,"title":"stub finding","detail":"stubbed"}]}`;
+		// [[0,1],[2]] and not [[0],[1],[2]]: a grouping that MERGES makes distinct
+		// (2) differ from raw (3), so the assertion cannot pass on the fail-open
+		// path — which returns raw and would satisfy an identity partition.
+		const grouping = 'Grouping note: avoid ${VAR} in prose.\n{"groups":[[0,1],[2]]}\nDone, see {ref}.';
+		const lensEnv = `{"is_error":false,"result":${JSON.stringify(payload)}}`;
+		const clusterEnv = `{"is_error":false,"result":${JSON.stringify(grouping)}}`;
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\ninput=$(cat)\ncase "$input" in\n  *FINDINGS:*) printf '%s' '${clusterEnv}' ;;\n  *) printf '%s' '${lensEnv}' ;;\nesac\nexit 0\n`,
+			{ mode: 0o755 });
+	} else if (mode === "prosebrace") {
 		// A reviewer that mentions `${VAR}` (or any brace) BEFORE its payload. The
 		// old collector took the FIRST balanced object, parsed `{VAR}`, and filed a
 		// lens that had actually found a High as "could not look" (macroscopeapp,
@@ -359,7 +378,11 @@ console.log("\nclustering fail-open:");
 {
 	const sb = makeSandbox();
 	const env = stubs(sb, "findings");
-	delete (env as any).PR_REVIEW_NO_CLUSTER;   // let it try; the stub cannot produce a partition
+	// "0", not `delete`: run() builds the child env as {...process.env, ...env},
+	// so deleting the key removes only the OVERRIDE — a host that exports
+	// PR_REVIEW_NO_CLUSTER=1 leaked through and the assertions below then measured
+	// the disabled branch instead of the failed one (#378).
+	env.PR_REVIEW_NO_CLUSTER = "0";   // let it try; the stub cannot produce a partition
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
@@ -369,6 +392,30 @@ console.log("\nclustering fail-open:");
 		`${d.distinctFindings} vs ${d.findings.length}`);
 	check(/NOT deduplicated/.test(out), "unusable clustering → output SAYS the count is not deduplicated", out);
 	check(typeof d.dedupNote === "string" && d.dedupNote.length > 0, "unusable clustering → records why", String(d.dedupNote));
+}
+{
+	// ...but a USABLE grouping wrapped in prose braces must not be filed unusable.
+	// The collector stopped trusting brace POSITION in #379; the clustering pass
+	// kept `find("{")`/`rfind("}")`, so a grouping that partitions the findings
+	// perfectly was discarded whenever the model put a brace in its explanation.
+	// It fails toward the RAW count, which is the number btw#59 compares against a
+	// deduplicated control — inflating this arm by up to the lens count (#378).
+	const sb = makeSandbox();
+	const env = stubs(sb, "clusterprose");
+	env.PR_REVIEW_NO_CLUSTER = "0";
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.findings.length === 3, "prose-wrapped grouping → three raw findings to group", String(d.findings.length));
+	check(d.dedup === "clustered", "prose braces around the grouping → still clustered, not 'failed'",
+		`${d.dedup}: ${d.dedupNote || ""}`);
+	check(d.distinctFindings === 2, "prose-wrapped grouping → the model's partition is honoured (2 of 3)",
+		String(d.distinctFindings));
+	check(Array.isArray(d.distinct?.[0]?.mergedFrom) && d.distinct[0].mergedFrom.length === 2,
+		"prose-wrapped grouping → the merged pair records what it merged",
+		JSON.stringify(d.distinct?.[0]?.mergedFrom));
+	check(code === 7, "prose-wrapped grouping → findings still block", `got ${code}: ${out}`);
+	check(!/NOT deduplicated/.test(out), "prose-wrapped grouping → output does not claim a raw count", out);
 }
 {
 	// Partial coverage must be visible on the machine path too, not only the human one.
