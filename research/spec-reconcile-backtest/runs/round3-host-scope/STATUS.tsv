@@ -1,4 +1,4 @@
-# round=round3-host-scope fixture_sha=bf4d104 model=opus
-auditor	exit
-C1-guardrails-repo-only-control	0
-C2-guardrails-host-scoped	0
+# round=round3-host-scope fixture_sha=bf4d104 model=opus host_overlay=yes
+auditor	exit	bytes
+C1-guardrails-repo-only-control	0	20321
+C2-guardrails-host-scoped	0	21168

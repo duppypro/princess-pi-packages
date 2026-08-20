@@ -395,20 +395,22 @@ the two prompts are byte-identical apart from the block that enumerates the host
 and both arms are handed the same tree.
 
 **The sharpest part of the result: the host document sat in the control's corpus the whole
-time.** Both arms got the same tree; only C2's prompt named the file. C1 returned **60
-findings and never mentioned it once.** The drift was not hidden from the diff-scoped
+time.** Both arms got the same tree; only C2's prompt named the file. C1 returned **59
+scoreable findings (60 labelled) and never mentioned it once.** The drift was not hidden from the diff-scoped
 auditor — it was *unenumerated*, which is precisely what a diff does to a file that appears
 in no changeset.
 
-**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those 59
-scoreable findings included a live guardrail bug (#389, the `gh -R … pr merge` bypass);
+**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those included a live guardrail bug (#389, the `gh -R … pr merge` bypass);
 none of them said push was blocked outright, because no tracked artifact claimed it.
 Per-arm attribution, and the one issue whose transcript an earlier re-run erased, are in
 `RUBRIC.md`'s log — read it before crediting a finding to an arm.
 
 The corpus, the prompts as run, and the scoring rubric are in
 `princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1,
-§2's Tier 4, or §4** — those sections are measured artifacts now, not prose:
+§2's Tier 4, or §4** — those sections are measured artifacts now, not prose. The re-run is
+the only thing that detects a *wording* regression there.
+`tests/spec-163-spec-reconcile.test.ts` pins that the measured clauses still exist, which
+catches a deletion and not a weakening:
 
 **One invocation runs one round.** Re-measuring after a §1/§4 edit means all three:
 
@@ -422,8 +424,10 @@ S=$(mktemp -d)
 ROUND=round1-as-written OUT=$S/round1-as-written $B   # F1-F4, skill as of #158, SHA 9b2a16e
 ROUND=round2-fixed      OUT=$S/round2-fixed      $B   # F1-F4, post-fix,        SHA 9b2a16e
 ROUND=round3-host-scope OUT=$S/round3-host-scope $B   # F5, Tier 4,             SHA bf4d104
-# score every $S/<round>/ against RUBRIC.md, then, to adopt it:
-#   OVERWRITE=1 ROUND=<round> $B
+# score every $S/<round>/ against RUBRIC.md; to adopt a scored run, PROMOTE the
+# transcripts you scored — re-running would produce different ones:
+#   R=research/spec-reconcile-backtest/runs/<round>
+#   rm -f $R/*.md $R/STATUS.tsv && cp $S/<round>/* $R/ && update RUBRIC.md + $R/SCORES.tsv
 ```
 
 `run-backtest.sh --help` carries the exit-code table. **Adopting a re-run destroys the

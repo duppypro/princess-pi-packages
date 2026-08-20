@@ -155,10 +155,8 @@ console.log(`\n— F5 host-scope fixture at ${F5_SHA} + frozen host doc`);
 const HOST_DOC = "research/spec-reconcile-backtest/fixtures/host/git-projects-CLAUDE.md";
 
 let f5Reachable = true;
-let f5Hook = "";
 let f5Spec = "";
 try {
-	f5Hook = atSha(F5_SHA, "hooks/block-dangerous-git.sh");
 	f5Spec = atSha(F5_SHA, "docs/dev-workflow-spec.md");
 } catch (err) {
 	f5Reachable = false;
@@ -181,9 +179,18 @@ function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "
 		const res = spawnSync("bash", [hook], {
 			input: JSON.stringify({ tool_input: { command, cwd: repo } }),
 			encoding: "utf8",
+			// A frozen shell script against a scratch repo can hang on a prompt or an
+			// inherited credential helper. run-backtest.sh wraps its subprocess in
+			// `timeout 900` for the same reason; a stalled suite reports nothing at all.
+			timeout: 30_000,
 		});
+		if (res.status === null) {
+			f5ProbeError = `probe timed out or was killed: ${res.signal ?? "unknown signal"}`;
+			return "error";
+		}
 		if (res.status === 0) return "allow";
 		if (res.status === 2) return "block";
+		f5ProbeError = `hook exited ${res.status}: ${(res.stderr || "").trim()}`;
 		return "error";
 	} catch (err) {
 		// A probe that dies because git/bash/tmpdir is unusable must not read as a
@@ -389,6 +396,7 @@ for (const rel of [
 	"research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA",
 	"research/spec-reconcile-backtest/prompts/round3-host-scope/STAGE_HOST",
 	"research/spec-reconcile-backtest/runs/round3-host-scope/STATUS.tsv",
+	"research/spec-reconcile-backtest/runs/round3-host-scope/SCORES.tsv",
 	"research/spec-reconcile-backtest/prompts/round3-host-scope/C1-guardrails-repo-only-control.txt",
 	"research/spec-reconcile-backtest/prompts/round3-host-scope/C2-guardrails-host-scoped.txt",
 	"research/spec-reconcile-backtest/runs/round3-host-scope/C1-guardrails-repo-only-control.md",
@@ -407,7 +415,20 @@ const safeRead = (rel: string): string =>
 	fs.existsSync(path.join(REPO, rel)) ? readRepo(rel) : "";
 
 const harness = safeRead("research/spec-reconcile-backtest/run-backtest.sh");
-check("the harness pins the same corpus SHA the record cites", harness.includes(CORPUS_SHA));
+const roundSha = (round: string): string =>
+	safeRead(`research/spec-reconcile-backtest/prompts/${round}/FIXTURE_SHA`).trim();
+// The old form was `harness.includes(CORPUS_SHA)`, which the harness's own prose comments
+// satisfy — a pin that a comment can keep green is not a pin. The SHA now lives in the
+// round markers, so assert their VALUES (#383 review).
+check(
+	`rounds 1-2 declare the corpus SHA the #163 record cites (${CORPUS_SHA})`,
+	roundSha("round1-as-written") === CORPUS_SHA && roundSha("round2-fixed") === CORPUS_SHA,
+	`round1: ${roundSha("round1-as-written") || "(none)"}, round2: ${roundSha("round2-fixed") || "(none)"}`,
+);
+check(
+	"the harness reads the marker rather than carrying a default of its own",
+	!/DEFAULT_SHA="9b2a16e"/.test(harness) && harness.includes("must declare its own corpus"),
+);
 check(
 	"the harness reads each round's own FIXTURE_SHA — a fixture is a tree AND a question",
 	harness.includes('PROMPT_DIR="$HERE/prompts/$ROUND"') &&
@@ -449,9 +470,11 @@ const statusRows = statusText
 	.trim()
 	.split("\n")
 	.filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("auditor\t"));
+const statusFor = (arm: string): string[] | undefined =>
+	statusRows.map((r) => r.split("\t")).find((c) => c[0] === arm);
 check(
-	"round 3's STATUS.tsv records the corpus its transcripts came from",
-	/^# round=round3-host-scope fixture_sha=bf4d104 /.test(statusText),
+	"round 3's STATUS.tsv records the corpus AND that the host overlay was staged — F5 rests on it",
+	/^# round=round3-host-scope fixture_sha=bf4d104 model=\S+ host_overlay=yes$/m.test(statusText),
 	statusText.split("\n")[0] ?? "(empty)",
 );
 check(
@@ -523,8 +546,7 @@ check(
 );
 check(
 	`round 3 declares ${F5_SHA} as its corpus`,
-	safeRead("research/spec-reconcile-backtest/prompts/round3-host-scope/FIXTURE_SHA").trim() ===
-		F5_SHA,
+	roundSha("round3-host-scope") === F5_SHA,
 );
 const PROMPT_ROOT = path.join(REPO, "research/spec-reconcile-backtest/prompts");
 const rounds = fs.existsSync(PROMPT_ROOT) ? fs.readdirSync(PROMPT_ROOT).sort() : [];
@@ -536,24 +558,80 @@ check(
 );
 check(
 	"the harness refuses to overwrite a scored transcript set",
-	harness.includes("refusing to overwrite it") && harness.includes('"${OVERWRITE:-0}"'),
+	harness.includes("already holds a scored record") && harness.includes('"${OVERWRITE:-0}"'),
 );
 check(
 	"the harness ships an exit-code table and a --help that prints it",
-	harness.includes("exit codes: 0 ok") && harness.includes("-h|--help"),
+	harness.includes("# exit codes:") && harness.includes("-h|--help") && harness.includes("#   4  refused"),
 );
 check(
 	"a round with no FIXTURE_SHA marker is refused rather than run against a guessed corpus",
 	harness.includes("a round must declare its own corpus"),
 );
 check(
-	"a failed transcript set is replaced, not protected as if it were a record",
-	harness.includes("is NOT a scoreable run") && harness.includes("holds a failed run"),
+	"whether OUT holds a record is decided by STATUS.tsv, never by grepping transcript text",
+	harness.includes("holds_record()") && !harness.includes('grep -rlq "is NOT a scoreable run"'),
+);
+check(
+	"the corpus extraction is checked, and reports a corpus failure rather than tar's own code",
+	harness.includes("git archive $FIXTURE_SHA failed") && harness.includes("could not extract the corpus"),
+);
+check(
+	"an auditor that exits 0 having written nothing is recorded as a failure",
+	harness.includes("not a scoreable transcript"),
+);
+check(
+	"the corpus is archived from the clone the prompts live in, not the caller's cwd",
+	harness.includes('git -C "$HERE" rev-parse --show-toplevel'),
 );
 check(
 	"an env FIXTURE_SHA that contradicts the round's marker is refused",
 	harness.includes("contradicts round") && harness.includes("OVERRIDE_SHA"),
 );
+
+// (Agent-First Output, #383 review) The per-fixture verdict was prose only, so a rescoring
+// or a miscount was invisible to `bun run test`. SCORES.tsv is the structured surface; this
+// asserts it agrees with the prose that quotes it.
+const scoresText = safeRead(`${R3}/SCORES.tsv`);
+const scoreRows = scoresText
+	.split("\n")
+	.filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("arm\t"))
+	.map((l) => l.split("\t"));
+const scoreOf = (arm: string, fixture: string): string[] | undefined =>
+	scoreRows.find((c) => c[0] === arm && c[1] === fixture);
+
+check(
+	"round 3 publishes a machine-readable per-fixture verdict",
+	scoreRows.length >= 2 && scoresText.includes("round=round3-host-scope"),
+);
+check(
+	"SCORES.tsv: the host-scoped arm surfaced F5",
+	scoreOf("C2-guardrails-host-scoped", "F5")?.[2] === "surfaced",
+);
+check(
+	"SCORES.tsv: the control did NOT — which is the result, not a miss",
+	scoreOf("C1-guardrails-repo-only-control", "F5")?.[2] === "not-surfaced",
+);
+check(
+	"SCORES.tsv names an arm for every auditor STATUS.tsv recorded",
+	statusRows.length > 0 &&
+		statusRows.every((r) => scoreRows.some((c) => c[0] === r.split("\t")[0])),
+);
+{
+	// The counts RUBRIC quotes in prose must be the counts SCORES.tsv publishes.
+	const rubric = safeRead("research/spec-reconcile-backtest/RUBRIC.md");
+	const c1 = scoreOf("C1-guardrails-repo-only-control", "F5");
+	const c2 = scoreOf("C2-guardrails-host-scoped", "F5");
+	check(
+		"RUBRIC's prose counts match SCORES.tsv, so a rescoring cannot drift from the record",
+		!!c1 &&
+			!!c2 &&
+			rubric.includes(`${c1[4]} scoreable findings`) &&
+			rubric.includes(`${c2[4]} scoreable findings`) &&
+			rubric.includes(`${c2[3]} labelled`),
+		`SCORES: C1 ${c1?.[4]}/${c1?.[3]}, C2 ${c2?.[4]}/${c2?.[3]}`,
+	);
+}
 
 check(
 	"RUBRIC records F5 and its own SHA, so the record stays third-party checkable",
