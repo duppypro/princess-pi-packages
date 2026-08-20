@@ -430,6 +430,16 @@ const PROSE_HAZARDS: Array<{ name: string; prose: string }> = [
 	// another name — the thing the balanced scan exists to remove.
 	{ name: "a JSON preamble carrying the key with the wrong type",
 		prose: '{"findings":"none"}\n{"groups":"see below"}\n' },
+	// The model echoing the prompt's OWN schema before answering. Both echoes are
+	// well-formed objects with a `findings` list, so first-object-wins handed the
+	// answer to the prompt: the empty one recorded a lens that found defects as
+	// clean (exit 0, PR opens), the placeholder one invented a finding titled
+	// "short". This is the failure the gate exists to prevent, arriving through the
+	// parser instead of the reviewer.
+	{ name: "the prompt's own empty schema echoed first",
+		prose: 'Return {"findings":[]} if you find nothing. Here is my answer:\n' },
+	{ name: "the prompt's placeholder schema echoed first",
+		prose: '{"findings":[{"severity":"Critical|High|Medium|Low","file":"path","line":123,"title":"short","detail":"what is wrong and why it matters"}]}\nMy actual answer:\n' },
 	// Nesting deep enough to blow the decoder's stack. `raw_decode` raises
 	// RecursionError there, which is a RuntimeError and NOT a ValueError: catching
 	// only ValueError let it escape the scanner, kill the collector before it wrote
