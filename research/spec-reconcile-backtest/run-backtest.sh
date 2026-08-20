@@ -229,8 +229,13 @@ if [ -f "$PROMPT_DIR/STAGE_HOST" ]; then
 	# artifact the whole round is scored on. Record a digest so a transcript set carries the
 	# identity of the fixture it saw.
 	OVERLAY_DIGEST="$(cd "$WORK/host" && find . -type f | LC_ALL=C sort | xargs cat | cksum | awk '{print $1"-"$2}')"
-	if ! git -C "$REPO" diff --quiet -- "$HERE/fixtures/host" 2>/dev/null; then
-		echo "WARNING: fixtures/host has uncommitted changes — the overlay is not reproducible from git." >&2
+	# `git diff` sees TRACKED paths only, so the most likely way the overlay stops being
+	# reproducible — dropping a new file into fixtures/host — fired no warning at all while
+	# `cp -R` copied it straight into the corpus. `status --short -uall` sees both.
+	if [ -n "$(git -C "$REPO" status --short --untracked-files=all -- "$HERE/fixtures/host" 2>/dev/null)" ]; then
+		echo "WARNING: fixtures/host has uncommitted or untracked changes — the overlay is not" >&2
+		echo "         reproducible from git, and this transcript set cannot be recreated:" >&2
+		git -C "$REPO" status --short --untracked-files=all -- "$HERE/fixtures/host" | sed 's/^/           /' >&2
 	fi
 fi
 

@@ -524,6 +524,10 @@ check(
 	harness.includes("overlay_digest=%s") && harness.includes("OVERLAY_DIGEST="),
 );
 check(
+	"the reproducibility warning sees UNTRACKED files too — the likeliest way the overlay drifts",
+	harness.includes("--untracked-files=all") && !harness.includes('diff --quiet -- "$HERE/fixtures/host"'),
+);
+check(
 	"every write to STATUS.tsv is checked, including the per-auditor append",
 	harness.includes("could not append to $STATUS"),
 );
