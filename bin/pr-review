@@ -68,8 +68,9 @@ LENSES=("correctness" "reasoning" "contract")
 # Overriding to a slower model requires also raising PR_REVIEW_TIMEOUT (see header).
 # At the 180s default, a lens that exceeds the ceiling is counted as failed; if all
 # three fail, COUNT=0 → exit 0, which pr-open maps to "reviewer unavailable". That
-# path is NOT silent — pr-review prints COVERAGE INCOMPLETE to stderr and pr-open
-# forwards it — but it does not block the PR, so the gate effectively did not run.
+# path is NOT silent unless --quiet is passed — pr-review prints COVERAGE INCOMPLETE
+# to stderr and pr-open forwards it — but it does not block the PR, so the gate
+# effectively did not run.
 # An opus lens at 180–480 s will time out at most of that range under this ceiling.
 MODEL="${PR_REVIEW_MODEL:-claude-sonnet-5}"
 LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-180}"
@@ -876,7 +877,7 @@ read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
 #
 # So: one more call. It sits serially after the parallel lenses; at 30–90 s per
 # call the total cycle time is max(lens) + clustering. The cost is wall-clock, not
-# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 72).
+# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 75).
 # It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
 # an un-deduplicated number that says so is usable; one that pretends is not.
 if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
