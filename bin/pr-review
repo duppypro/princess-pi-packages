@@ -877,7 +877,7 @@ read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
 #
 # So: one more call. It sits serially after the parallel lenses; at 30–90 s per
 # call the total cycle time is max(lens) + clustering. The cost is wall-clock, not
-# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 75).
+# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 76).
 # It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
 # an un-deduplicated number that says so is usable; one that pretends is not.
 if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
