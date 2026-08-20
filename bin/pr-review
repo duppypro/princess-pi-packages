@@ -818,19 +818,25 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
     if len(genuine) > 1:
         return None, (f"{len(genuine)} distinct '{key}' objects in the response disagree — "
                       "cannot tell which is the answer")
-    if soft:
-        return soft[0]
-    # capped_error outranks saw_echo, which outranks `reason`. A capped scan
-    # means the response was never fully read, so "the only object was an
-    # echo" is a claim the scan cannot actually back — a real payload may sit
-    # past the cutoff. saw_echo still outranks `reason` even when `reason` is
-    # already set: an earlier non-payload candidate (a preamble object with
-    # the wrong key or type) used to win that message unconditionally, which
-    # pointed the human reading the log at "no object carried the key" when
-    # one actually did — and was rejected as the prompt's own placeholder, a
-    # different repair.
+    # capped_error and decode_error outrank `soft`, not just `saw_echo`: a
+    # capped or undecodable scan means the response was never fully read, so
+    # the sole soft-echo candidate found so far ({"findings":[]}, indistinguishable
+    # from a genuine "found nothing") is not trustworthy either — the model's
+    # real answer, truncated at the output cap or sitting past the scan-cap
+    # cutoff, may be exactly what got cut off. Verified against a truncated
+    # E2BIG-shaped response: 'Return {"findings":[]} if you find nothing.\n' +
+    # a findings payload cut off mid-object used to return the empty echo as
+    # a CLEAN lens instead of a decode failure. `soft` is only safe to trust
+    # once the scan is known to have completed cleanly.
     if capped_error is not None:
         return None, str(capped_error)
+    if soft and decode_error is None:
+        return soft[0]
+    # saw_echo outranks `reason` even when `reason` is already set: an
+    # earlier non-payload candidate (a preamble object with the wrong key or
+    # type) used to win that message unconditionally, which pointed the human
+    # reading the log at "no object carried the key" when one actually did —
+    # and was rejected as the prompt's own placeholder, a different repair.
     if saw_echo:
         return None, f"the only '{key}' object in the response was the prompt's own schema, echoed back"
     if reason is None:
@@ -1144,15 +1150,18 @@ PYIDS
     : > "$WORK/cluster.fail"
   fi
 
-  # `if !`, not a bare command: python3 itself can fail to reach the try below
+  # `if`, not a bare command: python3 itself can fail to reach the try below
   # at all — missing binary, OOM-killed, a syntax error in the heredoc — and a
   # bare command's nonzero exit kills the WHOLE script here under
   # `set -euo pipefail`, never reaching the guarded `read` two lines down or
   # `exit 7` at the bottom, with findings already sitting in $LOG unreviewed.
   # The try/except inside PYCLUSTER covers every failure that happens ONCE
-  # python3 is running; this `if !` is the outer layer for the one it can't:
-  # python3 not running to begin with.
-  if ! python3 - "$WORK" "$LOG" <<'PYCLUSTER'
+  # python3 is running; this `if` is the outer layer for the one it can't:
+  # python3 not running to begin with. `then :` is the SUCCESS branch (python3
+  # exited 0, whether via finish() or the inner except:pass) — an inverted
+  # `if !` here once ran the crash handler on every successful run and skipped
+  # it on every actual crash, the exact opposite of what the branches say.
+  if python3 - "$WORK" "$LOG" <<'PYCLUSTER'
 import json, os, sys
 
 def _open_private(path):
