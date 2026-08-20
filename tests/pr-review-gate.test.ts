@@ -71,27 +71,31 @@ function makeSandbox(): Sandbox {
 // nothing" and "could not look" are different facts.
 type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv"
 	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly" | "clusterprose";
-function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string, string> {
+function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
 	if (mode === "clusterprose") {
-		// The same prose-brace hazard as "prosebrace", one call further on — the
-		// clustering pass. The lenses answer with findings; the clustering call is
-		// the only prompt carrying "FINDINGS:", and it answers with a brace in the
-		// prose BEFORE its payload and another AFTER it, which is what a model does
-		// whenever it names a variable or points at a placeholder. `find("{")` /
-		// `rfind("}")` spans from the first brace to the last, which is neither the
-		// payload nor valid JSON, so the grouping is filed unusable and the count
-		// reverts to RAW (#378).
+		// Prose in front of the payload, on BOTH calls: the lenses answer with
+		// findings, and the clustering call — the only prompt carrying "FINDINGS:" —
+		// answers with a grouping. `prose` is the hazard under test; the default is
+		// the brace that `find("{")`/`rfind("}")` mis-spanned (#378).
+		//
+		// Envelopes go through FILES, not shell quoting: the hazards these cases
+		// carry are quotes and braces, and a stub that has to escape them is a stub
+		// that tests its own escaping.
 		const payload = `{"findings":[{"severity":"High","file":"feature.sh","line":2,"title":"stub finding","detail":"stubbed"}]}`;
 		// [[0,1],[2]] and not [[0],[1],[2]]: a grouping that MERGES makes distinct
 		// (2) differ from raw (3), so the assertion cannot pass on the fail-open
 		// path — which returns raw and would satisfy an identity partition.
-		const grouping = 'Grouping note: avoid ${VAR} in prose.\n{"groups":[[0,1],[2]]}\nDone, see {ref}.';
-		const lensEnv = `{"is_error":false,"result":${JSON.stringify(payload)}}`;
-		const clusterEnv = `{"is_error":false,"result":${JSON.stringify(grouping)}}`;
+		const grouping = `{"groups":[[0,1],[2]]}`;
+		const pre = prose ?? 'Grouping note: avoid ${VAR} in prose.\n';
+		const post = "\nDone, see {ref}.";
+		const lensFile = path.join(sb.root, "lens-env.json");
+		const clusterFile = path.join(sb.root, "cluster-env.json");
+		fs.writeFileSync(lensFile, `{"is_error":false,"result":${JSON.stringify(pre + payload + post)}}`);
+		fs.writeFileSync(clusterFile, `{"is_error":false,"result":${JSON.stringify(pre + grouping + post)}}`);
 		fs.writeFileSync(path.join(sb.binDir, "claude"),
-			`#!/usr/bin/env bash\ninput=$(cat)\ncase "$input" in\n  *FINDINGS:*) printf '%s' '${clusterEnv}' ;;\n  *) printf '%s' '${lensEnv}' ;;\nesac\nexit 0\n`,
+			`#!/usr/bin/env bash\ninput=$(cat)\ncase "$input" in\n  *FINDINGS:*) cat "${clusterFile}" ;;\n  *) cat "${lensFile}" ;;\nesac\nexit 0\n`,
 			{ mode: 0o755 });
 	} else if (mode === "prosebrace") {
 		// A reviewer that mentions `${VAR}` (or any brace) BEFORE its payload. The
@@ -393,29 +397,49 @@ console.log("\nclustering fail-open:");
 	check(/NOT deduplicated/.test(out), "unusable clustering → output SAYS the count is not deduplicated", out);
 	check(typeof d.dedupNote === "string" && d.dedupNote.length > 0, "unusable clustering → records why", String(d.dedupNote));
 }
-{
-	// ...but a USABLE grouping wrapped in prose braces must not be filed unusable.
-	// The collector stopped trusting brace POSITION in #379; the clustering pass
-	// kept `find("{")`/`rfind("}")`, so a grouping that partitions the findings
-	// perfectly was discarded whenever the model put a brace in its explanation.
-	// It fails toward the RAW count, which is the number btw#59 compares against a
-	// deduplicated control — inflating this arm by up to the lens count (#378).
+// ...but a USABLE payload wrapped in prose must not be filed unusable, on EITHER
+// call. The collector stopped trusting brace POSITION in #379 and the clustering
+// pass followed in #378 — but a scanner that counts braces by hand is fooled by
+// every other thing a model writes around its answer. Each hazard below is
+// prepended to both the lens response and the grouping response, so one case
+// covers both passes: a lost lens shows up as fewer than 3 raw findings, a lost
+// grouping as `dedup: "failed"` and the count reverting to RAW.
+const PROSE_HAZARDS: Array<{ name: string; prose: string }> = [
+	// A brace in the explanation — `find("{")`/`rfind("}")` spanned from the first
+	// brace to the last, which is neither the payload nor valid JSON (#378).
+	{ name: "a brace in the prose", prose: 'Grouping note: avoid ${VAR} in prose.\n' },
+	// An ODD number of quotes. Hand-rolled string tracking toggles `in_str` on
+	// every '"', so one unbalanced quote — a quoted identifier, a 6" measurement —
+	// left the scanner inside a string across the real payload and it saw nothing.
+	{ name: 'an odd number of " in the prose', prose: 'Mind the 6" gap before the payload.\n' },
+	// An unmatched OPENING brace. Depth-counting fixed the stray closer and left
+	// this one: depth never returns to 0, so no span is ever yielded and the whole
+	// response is discarded — a lens quoting `|| { echo ...` does exactly this.
+	{ name: "an unmatched { in the prose", prose: "A fragment: || { echo hi\n" },
+	// A JSON-shaped preamble whose key is the RIGHT key with the WRONG type.
+	// Stopping at the first object that merely HAS the key is position-trust by
+	// another name — the thing the balanced scan exists to remove.
+	{ name: "a JSON preamble carrying the key with the wrong type",
+		prose: '{"findings":"none"}\n{"groups":"see below"}\n' },
+];
+for (const hazard of PROSE_HAZARDS) {
 	const sb = makeSandbox();
-	const env = stubs(sb, "clusterprose");
+	const env = stubs(sb, "clusterprose", undefined, hazard.prose);
 	env.PR_REVIEW_NO_CLUSTER = "0";
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
-	check(d.findings.length === 3, "prose-wrapped grouping → three raw findings to group", String(d.findings.length));
-	check(d.dedup === "clustered", "prose braces around the grouping → still clustered, not 'failed'",
+	check(d.findings.length === 3, `${hazard.name} → all three lenses still parsed`,
+		`${d.findings.length} raw: ${JSON.stringify(d.failedLenses)}`);
+	check(d.dedup === "clustered", `${hazard.name} → grouping still clustered, not 'failed'`,
 		`${d.dedup}: ${d.dedupNote || ""}`);
-	check(d.distinctFindings === 2, "prose-wrapped grouping → the model's partition is honoured (2 of 3)",
+	check(d.distinctFindings === 2, `${hazard.name} → the model's partition is honoured (2 of 3)`,
 		String(d.distinctFindings));
 	check(Array.isArray(d.distinct?.[0]?.mergedFrom) && d.distinct[0].mergedFrom.length === 2,
-		"prose-wrapped grouping → the merged pair records what it merged",
+		`${hazard.name} → the merged pair records what it merged`,
 		JSON.stringify(d.distinct?.[0]?.mergedFrom));
-	check(code === 7, "prose-wrapped grouping → findings still block", `got ${code}: ${out}`);
-	check(!/NOT deduplicated/.test(out), "prose-wrapped grouping → output does not claim a raw count", out);
+	check(code === 7, `${hazard.name} → findings still block`, `got ${code}: ${out}`);
+	check(!/NOT deduplicated/.test(out), `${hazard.name} → output does not claim a raw count`, out);
 }
 {
 	// Partial coverage must be visible on the machine path too, not only the human one.

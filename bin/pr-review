@@ -31,12 +31,13 @@
 #
 # --- Exit codes ---
 #   0  reviewed, nothing found (or fail-open: reviewer unavailable)
-#   2  usage error
 #   2  usage error — bad flags, or not run inside a git repository at all (the
 #      shared #224 table assigns that condition 2, and this file amends that
 #      table, so disagreeing with it here would ship the contradiction it fixes)
 #   3  precondition — on a protected branch, the diff itself failed, or the work
-#      dir would not take the shared parser the review passes import
+#      dir would not take the files the review passes need (the diff, the shared
+#      parser). Both writes are guarded and both say so; an unguarded one would
+#      exit 1 from the same condition, which is why they are not left bare
 #   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
 #
 # Under `set -euo pipefail` a few unguarded operations can still exit 1 with no
@@ -588,7 +589,10 @@ kill_lenses() {
 trap 'rm -rf "$WORK"' EXIT
 trap 'kill_lenses; rm -rf "$WORK"; exit 130' INT
 trap 'kill_lenses; rm -rf "$WORK"; exit 143' TERM
-printf '%s' "$DIFF" > "$WORK/diff"
+# Guarded, like the parser write below. Unguarded, an unwritable $WORK ended the
+# script here at exit 1 with no message — and the exit-3 the parser write claims
+# for that condition was unreachable, because this line hits it first.
+printf '%s' "$DIFF" > "$WORK/diff" || { echo "pr-review: cannot write the diff into '$WORK'." >&2; exit 3; }
 
 # --- One JSON-span scanner, imported by both python blocks ---
 # The collector and the clustering pass both read a model response that may carry
@@ -615,51 +619,44 @@ clustering pass. Not installed, not importable from anywhere else.
 import json
 
 
-def balanced_objects(text):
-    """Every top-level brace-balanced {...} span, in order, ignoring braces
-    inside strings.
+def objects(text):
+    """Every JSON object in `text`, in order, as (span, parsed) — plus, for each
+    '{' that begins something unreadable, (None, the decode error).
 
-    Was `_balanced_object`, returning only the FIRST. One `${VAR}` in the
-    reviewer's prose, or any JSON-shaped preamble, therefore won the race against
-    the real payload — and the lens was filed as unparseable, or worse, parsed as
-    an object with no `findings` and counted as a CLEAN review (macroscopeapp,
-    PR #379). Yielding every candidate lets the caller pick the one that is
-    actually the payload instead of trusting position.
+    The span is inclusive of both braces, so `text[s:e + 1]` is the payload.
 
-    A '}' at depth 0 is skipped rather than decremented past. Letting depth go
-    negative meant one stray closing brace in the prose hid every object after
-    it — the same downgrade this scanner exists to prevent, reached from the
-    other side (#378).
+    Every '{' is a candidate and the JSON DECODER decides, rather than a
+    hand-rolled brace count. Counting braces has to re-implement string and
+    escape rules, and got them wrong twice in the same file: `${VAR}` in the
+    prose won the race against the real payload (macroscopeapp, PR #379), a
+    stray '}' drove depth negative and hid everything after it (#378), an
+    unmatched '{' — a lens quoting `|| { echo ...` — raised depth forever so no
+    span was ever yielded, and one odd '"' (a 6" gap, a quoted identifier) left
+    the scanner inside a string for the rest of the response. `raw_decode`
+    already knows all of it, and returns where the object ended for free.
     """
-    depth = 0
-    start = -1
-    in_str = False
-    esc = False
-    for i, ch in enumerate(text):
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
+    dec = json.JSONDecoder()
+    i = 0
+    while True:
+        start = text.find("{", i)
+        if start < 0:
+            return
+        try:
+            parsed, end = dec.raw_decode(text, start)
+        except ValueError as exc:
+            # Not a payload here; the next '{' may still open one. Advancing by a
+            # whole object is wrong on this path — the failure may BE the outer
+            # brace, with the real payload nested one line down.
+            yield None, exc
+            i = start + 1
             continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start >= 0:
-                    yield start, i
+        yield (start, end - 1), parsed
+        i = end
 
 
 def payload_with(text, key):
-    """The first balanced object that is actually the payload: a dict whose `key`
-    is a LIST.
+    """The first JSON object that is actually the payload: a dict whose `key` is
+    a LIST.
 
     Both halves matter. `parsed.get(key, [])` used to default a missing key to
     empty, so `{"error": "rate limited"}` became a lens that ran and found
@@ -667,20 +664,35 @@ def payload_with(text, key):
     means a response that never contained one is a FAILURE, which is the
     treatment every other unusable response already gets.
 
+    A candidate carrying the key with the WRONG type does not end the scan
+    either. Stopping there let `{"findings":"none"}` in a preamble decide the
+    answer, which is trusting position again — the exact habit this function
+    exists to break.
+
     Returns (span, parsed) or (None, reason).
     """
-    reason = "response contains no JSON object"
-    for s, e in balanced_objects(text):
-        reason = f"no JSON object in the response carried a '{key}' list"
-        try:
-            parsed = json.loads(text[s:e + 1])
-        except Exception:
+    reason = None
+    decode_error = None
+    for span, parsed in objects(text):
+        if span is None:
+            # Kept, and reported only if nothing better turns up: "could not be
+            # decoded" and "carried no findings" are different repairs, and this
+            # string is what the log's `why` and `dedupNote` show the human who
+            # is looking for a dropped finding.
+            if decode_error is None:
+                decode_error = parsed
             continue
         if not isinstance(parsed, dict) or key not in parsed:
+            if reason is None:
+                reason = f"no JSON object in the response carried a '{key}' list"
             continue
         if not isinstance(parsed[key], list):
-            return None, (f"{key} is {type(parsed[key]).__name__}, expected list")
-        return (s, e), parsed
+            reason = f"{key} is {type(parsed[key]).__name__}, expected list"
+            continue
+        return span, parsed
+    if reason is None:
+        reason = ("response contains no JSON object" if decode_error is None
+                  else f"no JSON object in the response could be decoded ({decode_error})")
     return None, reason
 PYJSON
 
@@ -783,7 +795,17 @@ lenses = sys.argv[9:]
 # clustering pass gets the same one. The path goes on sys.path only after argv is
 # unpacked, because `work` IS argv[1].
 sys.path.insert(0, work)
-from prjson import payload_with  # noqa: E402
+try:
+    from prjson import payload_with  # noqa: E402
+except Exception as _import_exc:     # noqa: BLE001 — the review must not die with the parser
+    # An unimportable parser is a reviewer that cannot be read, not a reviewer
+    # that found nothing. Every lens is then filed as failed WITH this cause,
+    # the status lands on reviewed-none, and pr-review exits 0 carrying the whole
+    # log — the same fail-open every other broken-reviewer path takes. Letting
+    # the ImportError escape instead killed the collector, left no summary file,
+    # and took the whole script down with a bare exit 1 and no JSON at all.
+    def payload_with(text, key, _exc=_import_exc):
+        return None, f"the shared parser could not be imported ({_exc})"
 def _usable(f):
     """A finding has to SAY something.
 
@@ -962,10 +984,6 @@ def _open_private(path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
 
 work, log = sys.argv[1], sys.argv[2]
-# Same scanner the collector uses, from the same file — see the PYJSON block.
-sys.path.insert(0, work)
-from prjson import payload_with  # noqa: E402
-
 d = json.load(open(log))
 raw = d["findings"]
 
@@ -985,6 +1003,15 @@ if os.path.exists(os.path.join(work, "cluster.fail")):
     finish(raw, "failed", "clustering call failed; count is RAW, not deduplicated")
     sys.exit(0)
 try:
+    # Inside the try, with everything else that can fail here. Above it, an
+    # unimportable parser skipped `finish()` entirely, left no $WORK/distinct for
+    # the shell to read, and ended pr-review at exit 1 under `set -euo pipefail` —
+    # no JSON, no exit 7, and pr-open opening a PR that DID have findings. The
+    # documented promise for this pass is fail-open to the raw count; an import
+    # is not exempt from it.
+    sys.path.insert(0, work)
+    from prjson import payload_with  # same scanner the collector uses
+
     env = json.load(open(os.path.join(work, "cluster.out")))
     if env.get("is_error"):
         raise ValueError("is_error")
