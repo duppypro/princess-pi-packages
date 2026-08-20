@@ -23,6 +23,15 @@ import * as path from "node:path";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
+const REPO_BIN = path.join(REPO_ROOT, "bin");
+
+// Every sandbox root, removed when the suite ends however it ends. Left behind,
+// each run deposited a bare remote plus a clone per case under /tmp forever.
+const SANDBOXES: string[] = [];
+function cleanupSandboxes(): void {
+	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+}
+process.on("exit", cleanupSandboxes);
 
 let failures = 0;
 let checks = 0;
@@ -60,6 +69,7 @@ function commit(dir: string, file: string, body: string, msg: string): void {
 }
 
 interface Sandbox {
+	root: string;
 	clone: string;
 	binDir: string;
 	argvLog: string;
@@ -71,6 +81,7 @@ interface Sandbox {
  */
 function makeSandbox(): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-"));
+	SANDBOXES.push(root);
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", "main"]);
@@ -90,8 +101,17 @@ echo "https://github.com/duppypro/princess-pi-packages/pull/999"
 `;
 	fs.writeFileSync(path.join(binDir, "gh"), gh);
 	fs.chmodSync(path.join(binDir, "gh"), 0o755);
+	// `claude` too, and for the same reason as `gh`: pr-open runs pr-review before
+	// it creates a PR (#377), so an unstubbed PATH sent every case here to the
+	// developer's real reviewer — measured at 196 real three-lens runs logged into
+	// ~/.local/state/pr-review/clone/ from the test suite alone. The stub reports a
+	// clean review, which is what these cases assume: they are about the stacked-
+	// base warning, not the gate.
+	fs.writeFileSync(path.join(binDir, "claude"),
+		`#!/usr/bin/env bash\ncat >/dev/null\nprintf '%s' '{"is_error":false,"result":"{\\"findings\\":[]}"}'\n`,
+		{ mode: 0o755 });
 
-	return { clone, binDir, argvLog };
+	return { root, clone, binDir, argvLog };
 }
 
 /**
@@ -104,7 +124,14 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
-		env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}` },
+		// PATH is REPLACED, not prepended — see the `claude` stub above. The repo's
+		// own bin comes second so pr-open finds its siblings (pr-guard, pr-review)
+		// as the copies under test rather than the ones deployed to ~/bin.
+		env: {
+			...process.env, ...GIT_ENV,
+			PATH: [sb.binDir, REPO_BIN, "/usr/bin", "/bin"].join(path.delimiter),
+			PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
+		},
 	});
 	const out = `${r.stdout || ""}${r.stderr || ""}`;
 	const createdPr = fs.readFileSync(sb.argvLog, "utf8").includes("pr create");

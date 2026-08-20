@@ -620,20 +620,37 @@ import json
 
 
 def objects(text):
-    """Every JSON object in `text`, in order, as (span, parsed) — plus, for each
-    '{' that begins something unreadable, (None, the decode error).
+    """Every TOP-LEVEL JSON object in `text`, in order, as (span, parsed) — plus,
+    for each '{' that begins something unreadable, (None, the decode error).
 
-    The span is inclusive of both braces, so `text[s:e + 1]` is the payload.
+    Top-level is the whole promise: after a candidate decodes, the scan resumes
+    past it, so an object nested inside a decoded one is never offered. A model
+    that wraps its answer (`{"note":"...","answer":{"findings":[...]}}`) is a
+    FAILED lens by this contract, not a silently unwrapped one — the prompt asks
+    for the payload at the top level, and guessing which nested object was meant
+    is how a scanner starts inventing findings.
 
     Every '{' is a candidate and the JSON DECODER decides, rather than a
-    hand-rolled brace count. Counting braces has to re-implement string and
-    escape rules, and got them wrong twice in the same file: `${VAR}` in the
-    prose won the race against the real payload (macroscopeapp, PR #379), a
-    stray '}' drove depth negative and hid everything after it (#378), an
-    unmatched '{' — a lens quoting `|| { echo ...` — raised depth forever so no
-    span was ever yielded, and one odd '"' (a 6" gap, a quoted identifier) left
-    the scanner inside a string for the rest of the response. `raw_decode`
-    already knows all of it, and returns where the object ended for free.
+    hand-rolled brace count. Counting braces means re-implementing string and
+    escape rules, and this file got them wrong repeatedly: `${VAR}` in the prose
+    won the race against the real payload (macroscopeapp, PR #379); an unmatched
+    '{' — a lens quoting `|| { echo ...` — raised depth forever so no span was
+    ever yielded; and one odd '"' (a 6" gap, a quoted identifier) left the
+    scanner inside a string for the rest of the response. A stray '}' had to be
+    guarded by hand too, or depth went negative and hid every object after it.
+    `raw_decode` already knows all of this, and returns where the object ended
+    for free.
+
+    EVERY exception is caught, not just ValueError: `raw_decode` raises
+    RecursionError — a RuntimeError — on deeply nested input (measured: 20000
+    openers raise, 5000 do not). Letting it escape killed the collector before
+    it wrote its summary, and pr-review ended at exit 1 with an empty log, so a
+    review that HAD findings opened the PR unreviewed.
+
+    The rescan after a failed candidate is O(n²) in the number of failed
+    openers (measured on `'{"a":' * n`: 2000 → 0.13s, 4000 → 0.49s, 8000 →
+    1.94s). It is bounded by the reviewer's output cap in practice, but note
+    that the collector runs after `wait` and carries no `timeout` of its own.
     """
     dec = json.JSONDecoder()
     i = 0
@@ -643,7 +660,7 @@ def objects(text):
             return
         try:
             parsed, end = dec.raw_decode(text, start)
-        except ValueError as exc:
+        except Exception as exc:  # noqa: BLE001
             # Not a payload here; the next '{' may still open one. Advancing by a
             # whole object is wrong on this path — the failure may BE the outer
             # brace, with the real payload nested one line down.

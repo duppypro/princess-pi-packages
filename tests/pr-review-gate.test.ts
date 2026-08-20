@@ -45,8 +45,17 @@ function git(cwd: string, args: string[]): string {
 
 interface Sandbox { root: string; remote: string; clone: string; binDir: string }
 
+// Every sandbox root, removed when the suite ends however it ends — including the
+// hazard cases, whose stub envelopes carry a 100KB payload each. One root per
+// case was left under /tmp on every run before this.
+const SANDBOXES: string[] = [];
+process.on("exit", () => {
+	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
 function makeSandbox(): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-gate-"));
+	SANDBOXES.push(root);
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", "main"]);
@@ -421,6 +430,12 @@ const PROSE_HAZARDS: Array<{ name: string; prose: string }> = [
 	// another name — the thing the balanced scan exists to remove.
 	{ name: "a JSON preamble carrying the key with the wrong type",
 		prose: '{"findings":"none"}\n{"groups":"see below"}\n' },
+	// Nesting deep enough to blow the decoder's stack. `raw_decode` raises
+	// RecursionError there, which is a RuntimeError and NOT a ValueError: catching
+	// only ValueError let it escape the scanner, kill the collector before it wrote
+	// its summary, and end pr-review at exit 1 — every lens's findings lost and the
+	// PR opened unreviewed. Measured: 20000 openers raise, 5000 do not.
+	{ name: "nesting deep enough to raise RecursionError", prose: '{"a":'.repeat(20000) + "\n" },
 ];
 for (const hazard of PROSE_HAZARDS) {
 	const sb = makeSandbox();
@@ -428,7 +443,17 @@ for (const hazard of PROSE_HAZARDS) {
 	env.PR_REVIEW_NO_CLUSTER = "0";
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
-	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	// Read defensively: a hazard that kills the collector leaves the log created
+	// but EMPTY, and a bare JSON.parse there ends the whole suite with a stack
+	// trace instead of a failed check — the run reports nothing about the other
+	// hazards, which is the same "could not look" / "found nothing" merge this
+	// file exists to keep apart.
+	const rawLog = files.length ? fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8") : "";
+	let d: any = null;
+	try { d = JSON.parse(rawLog); } catch { /* left null; asserted below */ }
+	check(d !== null, `${hazard.name} → the run still wrote a parseable log`,
+		`${rawLog.length} bytes, exit ${code}: ${out.slice(0, 300)}`);
+	if (d === null) continue;
 	check(d.findings.length === 3, `${hazard.name} → all three lenses still parsed`,
 		`${d.findings.length} raw: ${JSON.stringify(d.failedLenses)}`);
 	check(d.dedup === "clustered", `${hazard.name} → grouping still clustered, not 'failed'`,
