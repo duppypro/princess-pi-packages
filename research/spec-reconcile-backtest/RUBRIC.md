@@ -1,7 +1,14 @@
 # Scoring rubric — `spec-reconcile` backtest
 
-Corpus SHA: **`9b2a16e`** (`princess-pi-packages` `main`, before #158 landed).
-Score auditor output in `runs/<round>/` against the four fixtures below.
+Corpus SHA: **`9b2a16e`** (`princess-pi-packages` `main`, before #158 landed) for F1–F4.
+**F5 pins its own corpus** — `bf4d104`, the commit before #382 landed — because a fixture
+is a tree *and* a question, and F5's question did not exist in the older tree. **Every round
+declares its SHA in `prompts/<round>/FIXTURE_SHA`** — rounds 1-2 carry `9b2a16e`, round 3
+carries `bf4d104`. There is no fallback: a round without the marker is refused (exit 2), and an env
+`FIXTURE_SHA` contradicting it is refused (exit 5) unless `OVERRIDE_SHA=1` says so
+deliberately — a run under that override is not a scoreable result.
+`tests/spec-163-spec-reconcile.test.ts` asserts both the presence and the value.
+Score auditor output in `runs/<round>/` against the five fixtures below.
 
 **The rule: a miss is a finding about the skill, never about the score.** Do not soften a
 fixture because an auditor came close. Record which prompt clause or scope rule failed to
@@ -61,6 +68,60 @@ reach it, then change the skill.
   skipped the prose. One surfacing F4 but not F2 read the prose and skipped the code.
   Scoring both separates those failure modes.
 
+## F5 — host-scoped false claim, reachable by no diff (**Tier 4**, `#383`)
+
+- **Corpus:** `bf4d104` + the staged host doc. Round `round3-host-scope`.
+- **Artifact:** `host/git-projects-CLAUDE.md` — the **Git Guardrails (hard block)**
+  bullet, frozen verbatim from `~/git-projects/CLAUDE.md` at `2026-08-19T16:01:47Z`:
+  *"…intercept: `git push`, `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`,
+  `git checkout .`, `git restore .`"*, with the `main`/`master` qualifier attached only to
+  the #301 additions that follow.
+- **Contradicted by:** `hooks/block-dangerous-git.sh` — push is blocked on **destination**
+  (`main`/`master`) since #74, and a bare `push` only while the repo is *on* `main`. Twin:
+  `extensions/lib/git-guardrails-core.ts`.
+- **Test-covered:** ✅ `tests/doc-claims-vs-hooks.test.ts` (#382), which pins the corrected
+  sentence *and* probes both implementations.
+- **Counts as surfaced when:** the auditor quotes the host document's `intercept:` sentence
+  AND cites the destination check in the hook as `path:line`. Naming the hook's behaviour
+  without reaching the host document does **not** count — that is the control's result.
+- **Difficulty:** structural, not textual. **What the round controlled for is enumeration, not phrasing.** The two arms differ by one
+  block — the paragraph naming the host documents — and by nothing else, so the result
+  attributes the hit to *naming the file*. It does **not** establish that no other phrasing
+  could ever reach the fixture; no arm tested that, and the fixture is staged in the tree
+  for both arms precisely so the difference is enumeration rather than availability. The
+  drift is not in the corpus at all: `~/git-projects/` is not a git repository, so the file
+  has no commit, no history, and appears in no changeset. Only §1's **reverse scope**
+  (branch touches `hooks/` → Tier 4 activates) and §2 Tier 4's **enumerated set** put the
+  document in front of an auditor. This is the one fixture that measures a *scope* rule
+  with nothing left over for prompt wording to explain.
+- **The control is the point, and the manipulation is enumeration only.**
+  `C1-guardrails-repo-only-control.txt` and `C2-guardrails-host-scoped.txt` are
+  **byte-identical apart from one block**: C2's paragraph naming the host-scoped documents.
+  `diff` the two files — if they differ anywhere else, the round is measuring prompt wording
+  and not scope, and the result does not stand.
+- **Both arms are handed the same corpus, host document included.** `STAGE_HOST` puts
+  `./host/` in the tree for the whole round, so C1 *could* read the file and simply is never
+  told to. That is the faithful reproduction: on a real host the document is right there, and
+  the only thing the skill changes is whether an auditor is pointed at it. C1 is therefore
+  "diff-*enumerated*", not "diff-restricted" — do not describe it as an artifact set the file
+  was withheld from.
+- **What the control must show:** no finding that push is blocked outright, in any tracked
+  artifact. Nothing stronger. At `bf4d104` no tracked artifact carried that claim —
+  `docs/dev-workflow-spec.md:449` says *"destination-aware, not a flat block list"* — but the
+  control is expected to return plenty of *other* drift, and it does. **"Clean" means clean on
+  the F5 claim, never clean overall**; the 2026-08-19 control returned 59 scoreable findings, three of
+  which were filed (#389, #391, and #392's spec half — see the issue table below; count them there rather than trusting this sentence). A control that returns nothing at all is a dead auditor
+  (check `STATUS.tsv`), not a result.
+- **Bonus signal:** a strong auditor reports the offending sentence **verbatim**, so the
+  correction can be pinned as a claim-table entry (§2 Tier 4) rather than merely reworded.
+  Both prompts ask for quoting *generally* (`quote the artifact line`), symmetrically, so
+  the signal stays earnable by either arm. What neither may carry is an instruction aimed
+  at **this sentence** — an earlier revision of C2 said "report the exact verbatim sentence",
+  which made the row un-earnable by the control and therefore worthless. If that goes back
+  in, delete this row with it.
+
+---
+
 ---
 
 ## Non-fixture checks, scored on the same run
@@ -72,10 +133,63 @@ reach it, then change the skill.
 | Fix, not report | Every surfaced contradiction ends fixed in-branch or filed as a named issue |
 | Glossary | `CONTEXT.md` has `## Language — Serve` and **no wtft section**. The auditor must say so and invent nothing. Applying serve's `_Avoid_` list to wtft is a **fail** — it is inventing a ruling |
 | Triage smell | Output grouped "most important first", or a stated word budget, means findings were dropped (§1 granularity) |
+| Absence declared (F5, **C2 only**) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The host-scoped auditor must SAY they are missing — the control's prompt never names them, so this row is not scored against it. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent. The absence is pinned by `tests/spec-163-spec-reconcile.test.ts`, which asserts `fixtures/host/` holds exactly the one expected file; adding either file silently inverts this row |
+| Scores are machine-readable (every round but 1-2) | `runs/<round>/SCORES.tsv` carries the per-arm, per-fixture verdict and the labelled/scoreable counts this file quotes in prose. The test asserts the two agree, so a rescoring cannot drift from the record. Rounds 1-2 are grandfathered **by name** in `tests/spec-163-spec-reconcile.test.ts`, so a round 4 shipping without these files fails the suite rather than shipping unscored |
+| Auditor actually ran (every round but 1-2) | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor, and its `#` header records the round, corpus SHA, model, and whether the host overlay was staged — the fact F5's validity rests on. Rounds 1-2 predate the file and are exempt by name; every later round is required to carry it. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
+
+## Auditors are wrong sometimes, and the transcripts keep the proof
+
+**Transcripts are never edited to remove a wrong claim.** The standing rule cuts both
+ways: *a miss is a finding about the skill, never about the score* — and a false positive
+is a finding about the **auditor**, which only stays visible while the transcript stays
+verbatim. Correcting one is fixing the score in the other direction.
+
+Two false sub-claims are on the record for round 3, both raised as review threads on PR
+#393 and both verified before being recorded here:
+
+| Where | The claim | What is actually true |
+|---|---|---|
+| `C1` A14 | `cd /tmp/ggt/{repo}` expands to `/tmp/ggt/repo` | Brace expansion needs a comma list or a `..` sequence; a lone word stays literal and the `cd` fails |
+| `C2` line 117 | the `:110-130` line-state banner is behaviourally accurate | It is not — `git checkout main && git commit` is allowed, which became **#399** |
+
+**Three** of the round's filed issues trace to those **113 labelled findings across both
+arms** (60 + 53; the scoreable total is 111): #389, #391, and #392's spec half. Two more
+were filed under the round's name but come from outside that denominator — **#390** from
+the superseded first run, whose transcripts the re-run erased, and **#399** from a
+`macroscopeapp` thread on PR #393 rather than from an auditor. Five issues, three of them
+countable here; the table below is the authority for which is which.
+
+**Three findings and two false sub-claims out of 113 is the ratio that matters**, and it is
+the reason §5's *"quote the contradicting code as `path:line`"* clause exists: every one of
+those arrived with the means to check it, which is how both false ones were caught. The two
+outside issues arrived with no transcript at all, and were verified by re-probing `main`. **That ratio is the reason
+§5's "quote the contradicting code as `path:line`" clause exists** — every finding arrives
+with the means to check it, and the ones above were caught precisely because they did.
+Adopt a finding when you have verified it against the code, never because an auditor said
+it well.
 
 ## Result log
 
-| Round | Prompts | F1 | F2 | F3 | F4 | Notes |
-|---|---|---|---|---|---|---|
-| 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
-| 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | 4 of 4. Also surfaced two drifts still live on `main` |
+> **Round 3 also paid for itself outside the fixture** — five issues, each **re-probed
+> against current `main`** before filing rather than taken from a transcript:
+>
+> | Issue | What | Which arm found it |
+> |---|---|---|
+> | **#389** | `gh -R o/r pr merge` walks the human-only gate | **control** (`C1` D3), reproduced in both runs |
+> | **#390** | the hook fails *open* when `jq` is unavailable | **the superseded first run only** — see the caveat below |
+> | **#391** | `git revert` advances `main` without a PR | **both arms** (`C1` D12, `C2` A15) — not host-scoped |
+> | **#392** (banner half) | the hook's banner misquotes the host doc it cites | **host-scoped arm only** (`C2` A16) — one of the two contradicting documents is in no repo |
+> | **#392** (spec half) | `dev-workflow-spec.md:337` says nothing hooks `git worktree remove` | **both arms** (`C1` D8, `C2` B1) — an ordinary tracked-artifact drift |
+> | **#399** | `git checkout main && git commit` lands a commit on `main` | raised by a `macroscopeapp` thread on PR #393 as a worktree case; the plain-clone repro that actually commits is mine |
+>
+> **Caveat, recorded rather than tidied away.** #390 was surfaced by the *first* round-3
+> run, whose transcripts the corrected re-run **overwrote** — neither committed transcript
+> mentions `jq`. The issue stands on its own re-probe against `main`, not on a transcript
+> you can read here. That erasure is why `run-backtest.sh` now refuses to write into a
+> non-empty `OUT` (exit 4): a harness that can destroy its own evidence will.
+
+| Round | Prompts | F1 | F2 | F3 | F4 | F5 | Notes |
+|---|---|---|---|---|---|---|---|
+| 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | — | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
+| 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | — | 4 of 4. Also surfaced two drifts still live on `main` |
+| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only.** C2 (52 scoreable findings; 53 labelled, one self-declared "not a finding") quotes `host/git-projects-CLAUDE.md:24`'s `intercept: git push` sentence against `block-dangerous-git.sh:477`, measured (`git push origin 42-feat` from `main` → exit 0), and declares both **prompt-named but deliberately absent** host files. C1 — byte-identical prompt minus the enumeration block, **same corpus, host document present on disk** — returned 59 scoreable findings (60 labelled) and **zero mentions of `host/`**: it reported nothing from the file, because nothing pointed it there. (The transcript is prose with no tool-call log, so "never read it" is not something the artifact can show — and does not need to be. A finding that never reaches the record is a finding the pass did not produce.) `STATUS.tsv`: both arms exit 0 |

@@ -1,0 +1,20 @@
+Read `hooks/block-dangerous-git.sh` in full, top to bottom. That file is the authority.
+Then read `extensions/git-guardrails.ts`, `extensions/lib/git-guardrails-core.ts`, `docs/dev-workflow-spec.md`, `CLAUDE.md`, and `README.md`.
+
+This branch changes a TOOL, so the artifact set is not the diff. Also audit the host-scoped documents that quote this tool's behaviour and that no changeset contains. In this corpus they are staged beside the tree; read every one of these that exists, and for each one that does NOT exist, say so explicitly rather than passing over it:
+
+  ./host/git-projects-CLAUDE.md      (the ~/git-projects domain rules)
+  ./host/claude-CLAUDE.md            (the ~/.claude global rules)
+  ./host/claude-settings.json        (~/.claude/settings.json, where it names a script by path)
+
+List EVERY claim in those artifacts that the source contradicts, is silent on, or documents only partially. One line per finding. Do NOT triage, rank, or summarise — if there are forty, list forty. Never drop a finding to fit a length; there is no length limit.
+
+Sweep the source file's own docstrings and banner comments in file order and account for each one. A docstring that sits above the wrong symbol — or that TypeScript will attach to a different symbol than the author intended — is a finding.
+
+For each finding: quote the artifact line, quote the contradicting code as `path:line`, and state what the code actually does.
+
+Include claims that are *incomplete*, not just wrong — an accepted input that `--help` never mentions is a contradiction, because a reader concludes it is unsupported.
+
+If a user-facing string uses a term the project glossary (`CONTEXT.md`) marks under `_Avoid_`, that is a finding. If the glossary has no section for this tool, say so plainly and invent no terminology.
+
+If you find none, do not say "looks good" — list what you checked and how you verified it. Do not fix anything.

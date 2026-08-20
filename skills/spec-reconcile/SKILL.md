@@ -77,10 +77,34 @@ So:
 - Treat "grouped by theme, most important first" in auditor output as a **symptom**, not
   a service. It means findings were dropped.
 
-## 2. Artifact classes — three tiers, checked three different ways
+### Reverse scope — when the branch changes a *tool*, ask who quotes it
+
+Diff scope answers *"which artifacts describe the files I changed?"*, and it answers it
+from inside the repo. For a **tool whose behaviour other documents assert** — a hook, a
+`bin/` script, an extension, a skill — the useful question is the reverse: **"who quotes
+this tool's behaviour, anywhere?"** That is a downstream-readers set. It is not a diff set,
+and no widening of `--name-only` produces it.
+
+**Trigger.** The branch touches `hooks/`, `bin/`, `extensions/`, or `skills/` → **Tier 4**
+(§2) activates, in addition to every tier the diff already reached.
+
+**Why a diff provably cannot get there** (`princess-pi-packages#381`).
+`~/git-projects/CLAUDE.md` told every session that `git push` was intercepted
+unconditionally. `hooks/block-dangerous-git.sh` has blocked by push *destination* since
+#74. The file is not gitignored — `~/git-projects/` is **not a git repository at all**, so
+the file has no history, no diff, and no commit any check can hang off. *There is no
+changeset in which it appears*, which is why "add `CLAUDE.md` to the reconcile file list"
+does not reach it. An agent read the file, believed it, and wrote *"the guardrails hook
+blocks agent `git push`"* into four artifacts in another repo — during a session in which
+`pr-open` pushed a branch for it four times. The tracked spec
+(`docs/dev-workflow-spec.md`) was correct the whole time, so a repo-scoped audit of that
+branch would have come back clean.
+
+## 2. Artifact classes — four tiers, checked four different ways
 
 Not every artifact is reachable the same way. Sort them before auditing, or you will
-either miss the unlinkable ones or waste passes on ones that cannot drift.
+either miss the unlinkable ones or waste passes on ones that cannot drift. Tiers 1–3 are
+reached by the diff; Tier 4 is reached only by §1's reverse scope.
 
 ### Tier 1 — shared source: fix once, propagates
 
@@ -137,6 +161,70 @@ skill's first version (#163) — it described a check that no audit prompt imple
 no auditor ever performed it. The glossary clause is now in the §4 template. If you write
 a variant prompt, carry that clause or Tier 3 silently stops existing.
 
+### Tier 4 — host-scoped docs: loaded every session, reachable by no diff
+
+These are the documents that configure the agent rather than the product. They are read
+into **every session**, they assert what your tools do, and **nothing enumerates them from
+a changeset** — some live in another repo, some in no repo at all.
+
+| Document | Status | Reachable by a diff? |
+|---|---|---|
+| `<this repo>/CLAUDE.md`, `AGENTS.md` | tracked | yes — Tier 2 already has it |
+| Other clones' `CLAUDE.md` / `AGENTS.md` — listable: `ls ~/git-projects/*/CLAUDE.md ~/git-projects/*/AGENTS.md` | tracked, **other repo** | no |
+| `~/git-projects/CLAUDE.md` (domain rules) | **in no repository** | **no** |
+| `~/.claude/CLAUDE.md` (global rules) | **in no repository** | **no** |
+| `~/.claude/settings.json` where it names a script by path | **in no repository** | **no** |
+
+**The set is enumerated because it cannot be derived from a changeset** — but four of the
+five rows *are* derivable from the filesystem, and the fifth is a glob. Run this and you
+have the tier's artifact set:
+
+```
+ls ~/.claude/CLAUDE.md ~/git-projects/CLAUDE.md ~/.claude/settings.json \
+   ~/git-projects/*/CLAUDE.md ~/git-projects/*/AGENTS.md 2>/dev/null
+```
+
+That is what makes the tier practical rather than aspirational: no agent has to *know* the
+clones, only to list them.
+
+**Two limits, stated rather than papered over.** A clone outside `~/git-projects/` is
+invisible to that glob — if a project lives elsewhere, its row is a manual addition. And a
+*new kind* of host document that quotes a tool and never gets a row here is invisible
+again; when you write one, add it in the same commit. Neither is fixable by machinery,
+which is why the cheapest mitigation is this sentence rather than a scanner.
+
+**Check the ones present; declare the ones absent.** An agent on a laptop cannot see this
+VPS's files, and CI has none of them. "Absent" is a fact to record, never a pass — a run
+that silently checked nothing reports the same green as a run that checked everything.
+
+#### Pin the claim; do not merely edit the sentence
+
+Where the claim is about **observable tool behaviour** — an exit code, what is blocked,
+what a flag accepts — the reconcile output should be a **claim-table entry**, not just a
+corrected sentence. `princess-pi-packages#381` / PR #382 is the worked pattern
+(`tests/doc-claims-vs-hooks.test.ts`): each entry pins a **verbatim quote that must still
+appear in its document** *and* the **probes that quote asserts**, run against every
+implementation, with `##SKIP##` (`tests/lib/skips.ts`) when the host document is absent.
+
+That covers two failure directions, and a probe-only check catches just one:
+
+1. **The tool changes and a doc still asserts the old behaviour** — caught by the probes.
+2. **A doc is reworded into a false claim while the tool stays put** — caught only by the
+   pinned quote. This is the direction that actually happened.
+
+A pin converts a one-time correction into a standing check, so the next behaviour change
+fails the build instead of waiting for a human to ask the right question.
+
+**Honest limits, which this tier does not paper over:**
+
+- **A check on host state cannot be enforced on CI**, which has none of these files. It
+  must skip *visibly*, never pass quietly.
+- **Not every prose claim is probe-able.** *"Prefer X over Y"* has no verdict. Pin the
+  claims that name observable behaviour; correct the rest as ordinary Tier 2 prose.
+- **A wrong rule here is worse than an absent one.** These files carry the authority of
+  the harness itself, so agents propagate their errors into places the file's author will
+  never look — which is the whole reason a tier that costs an enumerated list is worth it.
+
 ## 3. The loop — find, fix, re-verify, until dry
 
 This is a convergence loop, not a checklist. It is not done when you have a report; it
@@ -169,7 +257,31 @@ the harness has no agent-dispatch tool — a fresh process cannot inherit your a
 even accidentally.
 
 Fan out one auditor per changed source file (subject to §1's granularity rule), plus one
-for the spec document. Set the model explicitly on every dispatch — this is judgment work,
+for the spec document — **plus one host-scoped auditor whenever §1's reverse-scope trigger
+fired** (the branch touched `hooks/`, `bin/`, `extensions/`, or `skills/`).
+
+**That last one is not optional, and this is the second time this skill has needed the
+rule.** Tier 3 was unreachable in v1 because it described a check no prompt implemented
+(#163). Tier 4 arrives with the same hazard and a worse blast radius: its documents are
+loaded into every session. A tier that no auditor is dispatched for does not exist.
+
+The host-scoped auditor gets the **same prompt body** as the others, with one block added
+naming the enumerated set from §2 — and nothing else. Keep the addition to enumeration:
+
+> This branch changes a TOOL, so the artifact set is not the diff. Also audit the
+> host-scoped documents that quote this tool's behaviour and that no changeset contains.
+> Read every one of these that exists, and for each one that does NOT exist, say so
+> explicitly rather than passing over it:
+>
+> `~/.claude/CLAUDE.md` · `~/git-projects/CLAUDE.md` · `~/.claude/settings.json`, plus
+> every path printed by
+> `ls ~/git-projects/*/CLAUDE.md ~/git-projects/*/AGENTS.md 2>/dev/null`.
+> Run that glob rather than guessing which clones exist. Report any listed path you could
+> not read, and say plainly that a clone outside `~/git-projects/` is out of this scope.
+
+Do **not** also tell it to quote the offending sentence verbatim, or to look for a
+particular claim. Those instructions aim the auditor at the answer; §7's round 3 had to be
+re-run once for exactly that reason. Set the model explicitly on every dispatch — this is judgment work,
 so keep the strong model for auditing; route the mechanical fix-application to `sonnet`.
 Downshifting the auditor makes a miss un-attributable: weak prompt, or weak model?
 
@@ -312,13 +424,83 @@ with per-fixture attribution is `docs/spec-163-spec-reconcile-backtest.md` §9. 
 corrected prompts surfaced four of four, including two drifts still live on `main` that
 #158's hand-run had missed.
 
+**Round 3 ran 2026-08-19 (`princess-pi-packages#383`)** against a fifth fixture — the
+Tier-4 case, at its own corpus SHA `bf4d104`, with the host document staged beside the
+tree because no `git archive` can carry a file that lives in no repository. F5 is the only
+fixture that measures a **scope** rule with nothing left for prompt wording to explain —
+the two prompts are byte-identical apart from the block that enumerates the host documents,
+and both arms are handed the same tree.
+
+**The sharpest part of the result: the host document sat in the control's corpus the whole
+time.** Both arms got the same tree; only C2's prompt named the file. C1 returned **59
+scoreable findings (60 labelled) and never mentioned it once.** The drift was not hidden from the diff-scoped
+auditor — it was *unenumerated*, which is precisely what a diff does to a file that appears
+in no changeset.
+
+**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those 59 included a live guardrail bug (#389, the `gh -R … pr merge` bypass);
+none of them said push was blocked outright, because no tracked artifact claimed it.
+Per-arm attribution, and the one issue whose transcript an earlier re-run erased, are in
+`RUBRIC.md`'s log — read it before crediting a finding to an arm.
+
 The corpus, the prompts as run, and the scoring rubric are in
-`princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1
-or §4** — those two sections are measured artifacts now, not prose:
+`princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1,
+§2's Tier 4, or §4** — those sections are measured artifacts now, not prose.
+
+**Know what the re-run does and does not catch.** `run-backtest.sh` replays the *frozen*
+`prompts/<round>/*.txt` files; it does not read this document. So editing §4's wording
+changes nothing about a re-run's score, and a weakened §4 can post four-of-four forever.
+Two consequences, both load-bearing:
+
+- **Changing §4 means the CURRENT round's prompts change to match, by hand, in the same
+  commit** — or, more usually, that you add a new round. Otherwise the corpus measures a
+  skill that no longer exists.
+  **Never retrofit a historical round.** Round 1 is *"the skill as written during #158"* and
+  round 2 is the post-#163 wording as scored on 2026-08-10; §7's headline result — two of
+  four, then four of four — is a before/after comparison and editing either side erases it.
+  `RUBRIC.md` states the same constraint for their corpora.
+- `tests/spec-163-spec-reconcile.test.ts` pins that the measured clauses still *appear* in
+  this file. That catches a **deletion**; nothing catches a **weakening**. Neither the test
+  nor the backtest is a wording regression detector, and treating either as one is how a
+  skill quietly regresses to the version that scored 2 of 4.
+
+**One invocation runs one round.** Re-measuring after a §1/§4 edit means all three:
+
+Each round writes into its own tracked `runs/<round>/` and **refuses to overwrite a
+completed run** (exit 4) — "completed" being what the harness can test: every declared
+auditor ran and exited 0. Whether anyone *scored* it lives in the hand-authored
+`SCORES.tsv`, which the harness never reads or writes. So a re-measurement writes to a
+scratch directory and is diffed against the record — replace the record only once you have decided the new run supersedes it:
 
 ```
-research/spec-reconcile-backtest/run-backtest.sh    # then score against RUBRIC.md
+B=research/spec-reconcile-backtest/run-backtest.sh
+S=$(mktemp -d)
+ROUND=round1-as-written OUT=$S/round1-as-written $B   # F1-F4, skill as of #158, SHA 9b2a16e
+ROUND=round2-fixed      OUT=$S/round2-fixed      $B   # F1-F4, post-fix,        SHA 9b2a16e
+ROUND=round3-host-scope OUT=$S/round3-host-scope $B   # F5, Tier 4,             SHA bf4d104
+# then score every $S/<round>/ against RUBRIC.md
 ```
+
+**To adopt a scored run, promote the transcripts you scored** — never re-run to "make it
+official", because a second run produces different transcripts than the ones you read:
+
+```
+R=research/spec-reconcile-backtest/runs/<round>
+rm -f "$R"/*.md "$R"/STATUS.tsv      # NOT SCORES.tsv — see below
+cp "$S"/<round>/* "$R"/
+```
+
+`SCORES.tsv` is **hand-authored** — `run-backtest.sh` writes only `*.md` and `STATUS.tsv`,
+so a `cp` cannot restore it. Leave the old one in place and **edit it** to describe the
+transcripts you just promoted; deleting it first leaves the round failing the suite's
+"every non-grandfathered round ships both" check with no template to work from.
+
+Then update `RUBRIC.md`'s result log to match. `tests/spec-163-spec-reconcile.test.ts`
+asserts the counts in `SCORES.tsv`, `RUBRIC.md` and this file all agree, so forgetting one
+fails the suite rather than shipping a record that contradicts itself.
+
+`run-backtest.sh --help` carries the exit-code table. **Adopting a re-run destroys the
+transcript the previous record cites** — the #383 run did exactly that and erased the
+evidence behind issue #390, which is why the refusal exists.
 
 If a fixture regresses, **fix the skill, not the score.** A miss is a finding about this
 file.
