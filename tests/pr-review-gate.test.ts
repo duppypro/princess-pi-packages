@@ -504,7 +504,7 @@ console.log("\nthe review payload is identified, not taken by position:");
 console.log("\npreconditions refuse with a code from the shared table:");
 {
 	const sb = makeSandbox();
-	// "" is deliberately absent: ${PR_REVIEW_TIMEOUT:-600} substitutes the default
+	// "" is deliberately absent: ${PR_REVIEW_TIMEOUT:-180} substitutes the default
 	// for empty as well as unset, so an empty value is "use the default", not a typo.
 	for (const bad of ["0", "-5", "10m", "600s"]) {
 		const env = { ...stubs(sb, "clean"), PR_REVIEW_TIMEOUT: bad };

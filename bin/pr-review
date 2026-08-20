@@ -48,8 +48,10 @@
 #
 # --- Environment ---
 #   PR_REVIEW_MODEL    model for every lens and the clustering pass (default
-#                      claude-opus-5; explicit, never inherited)
-#   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 600)
+#                      claude-sonnet-5; explicit, never inherited). Overriding to
+#                      a slower model requires raising PR_REVIEW_TIMEOUT to match —
+#                      the default 180s will timeout a claude-opus-5 lens call.
+#   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 180)
 #   PR_REVIEW_LOG_DIR  where run logs land (default
 #                      ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>)
 #   PR_REVIEW_NO_CLUSTER=1  skip the clustering pass; distinct == raw
@@ -58,12 +60,20 @@ set -euo pipefail
 
 LENSES=("correctness" "reasoning" "contract")
 # Explicit, never inherited (~/git-projects/CLAUDE.md model-routing rule). Review
-# is judgment work, not mechanical, so it pins the strong model rather than
-# downshifting — and marginal cost is zero, so there is no reason to trade
-# quality here. An inherited model would also make the review's depth a property
-# of whoever happened to call it.
-MODEL="${PR_REVIEW_MODEL:-claude-opus-5}"
-LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
+# is judgment work; sonnet is the right tier. An earlier version pinned claude-opus-5
+# with the reasoning "marginal cost is zero" — true for tokens, false for time.
+# Lenses run in parallel; cycle time = max(lens) + clustering. opus measured
+# 3–8 min/lens; cycles ran 9–10 min wall-clock (6 cycles on ppp#378 = ~54–60 min
+# of agent wait). sonnet-5 measured 30–90 s/lens; full cycle ~2–3 min.
+# Overriding to a slower model requires also raising PR_REVIEW_TIMEOUT (see header).
+# At the 180s default, a lens that exceeds the ceiling is counted as failed; if all
+# three fail, COUNT=0 → exit 0, which pr-open maps to "reviewer unavailable". That
+# path is NOT silent unless --quiet is passed — pr-review prints COVERAGE INCOMPLETE
+# to stderr and pr-open forwards it — but it does not block the PR, so the gate
+# effectively did not run.
+# An opus lens at 180–480 s will time out at most of that range under this ceiling.
+MODEL="${PR_REVIEW_MODEL:-claude-sonnet-5}"
+LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-180}"
 # A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
 # means "no timeout at all", so PR_REVIEW_TIMEOUT=0 silently removed the very
 # protection this variable exists to provide — and a typo like `10m` or `-5`
@@ -76,8 +86,10 @@ esac
 # TERM asks; KILL insists. `timeout` sends only TERM, so a reviewer that traps or
 # ignores it keeps the lens wrapper — and the `wait` below — blocked forever,
 # which is precisely the hang the ceiling was added to prevent. The grace is a
-# fixed 30s rather than a fraction of the ceiling: it is time for a well-behaved
-# child to flush and exit, not a second review budget.
+# fixed 30s: a well-behaved `claude` exits at TERM and the grace is never reached;
+# a TERM-ignoring child is killed after the extra 30s, so the worst-case wrapper
+# wall-clock is ceiling+30. Scaling the grace to the ceiling would make it a second
+# review budget on slow models rather than a flush window.
 LENS_KILL_AFTER=30
 
 usage() {
@@ -102,8 +114,9 @@ temporary directory, because no file mode survives a writable directory. With HO
 too (cron, systemd, containers) the run still happens, into a private temporary
 directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
-environment: PR_REVIEW_MODEL (default claude-opus-5) · PR_REVIEW_TIMEOUT (600s)
-             PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
+environment: PR_REVIEW_MODEL (default claude-sonnet-5) · PR_REVIEW_TIMEOUT (default 180s,
+             bounds every claude call including clustering; override to a slower model
+             requires raising this too — see header) · PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
 
 --json emits that log verbatim: schema `pr-review/run@1`, carrying status,
 baseSha/headSha (the exact input, reproducible with `git diff BASE..HEAD`),
@@ -862,7 +875,9 @@ read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
 # "fail-open on a missing pr-review is silent" with "Missing pr-review is
 # skipped silently".
 #
-# So: one more call, which is affordable precisely because marginal cost is zero.
+# So: one more call. It sits serially after the parallel lenses; at 30–90 s per
+# call the total cycle time is max(lens) + clustering. The cost is wall-clock, not
+# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 76).
 # It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
 # an un-deduplicated number that says so is usable; one that pretends is not.
 if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
