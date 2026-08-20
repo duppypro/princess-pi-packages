@@ -619,16 +619,34 @@ clustering pass. Not installed, not importable from anywhere else.
 import json
 
 
+MAX_FAILED_CANDIDATES = 30000
+# Bounds the rescan below. Measured (this file's own decoder, `'{"a":' * n`):
+# 2000 → 0.13s, 4000 → 0.49s, 8000 → 1.94s, 20000 → 8.6s (20001 failed
+# candidates). #378's own hazard test feeds exactly that 20000-opener case and
+# must still reach the real payload past it, so the cap sits with headroom
+# above the measured 20001 — comfortably clear of the legitimate case, and
+# high enough that a reviewer's own output cap in practice keeps most real
+# responses far under it, while a deliberately pathological response is
+# stopped at roughly (30000/8000)² · 1.94s ≈ 27s of work instead of scaling
+# unboundedly with input size (see MEDIUM/CONTRACT bin/pr-review:786 in the
+# #378 pr-review log: quadratic and uncapped "wedges pr-open through a door
+# the timeout does not cover").
+
+
 def objects(text):
     """Every TOP-LEVEL JSON object in `text`, in order, as (span, parsed) — plus,
     for each '{' that begins something unreadable, (None, the decode error).
 
     Top-level is the whole promise: after a candidate decodes, the scan resumes
-    past it, so an object nested inside a decoded one is never offered. A model
-    that wraps its answer (`{"note":"...","answer":{"findings":[...]}}`) is a
-    FAILED lens by this contract, not a silently unwrapped one — the prompt asks
-    for the payload at the top level, and guessing which nested object was meant
-    is how a scanner starts inventing findings.
+    past it, so an object nested inside a decoded one is never offered ON THE
+    SUCCESS path. On the FAILURE path this is not enforced — the scan resumes
+    one character past a '{' that raised, precisely so a genuinely nested
+    payload (a lens quoting `|| { echo ...` before its real object) still gets
+    found — so a model that wraps its answer in an outer object which itself
+    fails to close (truncated at the reviewer's output cap, the same E2BIG
+    concern noted at :741) can surface the nested object as if it were
+    top-level. `payload_with` below is what actually decides which candidate
+    is trusted; this function only enumerates them.
 
     Every '{' is a candidate and the JSON DECODER decides, rather than a
     hand-rolled brace count. Counting braces means re-implementing string and
@@ -648,12 +666,13 @@ def objects(text):
     review that HAD findings opened the PR unreviewed.
 
     The rescan after a failed candidate is O(n²) in the number of failed
-    openers (measured on `'{"a":' * n`: 2000 → 0.13s, 4000 → 0.49s, 8000 →
-    1.94s). It is bounded by the reviewer's output cap in practice, but note
-    that the collector runs after `wait` and carries no `timeout` of its own.
+    openers. Past MAX_FAILED_CANDIDATES the scan gives up and yields one final
+    (None, RuntimeError) — a bounded failure, not an unbounded hang; the
+    collector counts it the same as any other unreadable response.
     """
     dec = json.JSONDecoder()
     i = 0
+    failed = 0
     while True:
         start = text.find("{", i)
         if start < 0:
@@ -664,6 +683,12 @@ def objects(text):
             # Not a payload here; the next '{' may still open one. Advancing by a
             # whole object is wrong on this path — the failure may BE the outer
             # brace, with the real payload nested one line down.
+            failed += 1
+            if failed > MAX_FAILED_CANDIDATES:
+                yield None, RuntimeError(
+                    f"gave up after {MAX_FAILED_CANDIDATES} unparseable '{{' — "
+                    "response too dense with malformed JSON to scan safely")
+                return
             yield None, exc
             i = start + 1
             continue
@@ -671,38 +696,66 @@ def objects(text):
         i = end
 
 
-def payload_with(text, key):
-    """The LAST JSON object that is actually the payload: a dict whose `key` is
-    a LIST.
+def payload_with(text, key, hard_echoes=(), soft_echoes=()):
+    """The JSON object among `text`'s top-level candidates that is genuinely the
+    payload: a dict whose `key` is a LIST, and not one of the prompt's own
+    schema examples echoed back.
 
-    Both halves matter. `parsed.get(key, [])` used to default a missing key to
-    empty, so `{"error": "rate limited"}` became a lens that ran and found
-    nothing — a clean review manufactured out of a failure. Requiring the key
-    means a response that never contained one is a FAILURE, which is the
-    treatment every other unusable response already gets.
+    Both halves of "dict whose key is a list" matter on their own.
+    `parsed.get(key, [])` used to default a missing key to empty, so
+    `{"error": "rate limited"}` became a lens that ran and found nothing — a
+    clean review manufactured out of a failure. Requiring the key means a
+    response that never contained one is a FAILURE, which is the treatment
+    every other unusable response already gets. A candidate carrying the key
+    with the WRONG type does not end the scan either — stopping there let
+    `{"findings":"none"}` in a preamble decide the answer, which is trusting
+    POSITION again, the exact habit this function exists to break.
 
-    A candidate carrying the key with the WRONG type does not end the scan
-    either. Stopping there let `{"findings":"none"}` in a preamble decide the
-    answer, which is trusting position again — the exact habit this function
-    exists to break.
+    `hard_echoes` and `soft_echoes` are exact objects the PROMPT ITSELF shows
+    the model as a schema example. A model that repeats one verbatim — before
+    its real answer, after it, or quoted mid-explanation ("since I did find
+    issues I am not returning {\"findings\":[]}") — produces a candidate that
+    passes every check above and is indistinguishable from a real answer by
+    shape alone. This function used to resolve that by trusting the FIRST such
+    candidate, then (briefly) the LAST — both are still position, and a
+    response that closes by repeating its own instructions defeated the LAST
+    rule exactly the way one that opens with them defeated the FIRST rule:
+    `payload_with('{"findings":[{"title":"REAL","detail":"d"}]}\\nRemember: '
+    'return {"findings":[]} if you find nothing.', "findings")` handed the
+    answer to the trailing echo under LAST-wins. Comparing by VALUE instead
+    removes position from the decision: a candidate is disqualified only when
+    it is byte-for-byte (structurally — key order and whitespace do not
+    matter, `dict` equality already ignores both) one of the objects the
+    prompt showed, and real content is kept no matter where in the response it
+    falls.
 
-    LAST, not first, among the candidates that qualify. The prompt sent to the
-    model INCLUDES this exact schema, and a model that echoes its instructions
-    before answering — the empty `{"findings":[]}` or the placeholder
-    `{"findings":[{"severity":"Critical|High|Medium|Low",...}]}` — produces a
-    well-formed object with `key` as a list before it ever gets to its real
-    answer. Both echoes satisfy every check above, so stopping at the first
-    match handed the result to the prompt: the empty echo recorded a lens that
-    found real defects as clean (exit 0, the PR opens unreviewed), the
-    placeholder echo invented a finding titled "short" at "path" line 123.
-    The model's actual answer is always the one written LAST — echoing the
-    instructions is scaffolding on the way there, never something that comes
-    after — so the scan keeps going once it finds a match instead of
-    returning early, and reports the final one.
+    The two buckets exist because one of the prompt's examples is ALSO the
+    only correct answer for a genuinely clean review: `{"findings":[]}` is
+    both "the schema example for finding nothing" and "finding nothing".
+    Excluding it unconditionally broke the ordinary clean-lens case — a
+    response containing nothing BUT that object stopped being read as "ran,
+    found nothing" and started being read as "only echoed the prompt", which
+    is the exact "clean review manufactured out of a failure" merge this
+    function exists to prevent, just from the opposite direction. `soft_echoes`
+    is for exactly that shape: excluded only when a genuine (non-echo)
+    candidate also exists to prefer, accepted as the answer when it is the
+    ONLY qualifying candidate. `hard_echoes` is for shapes that are never a
+    real answer on their own — the placeholder finding's severity is
+    literally `"Critical|High|Medium|Low"`, and the placeholder grouping is a
+    grouping over indices that are not from any real response — so those are
+    excluded unconditionally, sole candidate or not.
+
+    More than one genuine candidate qualifying is a contradiction, not a hint
+    about which to trust — reported as a failure rather than guessed at, the
+    same fail-open treatment every other unusable response gets here.
+
+    Returns (span, parsed) or (None, reason).
     """
     reason = None
     decode_error = None
-    best = None
+    saw_echo = False
+    genuine = []
+    soft = []
     for span, parsed in objects(text):
         if span is None:
             # Kept, and reported only if nothing better turns up: "could not be
@@ -719,13 +772,48 @@ def payload_with(text, key):
         if not isinstance(parsed[key], list):
             reason = f"{key} is {type(parsed[key]).__name__}, expected list"
             continue
-        best = (span, parsed)
-    if best is not None:
-        return best
+        if any(parsed == echo for echo in hard_echoes):
+            saw_echo = True
+            continue
+        if any(parsed == echo for echo in soft_echoes):
+            saw_echo = True
+            soft.append((span, parsed))
+            continue
+        genuine.append((span, parsed))
+    if len(genuine) == 1:
+        return genuine[0]
+    if len(genuine) > 1:
+        return None, (f"{len(genuine)} distinct '{key}' objects in the response disagree — "
+                      "cannot tell which is the answer")
+    if soft:
+        return soft[0]
     if reason is None:
-        reason = ("response contains no JSON object" if decode_error is None
+        reason = (f"the only '{key}' object in the response was the prompt's own schema, echoed back"
+                  if saw_echo else
+                  "response contains no JSON object" if decode_error is None
                   else f"no JSON object in the response could be decoded ({decode_error})")
     return None, reason
+
+
+# The exact schema examples shown to the model in the lens prompt (RULES,
+# below) and in the clustering prompt (CLUSTER_PROMPT, below) — duplicated
+# here rather than interpolated, because the heredoc that writes this whole
+# file is quote-delimited and takes no shell substitution. If either prompt's
+# example changes, this must change with it or an echo stops being caught.
+#
+# The empty findings list is a SOFT echo: unlike the placeholder finding or
+# the placeholder grouping, it doubles as the one correct answer for "ran,
+# found nothing" — see payload_with's docstring for why that splits it out.
+FINDINGS_ECHOES_SOFT = (
+    {"findings": []},
+)
+FINDINGS_ECHOES_HARD = (
+    {"findings": [{"severity": "Critical|High|Medium|Low", "file": "path", "line": 123,
+                    "title": "short", "detail": "what is wrong and why it matters"}]},
+)
+GROUPS_ECHOES_HARD = (
+    {"groups": [[0, 3], [1], [2, 4, 5]]},
+)
 PYJSON
 
 lens_prompt() {
@@ -828,7 +916,7 @@ lenses = sys.argv[9:]
 # unpacked, because `work` IS argv[1].
 sys.path.insert(0, work)
 try:
-    from prjson import payload_with  # noqa: E402
+    from prjson import payload_with, FINDINGS_ECHOES_HARD, FINDINGS_ECHOES_SOFT  # noqa: E402
 except Exception as _import_exc:     # noqa: BLE001 — the review must not die with the parser
     # An unimportable parser is a reviewer that cannot be read, not a reviewer
     # that found nothing. Every lens is then filed as failed WITH this cause,
@@ -836,8 +924,10 @@ except Exception as _import_exc:     # noqa: BLE001 — the review must not die 
     # log — the same fail-open every other broken-reviewer path takes. Letting
     # the ImportError escape instead killed the collector, left no summary file,
     # and took the whole script down with a bare exit 1 and no JSON at all.
-    def payload_with(text, key, _exc=_import_exc):
+    def payload_with(text, key, hard_echoes=(), soft_echoes=(), _exc=_import_exc):
         return None, f"the shared parser could not be imported ({_exc})"
+    FINDINGS_ECHOES_HARD = ()
+    FINDINGS_ECHOES_SOFT = ()
 def _usable(f):
     """A finding has to SAY something.
 
@@ -898,7 +988,7 @@ for lens in lenses:
     # ${VAR}, a trailing explanation), and the lens was then filed as "could not
     # look" — downgrading a lens that had actually found defects into
     # coverage-incomplete, with the findings surviving only in the log's raw field.
-    span, parsed = payload_with(text, "findings")
+    span, parsed = payload_with(text, "findings", FINDINGS_ECHOES_HARD, FINDINGS_ECHOES_SOFT)
     if span is None:
         # "Could not parse the answer" is NOT "the reviewer broke", and the raw
         # text is kept so a dropped finding stays recoverable. `parsed` carries
@@ -1016,67 +1106,93 @@ def _open_private(path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
 
 work, log = sys.argv[1], sys.argv[2]
-d = json.load(open(log))
-raw = d["findings"]
 
-
-def finish(distinct, method, note=None):
-    d["distinct"] = distinct
-    d["distinctFindings"] = len(distinct)
-    d["dedup"] = method
-    if note:
-        d["dedupNote"] = note
-    json.dump(d, _open_private(log), indent=2)
-    with open(os.path.join(work, "distinct"), "w") as fh:
-        fh.write(f"{len(distinct)}\n")
-
-
-if os.path.exists(os.path.join(work, "cluster.fail")):
-    finish(raw, "failed", "clustering call failed; count is RAW, not deduplicated")
-    sys.exit(0)
 try:
-    # Inside the try, with everything else that can fail here. Above it, an
-    # unimportable parser skipped `finish()` entirely, left no $WORK/distinct for
-    # the shell to read, and ended pr-review at exit 1 under `set -euo pipefail` —
-    # no JSON, no exit 7, and pr-open opening a PR that DID have findings. The
-    # documented promise for this pass is fail-open to the raw count; an import
-    # is not exempt from it.
-    sys.path.insert(0, work)
-    from prjson import payload_with  # same scanner the collector uses
+    # Everything that can fail here lives inside this one try — including the
+    # log read and the cluster.fail branch, which used to sit above it. A raise
+    # from either used to skip finish() entirely, leave no $WORK/distinct for
+    # the shell to read, and end pr-review at exit 1 under `set -euo pipefail`
+    # — no JSON, no exit 7, and pr-open opening a PR that DID have findings.
+    # The documented promise for this pass is fail-open to the raw count; a
+    # bad log read or a bad import is not exempt from it. The shell's own read
+    # of $WORK/distinct is guarded too (`|| COUNT="$RAWCOUNT"`, below) as a
+    # second line of defense for the one failure this try still cannot catch:
+    # this block itself never running (a crash before Python even starts).
+    d = json.load(open(log))
+    raw = d["findings"]
 
-    env = json.load(open(os.path.join(work, "cluster.out")))
-    if env.get("is_error"):
-        raise ValueError("is_error")
-    text = env.get("result") or ""
-    # Balanced scan, not `first-{ .. last-}`: the greedy span ran from a brace in
-    # the model's preamble to a brace in its sign-off and parsed as neither, so a
-    # usable grouping was filed unusable and the count reverted to RAW — the arm
-    # btw#59 compares against a DEDUPLICATED control, inflated by up to the lens
-    # count (#378). The reason string is raised so it reaches `dedupNote`.
-    span, parsed = payload_with(text, "groups")
-    if span is None:
-        raise ValueError(parsed)
-    groups = parsed["groups"]
-    seen = sorted(i for g in groups for i in g)
-    # Reject a grouping that does not partition the input. A dropped or repeated
-    # id would silently change the count, which is the number the experiment turns on.
-    if seen != list(range(len(raw))):
-        raise ValueError(f"not a partition: {len(seen)} ids for {len(raw)} findings")
-    # Representative = highest severity in the group, so a High merged with a Low
-    # is still reported as a High.
-    order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
-    distinct = []
-    for g in groups:
-        members = [raw[i] for i in g]
-        rep = dict(sorted(members, key=lambda f: order.get(f.get("severity", "Low"), 9))[0])
-        if len(members) > 1:
-            rep["mergedFrom"] = [f"{m.get('lens')}:{m.get('file')}:{m.get('line')}" for m in members]
-        distinct.append(rep)
-    finish(distinct, "clustered")
+    def finish(distinct, method, note=None):
+        d["distinct"] = distinct
+        d["distinctFindings"] = len(distinct)
+        d["dedup"] = method
+        if note:
+            d["dedupNote"] = note
+        json.dump(d, _open_private(log), indent=2)
+        with open(os.path.join(work, "distinct"), "w") as fh:
+            fh.write(f"{len(distinct)}\n")
+
+    if os.path.exists(os.path.join(work, "cluster.fail")):
+        # The cause used to be captured to cluster.err and then deleted unread
+        # by the EXIT trap — the same defect fail() already fixed for lenses
+        # (below: "Keep the CAUSE"). A rate limit, expired auth, and E2BIG on
+        # the findings prompt were indistinguishable in the log; now they aren't.
+        errpath = os.path.join(work, "cluster.err")
+        cause = open(errpath, errors="replace").read().strip() if os.path.exists(errpath) else ""
+        note = "clustering call failed; count is RAW, not deduplicated"
+        if cause:
+            note += ": " + cause.splitlines()[0][:300]
+        finish(raw, "failed", note)
+    else:
+        sys.path.insert(0, work)
+        from prjson import payload_with, GROUPS_ECHOES_HARD  # same scanner the collector uses
+
+        env = json.load(open(os.path.join(work, "cluster.out")))
+        if env.get("is_error"):
+            raise ValueError("is_error")
+        text = env.get("result") or ""
+        # Balanced scan, not `first-{ .. last-}`: the greedy span ran from a
+        # brace in the model's preamble to a brace in its sign-off and parsed
+        # as neither, so a usable grouping was filed unusable and the count
+        # reverted to RAW — the arm btw#59 compares against a DEDUPLICATED
+        # control (#378). GROUPS_ECHOES_HARD keeps a trailing recap of this
+        # same prompt's own example grouping from winning by content, not just
+        # by position: an echoed `{"groups":[[0,3],[1],[2,4,5]]}` is a valid
+        # partition ONLY when raw happens to carry exactly 6 findings, which a
+        # position-only fix would still get wrong silently. Unlike the empty
+        # findings list, no grouping example doubles as a legitimate answer on
+        # its own, so it is excluded unconditionally — HARD, not soft. The
+        # reason string is raised so it reaches `dedupNote`.
+        span, parsed = payload_with(text, "groups", GROUPS_ECHOES_HARD)
+        if span is None:
+            raise ValueError(parsed)
+        groups = parsed["groups"]
+        seen = sorted(i for g in groups for i in g)
+        # Reject a grouping that does not partition the input. A dropped or
+        # repeated id would silently change the count, which is the number
+        # the experiment turns on.
+        if seen != list(range(len(raw))):
+            raise ValueError(f"not a partition: {len(seen)} ids for {len(raw)} findings")
+        # Representative = highest severity in the group, so a High merged
+        # with a Low is still reported as a High.
+        order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+        distinct = []
+        for g in groups:
+            members = [raw[i] for i in g]
+            rep = dict(sorted(members, key=lambda f: order.get(f.get("severity", "Low"), 9))[0])
+            if len(members) > 1:
+                rep["mergedFrom"] = [f"{m.get('lens')}:{m.get('file')}:{m.get('line')}" for m in members]
+            distinct.append(rep)
+        finish(distinct, "clustered")
 except Exception as exc:
-    finish(raw, "failed", f"clustering unusable ({exc}); count is RAW, not deduplicated")
+    try:
+        finish(raw, "failed", f"clustering unusable ({exc}); count is RAW, not deduplicated")
+    except Exception:
+        # finish() itself unusable, or raw/finish never got defined (the log
+        # read failed before either did) — $WORK/distinct is left absent, and
+        # the shell's guarded read falls back to $RAWCOUNT.
+        pass
 PYCLUSTER
-  read -r COUNT < "$WORK/distinct"
+  read -r COUNT < "$WORK/distinct" || COUNT="$RAWCOUNT"
 else
   python3 - "$LOG" <<'PYNOCLUSTER'
 import json, os, sys

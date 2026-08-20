@@ -45,13 +45,19 @@ function git(cwd: string, args: string[]): string {
 
 interface Sandbox { root: string; remote: string; clone: string; binDir: string }
 
-// Every sandbox root, removed when the suite ends however it ends — including the
-// hazard cases, whose stub envelopes carry a 100KB payload each. One root per
-// case was left under /tmp on every run before this.
+// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM — including
+// the hazard cases, whose stub envelopes carry a 100KB payload each. One root
+// per case was left under /tmp on every run before this. `exit` alone does not
+// fire on a signal — Node's default disposition terminates without emitting
+// it — so the signal handlers close that gap and re-raise the conventional
+// exit code afterward.
 const SANDBOXES: string[] = [];
-process.on("exit", () => {
+function cleanupSandboxes(): void {
 	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-});
+}
+process.on("exit", cleanupSandboxes);
+process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
+process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
 
 function makeSandbox(): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-gate-"));
@@ -80,14 +86,18 @@ function makeSandbox(): Sandbox {
 // nothing" and "could not look" are different facts.
 type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv"
 	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly" | "clusterprose";
-function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string): Record<string, string> {
+function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string, postProse?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
 	if (mode === "clusterprose") {
 		// Prose in front of the payload, on BOTH calls: the lenses answer with
 		// findings, and the clustering call — the only prompt carrying "FINDINGS:" —
 		// answers with a grouping. `prose` is the hazard under test; the default is
-		// the brace that `find("{")`/`rfind("}")` mis-spanned (#378).
+		// the brace that `find("{")`/`rfind("}")` mis-spanned (#378). `postProse`
+		// is the same hazard AFTER the payload instead of before, for the class of
+		// hazard that only bites there — a trailing echo of the prompt's own schema
+		// (#378 round 2) — since LAST-wins beat FIRST-wins on the leading cases but
+		// lost on this one.
 		//
 		// Envelopes go through FILES, not shell quoting: the hazards these cases
 		// carry are quotes and braces, and a stub that has to escape them is a stub
@@ -98,7 +108,7 @@ function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string)
 		// path — which returns raw and would satisfy an identity partition.
 		const grouping = `{"groups":[[0,1],[2]]}`;
 		const pre = prose ?? 'Grouping note: avoid ${VAR} in prose.\n';
-		const post = "\nDone, see {ref}.";
+		const post = postProse ?? "\nDone, see {ref}.";
 		const lensFile = path.join(sb.root, "lens-env.json");
 		const clusterFile = path.join(sb.root, "cluster-env.json");
 		fs.writeFileSync(lensFile, `{"is_error":false,"result":${JSON.stringify(pre + payload + post)}}`);
@@ -413,7 +423,7 @@ console.log("\nclustering fail-open:");
 // prepended to both the lens response and the grouping response, so one case
 // covers both passes: a lost lens shows up as fewer than 3 raw findings, a lost
 // grouping as `dedup: "failed"` and the count reverting to RAW.
-const PROSE_HAZARDS: Array<{ name: string; prose: string }> = [
+const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	// A brace in the explanation — `find("{")`/`rfind("}")` spanned from the first
 	// brace to the last, which is neither the payload nor valid JSON (#378).
 	{ name: "a brace in the prose", prose: 'Grouping note: avoid ${VAR} in prose.\n' },
@@ -446,10 +456,23 @@ const PROSE_HAZARDS: Array<{ name: string; prose: string }> = [
 	// its summary, and end pr-review at exit 1 — every lens's findings lost and the
 	// PR opened unreviewed. Measured: 20000 openers raise, 5000 do not.
 	{ name: "nesting deep enough to raise RecursionError", prose: '{"a":'.repeat(20000) + "\n" },
+	// The model echoing the prompt's OWN schema AFTER its real answer, not
+	// before. A pure LAST-wins fix (briefly shipped between #378's first and
+	// second commits) beat the leading-echo cases above and then lost to
+	// these: the trailing echo is the very last qualifying object in the
+	// response, so "take the last match" handed the answer right back to the
+	// prompt from the opposite direction (macroscopeapp, #378 round 2). Only
+	// a content-based selection — never trust either end of the response —
+	// survives both directions at once.
+	{ name: "the prompt's own empty schema echoed LAST",
+		post: '\nRemember: return {"findings":[]} if you find nothing.' },
+	{ name: "the prompt's placeholder schema echoed LAST",
+		post: '\nFor reference, the schema is {"findings":[{"severity":"Critical|High|Medium|Low",' +
+			'"file":"path","line":123,"title":"short","detail":"what is wrong and why it matters"}]}.' },
 ];
 for (const hazard of PROSE_HAZARDS) {
 	const sb = makeSandbox();
-	const env = stubs(sb, "clusterprose", undefined, hazard.prose);
+	const env = stubs(sb, "clusterprose", undefined, hazard.prose, hazard.post);
 	env.PR_REVIEW_NO_CLUSTER = "0";
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);

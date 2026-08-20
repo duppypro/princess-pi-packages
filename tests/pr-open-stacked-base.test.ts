@@ -25,13 +25,19 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
 const REPO_BIN = path.join(REPO_ROOT, "bin");
 
-// Every sandbox root, removed when the suite ends however it ends. Left behind,
-// each run deposited a bare remote plus a clone per case under /tmp forever.
+// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM. `exit`
+// alone does not fire on a signal — Node's default disposition terminates
+// without emitting it — so Ctrl-C mid-run (each case now spawns pr-review
+// with three stubbed lens calls) left a bare remote plus a clone per case
+// under /tmp forever; the signal handlers close that gap and re-raise the
+// conventional exit code afterward.
 const SANDBOXES: string[] = [];
 function cleanupSandboxes(): void {
 	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 }
 process.on("exit", cleanupSandboxes);
+process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
+process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
 
 let failures = 0;
 let checks = 0;
@@ -124,12 +130,17 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
-		// PATH is REPLACED, not prepended — see the `claude` stub above. The repo's
-		// own bin comes second so pr-open finds its siblings (pr-guard, pr-review)
-		// as the copies under test rather than the ones deployed to ~/bin.
+		// PATH is REPLACED, not prepended, for the two controlled entries — see the
+		// `claude` stub above. sb.binDir and REPO_BIN come before the host's own
+		// PATH so pr-open finds pr-review as the copy under test rather than the
+		// one deployed to ~/bin, while the host's PATH stays available after them
+		// for python3/timeout — hardcoding "/usr/bin:/bin" broke on any host that
+		// installs those elsewhere (homebrew, nix, asdf). `pr-guard` is unaffected
+		// either way: it is sourced by `readlink -f "$0"` from beside pr-open, not
+		// resolved through PATH, so it was always the repo's copy.
 		env: {
 			...process.env, ...GIT_ENV,
-			PATH: [sb.binDir, REPO_BIN, "/usr/bin", "/bin"].join(path.delimiter),
+			PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
 			PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
 		},
 	});

@@ -31,13 +31,19 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
 const REPO_BIN = path.join(REPO_ROOT, "bin");
 
-// Every sandbox root, removed when the suite ends however it ends. Left behind,
-// each run deposited a bare remote plus a clone per case under /tmp forever.
+// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM. `exit`
+// alone does not fire on a signal — Node's default disposition terminates
+// without emitting it — so Ctrl-C mid-run (each case now spawns pr-review
+// with three stubbed lens calls) left a bare remote plus a clone per case
+// under /tmp forever; the signal handlers close that gap and re-raise the
+// conventional exit code afterward.
 const SANDBOXES: string[] = [];
 function cleanupSandboxes(): void {
 	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 }
 process.on("exit", cleanupSandboxes);
+process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
+process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
 
 let failures = 0;
 let checks = 0;
@@ -135,14 +141,22 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
-		// PATH is REPLACED, not prepended. Prepending left the host's `claude` and
-		// the INSTALLED `pr-review`/`pr-guard` in ~/bin reachable, so the suite
-		// measured this developer's machine and billed real reviewer calls. The
-		// repo's own bin comes second so pr-open still finds its siblings — the
-		// copies under test, not the deployed ones.
+		// PATH is REPLACED, not prepended, for the two controlled entries — sb.binDir
+		// (the `claude`/`gh` stubs) and REPO_BIN both come before the host's own
+		// PATH. Prepending them and leaving the host's real PATH ahead reachable
+		// left the host's `claude` and the INSTALLED `pr-review` in ~/bin reachable
+		// too, so the suite measured this developer's machine and billed real
+		// reviewer calls; putting the stub and REPO_BIN first fixes that without
+		// dropping the host's PATH entirely — pr-review still needs `python3` and
+		// `timeout` resolvable, and hardcoding "/usr/bin:/bin" broke that on any
+		// host that installs them elsewhere (homebrew, nix, asdf). Only
+		// `pr-review` is actually resolved through PATH (`command -v pr-review`,
+		// bin/pr-open); `pr-guard` is sourced by `readlink -f "$0"` from beside
+		// pr-open itself, so REPO_BIN on PATH has no effect on which copy of
+		// pr-guard runs — it was always the repo's.
 		env: {
 			...process.env, ...GIT_ENV,
-			PATH: [sb.binDir, REPO_BIN, "/usr/bin", "/bin"].join(path.delimiter),
+			PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
 			// …and the review log stays in the sandbox rather than in the
 			// developer's state dir, where 196 of them accumulated unnoticed.
 			PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
