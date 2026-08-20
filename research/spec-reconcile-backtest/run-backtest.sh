@@ -38,7 +38,8 @@
 #   2  usage — invalid ROUND (not a single directory name), no such round, round has no
 #      *.txt prompts, round has no/blank FIXTURE_SHA, unknown argument
 #   3  corpus or output setup — not a git repo, `git archive`/`tar` failed, overlay
-#      missing, corpus already carries host/, OUT or STATUS.tsv not writable
+#      missing, corpus already carries host/, OUT or STATUS.tsv not writable, OUT is
+#      locked by another concurrent run, or OUT holds files this script doesn't manage
 #   4  refused — OUT already holds a COMPLETED run; set OVERWRITE=1 or OUT=<path>.
 #      "Completed" is what this script can test: every declared auditor ran and exited 0.
 #      Whether anyone SCORED it lives in SCORES.tsv, which is hand-authored and which this
@@ -120,6 +121,26 @@ if [ "$(resolve "$FIXTURE_SHA")" != "$(resolve "$ROUND_SHA")" ]; then
 fi
 
 OUT="${OUT:-$HERE/runs/$ROUND}"
+
+# --- OUT is user-settable (`OUT=/tmp/scratch`), and the replace step below deletes files
+#     in it. Two concurrent invocations sharing a default OUT (same ROUND, no OUT set) would
+#     otherwise both pass the completed-run check, then interleave writes to the same
+#     transcript files and STATUS.tsv — the resulting row count can exceed the declared
+#     auditor count, which holds_record then reads as wreckage on the NEXT run and deletes.
+#     An atomic `mkdir` lock, held for the process lifetime, serializes runs against one OUT.
+LOCK="$OUT.lock"
+SCRATCH=""
+cleanup() {
+	[ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
+	rmdir "$LOCK" 2>/dev/null || true
+}
+trap cleanup EXIT
+mkdir -p "$(dirname "$OUT")" || { echo "could not create $(dirname "$OUT")" >&2; exit 3; }
+if ! mkdir "$LOCK" 2>/dev/null; then
+	echo "another run-backtest.sh is already writing $OUT (lock dir: $LOCK)" >&2
+	echo "if this is stale (a previous run crashed), remove it: rmdir '$LOCK'" >&2
+	exit 3
+fi
 # --- §4 prescribes the strong model: auditing is judgment work. Downshifting makes a miss
 #     un-attributable (weak prompt, or weak model?).
 MODEL="${MODEL:-opus}"
@@ -210,6 +231,20 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 	else
 		echo "$OUT holds no completed run (missing, failed, or partial STATUS.tsv) — replacing it" >&2
 	fi
+	# OUT is user-settable (`OUT=$HOME`, `OUT=/tmp/scratch`) and everything above only
+	# decides whether ITS OWN record looks complete — a directory that never held a run at
+	# all (someone else's README.md, an unrelated STATUS.tsv) sails through the same "no
+	# completed run — replacing it" branch. Refuse to delete anything unless every entry in
+	# OUT is a file this script would itself have written; a stray foreign file means OUT
+	# isn't a backtest output directory and the *.md glob below would take it out anyway.
+	foreign="$(find "$OUT" -mindepth 1 -maxdepth 1 \
+		! -name '*.md' ! -name 'STATUS.tsv' ! -name 'SCORES.tsv')"
+	if [ -n "$foreign" ]; then
+		echo "$OUT contains files this script does not manage — refusing to delete anything there:" >&2
+		printf '%s\n' "$foreign" | sed 's/^/  /' >&2
+		echo "point OUT at a directory this script owns, or clean it up by hand." >&2
+		exit 3
+	fi
 	# Clear first either way: a re-run with renamed or fewer prompts would otherwise leave
 	# stale transcripts beside the new ones, with STATUS.tsv describing only the new set.
 	# SCORES.tsv too: leaving it behind publishes verdicts for transcripts that no longer
@@ -225,7 +260,6 @@ SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/spec-reconcile-backtest-XXXXXX")"
 WORK="$SCRATCH/corpus"
 STAGE="$SCRATCH/stage"
 mkdir -p "$WORK" "$STAGE" || { echo "could not create the scratch corpus under $SCRATCH" >&2; exit 3; }
-trap 'rm -rf "$SCRATCH"' EXIT
 
 # --- An unchecked extraction is a corpus you did not get. Report it as a corpus failure
 #     rather than letting tar's own exit code masquerade as this script's "usage".
