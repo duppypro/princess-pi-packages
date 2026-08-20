@@ -170,15 +170,28 @@ a changeset** — some live in another repo, some in no repo at all.
 | Document | Status | Reachable by a diff? |
 |---|---|---|
 | `<this repo>/CLAUDE.md`, `AGENTS.md` | tracked | yes — Tier 2 already has it |
-| Other clones' `CLAUDE.md` / `AGENTS.md` (client repos, sibling projects) | tracked, **other repo** | no |
+| Other clones' `CLAUDE.md` / `AGENTS.md` — listable: `ls ~/git-projects/*/CLAUDE.md ~/git-projects/*/AGENTS.md` | tracked, **other repo** | no |
 | `~/git-projects/CLAUDE.md` (domain rules) | **in no repository** | **no** |
 | `~/.claude/CLAUDE.md` (global rules) | **in no repository** | **no** |
 | `~/.claude/settings.json` where it names a script by path | **in no repository** | **no** |
 
-**The set is enumerated because it cannot be derived.** That is a cost, not a design
-flourish — but the list is short, stable, and conventional, which is what makes this tier
-practical rather than aspirational. **A new host document that quotes a tool and never
-gets added here is invisible again**; when you write one, add its row in the same commit.
+**The set is enumerated because it cannot be derived from a changeset** — but four of the
+five rows *are* derivable from the filesystem, and the fifth is a glob. Run this and you
+have the tier's artifact set:
+
+```
+ls ~/.claude/CLAUDE.md ~/git-projects/CLAUDE.md ~/.claude/settings.json \
+   ~/git-projects/*/CLAUDE.md ~/git-projects/*/AGENTS.md 2>/dev/null
+```
+
+That is what makes the tier practical rather than aspirational: no agent has to *know* the
+clones, only to list them.
+
+**Two limits, stated rather than papered over.** A clone outside `~/git-projects/` is
+invisible to that glob — if a project lives elsewhere, its row is a manual addition. And a
+*new kind* of host document that quotes a tool and never gets a row here is invisible
+again; when you write one, add it in the same commit. Neither is fixable by machinery,
+which is why the cheapest mitigation is this sentence rather than a scanner.
 
 **Check the ones present; declare the ones absent.** An agent on a laptop cannot see this
 VPS's files, and CI has none of them. "Absent" is a fact to record, never a pass — a run
@@ -260,8 +273,11 @@ naming the enumerated set from §2 — and nothing else. Keep the addition to en
 > Read every one of these that exists, and for each one that does NOT exist, say so
 > explicitly rather than passing over it:
 >
-> `~/git-projects/CLAUDE.md` · `~/.claude/CLAUDE.md` · `~/.claude/settings.json` ·
-> each client/project clone's `CLAUDE.md` and `AGENTS.md`
+> `~/.claude/CLAUDE.md` · `~/git-projects/CLAUDE.md` · `~/.claude/settings.json`, plus
+> every path printed by
+> `ls ~/git-projects/*/CLAUDE.md ~/git-projects/*/AGENTS.md 2>/dev/null`.
+> Run that glob rather than guessing which clones exist. Report any listed path you could
+> not read, and say plainly that a clone outside `~/git-projects/` is out of this scope.
 
 Do **not** also tell it to quote the offending sentence verbatim, or to look for a
 particular claim. Those instructions aim the auditor at the answer; §7's round 3 had to be
@@ -449,9 +465,11 @@ Two consequences, both load-bearing:
 
 **One invocation runs one round.** Re-measuring after a §1/§4 edit means all three:
 
-Each round writes into its own tracked `runs/<round>/` and **refuses to overwrite a scored
-transcript set** (exit 4), so a re-measurement writes to a scratch directory and is diffed
-against the record — replace the record only once you have decided the new run supersedes it:
+Each round writes into its own tracked `runs/<round>/` and **refuses to overwrite a
+completed run** (exit 4) — "completed" being what the harness can test: every declared
+auditor ran and exited 0. Whether anyone *scored* it lives in the hand-authored
+`SCORES.tsv`, which the harness never reads or writes. So a re-measurement writes to a
+scratch directory and is diffed against the record — replace the record only once you have decided the new run supersedes it:
 
 ```
 B=research/spec-reconcile-backtest/run-backtest.sh

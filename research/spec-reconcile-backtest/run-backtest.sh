@@ -35,8 +35,8 @@
 # exit codes:
 #   0  every auditor exited 0
 #   1  at least one auditor exited non-zero, or wrote fewer than 200 bytes — see STATUS.tsv
-#   2  usage — no such round, round has no *.txt prompts, round has no/blank FIXTURE_SHA,
-#      unknown argument
+#   2  usage — invalid ROUND (not a single directory name), no such round, round has no
+#      *.txt prompts, round has no/blank FIXTURE_SHA, unknown argument
 #   3  corpus or output setup — not a git repo, `git archive`/`tar` failed, overlay
 #      missing, corpus already carries host/, OUT or STATUS.tsv not writable
 #   4  refused — OUT already holds a COMPLETED run; set OVERWRITE=1 or OUT=<path>.
@@ -53,6 +53,9 @@ case "${1:-}" in
 	"") ;;
 	*) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
 esac
+# The round is selected by the ROUND env var only. A caller who passes it positionally
+# would otherwise get a silent run against the default round.
+[ "$#" -le 1 ] || { echo "unexpected extra arguments: ${*:2} — the round is set with ROUND=<name> (see --help)" >&2; exit 2; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -63,6 +66,16 @@ REPO="${REPO:-$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null || true)}"
 [ -n "$REPO" ] || { echo "not inside a git repository (looked from $HERE)" >&2; exit 3; }
 
 ROUND="${ROUND:-round2-fixed}"
+# --- ROUND names a directory, so it must be a NAME. Left unvalidated it accepts path
+#     components: `ROUND=../../spec-reconcile-backtest/prompts/round3-host-scope` resolves
+#     OUT into the tracked prompts directory, where the replace step would delete real
+#     artifacts. A round is a single path segment, always has been.
+case "$ROUND" in
+	*/*|*..*|"") echo "invalid ROUND: '$ROUND' — a round is a single directory name, not a path" >&2; exit 2 ;;
+esac
+case "$ROUND" in
+	*[!A-Za-z0-9._-]*) echo "invalid ROUND: '$ROUND' — allowed characters are A-Z a-z 0-9 . _ -" >&2; exit 2 ;;
+esac
 PROMPT_DIR="$HERE/prompts/$ROUND"
 [ -d "$PROMPT_DIR" ] || { echo "no such round: $ROUND (looked in $PROMPT_DIR)" >&2; exit 2; }
 
@@ -74,11 +87,22 @@ ROUND_SHA="$(tr -d "[:space:]" < "$PROMPT_DIR/FIXTURE_SHA")"
 [ -n "$ROUND_SHA" ] || { echo "round $ROUND's FIXTURE_SHA is empty" >&2; exit 2; }
 
 FIXTURE_SHA="${FIXTURE_SHA:-$ROUND_SHA}"
-if [ "$FIXTURE_SHA" != "$ROUND_SHA" ] && [ "${OVERRIDE_SHA:-0}" != "1" ]; then
+# Compare RESOLVED objects, not the strings: the full 40-char spelling of the round's own
+# commit is the unambiguous way to name the corpus and was being refused as a contradiction.
+resolve() { git -C "$REPO" rev-parse --verify --quiet "$1^{commit}" 2>/dev/null || echo "unresolvable:$1"; }
+SHA_OVERRIDDEN=no
+if [ "$(resolve "$FIXTURE_SHA")" != "$(resolve "$ROUND_SHA")" ] && [ "${OVERRIDE_SHA:-0}" != "1" ]; then
 	echo "FIXTURE_SHA=$FIXTURE_SHA contradicts round $ROUND's marker ($ROUND_SHA)." >&2
 	echo "A round's prompts are written against its own tree; scoring a foreign one is not a result." >&2
 	echo "Set OVERRIDE_SHA=1 if that is genuinely what you want." >&2
 	exit 5
+fi
+# (RUBRIC: "a run under that override is not a scoreable result".) Say so at run time and
+# record it in the artifact a later reader consults, not only in prose.
+if [ "$(resolve "$FIXTURE_SHA")" != "$(resolve "$ROUND_SHA")" ]; then
+	SHA_OVERRIDDEN=yes
+	echo "WARNING: OVERRIDE_SHA=1 — running round $ROUND against $FIXTURE_SHA, not its marker $ROUND_SHA." >&2
+	echo "         This transcript set is NOT a scoreable result." >&2
 fi
 
 OUT="${OUT:-$HERE/runs/$ROUND}"
@@ -94,7 +118,7 @@ PROMPTS=("$PROMPT_DIR"/*.txt)
 
 STATUS="$OUT/STATUS.tsv"
 
-# --- Is OUT a SCORED RECORD, or wreckage? Never decided by transcript text, which an
+# --- Is OUT a COMPLETED RUN, or wreckage? Never decided by transcript text, which an
 #     auditor may legitimately quote.
 #
 #     Two ways to count as a completed run:
@@ -116,9 +140,17 @@ holds_record() {
 		[ -n "${mds[0]:-}" ] && return 0
 		return 1
 	fi
-	local rows declared
-	rows="$(grep -v '^#' "$STATUS" | tail -n +2 || true)"
-	[ -n "$rows" ] || return 1
+	local rows declared raw grc
+	# grep exits 1 for "no match" and 2 for an unreadable file. Collapsing both with
+	# `|| true` made a transient read failure look like wreckage — and the caller's else
+	# branch DELETES. That is the evidence loss (#390) this guard exists to prevent.
+	raw="$(grep -v '^#' "$STATUS")" && grc=0 || grc=$?
+	if [ "${grc:-0}" -gt 1 ]; then
+		echo "$STATUS exists but could not be read (grep exit $grc) — refusing to touch $OUT" >&2
+		exit 3
+	fi
+	rows="$(printf '%s\n' "$raw" | tail -n +2)"
+	[ -n "$(printf '%s' "$rows" | tr -d '[:space:]')" ] || return 1
 	# STATUS.tsv rows are appended as the loop progresses, so a run interrupted after
 	# auditor 1 of 2 leaves a file shaped exactly like a clean complete one. The header
 	# records how many auditors the round DECLARED; require every one of them to be there.
@@ -126,6 +158,13 @@ holds_record() {
 	if [ -n "$declared" ]; then
 		[ "$(printf '%s\n' "$rows" | grep -c .)" -eq "$declared" ] || return 1
 	fi
+	# STATUS.tsv describing transcripts that are gone is not a completed run; refusing to
+	# re-run over an empty directory would strand it behind OVERWRITE=1.
+	local arm
+	while IFS=$'\t' read -r arm _ _; do
+		[ -n "$arm" ] || continue
+		[ -f "$OUT/$arm.md" ] || return 1
+	done <<< "$rows"
 	printf '%s\n' "$rows" | awk -F'\t' '
 		$2 !~ /^[0-9]+$/ { bad = 1 }
 		$2 + 0 != 0      { bad = 1 }
@@ -144,7 +183,7 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 			echo "Set OVERWRITE=1 to replace it, or OUT=<path> to write elsewhere." >&2
 			exit 4
 		fi
-		echo "OVERWRITE=1 — replacing the scored record in $OUT" >&2
+		echo "OVERWRITE=1 — replacing the completed run in $OUT" >&2
 	else
 		echo "$OUT holds no completed run (missing, failed, or partial STATUS.tsv) — replacing it" >&2
 	fi
@@ -156,16 +195,21 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 fi
 mkdir -p "$OUT" || { echo "could not create the output directory $OUT" >&2; exit 3; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/spec-reconcile-backtest-XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+# The corpus must contain the archived tree and nothing else — an auditor reads $WORK as
+# its cwd, and a stray file there is an unenumerated artifact it can read or report. Staging
+# lives in a SIBLING directory, never inside the corpus.
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/spec-reconcile-backtest-XXXXXX")"
+WORK="$SCRATCH/corpus"
+STAGE="$SCRATCH/stage"
+mkdir -p "$WORK" "$STAGE" || { echo "could not create the scratch corpus under $SCRATCH" >&2; exit 3; }
+trap 'rm -rf "$SCRATCH"' EXIT
 
 # --- An unchecked extraction is a corpus you did not get. Report it as a corpus failure
 #     rather than letting tar's own exit code masquerade as this script's "usage".
-git -C "$REPO" archive "$FIXTURE_SHA" > "$WORK/corpus.tar" 2> "$WORK/archive.err" \
-	|| { echo "git archive $FIXTURE_SHA failed in $REPO:" >&2; cat "$WORK/archive.err" >&2; exit 3; }
-tar -x -f "$WORK/corpus.tar" -C "$WORK" \
+git -C "$REPO" archive "$FIXTURE_SHA" > "$STAGE/corpus.tar" 2> "$STAGE/archive.err" \
+	|| { echo "git archive $FIXTURE_SHA failed in $REPO:" >&2; cat "$STAGE/archive.err" >&2; exit 3; }
+tar -x -f "$STAGE/corpus.tar" -C "$WORK" \
 	|| { echo "tar could not extract the corpus for $FIXTURE_SHA" >&2; exit 3; }
-rm -f "$WORK/corpus.tar"
 
 # --- Host-doc overlay (#383). A Tier-4 fixture lives in NO repository by definition — that
 #     is the whole reason spec-reconcile's diff scope cannot reach it — so `git archive`
@@ -173,12 +217,21 @@ rm -f "$WORK/corpus.tar"
 #     1-2 are scored against the 2026-08-10 record and their corpus must not grow a
 #     directory that run never saw.
 HOST_OVERLAY=no
+OVERLAY_DIGEST=none
 if [ -f "$PROMPT_DIR/STAGE_HOST" ]; then
 	[ -d "$HERE/fixtures/host" ] || { echo "round $ROUND asks for the host overlay, but $HERE/fixtures/host is missing" >&2; exit 3; }
 	[ -e "$WORK/host" ] && { echo "corpus $FIXTURE_SHA already contains host/ — refusing to overlay onto it" >&2; exit 3; }
 	mkdir -p "$WORK/host" || { echo "could not create $WORK/host for the overlay" >&2; exit 3; }
 	cp -R "$HERE/fixtures/host/." "$WORK/host/" || { echo "could not stage the host overlay into $WORK/host" >&2; exit 3; }
 	HOST_OVERLAY=yes
+	# Everything else in the corpus is frozen at a SHA; the overlay is the one part copied
+	# from the working tree, so an uncommitted edit to the fixture would silently change the
+	# artifact the whole round is scored on. Record a digest so a transcript set carries the
+	# identity of the fixture it saw.
+	OVERLAY_DIGEST="$(cd "$WORK/host" && find . -type f | LC_ALL=C sort | xargs cat | cksum | awk '{print $1"-"$2}')"
+	if ! git -C "$REPO" diff --quiet -- "$HERE/fixtures/host" 2>/dev/null; then
+		echo "WARNING: fixtures/host has uncommitted changes — the overlay is not reproducible from git." >&2
+	fi
 fi
 
 echo "fixture   : $FIXTURE_SHA"
@@ -191,8 +244,8 @@ echo "model     : $MODEL"
 
 # --- F5's validity rests on the overlay having been staged, so the transcript set records
 #     it alongside the corpus it was measured against.
-printf '# round=%s fixture_sha=%s model=%s host_overlay=%s auditors=%s\n' \
-	"$ROUND" "$FIXTURE_SHA" "$MODEL" "$HOST_OVERLAY" "${#PROMPTS[@]}" > "$STATUS" \
+printf '# round=%s fixture_sha=%s model=%s host_overlay=%s overlay_digest=%s sha_overridden=%s auditors=%s\n' \
+	"$ROUND" "$FIXTURE_SHA" "$MODEL" "$HOST_OVERLAY" "$OVERLAY_DIGEST" "$SHA_OVERRIDDEN" "${#PROMPTS[@]}" > "$STATUS" \
 	|| { echo "could not write $STATUS" >&2; exit 3; }
 printf 'auditor\texit\tbytes\n' >> "$STATUS" || { echo "could not write $STATUS" >&2; exit 3; }
 
@@ -221,7 +274,8 @@ for p in "${PROMPTS[@]}"; do
 		rc=1
 		echo "auditor $name exited 0 but wrote only $bytes bytes — not a scoreable transcript" >&2
 	fi
-	printf '%s\t%s\t%s\n' "$name" "$rc" "$bytes" >> "$STATUS"
+	printf '%s\t%s\t%s\n' "$name" "$rc" "$bytes" >> "$STATUS" \
+		|| { echo "could not append to $STATUS" >&2; exit 3; }
 	if [ "$rc" -ne 0 ]; then
 		echo "auditor $name failed (exit $rc)" >&2
 		worst=1

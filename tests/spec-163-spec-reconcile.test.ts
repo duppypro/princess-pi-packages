@@ -261,9 +261,19 @@ check(
 // `git grep` exits 1 for "no match" and 2+ for a real failure (bad SHA, not a repo). A
 // bare catch turns both into a PASS, which is a vacuous pass on the load-bearing evidence
 // check — the check most worth breaking loudly (#383 review).
+// One literal would be close to tautological — only a verbatim copy of the fixture could
+// match it. The claim is semantic ("push is intercepted unconditionally"), so search the
+// phrasings the drift actually took, including the one #381 recorded propagating.
+const CLAIM_PATTERNS = [
+	"intercept: `git push`",
+	"blocks agent `git push`",
+	"agents cannot push",
+	"blocked from.*git push",
+	"git push.*blocked unconditionally",
+];
 const grepRes = spawnSync(
 	"git",
-	["-C", REPO, "grep", "-l", "-F", "intercept: `git push`", F5_SHA],
+	["-C", REPO, "grep", "-l", "-I", "-E", CLAIM_PATTERNS.join("|"), F5_SHA],
 	{ encoding: "utf8" },
 );
 const grepRan = grepRes.status === 0 || grepRes.status === 1;
@@ -275,7 +285,7 @@ check(
 	`git grep exited ${grepRes.status}: ${(grepRes.stderr || "").trim()}`,
 );
 check(
-	"F5: NO tracked file at that SHA carried the false claim — which is what makes the control's clean result evidence",
+	"F5: no tracked file at that SHA carried the claim in any of its known phrasings — the control's clean result is not luck",
 	grepRan && claimInTracked.length === 0,
 	`found in: ${JSON.stringify(claimInTracked)}`,
 );
@@ -347,6 +357,10 @@ const CLAUSES: Array<[string, string, string]> = [
 	["F5 (dispatch)", "§4 — a tier no auditor is dispatched for does not exist", "plus one host-scoped auditor whenever §1's reverse-scope trigger\nfired"],
 	["F5 (dispatch)", "§4 — names the hazard by its precedent", "A tier that no auditor is dispatched for does not exist."],
 	["F5 (no aiming)", "§4 — instructions aimed at the answer confound the measurement", "Those instructions aim the auditor at the answer"],
+	// The set must be REACHABLE, not just listed: "each clone's CLAUDE.md" is not something
+	// an auditor can enumerate, so the tier ships the glob that produces it.
+	["F5 (derivable set)", "§2 Tier 4 — an unbounded row makes the tier aspirational", "ls ~/.claude/CLAUDE.md ~/git-projects/CLAUDE.md ~/.claude/settings.json"],
+	["F5 (scope limit)", "§2 Tier 4 — a clone outside ~/git-projects is invisible to the glob", "is invisible to that glob"],
 	["honesty", "§7 — the backtest replays frozen prompts and cannot see a weakened §4", "nothing catches a **weakening**"],
 ];
 
@@ -485,6 +499,44 @@ check(
 	),
 );
 check(
+	"an unreadable STATUS.tsv aborts instead of falling through to the delete branch",
+	harness.includes('[ "${grc:-0}" -gt 1 ]') && harness.includes("could not be read (grep exit"),
+);
+check(
+	"a STATUS.tsv whose transcripts are gone is not a completed run",
+	harness.includes('[ -f "$OUT/$arm.md" ] || return 1'),
+);
+check(
+	"the corpus holds the archived tree and nothing else — staging lives in a sibling dir",
+	harness.includes('WORK="$SCRATCH/corpus"') && harness.includes('STAGE="$SCRATCH/stage"') &&
+		!harness.includes('"$WORK/corpus.tar"') && !harness.includes('"$WORK/archive.err"'),
+);
+check(
+	"the corpus SHA is compared as a resolved commit, so the full spelling is not a contradiction",
+	harness.includes('rev-parse --verify --quiet "$1^{commit}"'),
+);
+check(
+	"an OVERRIDE_SHA run warns and marks itself in STATUS.tsv",
+	harness.includes("NOT a scoreable result") && harness.includes("sha_overridden=%s"),
+);
+check(
+	"the overlay's identity is recorded, since it is the one part not frozen at a SHA",
+	harness.includes("overlay_digest=%s") && harness.includes("OVERLAY_DIGEST="),
+);
+check(
+	"every write to STATUS.tsv is checked, including the per-auditor append",
+	harness.includes("could not append to $STATUS"),
+);
+check(
+	"trailing positional arguments are refused rather than silently dropped",
+	harness.includes("unexpected extra arguments"),
+);
+check(
+	"ROUND is validated as a single directory name — a path escapes OUT into tracked files",
+	harness.includes("a round is a single directory name, not a path") &&
+		harness.includes("*[!A-Za-z0-9._-]*"),
+);
+check(
 	"a mistyped ROUND is fatal, not a green run over zero auditors",
 	harness.includes("no such round") && harness.includes("contains no *.txt prompts"),
 );
@@ -543,9 +595,9 @@ for (const round of scoredRounds) {
 		: 0;
 
 	check(
-		`${round}: STATUS.tsv header records round, corpus SHA, overlay and auditor count`,
+		`${round}: STATUS.tsv header records round, corpus SHA, overlay digest, override flag and auditor count`,
 		new RegExp(
-			`^# round=${round} fixture_sha=\\S+ model=\\S+ host_overlay=(yes|no) auditors=\\d+$`,
+			`^# round=${round} fixture_sha=\\S+ model=\\S+ host_overlay=(yes|no) overlay_digest=\\S+ sha_overridden=(yes|no) auditors=\\d+$`,
 			"m",
 		).test(a.statusText),
 		a.statusText.split("\n")[0] ?? "(empty)",
@@ -553,6 +605,11 @@ for (const round of scoredRounds) {
 	check(
 		`${round}: STATUS.tsv's corpus SHA is the one the round's own marker declares`,
 		a.statusText.includes(`fixture_sha=${roundSha(round)}`) && roundSha(round).length > 0,
+	);
+	check(
+		`${round}: the transcripts were NOT produced under an OVERRIDE_SHA run`,
+		a.statusText.includes("sha_overridden=no"),
+		"RUBRIC: a run under that override is not a scoreable result",
 	);
 	check(
 		`${round}: one STATUS row per prompt — a partial run must not read as a complete one`,
@@ -659,7 +716,8 @@ check(
 		insertion.every(
 			(l) =>
 				l.trim() === "" ||
-				l.includes("artifact set is not the diff") ||
+				l.trim() ===
+					"This branch changes a TOOL, so the artifact set is not the diff. Also audit the host-scoped documents that quote this tool's behaviour and that no changeset contains. In this corpus they are staged beside the tree; read every one of these that exists, and for each one that does NOT exist, say so explicitly rather than passing over it:" ||
 				/^\s*\.\/host\/\S+\s+\(.*\)\s*$/.test(l),
 		) &&
 		!/verbatim|exact sentence|quote the exact/i.test(insertion.join(" ")),
@@ -689,7 +747,9 @@ check(
 );
 check(
 	"a round with transcripts but no STATUS.tsv is a LEGACY RECORD, not wreckage to delete",
-	harness.includes("Legacy record iff transcripts are present") &&
+	// The enforcing code is the `[ ! -f "$STATUS" ]` branch that returns 0 when *.md exist.
+	harness.includes('if [ ! -f "$STATUS" ]; then') &&
+		harness.includes('[ -n "${mds[0]:-}" ] && return 0') &&
 		harness.includes("holds a legacy completed run"),
 );
 check(
@@ -702,8 +762,10 @@ check(
 );
 check(
 	"the refusal says what the predicate actually tests — a completed run, not a scored one",
-	harness.includes("Whether anyone SCORED it lives in SCORES.tsv") &&
-		!harness.includes("already holds a SCORED record"),
+	// Match the runtime messages a user sees, not the rationale comment above them.
+	harness.includes("already holds a completed run") &&
+		harness.includes("replacing the completed run in") &&
+		!/already holds a scored record|replacing the scored record/i.test(harness),
 );
 check(
 	"a malformed exit column counts as a failed row, not a clean auditor",
@@ -723,7 +785,7 @@ check(
 );
 check(
 	"git archive's own diagnosis survives, rather than being replaced by a guess",
-	harness.includes('cat "$WORK/archive.err"'),
+	harness.includes('cat "$STAGE/archive.err"'),
 );
 check(
 	"whether OUT holds a record is decided by STATUS.tsv, never by grepping transcript text",
@@ -735,8 +797,8 @@ check(
 );
 check(
 	"an auditor that exits 0 having written almost nothing is recorded as a failure",
-	harness.includes("not a scoreable transcript") &&
-		harness.includes("wrote fewer than 200 bytes"),
+	// Match the CODE, not the exit-code comment: `[ "$bytes" -lt 200 ]` is what enforces it.
+	harness.includes('[ "$bytes" -lt 200 ]') && harness.includes("not a scoreable transcript"),
 );
 check(
 	"the corpus is archived from the clone the prompts live in, not the caller's cwd",
@@ -781,22 +843,24 @@ check(
 {
 	// The counts RUBRIC quotes in prose must be the counts SCORES.tsv publishes — per arm
 	// AND as the cross-arm totals, since a total is a third place the numbers can drift.
-	const rubric = safeRead("research/spec-reconcile-backtest/RUBRIC.md");
+	// Whitespace-collapsed on both sides: a prose reflow is not a count regression, and a
+	// check that forces the author to reflow prose to satisfy it has the tail wagging the dog.
+	const rubric = flat(safeRead("research/spec-reconcile-backtest/RUBRIC.md"));
 	const c1 = scoreOf("C1-guardrails-repo-only-control", "F5");
 	const c2 = scoreOf("C2-guardrails-host-scoped", "F5");
 	check(
 		"RUBRIC's prose counts match SCORES.tsv, so a rescoring cannot drift from the record",
 		!!c1 &&
 			!!c2 &&
-			rubric.includes(`${c1[4]} scoreable findings`) &&
-			rubric.includes(`${c2[4]} scoreable findings`) &&
-			rubric.includes(`${c1[3]} labelled`) &&
-			rubric.includes(`${c2[3]} labelled`),
+			rubric.includes(flat(`${c1[4]} scoreable findings`)) &&
+			rubric.includes(flat(`${c2[4]} scoreable findings`)) &&
+			rubric.includes(flat(`${c1[3]} labelled`)) &&
+			rubric.includes(flat(`${c2[3]} labelled`)),
 		`SCORES: C1 ${c1?.[4]}/${c1?.[3]}, C2 ${c2?.[4]}/${c2?.[3]}`,
 	);
 	check(
 		"RUBRIC's cross-arm total is the LABELLED total, computed from SCORES.tsv",
-		!!c1 && !!c2 && rubric.includes(`${Number(c1[3]) + Number(c2[3])} labelled findings across both arms`),
+		!!c1 && !!c2 && rubric.includes(flat(`${Number(c1[3]) + Number(c2[3])} labelled findings across both arms`)),
 		`expected ${Number(c1?.[3]) + Number(c2?.[3])} labelled across both arms`,
 	);
 	// The skill quotes the control's pair too. Whitespace-collapsed, because a reflow of

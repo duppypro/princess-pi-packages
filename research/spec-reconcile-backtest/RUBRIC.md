@@ -152,11 +152,17 @@ Two false sub-claims are on the record for round 3, both raised as review thread
 | `C1` A14 | `cd /tmp/ggt/{repo}` expands to `/tmp/ggt/repo` | Brace expansion needs a comma list or a `..` sequence; a lone word stays literal and the `cd` fails |
 | `C2` line 117 | the `:110-130` line-state banner is behaviourally accurate | It is not — `git checkout main && git commit` is allowed, which became **#399** |
 
-So the round's yield is **five filed issues** — #389, #390, #391, #392, #399 — and two
-demonstrably false sub-claims, out of **113 labelled findings across both arms** (60 + 53;
-the scoreable total is 111). #390 is in that five with an asterisk: it came from the
-superseded first run, and the re-run that replaced it erased its transcript, so it is the
-one issue here you cannot trace to a committed artifact. **That ratio is the reason
+**Three** of the round's filed issues trace to those **113 labelled findings across both
+arms** (60 + 53; the scoreable total is 111): #389, #391, and #392's spec half. Two more
+were filed under the round's name but come from outside that denominator — **#390** from
+the superseded first run, whose transcripts the re-run erased, and **#399** from a
+`macroscopeapp` thread on PR #393 rather than from an auditor. Five issues, three of them
+countable here; the table below is the authority for which is which.
+
+**Three findings and two false sub-claims out of 113 is the ratio that matters**, and it is
+the reason §5's *"quote the contradicting code as `path:line`"* clause exists: every one of
+those arrived with the means to check it, which is how both false ones were caught. The two
+outside issues arrived with no transcript at all, and were verified by re-probing `main`. **That ratio is the reason
 §5's "quote the contradicting code as `path:line`" clause exists** — every finding arrives
 with the means to check it, and the ones above were caught precisely because they did.
 Adopt a finding when you have verified it against the code, never because an auditor said
@@ -186,4 +192,4 @@ it well.
 |---|---|---|---|---|---|---|---|
 | 2026-08-10 round 1 | `prompts/round1-as-written/` (skill as written during #158) | ❌ A1 / ✅ A2 | ✅ A1, A3 | ❌ all | ✅ A1 | — | 2 of 4 under the skill as written. A2 is a symbol-scope control the skill forbids, so its F1 hit does not count toward the score |
 | 2026-08-10 round 2 | `prompts/round2-fixed/` (post-fix) | ✅ B1 | ✅ B1, B3 | ✅ B3 | ✅ B1 | — | 4 of 4. Also surfaced two drifts still live on `main` |
-| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only.** C2 (52 scoreable findings; 53 labelled, one self-declared "not a finding") quotes `host/git-projects-CLAUDE.md:24`'s `intercept: git push` sentence against `block-dangerous-git.sh:477`, measured (`git push origin 42-feat` from `main` → exit 0), and declares both **prompt-named but deliberately absent** host files. C1 — byte-identical prompt minus the enumeration block, **same corpus, host document present on disk** — returned 59 scoreable findings (60 labelled) and **zero mentions of `host/`**: it never opened the file, because nothing pointed it there. `STATUS.tsv`: both arms exit 0 |
+| 2026-08-19 round 3 | `prompts/round3-host-scope/` (Tier 4, #383) | — | — | — | — | ✅ C2 / — C1 | **F5 surfaced by the host-scoped auditor only.** C2 (52 scoreable findings; 53 labelled, one self-declared "not a finding") quotes `host/git-projects-CLAUDE.md:24`'s `intercept: git push` sentence against `block-dangerous-git.sh:477`, measured (`git push origin 42-feat` from `main` → exit 0), and declares both **prompt-named but deliberately absent** host files. C1 — byte-identical prompt minus the enumeration block, **same corpus, host document present on disk** — returned 59 scoreable findings (60 labelled) and **zero mentions of `host/`**: it reported nothing from the file, because nothing pointed it there. (The transcript is prose with no tool-call log, so "never read it" is not something the artifact can show — and does not need to be. A finding that never reaches the record is a finding the pass did not produce.) `STATUS.tsv`: both arms exit 0 |
