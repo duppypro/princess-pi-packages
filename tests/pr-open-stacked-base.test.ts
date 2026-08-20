@@ -25,6 +25,17 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
 const REPO_BIN = path.join(REPO_ROOT, "bin");
 
+// pr-review fails OPEN when `timeout` or `python3` is missing — every lens
+// fails, no findings are ever recorded, and pr-open still creates the PR.
+// That's correct behavior, but it also means the `claude` stub never runs on
+// such a host, so the claudeMarker canary below would report a defect in the
+// code under test when the code did exactly what its own contract promises.
+// Checked once, not per-case: this repo's own scripts already hard-depend on
+// GNU `timeout` (`--kill-after`), so this only matters on a host this suite
+// was never going to pass on anyway — but the canary shouldn't be what fails.
+const HAS_REVIEW_DEPS = ["timeout", "python3"].every(
+	(bin) => spawnSync("command", ["-v", bin], { shell: true }).status === 0);
+
 // Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM. `exit`
 // alone does not fire on a signal — Node's default disposition terminates
 // without emitting it — so Ctrl-C mid-run (each case now spawns pr-review
@@ -162,8 +173,11 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 	// Gated on createdPr: a created PR cannot happen without pr-review having
 	// run and reported clean, so this is a real canary for the `claude` stub's
 	// own comment above — not vacuous, and not a false failure on a case that
-	// legitimately never reaches pr-review.
-	if (createdPr) {
+	// legitimately never reaches pr-review. Also gated on HAS_REVIEW_DEPS:
+	// without `timeout`/`python3`, pr-review's own documented fail-open still
+	// lets the PR through with the stub never invoked, which is correct
+	// behavior, not a defect this canary should flag.
+	if (createdPr && HAS_REVIEW_DEPS) {
 		check(fs.existsSync(sb.claudeMarker),
 			"pr created → the stubbed claude actually ran (not the host's real reviewer)",
 			`missing ${sb.claudeMarker}`);

@@ -36,8 +36,9 @@
 #      table, so disagreeing with it here would ship the contradiction it fixes)
 #   3  precondition — on a protected branch, the diff itself failed, or the work
 #      dir would not take the files the review passes need (the diff, the shared
-#      parser). Both writes are guarded and both say so; an unguarded one would
-#      exit 1 from the same condition, which is why they are not left bare
+#      parser). Only THESE two $WORK writes are guarded this way — later writes
+#      (the cluster prompt, the collector's summary, a reviewer's raw output)
+#      are not, and the same ENOSPC there exits 1 bare instead; see the note below
 #   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
 #
 # Under `set -euo pipefail` a few unguarded operations can still exit 1 with no
@@ -622,15 +623,19 @@ import json
 MAX_FAILED_CANDIDATES = 30000
 # Bounds the rescan below. Measured (this file's own decoder, `'{"a":' * n`):
 # 2000 → 0.13s, 4000 → 0.49s, 8000 → 1.94s, 20000 → 8.6s (20001 failed
-# candidates). #378's own hazard test feeds exactly that 20000-opener case and
+# candidates), 30000 → ~14-16s, plateauing around ~17-18s from 100000 openers
+# on. Growth is quadratic only up to a point and then flattens — a naive
+# (n/8000)²·1.94s extrapolation from the 8000 point overstates the plateau
+# region, so no single formula here is load-bearing; what matters is that the
+# cap turns "scales with however much malformed JSON the response carries" —
+# unbounded — into "at most on the close order of 15-20s of CPU regardless of
+# input size" (see MEDIUM/CONTRACT bin/pr-review:786 in the #378 pr-review
+# log: quadratic and uncapped "wedges pr-open through a door the timeout does
+# not cover"). #378's own hazard test feeds exactly the 20000-opener case and
 # must still reach the real payload past it, so the cap sits with headroom
 # above the measured 20001 — comfortably clear of the legitimate case, and
 # high enough that a reviewer's own output cap in practice keeps most real
-# responses far under it, while a deliberately pathological response is
-# stopped at roughly (30000/8000)² · 1.94s ≈ 27s of work instead of scaling
-# unboundedly with input size (see MEDIUM/CONTRACT bin/pr-review:786 in the
-# #378 pr-review log: quadratic and uncapped "wedges pr-open through a door
-# the timeout does not cover").
+# responses far under it.
 
 
 def objects(text):
@@ -815,15 +820,19 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
                       "cannot tell which is the answer")
     if soft:
         return soft[0]
-    # saw_echo wins over `reason` even when `reason` is already set: an
-    # earlier non-payload candidate (a preamble object with the wrong key or
-    # type) used to win this message unconditionally, which pointed the human
-    # reading the log at "no object carried the key" when one actually did —
-    # and was rejected as the prompt's own placeholder, a different repair.
-    if saw_echo:
-        return None, f"the only '{key}' object in the response was the prompt's own schema, echoed back"
+    # capped_error outranks saw_echo, which outranks `reason`. A capped scan
+    # means the response was never fully read, so "the only object was an
+    # echo" is a claim the scan cannot actually back — a real payload may sit
+    # past the cutoff. saw_echo still outranks `reason` even when `reason` is
+    # already set: an earlier non-payload candidate (a preamble object with
+    # the wrong key or type) used to win that message unconditionally, which
+    # pointed the human reading the log at "no object carried the key" when
+    # one actually did — and was rejected as the prompt's own placeholder, a
+    # different repair.
     if capped_error is not None:
         return None, str(capped_error)
+    if saw_echo:
+        return None, f"the only '{key}' object in the response was the prompt's own schema, echoed back"
     if reason is None:
         reason = ("response contains no JSON object" if decode_error is None
                   else f"no JSON object in the response could be decoded ({decode_error})")
@@ -834,11 +843,15 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
 # below) and in the clustering prompt (CRULES, below) — duplicated here
 # rather than interpolated, because the heredoc that writes this whole file
 # is quote-delimited and takes no shell substitution. Nothing enforces the
-# two staying in sync — tests/pr-review-gate.test.ts's hazard cases hardcode
-# these same literals independently, so a reworded prompt would keep every
-# existing check green while a real echo silently stopped being caught. If
-# either prompt's example changes, these constants — and the hazard prose in
-# that test file — must change with it.
+# two staying in sync. FINDINGS_ECHOES_SOFT and FINDINGS_ECHOES_HARD at least
+# have an independent restatement to catch drift: tests/pr-review-gate.test.ts's
+# hazard cases hardcode both literals separately from these constants, so a
+# reworded RULES schema would fail a hazard case rather than pass silently.
+# GROUPS_ECHOES_HARD has NO such check — no hazard case exercises a groups
+# echo at all — so a reworded CRULES schema here would drift unnoticed and a
+# real trailing recap of it would stop being caught. If either prompt's
+# example changes, these constants must change with it; only the findings
+# side is anything holding them to that today.
 #
 # The empty findings list is a SOFT echo: unlike the placeholder finding or
 # the placeholder grouping, it doubles as the one correct answer for "ran,
@@ -1131,7 +1144,15 @@ PYIDS
     : > "$WORK/cluster.fail"
   fi
 
-  python3 - "$WORK" "$LOG" <<'PYCLUSTER'
+  # `if !`, not a bare command: python3 itself can fail to reach the try below
+  # at all — missing binary, OOM-killed, a syntax error in the heredoc — and a
+  # bare command's nonzero exit kills the WHOLE script here under
+  # `set -euo pipefail`, never reaching the guarded `read` two lines down or
+  # `exit 7` at the bottom, with findings already sitting in $LOG unreviewed.
+  # The try/except inside PYCLUSTER covers every failure that happens ONCE
+  # python3 is running; this `if !` is the outer layer for the one it can't:
+  # python3 not running to begin with.
+  if ! python3 - "$WORK" "$LOG" <<'PYCLUSTER'
 import json, os, sys
 
 def _open_private(path):
@@ -1154,9 +1175,9 @@ try:
     # — no JSON, no exit 7, and pr-open opening a PR that DID have findings.
     # The documented promise for this pass is fail-open to the raw count; a
     # bad log read or a bad import is not exempt from it. The shell's own read
-    # of $WORK/distinct is guarded too (`|| COUNT="$RAWCOUNT"`, below) as a
-    # second line of defense for the one failure this try still cannot catch:
-    # this block itself never running (a crash before Python even starts).
+    # of $WORK/distinct is guarded too (`|| COUNT="$RAWCOUNT"`, below) — this
+    # try covers the log read and finish() failing AFTER python3 started; the
+    # `if !` around this whole command covers python3 not starting at all.
     d = json.load(open(log))
     raw = d["findings"]
 
@@ -1243,7 +1264,40 @@ except Exception as exc:
         # the shell's guarded read falls back to $RAWCOUNT.
         pass
 PYCLUSTER
-  read -r COUNT < "$WORK/distinct" || COUNT="$RAWCOUNT"
+  then
+    :
+  else
+    echo "pr-review: the clustering pass crashed before it could run; count is RAW, not deduplicated." >&2
+    # Best-effort, and separately guarded: $LOG itself may still be fine — the
+    # crash was in the clustering STAGE, not necessarily in reading or writing
+    # $LOG — so stamp the failed-shape keys onto it if it's readable at all.
+    # `--json` callers get `dedup: "failed"` instead of a schema-@1 object
+    # silently missing the count it gates on; if even THIS can't run, the
+    # guarded `read` below still keeps $COUNT correct either way.
+    python3 - "$LOG" <<'PYCLUSTERCRASH' 2>/dev/null || true
+import json, os, sys
+try:
+    log = sys.argv[1]
+    d = json.load(open(log))
+    if "dedup" not in d:
+        d["distinct"] = d.get("findings", [])
+        d["distinctFindings"] = len(d["distinct"])
+        d["dedup"] = "failed"
+        d["dedupNote"] = "clustering pass crashed before it could run; count is RAW, not deduplicated"
+        fh = os.fdopen(os.open(log, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
+        json.dump(d, fh, indent=2)
+except Exception:
+    pass
+PYCLUSTERCRASH
+  fi
+  # `cat`, not `read -r`, and checked for emptiness rather than relying on
+  # a nonzero exit status: `read` returns nonzero on a value with no trailing
+  # newline while STILL assigning it, so `read ... || COUNT="$RAWCOUNT"`
+  # would silently overwrite a correctly-read deduplicated count with the
+  # raw one on that path. It only ever worked because finish() always writes
+  # a trailing newline; this does not depend on that.
+  COUNT=$(cat "$WORK/distinct" 2>/dev/null) || COUNT=""
+  [ -n "$COUNT" ] || COUNT="$RAWCOUNT"
 else
   python3 - "$LOG" <<'PYNOCLUSTER'
 import json, os, sys
@@ -1295,8 +1349,14 @@ PYFAIL
       echo "✅ pr-review: no findings across $NRAN lenses. Log: $LOG"
     fi
   else
-    DEDUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dedup","?"))' "$LOG")
-    # "?" is the read-guard fallback path: the PYCLUSTER block died before
+    # `|| DEDUP="?"`: a bare command substitution here is unguarded under
+    # `set -euo pipefail` — if $LOG itself somehow became unreadable between
+    # the collector writing it and this line (not something clustering
+    # failing causes; a host-level fault), this would otherwise kill the
+    # script one line before reaching `exit 7`, the same class of bug this
+    # whole pass exists to close.
+    DEDUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dedup","?"))' "$LOG" 2>/dev/null) || DEDUP="?"
+    # "?" is also the read-guard fallback path: the PYCLUSTER block died before
     # finish() ever ran (log unreadable, or finish() itself raising), $WORK/distinct
     # was never written, COUNT fell back to $RAWCOUNT, and $LOG carries no `dedup`
     # key at all. That is exactly the "clustering call failed" case, not a
@@ -1306,7 +1366,15 @@ PYFAIL
     else
       echo "🔎 pr-review: $COUNT distinct finding(s) from $NRAN lens(es) [$RAWCOUNT raw]. Log: $LOG"
     fi
-    python3 - "$LOG" <<'PYSHOW'
+    # `|| true`: printing the finding list is informational, not load-bearing
+    # for the exit code below — if $LOG turned out to be unreadable despite
+    # DEDUP's own guard above having just read it (a race, not something this
+    # pass can control), a bare heredoc command here would still kill the
+    # whole script under `set -e` one step before `exit 7`. `.get(...)` inside
+    # covers the ordinary case (a crash before finish() ran leaves `distinct`
+    # absent from an otherwise-readable $LOG); `|| true` covers $LOG itself
+    # being unreadable, which no amount of `.get()` inside the process can.
+    python3 - "$LOG" <<'PYSHOW' || true
 import json, sys
 d = json.load(open(sys.argv[1]))
 order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
