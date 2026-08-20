@@ -672,7 +672,7 @@ def objects(text):
 
 
 def payload_with(text, key):
-    """The first JSON object that is actually the payload: a dict whose `key` is
+    """The LAST JSON object that is actually the payload: a dict whose `key` is
     a LIST.
 
     Both halves matter. `parsed.get(key, [])` used to default a missing key to
@@ -686,10 +686,23 @@ def payload_with(text, key):
     answer, which is trusting position again — the exact habit this function
     exists to break.
 
-    Returns (span, parsed) or (None, reason).
+    LAST, not first, among the candidates that qualify. The prompt sent to the
+    model INCLUDES this exact schema, and a model that echoes its instructions
+    before answering — the empty `{"findings":[]}` or the placeholder
+    `{"findings":[{"severity":"Critical|High|Medium|Low",...}]}` — produces a
+    well-formed object with `key` as a list before it ever gets to its real
+    answer. Both echoes satisfy every check above, so stopping at the first
+    match handed the result to the prompt: the empty echo recorded a lens that
+    found real defects as clean (exit 0, the PR opens unreviewed), the
+    placeholder echo invented a finding titled "short" at "path" line 123.
+    The model's actual answer is always the one written LAST — echoing the
+    instructions is scaffolding on the way there, never something that comes
+    after — so the scan keeps going once it finds a match instead of
+    returning early, and reports the final one.
     """
     reason = None
     decode_error = None
+    best = None
     for span, parsed in objects(text):
         if span is None:
             # Kept, and reported only if nothing better turns up: "could not be
@@ -706,7 +719,9 @@ def payload_with(text, key):
         if not isinstance(parsed[key], list):
             reason = f"{key} is {type(parsed[key]).__name__}, expected list"
             continue
-        return span, parsed
+        best = (span, parsed)
+    if best is not None:
+        return best
     if reason is None:
         reason = ("response contains no JSON object" if decode_error is None
                   else f"no JSON object in the response could be decoded ({decode_error})")
