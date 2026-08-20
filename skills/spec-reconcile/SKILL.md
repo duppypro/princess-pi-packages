@@ -244,7 +244,28 @@ the harness has no agent-dispatch tool — a fresh process cannot inherit your a
 even accidentally.
 
 Fan out one auditor per changed source file (subject to §1's granularity rule), plus one
-for the spec document. Set the model explicitly on every dispatch — this is judgment work,
+for the spec document — **plus one host-scoped auditor whenever §1's reverse-scope trigger
+fired** (the branch touched `hooks/`, `bin/`, `extensions/`, or `skills/`).
+
+**That last one is not optional, and this is the second time this skill has needed the
+rule.** Tier 3 was unreachable in v1 because it described a check no prompt implemented
+(#163). Tier 4 arrives with the same hazard and a worse blast radius: its documents are
+loaded into every session. A tier that no auditor is dispatched for does not exist.
+
+The host-scoped auditor gets the **same prompt body** as the others, with one block added
+naming the enumerated set from §2 — and nothing else. Keep the addition to enumeration:
+
+> This branch changes a TOOL, so the artifact set is not the diff. Also audit the
+> host-scoped documents that quote this tool's behaviour and that no changeset contains.
+> Read every one of these that exists, and for each one that does NOT exist, say so
+> explicitly rather than passing over it:
+>
+> `~/git-projects/CLAUDE.md` · `~/.claude/CLAUDE.md` · `~/.claude/settings.json` ·
+> each client/project clone's `CLAUDE.md` and `AGENTS.md`
+
+Do **not** also tell it to quote the offending sentence verbatim, or to look for a
+particular claim. Those instructions aim the auditor at the answer; §7's round 3 had to be
+re-run once for exactly that reason. Set the model explicitly on every dispatch — this is judgment work,
 so keep the strong model for auditing; route the mechanical fix-application to `sonnet`.
 Downshifting the auditor makes a miss un-attributable: weak prompt, or weak model?
 
@@ -400,17 +421,26 @@ scoreable findings (60 labelled) and never mentioned it once.** The drift was no
 auditor — it was *unenumerated*, which is precisely what a diff does to a file that appears
 in no changeset.
 
-**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those included a live guardrail bug (#389, the `gh -R … pr merge` bypass);
+**And "the control came back clean" means clean *on the F5 claim*, nothing more.** Those 59 included a live guardrail bug (#389, the `gh -R … pr merge` bypass);
 none of them said push was blocked outright, because no tracked artifact claimed it.
 Per-arm attribution, and the one issue whose transcript an earlier re-run erased, are in
 `RUBRIC.md`'s log — read it before crediting a finding to an arm.
 
 The corpus, the prompts as run, and the scoring rubric are in
 `princess-pi-packages/research/spec-reconcile-backtest/`. **Re-run it after any edit to §1,
-§2's Tier 4, or §4** — those sections are measured artifacts now, not prose. The re-run is
-the only thing that detects a *wording* regression there.
-`tests/spec-163-spec-reconcile.test.ts` pins that the measured clauses still exist, which
-catches a deletion and not a weakening:
+§2's Tier 4, or §4** — those sections are measured artifacts now, not prose.
+
+**Know what the re-run does and does not catch.** `run-backtest.sh` replays the *frozen*
+`prompts/<round>/*.txt` files; it does not read this document. So editing §4's wording
+changes nothing about a re-run's score, and a weakened §4 can post four-of-four forever.
+Two consequences, both load-bearing:
+
+- **Changing §4 means changing the round prompts to match, by hand, in the same commit.**
+  Otherwise the corpus measures a skill that no longer exists.
+- `tests/spec-163-spec-reconcile.test.ts` pins that the measured clauses still *appear* in
+  this file. That catches a **deletion**; nothing catches a **weakening**. Neither the test
+  nor the backtest is a wording regression detector, and treating either as one is how a
+  skill quietly regresses to the version that scored 2 of 4.
 
 **One invocation runs one round.** Re-measuring after a §1/§4 edit means all three:
 
@@ -424,11 +454,21 @@ S=$(mktemp -d)
 ROUND=round1-as-written OUT=$S/round1-as-written $B   # F1-F4, skill as of #158, SHA 9b2a16e
 ROUND=round2-fixed      OUT=$S/round2-fixed      $B   # F1-F4, post-fix,        SHA 9b2a16e
 ROUND=round3-host-scope OUT=$S/round3-host-scope $B   # F5, Tier 4,             SHA bf4d104
-# score every $S/<round>/ against RUBRIC.md; to adopt a scored run, PROMOTE the
-# transcripts you scored — re-running would produce different ones:
-#   R=research/spec-reconcile-backtest/runs/<round>
-#   rm -f $R/*.md $R/STATUS.tsv && cp $S/<round>/* $R/ && update RUBRIC.md + $R/SCORES.tsv
+# then score every $S/<round>/ against RUBRIC.md
 ```
+
+**To adopt a scored run, promote the transcripts you scored** — never re-run to "make it
+official", because a second run produces different transcripts than the ones you read:
+
+```
+R=research/spec-reconcile-backtest/runs/<round>
+rm -f "$R"/*.md "$R"/STATUS.tsv "$R"/SCORES.tsv
+cp "$S"/<round>/* "$R"/
+```
+
+Then hand-edit two records so they describe what you just promoted: `RUBRIC.md`'s result
+log, and `$R/SCORES.tsv`. `tests/spec-163-spec-reconcile.test.ts` asserts the two agree, so
+forgetting either one fails the suite rather than shipping a record that contradicts itself.
 
 `run-backtest.sh --help` carries the exit-code table. **Adopting a re-run destroys the
 transcript the previous record cites** — the #383 run did exactly that and erased the

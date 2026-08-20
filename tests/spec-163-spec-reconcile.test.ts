@@ -169,6 +169,7 @@ check(`F5 corpus SHA ${F5_SHA} is reachable from this clone`, f5Reachable);
 // not do it (#383 review). The hook is materialised from the frozen tree and run for real.
 let f5ProbeError = "";
 function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "error" {
+	f5ProbeError = ""; // never carry a previous probe's cause into this one's detail
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-probe-"));
 	try {
 		const hook = path.join(dir, "hook.sh");
@@ -264,7 +265,7 @@ check(
 // here and dated it. A real ~/git-projects/CLAUDE.md carries no such hint.
 check(
 	"F5: the fixture carries no provenance banner that would hint at the planted claim",
-	!/FIXTURE|do not edit to make|scored against it/i.test(hostDoc),
+	hostDoc.length > 0 && !/FIXTURE|do not edit to make|scored against it/i.test(hostDoc),
 	"provenance belongs in fixtures/README.md, which is never staged into the corpus",
 );
 // (§2 Tier 4 / RUBRIC "Absence declared") The round scores the auditor for SAYING that
@@ -310,6 +311,12 @@ const CLAUSES: Array<[string, string, string]> = [
 	["F5 (enumeration)", "§2 Tier 4 — the set cannot be derived, so it must be listed", "enumerated because it cannot be derived"],
 	["F5 (absence)", "§2 Tier 4 — a host check that finds no file must say so", "Check the ones present; declare the ones absent"],
 	["F5 (pin)", "§2 Tier 4 — a reword is invisible to behaviour probes alone", "Pin the claim; do not merely edit the sentence"],
+	// The Tier 3 lesson, applied to Tier 4: a tier the §4 dispatch never fans out to is a
+	// tier that silently stops existing. This is the clause that makes Tier 4 reachable.
+	["F5 (dispatch)", "§4 — a tier no auditor is dispatched for does not exist", "plus one host-scoped auditor whenever §1's reverse-scope trigger\nfired"],
+	["F5 (dispatch)", "§4 — names the hazard by its precedent", "A tier that no auditor is dispatched for does not exist."],
+	["F5 (no aiming)", "§4 — instructions aimed at the answer confound the measurement", "Those instructions aim the auditor at the answer"],
+	["honesty", "§7 — the backtest replays frozen prompts and cannot see a weakened §4", "nothing catches a **weakening**"],
 ];
 
 // Match with runs of whitespace collapsed, so a needle spanning a hard line wrap survives
@@ -427,7 +434,10 @@ check(
 );
 check(
 	"the harness reads the marker rather than carrying a default of its own",
-	!/DEFAULT_SHA="9b2a16e"/.test(harness) && harness.includes("must declare its own corpus"),
+	harness.includes('ROUND_SHA="$(tr -d "[:space:]" < "$PROMPT_DIR/FIXTURE_SHA")"') &&
+		harness.includes("must declare its own corpus") &&
+		!/^[^#\n]*\b\w*SHA\w*="9b2a16e"/m.test(harness),
+	"a hardcoded corpus SHA outside a comment would make the marker advisory",
 );
 check(
 	"the harness reads each round's own FIXTURE_SHA — a fixture is a tree AND a question",
@@ -487,12 +497,24 @@ check(
 	statusRows.length > 0 && statusRows.every((r) => r.split("\t")[1]?.trim() === "0"),
 	statusRows.join(" | "),
 );
+// Whether a transcript is scoreable is STATUS.tsv's answer, not a string inside the
+// transcript — an earlier revision looked for a marker the harness no longer writes, and
+// an auditor could quote it anyway. Assert the recorded exit AND the recorded size.
 for (const arm of ["C1-guardrails-repo-only-control", "C2-guardrails-host-scoped"]) {
-	const rel = `${R3}/${arm}.md`;
-	const body = fs.existsSync(path.join(REPO, rel)) ? readRepo(rel) : "";
+	const row = statusFor(arm);
 	check(
-		`${arm}: transcript carries no harness failure marker`,
-		body.length > 0 && !body.includes("is NOT a scoreable run"),
+		`${arm}: STATUS.tsv records a clean exit and a transcript worth scoring`,
+		!!row && row[1] === "0" && Number(row[2]) >= 200,
+		row ? `exit ${row[1]}, ${row[2]} bytes` : "no STATUS.tsv row",
+	);
+	const rel = `${R3}/${arm}.md`;
+	const bytes = fs.existsSync(path.join(REPO, rel))
+		? fs.statSync(path.join(REPO, rel)).size
+		: -1;
+	check(
+		`${arm}: the transcript on disk is the size STATUS.tsv recorded`,
+		!!row && bytes === Number(row[2]),
+		`on disk ${bytes}, recorded ${row?.[2]}`,
 	);
 }
 
@@ -541,7 +563,16 @@ check(
 	parity &&
 		insertion.length > 0 &&
 		insertion.some((l) => l.includes("./host/git-projects-CLAUDE.md")) &&
-		insertion.every((l) => l.trim() === "" || /host|artifact set is not the diff/i.test(l)),
+		// RUBRIC's Bonus-signal row forbids an instruction aimed at the F5 sentence. A loose
+		// /host/i predicate would let "report the exact verbatim sentence from ./host/..."
+		// straight through, so match the block's known shape instead.
+		insertion.every(
+			(l) =>
+				l.trim() === "" ||
+				l.includes("artifact set is not the diff") ||
+				/^\s*\.\/host\/\S+\s+\(.*\)\s*$/.test(l),
+		) &&
+		!/verbatim|exact sentence|quote the exact/i.test(insertion.join(" ")),
 	JSON.stringify(insertion.filter((l) => l.trim() && !/host|artifact set is not the diff/i.test(l))),
 );
 check(
@@ -569,16 +600,42 @@ check(
 	harness.includes("a round must declare its own corpus"),
 );
 check(
+	"a round with transcripts but no STATUS.tsv is a LEGACY RECORD, not wreckage to delete",
+	harness.includes("Legacy record iff transcripts are present") &&
+		harness.includes("holds a legacy scored record"),
+);
+check(
+	"a malformed exit column counts as a failed row, not a clean auditor",
+	harness.includes('$2 !~ /^[0-9]+$/'),
+);
+check(
+	"replacing a round clears SCORES.tsv too, so no verdict outlives its transcripts",
+	harness.includes('rm -f "$OUT"/*.md "$OUT"/STATUS.tsv "$OUT"/SCORES.tsv'),
+);
+check(
+	"an unreadable transcript is recorded as a failed auditor rather than aborting the loop",
+	harness.includes("produced no readable transcript"),
+);
+check(
+	"overlay staging failures report as a corpus problem (exit 3), not as an auditor failure",
+	harness.includes("could not stage the host overlay"),
+);
+check(
+	"git archive's own diagnosis survives, rather than being replaced by a guess",
+	harness.includes('cat "$WORK/archive.err"'),
+);
+check(
 	"whether OUT holds a record is decided by STATUS.tsv, never by grepping transcript text",
-	harness.includes("holds_record()") && !harness.includes('grep -rlq "is NOT a scoreable run"'),
+	harness.includes("holds_record()") && !harness.includes("grep -rlq"),
 );
 check(
 	"the corpus extraction is checked, and reports a corpus failure rather than tar's own code",
 	harness.includes("git archive $FIXTURE_SHA failed") && harness.includes("could not extract the corpus"),
 );
 check(
-	"an auditor that exits 0 having written nothing is recorded as a failure",
-	harness.includes("not a scoreable transcript"),
+	"an auditor that exits 0 having written almost nothing is recorded as a failure",
+	harness.includes("not a scoreable transcript") &&
+		harness.includes("wrote fewer than 200 bytes"),
 );
 check(
 	"the corpus is archived from the clone the prompts live in, not the caller's cwd",
@@ -599,6 +656,22 @@ const scoreRows = scoresText
 	.map((l) => l.split("\t"));
 const scoreOf = (arm: string, fixture: string): string[] | undefined =>
 	scoreRows.find((c) => c[0] === arm && c[1] === fixture);
+
+// The RUBRIC rows say "round 3 on". Rounds 1-2 are grandfathered BY NAME so that a
+// round 4 added without STATUS.tsv/SCORES.tsv fails here rather than shipping unscored.
+const GRANDFATHERED = new Set(["round1-as-written", "round2-fixed"]);
+const missingArtifacts = rounds
+	.filter((r) => !GRANDFATHERED.has(r))
+	.filter(
+		(r) =>
+			!fs.existsSync(path.join(REPO, `research/spec-reconcile-backtest/runs/${r}/STATUS.tsv`)) ||
+			!fs.existsSync(path.join(REPO, `research/spec-reconcile-backtest/runs/${r}/SCORES.tsv`)),
+	);
+check(
+	"every non-grandfathered round ships both STATUS.tsv and SCORES.tsv",
+	missingArtifacts.length === 0,
+	`rounds missing them: ${JSON.stringify(missingArtifacts)}`,
+);
 
 check(
 	"round 3 publishes a machine-readable per-fixture verdict",
@@ -628,8 +701,15 @@ check(
 			!!c2 &&
 			rubric.includes(`${c1[4]} scoreable findings`) &&
 			rubric.includes(`${c2[4]} scoreable findings`) &&
+			rubric.includes(`${c1[3]} labelled`) &&
 			rubric.includes(`${c2[3]} labelled`),
 		`SCORES: C1 ${c1?.[4]}/${c1?.[3]}, C2 ${c2?.[4]}/${c2?.[3]}`,
+	);
+	// The skill quotes the control's pair too, and was cross-checked against nothing.
+	check(
+		"the skill's quoted counts match SCORES.tsv as well",
+		!!c1 && skill.includes(`${c1[4]}\nscoreable findings (${c1[3]} labelled)`),
+		`skill must carry "${c1?.[4]} scoreable findings (${c1?.[3]} labelled)"`,
 	);
 }
 

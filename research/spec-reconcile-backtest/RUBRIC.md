@@ -4,8 +4,9 @@ Corpus SHA: **`9b2a16e`** (`princess-pi-packages` `main`, before #158 landed) fo
 **F5 pins its own corpus** — `bf4d104`, the commit before #382 landed — because a fixture
 is a tree *and* a question, and F5's question did not exist in the older tree. **Every round
 declares its SHA in `prompts/<round>/FIXTURE_SHA`** — rounds 1-2 carry `9b2a16e`, round 3
-carries `bf4d104`. There is no fallback: a round without the marker is refused (exit 2), as
-is an env `FIXTURE_SHA` contradicting it (exit 5).
+carries `bf4d104`. There is no fallback: a round without the marker is refused (exit 2), and an env
+`FIXTURE_SHA` contradicting it is refused (exit 5) unless `OVERRIDE_SHA=1` says so
+deliberately — a run under that override is not a scoreable result.
 `tests/spec-163-spec-reconcile.test.ts` asserts both the presence and the value.
 Score auditor output in `runs/<round>/` against the five fixtures below.
 
@@ -108,8 +109,8 @@ reach it, then change the skill.
   artifact. Nothing stronger. At `bf4d104` no tracked artifact carried that claim —
   `docs/dev-workflow-spec.md:449` says *"destination-aware, not a flat block list"* — but the
   control is expected to return plenty of *other* drift, and it does. **"Clean" means clean on
-  the F5 claim, never clean overall**; the 2026-08-19 control returned 59 scoreable findings, two of
-  which were filed as live bugs. A control that returns nothing at all is a dead auditor
+  the F5 claim, never clean overall**; the 2026-08-19 control returned 59 scoreable findings, three of
+  which were filed (#389, #391, and #392's spec half — see the issue table below; count them there rather than trusting this sentence). A control that returns nothing at all is a dead auditor
   (check `STATUS.tsv`), not a result.
 - **Bonus signal:** a strong auditor reports the offending sentence **verbatim**, so the
   correction can be pinned as a claim-table entry (§2 Tier 4) rather than merely reworded.
@@ -133,8 +134,8 @@ reach it, then change the skill.
 | Glossary | `CONTEXT.md` has `## Language — Serve` and **no wtft section**. The auditor must say so and invent nothing. Applying serve's `_Avoid_` list to wtft is a **fail** — it is inventing a ruling |
 | Triage smell | Output grouped "most important first", or a stated word budget, means findings were dropped (§1 granularity) |
 | Absence declared (F5, **C2 only**) | `./host/claude-CLAUDE.md` and `./host/claude-settings.json` are deliberately absent from the corpus. The host-scoped auditor must SAY they are missing — the control's prompt never names them, so this row is not scored against it. Silence is a fail — a host check that finds no file and reports nothing is the failure mode `##SKIP##` exists to prevent. The absence is pinned by `tests/spec-163-spec-reconcile.test.ts`, which asserts `fixtures/host/` holds exactly the one expected file; adding either file silently inverts this row |
-| Scores are machine-readable (round 3 on) | `runs/<round>/SCORES.tsv` carries the per-arm, per-fixture verdict and the labelled/scoreable counts this file quotes in prose. The test asserts the two agree, so a rescoring cannot drift from the record. Rounds 1-2 predate it |
-| Auditor actually ran (round 3 on) | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor, and its `#` header records the round, corpus SHA, model, and whether the host overlay was staged — the fact F5's validity rests on. Rounds 1-2 predate the file and are exempt. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
+| Scores are machine-readable (every round but 1-2) | `runs/<round>/SCORES.tsv` carries the per-arm, per-fixture verdict and the labelled/scoreable counts this file quotes in prose. The test asserts the two agree, so a rescoring cannot drift from the record. Rounds 1-2 are grandfathered **by name** in `tests/spec-163-spec-reconcile.test.ts`, so a round 4 shipping without these files fails the suite rather than shipping unscored |
+| Auditor actually ran (every round but 1-2) | `runs/<round>/STATUS.tsv` shows exit `0` for every auditor, and its `#` header records the round, corpus SHA, model, and whether the host overlay was staged — the fact F5's validity rests on. Rounds 1-2 predate the file and are exempt by name; every later round is required to carry it. A killed or unauthenticated auditor emits zero findings, which scores identically to a clean control. Check this BEFORE reading a transcript as a result |
 
 ## Result log
 

@@ -34,12 +34,13 @@
 #
 # exit codes:
 #   0  every auditor exited 0
-#   1  at least one auditor exited non-zero, or produced an empty transcript — see STATUS.tsv
+#   1  at least one auditor exited non-zero, or wrote fewer than 200 bytes — see STATUS.tsv
 #   2  usage — no such round, round has no *.txt prompts, round has no/blank FIXTURE_SHA,
 #      unknown argument
 #   3  corpus — not a git repo, `git archive`/`tar` failed, overlay missing, corpus already
 #      carries host/
-#   4  refused — OUT already holds a SCORED record; set OVERWRITE=1 or OUT=<path>
+#   4  refused — OUT already holds a SCORED record; set OVERWRITE=1 or OUT=<path>.
+#      A round with transcripts but no STATUS.tsv counts as a record (rounds 1-2 predate it).
 #   5  sha — env FIXTURE_SHA contradicts the round's marker; set OVERRIDE_SHA=1
 # ---
 set -euo pipefail
@@ -90,21 +91,46 @@ PROMPTS=("$PROMPT_DIR"/*.txt)
 
 STATUS="$OUT/STATUS.tsv"
 
-# --- Is OUT a SCORED RECORD, or wreckage? STATUS.tsv decides — never transcript text, which
-#     an auditor may legitimately quote. A record is: the file exists, it has at least one
-#     auditor row, and EVERY row is exit 0. Anything else is wreckage and may be replaced.
+# --- Is OUT a SCORED RECORD, or wreckage? Never decided by transcript text, which an
+#     auditor may legitimately quote.
+#
+#     Two ways to be a record:
+#       1. STATUS.tsv is present, has auditor rows, and EVERY row is a clean exit 0.
+#       2. There is no STATUS.tsv but there ARE transcripts — a LEGACY record. Rounds 1-2
+#          were scored in 2026-08-10, before STATUS.tsv existed, and RUBRIC's result log
+#          cites them. An earlier revision of this guard read "no STATUS.tsv" as wreckage,
+#          so a bare `run-backtest.sh` (ROUND defaults to round2-fixed) would have DELETED
+#          the very transcripts the record depends on — the guard inverted onto exactly
+#          what it exists to protect (#383 review).
+#
+#     Wreckage is therefore the narrow case: a STATUS.tsv that says the run failed, or that
+#     is malformed. A row whose exit column is not a plain integer counts as failed — a
+#     truncated write must not read as a clean auditor.
 holds_record() {
-	[ -f "$STATUS" ] || return 1
+	if [ ! -f "$STATUS" ]; then
+		# Legacy record iff transcripts are present.
+		local mds=("$OUT"/*.md)
+		[ -n "${mds[0]:-}" ] && return 0
+		return 1
+	fi
 	local rows
 	rows="$(grep -v '^#' "$STATUS" | tail -n +2 || true)"
 	[ -n "$rows" ] || return 1
-	! printf '%s\n' "$rows" | awk -F'\t' '$2 != 0 { found = 1 } END { exit !found }'
+	printf '%s\n' "$rows" | awk -F'\t' '
+		$2 !~ /^[0-9]+$/ { bad = 1 }
+		$2 + 0 != 0      { bad = 1 }
+		END { exit bad ? 1 : 0 }
+	'
 }
 
 if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 	if holds_record; then
 		if [ "${OVERWRITE:-0}" != "1" ]; then
-			echo "$OUT already holds a scored record (STATUS.tsv: all auditors exit 0)." >&2
+			if [ -f "$STATUS" ]; then
+				echo "$OUT already holds a scored record (STATUS.tsv: every auditor exit 0)." >&2
+			else
+				echo "$OUT holds a legacy scored record (transcripts, no STATUS.tsv — it predates the file)." >&2
+			fi
 			echo "Set OVERWRITE=1 to replace it, or OUT=<path> to write elsewhere." >&2
 			exit 4
 		fi
@@ -114,7 +140,9 @@ if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
 	fi
 	# Clear first either way: a re-run with renamed or fewer prompts would otherwise leave
 	# stale transcripts beside the new ones, with STATUS.tsv describing only the new set.
-	rm -f "$OUT"/*.md "$OUT"/STATUS.tsv
+	# SCORES.tsv too: leaving it behind publishes verdicts for transcripts that no longer
+	# exist, which is the same defect one file over.
+	rm -f "$OUT"/*.md "$OUT"/STATUS.tsv "$OUT"/SCORES.tsv
 fi
 mkdir -p "$OUT"
 
@@ -123,8 +151,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- An unchecked extraction is a corpus you did not get. Report it as a corpus failure
 #     rather than letting tar's own exit code masquerade as this script's "usage".
-git -C "$REPO" archive "$FIXTURE_SHA" > "$WORK/corpus.tar" 2>/dev/null \
-	|| { echo "git archive $FIXTURE_SHA failed in $REPO — is the SHA reachable from this clone?" >&2; exit 3; }
+git -C "$REPO" archive "$FIXTURE_SHA" > "$WORK/corpus.tar" 2> "$WORK/archive.err" \
+	|| { echo "git archive $FIXTURE_SHA failed in $REPO:" >&2; cat "$WORK/archive.err" >&2; exit 3; }
 tar -x -f "$WORK/corpus.tar" -C "$WORK" \
 	|| { echo "tar could not extract the corpus for $FIXTURE_SHA" >&2; exit 3; }
 rm -f "$WORK/corpus.tar"
@@ -138,8 +166,8 @@ HOST_OVERLAY=no
 if [ -f "$PROMPT_DIR/STAGE_HOST" ]; then
 	[ -d "$HERE/fixtures/host" ] || { echo "round $ROUND asks for the host overlay, but $HERE/fixtures/host is missing" >&2; exit 3; }
 	[ -e "$WORK/host" ] && { echo "corpus $FIXTURE_SHA already contains host/ — refusing to overlay onto it" >&2; exit 3; }
-	mkdir -p "$WORK/host"
-	cp -R "$HERE/fixtures/host/." "$WORK/host/"
+	mkdir -p "$WORK/host" || { echo "could not create $WORK/host for the overlay" >&2; exit 3; }
+	cp -R "$HERE/fixtures/host/." "$WORK/host/" || { echo "could not stage the host overlay into $WORK/host" >&2; exit 3; }
 	HOST_OVERLAY=yes
 fi
 
@@ -168,7 +196,14 @@ for p in "${PROMPTS[@]}"; do
 	( cd "$WORK" && timeout 900 claude -p "$(cat "$p")" \
 		--model "$MODEL" \
 		--allowedTools "Read,Grep,Glob" ) > "$OUT/$name.md" 2>&1 || rc=$?
-	bytes=$(wc -c < "$OUT/$name.md" | tr -d '[:space:]')
+	# If the redirection itself failed there is no file to measure, and `set -e` would
+	# abort here — leaving STATUS.tsv holding only the earlier, successful rows, which
+	# holds_record would then read as a clean record. Record the failure instead.
+	if ! bytes=$(wc -c < "$OUT/$name.md" 2>/dev/null | tr -d '[:space:]'); then
+		bytes=0
+		rc=1
+		echo "auditor $name produced no readable transcript" >&2
+	fi
 	# An auditor that exits 0 having written nothing is not a clean run with no findings —
 	# it is a run that produced no evidence either way.
 	if [ "$rc" -eq 0 ] && [ "$bytes" -lt 200 ]; then
