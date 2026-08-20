@@ -600,6 +600,12 @@ printf '%s' "$DIFF" > "$WORK/diff"
 # other way, so the scanner is written ONCE into this run's private work dir and
 # imported by both — a copy-pasted twin is a fix that lands in one place and rots
 # in the other, which is how the two copies diverged to begin with.
+#
+# This is NOT the shared library the spec says these scripts cannot have
+# (docs/dev-workflow-spec.md, "no shared library for them to source"):
+# install-workflow-tools still copies exactly one file to ~/bin. This one is
+# generated per run inside $WORK and dies with the EXIT trap, so there is nothing
+# on PATH to install, version, or drift.
 cat > "$WORK/prjson.py" <<'PYJSON' || { echo "pr-review: cannot write the shared parser into '$WORK'." >&2; exit 3; }
 """Brace-balanced JSON extraction from a model response.
 
