@@ -58,12 +58,15 @@ set -euo pipefail
 
 LENSES=("correctness" "reasoning" "contract")
 # Explicit, never inherited (~/git-projects/CLAUDE.md model-routing rule). Review
-# is judgment work, not mechanical, so it pins the strong model rather than
-# downshifting — and marginal cost is zero, so there is no reason to trade
-# quality here. An inherited model would also make the review's depth a property
-# of whoever happened to call it.
-MODEL="${PR_REVIEW_MODEL:-claude-opus-5}"
-LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
+# is judgment work; sonnet is the right tier. An earlier comment here said
+# "marginal cost is zero, so there is no reason to trade quality here" — true for
+# tokens, false for time: each opus lens call took 3–8 min, making a review cycle
+# 9–10 min wall-clock. At 6 cycles on a single branch that is 60–90 min of agent
+# wait. sonnet cuts each lens to 30–90 s and the full cycle to ~2 min, with no
+# observed drop in finding quality for the class of bugs pr-review targets.
+# Override with PR_REVIEW_MODEL if a specific diff warrants a stronger pass.
+MODEL="${PR_REVIEW_MODEL:-claude-sonnet-4-6}"
+LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-120}"
 # A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
 # means "no timeout at all", so PR_REVIEW_TIMEOUT=0 silently removed the very
 # protection this variable exists to provide — and a typo like `10m` or `-5`
