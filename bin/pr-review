@@ -110,6 +110,22 @@ case "$LENS_TIMEOUT" in
   ''|*[!0-9]*) echo "pr-review: PR_REVIEW_TIMEOUT must be a positive whole number of seconds (got '$LENS_TIMEOUT')" >&2; exit 2 ;;
 esac
 [ "$LENS_TIMEOUT" -gt 0 ] || { echo "pr-review: PR_REVIEW_TIMEOUT must be greater than 0 — 'timeout 0' disables the ceiling entirely" >&2; exit 2; }
+# AFTER the validation above, never before: `[ "$LENS_TIMEOUT" -eq 600 ]` on a
+# non-numeric value fails under `set -e` and swallows the specific exit-2
+# message that tells the caller what is actually wrong.
+DEFAULT_MODEL="claude-sonnet-5"
+DEFAULT_TIMEOUT=600
+# The rule "a slower model needs the ceiling raised" was stated in three
+# comments and enforced nowhere — the shape this script's own contract lens is
+# told to flag. It cannot be checked properly: no table maps a model name to a
+# duration, and any string is a legal model. But the ONE combination the
+# measurements condemn is checkable — a non-default model at the default
+# ceiling, which is the config behind #403's silent partial coverage.
+if [ "$MODEL" != "$DEFAULT_MODEL" ] && [ "$LENS_TIMEOUT" -eq "$DEFAULT_TIMEOUT" ]; then
+  echo "⚠️  pr-review: PR_REVIEW_MODEL is '$MODEL' at the default ${DEFAULT_TIMEOUT}s ceiling." >&2
+  echo "   #398 measured an opus lens exceeding 600s. If lenses time out, the run" >&2
+  echo "   still exits 0 with partial coverage — raise PR_REVIEW_TIMEOUT to match." >&2
+fi
 # TERM asks; KILL insists. `timeout` sends only TERM, so a reviewer that traps or
 # ignores it keeps the lens wrapper — and the `wait` below — blocked forever,
 # which is precisely the hang the ceiling was added to prevent. The grace is a
@@ -1086,6 +1102,17 @@ def _read_int(lens, suffix):
         return None
 
 
+def _unreadable(lens, why, raw):
+    """One envelope, always the same keys. These two paths used to omit stderr,
+    exitCode and elapsedSec entirely while the published contract said the values
+    "may be null" — so a consumer doing f["exitCode"] got a KeyError, not a null,
+    and had to branch on key presence after all. Absent and null are different
+    facts; the docs promised the second, so the code supplies it."""
+    return {"lens": lens, "why": why, "cause": "unreadable", "raw": raw,
+            "stderr": "", "exitCode": _read_int(lens, "code"),
+            "elapsedSec": _read_int(lens, "elapsed")}
+
+
 def fail(lens, why, cause="failed"):
     err = os.path.join(work, f"{lens}.err")
     detail = ""
@@ -1171,8 +1198,7 @@ for lens in lenses:
         # `cause` on EVERY entry, including this one. Publishing the enum while
         # two paths omitted the key made a consumer branch on key PRESENCE — the
         # exact prose-parsing the field exists to remove (#403 reconcile).
-        failed.append({"lens": lens, "why": str(parsed), "cause": "unreadable",
-                       "raw": _clip(text, 2000)})
+        failed.append(_unreadable(lens, str(parsed), _clip(text, 2000)))
         continue
     s, e = span
     try:
@@ -1197,8 +1223,8 @@ for lens in lenses:
                                     f"not objects or carried no title or detail",
                              "raw": _clip(text[s:e + 1], 2000)})
     except Exception as exc:
-        failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",
-                       "cause": "unreadable", "raw": _clip(text[s:e + 1], 2000)})
+        failed.append(_unreadable(lens, f"findings JSON invalid: {exc}",
+                                  _clip(text[s:e + 1], 2000)))
         continue
 
 # STATUS distinguishes complete from partial coverage. Collapsing them into

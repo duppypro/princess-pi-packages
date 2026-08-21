@@ -1237,6 +1237,45 @@ console.log("\na finding that says nothing is not a finding:");
 }
 
 
+{
+	// The model/ceiling rule was prose in three comments and code in none — the
+	// "stated but not enforced" shape pr-review's own contract lens hunts for.
+	// Only the combination the measurements condemn is checkable, so only that
+	// one warns (#403).
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	env.PR_REVIEW_MODEL = "claude-opus-5";
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	check(code === 0, "a non-default model at the default ceiling still reviews", `${code}: ${out}`);
+	check(/PR_REVIEW_MODEL is 'claude-opus-5' at the default 600s ceiling/.test(out),
+		"…and warns, naming both values rather than the rule in the abstract", out);
+	const raised = stubs(sb, "clean");
+	raised.PR_REVIEW_MODEL = "claude-opus-5";
+	raised.PR_REVIEW_TIMEOUT = "900";
+	check(!/at the default 600s ceiling/.test(run(PR_REVIEW, sb.clone, raised).out),
+		"…and says nothing once the ceiling is raised — a warning that always fires is noise", out);
+	const dflt = stubs(sb, "clean");
+	check(!/at the default 600s ceiling/.test(run(PR_REVIEW, sb.clone, dflt).out),
+		"…and nothing for the default model, which is what the ceiling was measured against", out);
+}
+{
+	// Every failedLenses entry, same keys. The two parse-failure paths omitted
+	// stderr/exitCode/elapsedSec entirely while the published contract said the
+	// VALUES may be null — so `f["exitCode"]` raised instead of returning null,
+	// and a consumer had to branch on key presence after all.
+	const sb = makeSandbox();
+	const env = stubs(sb, "errorobject");
+	run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.failedLenses.length === 3, "an unusable answer fails every lens", String(d.failedLenses.length));
+	for (const key of ["lens", "why", "cause", "stderr", "exitCode", "elapsedSec"]) {
+		check(d.failedLenses.every((f: any) => key in f),
+			`…and every entry carries '${key}' — present, even when null`,
+			JSON.stringify(d.failedLenses.map((f: any) => Object.keys(f))));
+	}
+}
+
 console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 {
 	// Timeout path: `timeout` kills the stub, exit 124.
