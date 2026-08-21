@@ -535,7 +535,16 @@ if [ "$TMP_VERDICT" != "ok|" ]; then
   fi
 fi
 
-REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
+# #406: NOT `basename "$(git rev-parse --show-toplevel)"`. Inside a worktree,
+# --show-toplevel is the WORKTREE path — and pr-open documents running from
+# exactly that layout, `<repo>/.claude/worktrees/<branch>/` — so REPO_NAME
+# resolved to the branch directory name and logs scattered one directory per
+# branch, orphaned by `pr-cleanup` deleting the worktree out from under them.
+# --git-common-dir resolves to the MAIN clone's `.git` in both a worktree and
+# the main clone itself (git shares one `.git` across all of a repo's
+# worktrees by design), so its parent's basename is the repo, stable either
+# way. --path-format=absolute makes that true from any cwd, not only the top.
+REPO_NAME=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
 # Resolved in steps rather than by nested `${A:-${B:-$C}}`, because HOME is not
 # guaranteed. Under `set -u` the nested form aborted the whole script on
 # "HOME: unbound variable" with exit 1 — a code in no table here — in exactly the

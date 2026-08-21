@@ -285,6 +285,56 @@ console.log("\nthe log is written every run:");
 	}
 }
 
+// --- #406: the log directory groups by REPOSITORY, not worktree basename ----
+// `basename "$(git rev-parse --show-toplevel)"` resolves to the WORKTREE path
+// inside a worktree, so a branch checked out at `<repo>/.claude/worktrees/<br
+// anch>/` — pr-open's own documented layout — logged to a directory named
+// after the branch instead of the repo, scattering one directory per branch
+// that `pr-cleanup` then orphans. `--path-format=absolute --git-common-dir`
+// resolves to the MAIN clone's `.git` in both a worktree and the main clone
+// itself, so its parent's basename is the repo, stable across both.
+console.log("\n#406: the log directory groups by repo, not worktree basename:");
+{
+	const sb = makeSandbox();
+	// A worktree whose directory basename is NOT the repo name — the exact shape
+	// of pr-open's own documented layout (`<repo>/.claude/worktrees/<branch>/`).
+	const wtDir = path.join(sb.root, "406-feature-worktree");
+	git(sb.clone, ["worktree", "add", "-q", "-b", "406-feature", wtDir]);
+	fs.writeFileSync(path.join(wtDir, "wtfile.txt"), "hi\n");
+	git(wtDir, ["add", "-A"]);
+	git(wtDir, ["commit", "-q", "-m", "feat: worktree change"]);
+
+	const xdg = path.join(sb.root, "xdg-state");
+	// PR_REVIEW_LOG_DIR is dropped so the script computes the DEFAULT path from
+	// XDG_STATE_HOME/REPO_NAME — the thing under test — rather than the
+	// sandbox override every other case here uses. `-u` on the invocation
+	// guards against a PR_REVIEW_LOG_DIR the host itself happens to export,
+	// same pattern as the "no HOME" case above.
+	const { PR_REVIEW_LOG_DIR: _dropped, ...env } = stubs(sb, "clean");
+	env.XDG_STATE_HOME = xdg;
+	const runDefault = (cwd: string) =>
+		run("/usr/bin/env", cwd, env, ["-u", "PR_REVIEW_LOG_DIR", PR_REVIEW]);
+
+	const { code: c1, out: o1 } = runDefault(wtDir);
+	const { code: c2, out: o2 } = runDefault(sb.clone);
+	check(c1 === 0, "run from the worktree still reviews and exits 0", `got ${c1}: ${o1}`);
+	check(c2 === 0, "run from the main clone still reviews and exits 0", `got ${c2}: ${o2}`);
+
+	const repoName = path.basename(sb.clone); // "clone" — the main clone's own dirname
+	const repoDir = path.join(xdg, "pr-review", repoName);
+	const worktreeDir = path.join(xdg, "pr-review", path.basename(wtDir));
+
+	check(fs.existsSync(repoDir), "the repo-named log directory exists", repoDir);
+	check(!fs.existsSync(worktreeDir),
+		"no directory named after the worktree basename is created", worktreeDir);
+	const logs = fs.existsSync(repoDir) ? fs.readdirSync(repoDir).filter((f) => f.endsWith(".json")) : [];
+	check(logs.length === 2,
+		"both runs — worktree AND main clone — logged into the SAME repo directory",
+		JSON.stringify(logs));
+
+	git(sb.clone, ["worktree", "remove", "-f", wtDir]);
+}
+
 console.log("\npr-open gate behaviour:");
 {
 	const sb = makeSandbox();
