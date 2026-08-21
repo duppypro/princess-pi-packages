@@ -1259,10 +1259,10 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 		JSON.stringify(d.failedLenses.map((f: any) => f.exitCode)));
 	check(/timed out/.test(out), "the human line says it timed out", out);
 	check(/PR_REVIEW_TIMEOUT/.test(out), "…and names the knob that raises it — the action, not just the state", out);
-	// NOT `!/or reviewer failure/` — that literal only ever existed inside a
-	// comment, so the check passed against any wording and would have survived
-	// deleting the split entirely. Assert the positive instead: the reviewer's
-	// own exit is not blamed, because there is no reviewer exit to blame.
+	// Still a negative, and a negative passes on empty output — the positives
+	// above (/timed out/, /PR_REVIEW_TIMEOUT/) are what prove the printer ran.
+	// It replaces `!/or reviewer failure/`, which matched a literal that only
+	// ever existed inside a comment and so could not fail at all.
 	check(!/reviewer exited/.test(out),
 		"…and does not also blame the reviewer, which is the ambiguity being removed", out);
 	check(d.failedLenses.every((f: any) => typeof f.elapsedSec === "number"),
@@ -1326,11 +1326,11 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 }
 {
 	// The default itself. #398 moved the model opus→sonnet and the ceiling
-	// 600s→180s in one commit; the measurements behind those numbers live in
-	// that PR and in #403, not in this file. What #403 measured: at 180s,
-	// ppp#378 got 1 of 3 lenses on two consecutive runs and missed two findings
-	// that 900s surfaced. 600 is the floor pinned here — the value that was in
-	// force for the runs that reviewed 3 of 3.
+	// 600s→180s in one commit; the measurements live in that PR and in #403,
+	// not in this file. What #403 records: at 180s, ppp#378 got 1 of 3 lenses
+	// on two consecutive runs. 600 is pinned as a FLOOR, not a guarantee — #403
+	// also records one opus lens exceeding 600s, so this stops the default
+	// being cost-tuned back down without a measurement, and claims no more.
 	const src = fs.readFileSync(PR_REVIEW, "utf8");
 	const m = src.match(/LENS_TIMEOUT="\$\{PR_REVIEW_TIMEOUT:-(\d+)\}"/);
 	check(m !== null, "the default lens timeout is still a single readable literal", String(m));

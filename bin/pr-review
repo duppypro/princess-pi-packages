@@ -86,13 +86,18 @@ LENSES=("correctness" "reasoning" "contract")
 # 3–8 min/lens; cycles ran 9–10 min wall-clock (6 cycles on ppp#378 = ~54–60 min
 # of agent wait). sonnet-5 measured 30–90 s/lens; full cycle ~2–3 min.
 # A lens that exceeds the ceiling is counted as failed; if all three fail,
-# COUNT=0 → exit 0, which pr-open maps to "reviewer unavailable". That path is
-# NOT silent unless --quiet is passed — pr-review prints COVERAGE INCOMPLETE to
-# stderr and pr-open forwards it — but it does not block the PR, so the gate
-# effectively did not run. #403 is that failure measured: at the old 180s
-# default, ppp#378 got ONE of three lenses twice running and missed two real
-# findings, while exiting 0. 600s covers both measured ranges — sonnet at
-# 30–90 s and opus at 3–8 min — so neither model times out at the default.
+# COUNT=0 → exit 0, and pr-open opens the PR with no message at all — it prints
+# "proceeding unreviewed" only for a NONZERO status, so this path is quieter
+# than a broken reviewer. That path is
+# printed as COVERAGE INCOMPLETE on stderr — but BOTH --quiet and --json
+# suppress that line, and it does not block the PR either way, so the gate can
+# report exit 0 having effectively not run. A machine caller must read
+# lensesRan, never the exit code alone.
+# #403 is that failure measured: at the old 180s default, ppp#378 got ONE of
+# three lenses on two consecutive runs and opened its PR on the survivor.
+# 600s is the value those measurements support, not a ceiling that guarantees
+# anything: one opus lens exceeded 600s during #398's own runs. Nothing here
+# compares MODEL against LENS_TIMEOUT, so a slower model still needs a raise.
 MODEL="${PR_REVIEW_MODEL:-claude-sonnet-5}"
 LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
 # A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
@@ -147,15 +152,19 @@ baseSha/headSha (the exact input, reproducible with `git diff BASE..HEAD`),
 lenses, lensesRan, failedLenses, lensWarnings, findings, distinct,
 distinctFindings, dedup/dedupNote, branch, base, utc, model, and the coverage
 measurements lensTimeoutSec (the ceiling in force) and lensSeconds (per lens,
-seconds). Every failedLenses entry carries cause: "timeout" (the ceiling expired),
-"killed" (died well inside it — an OOM kill looks like a timeout by exit code
-alone), "failed" (the reviewer's own nonzero exit), "unknown" (no exit code was
-recorded), or "unreadable" (the lens answered and the answer could not be
-parsed). The first four also carry exitCode and elapsedSec; "unreadable"
-carries raw instead. No caller ever parses the human sentence.
-The EARLY-EXIT paths (not a repo, precondition, diff failed, no changes,
+seconds). Every failedLenses entry carries cause, one of: "timeout" (124/137 and the
+elapsed time reached the ceiling), "killed" (124/137 well inside it — an OOM
+kill is indistinguishable by exit code alone), "failed" (everything else the
+collector rejects, including a lens that exited 0 with no output or an
+unusable envelope), "unknown" (no exit code was recorded), "unreadable" (the
+lens answered and the collector could not use the answer). Entries also carry
+why and stderr, and exitCode/elapsedSec where they were recorded — either may
+be null. No caller ever parses the human sentence.
+The five emit_status paths (not a repo, precondition, diff failed, no changes,
 reviewer unavailable) emit a different, smaller object with NO schema key and a
 `message` key instead — treat a missing `schema` as "this run never started".
+Usage errors and every exit 3 emit NO JSON at all, even under --json: a caller
+must handle an empty stdout, and read the exit code for those.
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
             3 precondition (protected branch, diff failed) · 7 findings
@@ -890,9 +899,10 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
 # rather than interpolated, because the heredoc that writes this whole file
 # is quote-delimited and takes no shell substitution. Nothing enforces the
 # two staying in sync. FINDINGS_ECHOES_SOFT and FINDINGS_ECHOES_HARD at least
-# have an independent restatement to catch drift: tests/pr-review-gate.test.ts's
-# hazard cases hardcode both literals separately from these constants, so a
-# reworded RULES schema would fail a hazard case rather than pass silently.
+# have an independent restatement in tests/pr-review-gate.test.ts, whose hazard
+# cases hardcode both literals separately from these constants — so a drifted
+# CONSTANT fails a hazard case. A reworded RULES heredoc with the constant left
+# alone fails nothing; see the limit stated below, which applies to both halves.
 # GROUPS_ECHOES_HARD is held to the same standard, with the same LIMIT, and the
 # limit is worth stating because the earlier wording here overclaimed: the hazard
 # cases hardcode these literals separately from the constants, so they fail when
@@ -1463,11 +1473,12 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 for f in d["failedLenses"]:
     print("    {}: {}".format(f["lens"], f["why"]))
-    # A timeout and a crashed reviewer take different actions, so they get
-    # different second lines. The timeout names the knob and the value to beat;
-    # anything else quotes what the reviewer itself said, which is the only
-    # place the real cause can be. Printing one merged sentence for both — the
-    # #403 bug — left the reader with a state and no verb.
+    # Each cause takes a different action, so each gets its own second line:
+    # timeout names the knob, killed points at dmesg, and everything else quotes
+    # the reviewer's own stderr. A `killed` lens's stderr is NOT printed — the
+    # branch consumes the chain — because an OOM-killed process rarely wrote
+    # any, and the log keeps it either way. Printing one merged sentence for all
+    # of them — the #403 bug — left the reader with a state and no verb.
     if f.get("cause") == "timeout":
         print("      raise it: PR_REVIEW_TIMEOUT=<seconds> (currently {})".format(
             d.get("lensTimeoutSec") or "?"))
