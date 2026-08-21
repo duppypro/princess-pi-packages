@@ -389,8 +389,21 @@ strip_heredocs() {
       fi
       if [ -z "$q" ] && [ "$arith" -eq 0 ] && [ "$ch" = ')' ] && [ ${#qstack[@]} -gt 0 ]; then
         qtop="${qstack[$((${#qstack[@]} - 1))]}"; unset 'qstack[${#qstack[@]}-1]'
-        [ -n "$qtop" ] && outerq=$((outerq - 1))
-        q="$qtop"; continue
+        if [ "$qtop" != "GROUP" ]; then
+          [ -n "$qtop" ] && outerq=$((outerq - 1))
+          q="$qtop"
+        fi
+        continue
+      fi
+      # Bare `(` - a subshell/grouping paren, not a `$(` (that case already
+      # `continue`d above). It doesn't touch q, but it MUST be pushed so its
+      # own `)` isn't mistaken for the closer of an enclosing `$(` (#400
+      # finding 1 review): `$(true; (true); cat <<'EOF' ...)` was popping the
+      # `$(`'s saved quote state on the FIRST `)` - the one closing `(true)` -
+      # leaving the real closer to read as ordinary text and the heredoc to
+      # never open.
+      if [ -z "$q" ] && [ "$arith" -eq 0 ] && [ "$ch" = '(' ]; then
+        qstack+=("GROUP"); continue
       fi
       if [ "$q" = "'" ]; then
         [ "$ch" = "'" ] && q=""

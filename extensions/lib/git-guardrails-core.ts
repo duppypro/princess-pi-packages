@@ -223,13 +223,25 @@ const HEREDOC_DELIM_CHARS = /[A-Za-z0-9_.+-]/;
 // enclosing quote was open, which is exactly the set of positions the old
 // top-level-only scan reached. `outerQuoted` counts those enclosing quotes.
 // ---
-function stripHeredocs(command: string): string {
+// Exported for tests/git-guardrails-parity.test.ts (#400 finding 1): the
+// end-to-end checkGitCommand() verdict stays correct today by coincidence —
+// checkSubstitutions() independently re-derives $( ) boundaries with a
+// correct paren counter and re-strips inside the recursion. A test must
+// assert on stripHeredocs's OWN output, or it proves nothing.
+export function stripHeredocs(command: string): string {
   const out: string[] = [];
   let delim: string | null = null;
   let dashed = false; // <<- : terminator may be tab-indented (#74 review finding 7)
   let q: "'" | '"' | null = null; // shell quotes span newlines — state persists across lines
   let arith = 0; // inside $(( )) a << is a bit-shift, never a heredoc opener
-  const substStack: ("'" | '"' | null)[] = []; // quote state saved at each `$(`
+  // Quote state saved at each `$(`, or the sentinel "GROUP" for a bare `(...)`
+  // subshell group (#400 finding 1 review): a bare `(` doesn't open a fresh
+  // quoting context the way `$(` does, but its `)` still has to be popped by
+  // its OWN closer, not mistaken for the closer of an enclosing `$(`. Without
+  // counting it, `$(true; (true); cat <<'EOF' ...)` popped the `$(`'s saved
+  // quote state on the FIRST `)` — the one closing `(true)` — leaving the real
+  // closer to be treated as ordinary text and the heredoc never entered.
+  const substStack: ("'" | '"' | null | "GROUP")[] = [];
   let outerQuoted = 0; // how many of those saved states had a quote open
   for (const line of command.split("\n")) {
     if (delim !== null) {
@@ -253,9 +265,18 @@ function stripHeredocs(command: string): string {
         continue;
       }
       if (q === null && arith === 0 && ch === ")" && substStack.length > 0) {
-        const outer = substStack.pop() ?? null;
-        if (outer !== null) outerQuoted--;
-        q = outer;
+        const frame = substStack.pop() ?? null;
+        if (frame !== "GROUP") {
+          if (frame !== null) outerQuoted--;
+          q = frame;
+        }
+        continue;
+      }
+      // Bare `(` — a subshell/grouping paren, not a `$(` (that case already
+      // `continue`d above). It doesn't touch `q`, but it MUST be counted so
+      // its own `)` doesn't get mistaken for the closer of an enclosing `$(`.
+      if (q === null && arith === 0 && ch === "(") {
+        substStack.push("GROUP");
         continue;
       }
       if (q === "'") {

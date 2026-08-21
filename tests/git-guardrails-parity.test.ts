@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
-import { checkGitCommand } from "../extensions/lib/git-guardrails-core";
+import { checkGitCommand, stripHeredocs as tsStripHeredocs } from "../extensions/lib/git-guardrails-core";
 import fixture from "./fixtures/git-guardrails-cases.json";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -265,5 +265,45 @@ describe("git-guardrails input-parse dependency (#390)", () => {
     // reaches this directly.
     expect(checkGitCommand(DANGEROUS, cwd)).not.toBeNull();
     expect(checkGitCommand("", cwd)).toBeNull();
+  });
+});
+
+// ---
+// #400 finding 1 (pr-review on #389/#390/#391/#399/#400): substStack pops on the
+// FIRST `)` after a `$(` with q===null, whether or not that `)` actually closes
+// the `$(` — a bare `(...)` subshell group nested inside is never counted, so its
+// `)` prematurely restores the quote state meant for the real closer. This is
+// masked end-to-end today because checkSubstitutions() independently re-finds
+// `$( )` boundaries with a correct paren counter and recurses — so a test must
+// assert on stripHeredocs's OWN output, never only the checkGitCommand verdict.
+// ---
+function shStripHeredocs(command: string): string {
+  const fnSrc = readFileSync(SH_HOOK, "utf8");
+  const m = fnSrc.match(/\nstrip_heredocs\(\) \{[\s\S]*?\n\}\n/);
+  if (!m) throw new Error("could not locate strip_heredocs() in hooks/block-dangerous-git.sh");
+  const res = spawnSync("bash", ["-c", `${m[0]}\nstrip_heredocs "$1"`, "--", command], {
+    encoding: "utf8",
+  });
+  if (res.status !== 0) throw new Error(`strip_heredocs failed: ${res.stderr}`);
+  return res.stdout.replace(/\n$/, "");
+}
+
+describe("git-guardrails stripHeredocs — nested bare subshell group (#400 finding)", () => {
+  // `(true)` is a bare subshell group nested inside the `$( )` — its `)` must
+  // not be mistaken for the closer of the outer `$(`.
+  const command = "echo \"$(true; (true); cat <<'EOF2'\ngit push origin main\nEOF2\n)\"";
+
+  test("ts: the quoted heredoc body is dropped even with a nested bare ( ) group inside $( )", () => {
+    const out = tsStripHeredocs(command);
+    expect(out, "heredoc body must be stripped at any depth for a QUOTED delimiter").not.toContain(
+      "git push origin main",
+    );
+  });
+
+  test("sh: the quoted heredoc body is dropped even with a nested bare ( ) group inside $( )", () => {
+    const out = shStripHeredocs(command);
+    expect(out, "heredoc body must be stripped at any depth for a QUOTED delimiter").not.toContain(
+      "git push origin main",
+    );
   });
 });
