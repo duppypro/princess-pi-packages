@@ -23,6 +23,32 @@ import * as path from "node:path";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
+const REPO_BIN = path.join(REPO_ROOT, "bin");
+
+// pr-review fails OPEN when `timeout` or `python3` is missing — every lens
+// fails, no findings are ever recorded, and pr-open still creates the PR.
+// That's correct behavior, but it also means the `claude` stub never runs on
+// such a host, so the claudeMarker canary below would report a defect in the
+// code under test when the code did exactly what its own contract promises.
+// Checked once, not per-case: this repo's own scripts already hard-depend on
+// GNU `timeout` (`--kill-after`), so this only matters on a host this suite
+// was never going to pass on anyway — but the canary shouldn't be what fails.
+const HAS_REVIEW_DEPS = ["timeout", "python3"].every(
+	(bin) => spawnSync("command", ["-v", bin], { shell: true }).status === 0);
+
+// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM. `exit`
+// alone does not fire on a signal — Node's default disposition terminates
+// without emitting it — so Ctrl-C mid-run (each case now spawns pr-review
+// with three stubbed lens calls) left a bare remote plus a clone per case
+// under /tmp forever; the signal handlers close that gap and re-raise the
+// conventional exit code afterward.
+const SANDBOXES: string[] = [];
+function cleanupSandboxes(): void {
+	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+}
+process.on("exit", cleanupSandboxes);
+process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
+process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
 
 let failures = 0;
 let checks = 0;
@@ -60,9 +86,11 @@ function commit(dir: string, file: string, body: string, msg: string): void {
 }
 
 interface Sandbox {
+	root: string;
 	clone: string;
 	binDir: string;
 	argvLog: string;
+	claudeMarker: string;
 }
 
 /**
@@ -71,6 +99,7 @@ interface Sandbox {
  */
 function makeSandbox(): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-"));
+	SANDBOXES.push(root);
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", "main"]);
@@ -90,8 +119,25 @@ echo "https://github.com/duppypro/princess-pi-packages/pull/999"
 `;
 	fs.writeFileSync(path.join(binDir, "gh"), gh);
 	fs.chmodSync(path.join(binDir, "gh"), 0o755);
+	// `claude` too, and for the same reason as `gh`: pr-open runs pr-review before
+	// it creates a PR (#377), so an unstubbed PATH sent every case here to the
+	// developer's real reviewer — measured at 196 real three-lens runs logged into
+	// ~/.local/state/pr-review/clone/ from the test suite alone. The stub reports a
+	// clean review, which is what these cases assume: they are about the stacked-
+	// base warning, not the gate.
+	//
+	// Unlike `gh`, nothing else here proves the stub is the one that ran: every
+	// case's assertions pass identically whether this stub answered or the
+	// host's real reviewer did, so a future PATH change or a lost `chmod` could
+	// re-bill real calls silently with the suite still green. `claudeMarker`
+	// closes that — runPrOpen() asserts it whenever a PR gets created.
+	const claudeMarker = path.join(root, "claude-called");
+	fs.writeFileSync(path.join(binDir, "claude"),
+		`#!/usr/bin/env bash\necho called >> ${JSON.stringify(claudeMarker)}\ncat >/dev/null\n` +
+		`printf '%s' '{"is_error":false,"result":"{\\"findings\\":[]}"}'\n`,
+		{ mode: 0o755 });
 
-	return { clone, binDir, argvLog };
+	return { root, clone, binDir, argvLog, claudeMarker };
 }
 
 /**
@@ -104,10 +150,38 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
-		env: { ...process.env, ...GIT_ENV, PATH: `${sb.binDir}${path.delimiter}${process.env.PATH}` },
+		// sb.binDir (the `claude`/`gh` stubs) and REPO_BIN are PREPENDED to the
+		// host's own PATH, in that order — see the `claude` stub above. The
+		// host's PATH was always behind sb.binDir; the real `claude` used to run
+		// not because of PATH ordering but because sb.binDir carried no `claude`
+		// stub at all until now. REPO_BIN is the actual fix here: it makes
+		// `command -v pr-review` resolve the repo's own copy ahead of any
+		// `pr-review` installed to ~/bin. `pr-guard` is unaffected either way —
+		// it is sourced by `readlink -f "$0"` from beside pr-open, never
+		// resolved through PATH. The host's PATH is kept, not replaced with a
+		// hardcoded list: pr-review also needs python3/timeout resolvable, and a
+		// fixed "/usr/bin:/bin" allowlist broke on any host that installs those
+		// elsewhere (homebrew, nix, asdf).
+		env: {
+			...process.env, ...GIT_ENV,
+			PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
+			PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
+		},
 	});
 	const out = `${r.stdout || ""}${r.stderr || ""}`;
 	const createdPr = fs.readFileSync(sb.argvLog, "utf8").includes("pr create");
+	// Gated on createdPr: a created PR cannot happen without pr-review having
+	// run and reported clean, so this is a real canary for the `claude` stub's
+	// own comment above — not vacuous, and not a false failure on a case that
+	// legitimately never reaches pr-review. Also gated on HAS_REVIEW_DEPS:
+	// without `timeout`/`python3`, pr-review's own documented fail-open still
+	// lets the PR through with the stub never invoked, which is correct
+	// behavior, not a defect this canary should flag.
+	if (createdPr && HAS_REVIEW_DEPS) {
+		check(fs.existsSync(sb.claudeMarker),
+			"pr created → the stubbed claude actually ran (not the host's real reviewer)",
+			`missing ${sb.claudeMarker}`);
+	}
 	return { code: r.status ?? -1, out, createdPr };
 }
 

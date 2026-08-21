@@ -29,13 +29,27 @@
 # waited unconditionally and would have wedged pr-open on a stalled reviewer,
 # the one failure this paragraph claims cannot happen.
 #
+# `timeout` covers a reviewer that STALLS, and only that. A reviewer that answers
+# promptly with pathological output stalls nothing and reaches the collector,
+# where the JSON scan runs after the timeout has already been satisfied. Four
+# scans per run, across TWO processes: the collector scans all three lens
+# responses sequentially in one python3, and the clustering pass scans again in
+# a second, separate python3. Neither is wrapped in `timeout`, and a maintainer
+# tracing the unwrapped path needs to look in both. That path is bounded by
+# MAX_FAILED_CANDIDATES instead: ~15-20s of CPU per scan at the cap, so tens of
+# seconds for a whole run, not the unbounded wedge. Two different stalls, two
+# different bounds; do not read the sentence above as covering both.
+#
 # --- Exit codes ---
 #   0  reviewed, nothing found (or fail-open: reviewer unavailable)
-#   2  usage error
 #   2  usage error — bad flags, or not run inside a git repository at all (the
 #      shared #224 table assigns that condition 2, and this file amends that
 #      table, so disagreeing with it here would ship the contradiction it fixes)
-#   3  precondition — on a protected branch, or the diff itself failed
+#   3  precondition — on a protected branch, the diff itself failed, or the work
+#      dir would not take the files the review passes need (the diff, the shared
+#      parser). Only THESE two $WORK writes are guarded this way — later writes
+#      (the cluster prompt, the collector's summary, a reviewer's raw output)
+#      are not, and the same ENOSPC there exits 1 bare instead; see the note below
 #   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
 #
 # Under `set -euo pipefail` a few unguarded operations can still exit 1 with no
@@ -587,7 +601,297 @@ kill_lenses() {
 trap 'rm -rf "$WORK"' EXIT
 trap 'kill_lenses; rm -rf "$WORK"; exit 130' INT
 trap 'kill_lenses; rm -rf "$WORK"; exit 143' TERM
-printf '%s' "$DIFF" > "$WORK/diff"
+# Guarded, like the parser write below. Unguarded, an unwritable $WORK ended the
+# script here at exit 1 with no message — and the exit-3 the parser write claims
+# for that condition was unreachable, because this line hits it first.
+printf '%s' "$DIFF" > "$WORK/diff" || { echo "pr-review: cannot write the diff into '$WORK'." >&2; exit 3; }
+
+# --- One JSON-span scanner, imported by both python blocks ---
+# The collector and the clustering pass both read a model response that may carry
+# prose around its payload, and both got it wrong in the same way. The collector's
+# greedy `first-{ .. last-}` was replaced with a balanced scan in #379; the
+# clustering pass kept the greedy span and so discarded a perfectly good grouping
+# whenever the model mentioned a ${VAR} or a {placeholder} while explaining itself
+# (#378). They are separate `python3` processes and cannot share a namespace any
+# other way, so the scanner is written ONCE into this run's private work dir and
+# imported by both — a copy-pasted twin is a fix that lands in one place and rots
+# in the other, which is how the two copies diverged to begin with.
+#
+# This is NOT the shared library the spec says these scripts cannot have
+# (docs/dev-workflow-spec.md, "no shared library for them to source"):
+# install-workflow-tools still copies exactly one file to ~/bin. This one is
+# generated per run inside $WORK and dies with the EXIT trap, so there is nothing
+# on PATH to install, version, or drift.
+cat > "$WORK/prjson.py" <<'PYJSON' || { echo "pr-review: cannot write the shared parser into '$WORK'." >&2; exit 3; }
+"""Brace-balanced JSON extraction from a model response.
+
+Written by pr-review into its own work dir; imported by the collector and by the
+clustering pass. Not installed, not importable from anywhere else.
+"""
+import json
+
+
+MAX_FAILED_CANDIDATES = 30000
+# Bounds the rescan below. Measured (this file's own decoder, `'{"a":' * n`):
+# 2000 → 0.13s, 4000 → 0.49s, 8000 → 1.94s, 20000 → 8.6s (20000 failed
+# candidates), 30000 → ~14-16s, plateauing around ~17-18s from 100000 openers
+# on. Growth is quadratic only up to a point and then flattens — a naive
+# (n/8000)²·1.94s extrapolation from the 8000 point overstates the plateau
+# region, so no single formula here is load-bearing; what matters is that the
+# cap turns "scales with however much malformed JSON the response carries" —
+# unbounded — into "at most on the close order of 15-20s of CPU regardless of
+# input size" (see MEDIUM/CONTRACT bin/pr-review:786 in the #378 pr-review
+# log: quadratic and uncapped "wedges pr-open through a door the timeout does
+# not cover"). #378's own hazard test feeds exactly the 20000-opener case and
+# must still reach the real payload past it, so the cap sits with headroom
+# above the measured 20000 — comfortably clear of the legitimate case, and
+# high enough that a reviewer's own output cap in practice keeps most real
+# responses far under it.
+
+
+def objects(text):
+    """Every TOP-LEVEL JSON object in `text`, in order, as (span, parsed) — plus,
+    for each '{' that begins something unreadable, (None, the decode error).
+
+    Top-level is the whole promise: after a candidate decodes, the scan resumes
+    past it, so an object nested inside a decoded one is never offered ON THE
+    SUCCESS path. On the FAILURE path this is not enforced — the scan resumes
+    one character past a '{' that raised, precisely so a genuinely nested
+    payload (a lens quoting `|| { echo ...` before its real object) still gets
+    found — so a model that wraps its answer in an outer object which itself
+    fails to close (truncated at the reviewer's output cap, the same E2BIG
+    concern noted at :741) can surface the nested object as if it were
+    top-level. `payload_with` below is what actually decides which candidate
+    is trusted; this function only enumerates them.
+
+    Every '{' is a candidate and the JSON DECODER decides, rather than a
+    hand-rolled brace count. Counting braces means re-implementing string and
+    escape rules, and this file got them wrong repeatedly: `${VAR}` in the prose
+    won the race against the real payload (macroscopeapp, PR #379); an unmatched
+    '{' — a lens quoting `|| { echo ...` — raised depth forever so no span was
+    ever yielded; and one odd '"' (a 6" gap, a quoted identifier) left the
+    scanner inside a string for the rest of the response. A stray '}' had to be
+    guarded by hand too, or depth went negative and hid every object after it.
+    `raw_decode` already knows all of this, and returns where the object ended
+    for free.
+
+    EVERY exception is caught, not just ValueError: `raw_decode` raises
+    RecursionError — a RuntimeError — on deeply nested input (measured: 20000
+    openers raise, 5000 do not). Letting it escape killed the collector before
+    it wrote its summary, and pr-review ended at exit 1 with an empty log, so a
+    review that HAD findings opened the PR unreviewed.
+
+    The rescan after a failed candidate is O(n²) in the number of failed
+    openers. Past MAX_FAILED_CANDIDATES the scan gives up and yields one final
+    (None, RuntimeError) — a bounded failure, not an unbounded hang; the
+    collector counts it the same as any other unreadable response.
+    """
+    dec = json.JSONDecoder()
+    i = 0
+    failed = 0
+    while True:
+        start = text.find("{", i)
+        if start < 0:
+            return
+        try:
+            parsed, end = dec.raw_decode(text, start)
+        except Exception as exc:  # noqa: BLE001
+            # Not a payload here; the next '{' may still open one. Advancing by a
+            # whole object is wrong on this path — the failure may BE the outer
+            # brace, with the real payload nested one line down.
+            failed += 1
+            if failed > MAX_FAILED_CANDIDATES:
+                # Tagged, not just raised: `payload_with` used to keep only the
+                # FIRST decode error it saw, so this — the reason the scan
+                # stopped at all, and the one case where a real payload may sit
+                # unread past the cutoff — lost to whatever unrelated stray
+                # brace failed first. The attribute lets payload_with recognise
+                # and prefer this one specifically.
+                capped = RuntimeError(
+                    f"gave up after {MAX_FAILED_CANDIDATES} unparseable '{{' — "
+                    "response too dense with malformed JSON to scan safely")
+                capped.scan_capped = True
+                yield None, capped
+                return
+            yield None, exc
+            i = start + 1
+            continue
+        yield (start, end - 1), parsed
+        i = end
+
+
+def payload_with(text, key, hard_echoes=(), soft_echoes=()):
+    """The JSON object among `text`'s top-level candidates that is genuinely the
+    payload: a dict whose `key` is a LIST, and not one of the prompt's own
+    schema examples echoed back.
+
+    Both halves of "dict whose key is a list" matter on their own.
+    `parsed.get(key, [])` used to default a missing key to empty, so
+    `{"error": "rate limited"}` became a lens that ran and found nothing — a
+    clean review manufactured out of a failure. Requiring the key means a
+    response that never contained one is a FAILURE, which is the treatment
+    every other unusable response already gets. A candidate carrying the key
+    with the WRONG type does not end the scan either — stopping there let
+    `{"findings":"none"}` in a preamble decide the answer, which is trusting
+    POSITION again, the exact habit this function exists to break.
+
+    `hard_echoes` and `soft_echoes` are exact objects the PROMPT ITSELF shows
+    the model as a schema example. A model that repeats one verbatim — before
+    its real answer, after it, or quoted mid-explanation ("since I did find
+    issues I am not returning {\"findings\":[]}") — produces a candidate that
+    passes every check above and is indistinguishable from a real answer by
+    shape alone. This function used to resolve that by trusting the FIRST such
+    candidate, then (briefly) the LAST — both are still position, and a
+    response that closes by repeating its own instructions defeated the LAST
+    rule exactly the way one that opens with them defeated the FIRST rule:
+    `payload_with('{"findings":[{"title":"REAL","detail":"d"}]}\\nRemember: '
+    'return {"findings":[]} if you find nothing.', "findings", FINDINGS_ECHOES_HARD, '
+    'FINDINGS_ECHOES_SOFT)` handed the answer to the trailing echo under
+    LAST-wins (the echo arguments matter here: called with none, as this
+    function's own default, the trailing `{"findings":[]}` is just a SECOND
+    genuine candidate and the call reports a disagreement instead — still
+    wrong, but a different wrong; the echo constants are what makes it
+    recognisable as an echo at all). Comparing by VALUE instead
+    removes position from the decision: a candidate is disqualified only when
+    it is byte-for-byte (structurally — key order and whitespace do not
+    matter, `dict` equality already ignores both) one of the objects the
+    prompt showed, and real content is kept no matter where in the response it
+    falls.
+
+    The two buckets exist because one of the prompt's examples is ALSO the
+    only correct answer for a genuinely clean review: `{"findings":[]}` is
+    both "the schema example for finding nothing" and "finding nothing".
+    Excluding it unconditionally broke the ordinary clean-lens case — a
+    response containing nothing BUT that object stopped being read as "ran,
+    found nothing" and started being read as "only echoed the prompt", which
+    is the exact "clean review manufactured out of a failure" merge this
+    function exists to prevent, just from the opposite direction. `soft_echoes`
+    is for exactly that shape: excluded only when a genuine (non-echo)
+    candidate also exists to prefer, accepted as the answer when it is the
+    ONLY qualifying candidate. `hard_echoes` is for shapes that are never a
+    real answer on their own — the placeholder finding's severity is
+    literally `"Critical|High|Medium|Low"`, and the placeholder grouping is a
+    grouping over indices that are not from any real response — so those are
+    excluded unconditionally, sole candidate or not.
+
+    More than one genuine candidate qualifying is a contradiction, not a hint
+    about which to trust — reported as a failure rather than guessed at, the
+    same fail-open treatment every other unusable response gets here.
+
+    Returns (span, parsed) or (None, reason).
+    """
+    reason = None
+    decode_error = None
+    capped_error = None
+    saw_echo = False
+    genuine = []
+    soft = []
+    for span, parsed in objects(text):
+        if span is None:
+            # Kept, and reported only if nothing better turns up: "could not be
+            # decoded" and "carried no findings" are different repairs, and this
+            # string is what the log's `why` and `dedupNote` show the human who
+            # is looking for a dropped finding. The scan-capped error (tagged by
+            # objects()) is kept SEPARATELY and always wins over an ordinary
+            # decode error below — it means the scan gave up before reaching
+            # the end of the response, which is a different, more urgent fact
+            # than "one candidate near the start failed to parse".
+            if getattr(parsed, "scan_capped", False):
+                capped_error = parsed
+            elif decode_error is None:
+                decode_error = parsed
+            continue
+        if not isinstance(parsed, dict) or key not in parsed:
+            if reason is None:
+                reason = f"no JSON object in the response carried a '{key}' list"
+            continue
+        if not isinstance(parsed[key], list):
+            reason = f"{key} is {type(parsed[key]).__name__}, expected list"
+            continue
+        if any(parsed == echo for echo in hard_echoes):
+            saw_echo = True
+            continue
+        if any(parsed == echo for echo in soft_echoes):
+            saw_echo = True
+            soft.append((span, parsed))
+            continue
+        # Deduplicated by VALUE, not counted as-is: a model that states its
+        # answer and then repeats it verbatim ("Here is my answer: {...} ...
+        # In summary, {...}") produces two structurally EQUAL candidates, and
+        # counting both as "genuine" read that as a disagreement and dropped
+        # the lens — a real regression the FIRST-match code never had, since
+        # a repeated payload is not a contradiction, it is the same answer
+        # said twice.
+        if not any(parsed == g for _, g in genuine):
+            genuine.append((span, parsed))
+    if len(genuine) == 1:
+        return genuine[0]
+    if len(genuine) > 1:
+        return None, (f"{len(genuine)} distinct '{key}' objects in the response disagree — "
+                      "cannot tell which is the answer")
+    # capped_error and decode_error outrank `soft`, not just `saw_echo`: a
+    # capped or undecodable scan means the response was never fully read, so
+    # the sole soft-echo candidate found so far ({"findings":[]}, indistinguishable
+    # from a genuine "found nothing") is not trustworthy either — the model's
+    # real answer, truncated at the output cap or sitting past the scan-cap
+    # cutoff, may be exactly what got cut off. Verified against a truncated
+    # E2BIG-shaped response: 'Return {"findings":[]} if you find nothing.\n' +
+    # a findings payload cut off mid-object used to return the empty echo as
+    # a CLEAN lens instead of a decode failure. `soft` is only safe to trust
+    # once the scan is known to have completed cleanly.
+    if capped_error is not None:
+        return None, str(capped_error)
+    if soft and decode_error is None:
+        return soft[0]
+    # saw_echo outranks `reason` even when `reason` is already set: an
+    # earlier non-payload candidate (a preamble object with the wrong key or
+    # type) used to win that message unconditionally, which pointed the human
+    # reading the log at "no object carried the key" when one actually did —
+    # and was rejected as the prompt's own placeholder, a different repair.
+    if saw_echo:
+        # The decode error rides along instead of being dropped. When an
+        # unparseable candidate and an echo both exist, "the only object was an
+        # echo" is true of what SURVIVED and misleading about what happened —
+        # and the unparseable one is the likelier home of the real answer, so a
+        # human reading `why` in the log needs to see that it was there.
+        echoed = f"the only '{key}' object in the response was the prompt's own schema, echoed back"
+        if decode_error is not None:
+            return None, f"{echoed} (another object could not be decoded: {decode_error})"
+        return None, echoed
+    if reason is None:
+        reason = ("response contains no JSON object" if decode_error is None
+                  else f"no JSON object in the response could be decoded ({decode_error})")
+    return None, reason
+
+
+# The exact schema examples shown to the model in the lens prompt (RULES,
+# below) and in the clustering prompt (CRULES, below) — duplicated here
+# rather than interpolated, because the heredoc that writes this whole file
+# is quote-delimited and takes no shell substitution. Nothing enforces the
+# two staying in sync. FINDINGS_ECHOES_SOFT and FINDINGS_ECHOES_HARD at least
+# have an independent restatement to catch drift: tests/pr-review-gate.test.ts's
+# hazard cases hardcode both literals separately from these constants, so a
+# reworded RULES schema would fail a hazard case rather than pass silently.
+# GROUPS_ECHOES_HARD is held to the same standard: the same file's hazard
+# cases echo this grouping both before and after the real answer, hardcoded
+# separately from this constant, so a reworded CRULES schema fails a hazard
+# case rather than drifting unnoticed. If either prompt's example changes,
+# these constants must change with it, and both sides now say so in a test.
+#
+# The empty findings list is a SOFT echo: unlike the placeholder finding or
+# the placeholder grouping, it doubles as the one correct answer for "ran,
+# found nothing" — see payload_with's docstring for why that splits it out.
+FINDINGS_ECHOES_SOFT = (
+    {"findings": []},
+)
+FINDINGS_ECHOES_HARD = (
+    {"findings": [{"severity": "Critical|High|Medium|Low", "file": "path", "line": 123,
+                    "title": "short", "detail": "what is wrong and why it matters"}]},
+)
+GROUPS_ECHOES_HARD = (
+    {"groups": [[0, 3], [1], [2, 4, 5]]},
+)
+PYJSON
 
 lens_prompt() {
   case "$1" in
@@ -672,70 +976,6 @@ def _open_private(path):
 
 
 
-def _balanced_objects(text):
-    """Every top-level brace-balanced {...} span, in order, ignoring braces
-    inside strings.
-
-    Was `_balanced_object`, returning only the FIRST. One `${VAR}` in the
-    reviewer's prose, or any JSON-shaped preamble, therefore won the race against
-    the real payload — and the lens was filed as unparseable, or worse, parsed as
-    an object with no `findings` and counted as a CLEAN review (macroscopeapp,
-    PR #379). Yielding every candidate lets the caller pick the one that is
-    actually a review result instead of trusting position.
-    """
-    depth = 0
-    start = -1
-    in_str = False
-    esc = False
-    for i, ch in enumerate(text):
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start >= 0:
-                    yield start, i
-
-
-def _review_payload(text):
-    """The first balanced object that is actually a review result.
-
-    A review result is an object with a `findings` LIST. Both halves matter:
-    `parsed.get("findings", [])` used to default a missing key to empty, so
-    `{"error": "rate limited"}` became a lens that ran and found nothing —
-    a clean review manufactured out of a failure. Requiring the key means a
-    response that never contained one is a FAILED lens, which is the treatment
-    every other unusable response already gets here.
-
-    Returns (span, parsed) or (None, reason).
-    """
-    reason = "response contains no JSON object"
-    for s, e in _balanced_objects(text):
-        reason = "no JSON object in the response carried a 'findings' list"
-        try:
-            parsed = json.loads(text[s:e + 1])
-        except Exception:
-            continue
-        if not isinstance(parsed, dict) or "findings" not in parsed:
-            continue
-        if not isinstance(parsed["findings"], list):
-            return None, (f"findings is {type(parsed['findings']).__name__}, expected list")
-        return (s, e), parsed
-    return None, reason
-
-
 def _clip(text, limit):
     """Truncate WITH a marker. A silently clipped stack trace or response reads as
     complete, and these logs are the recovery path for a dropped finding."""
@@ -748,6 +988,23 @@ def _clip(text, limit):
 
 work, log, base, branch, stamp, model, base_sha, head_sha = sys.argv[1:9]
 lenses = sys.argv[9:]
+# The scanner lives in this run's work dir, written by the shell above, so the
+# clustering pass gets the same one. The path goes on sys.path only after argv is
+# unpacked, because `work` IS argv[1].
+sys.path.insert(0, work)
+try:
+    from prjson import payload_with, FINDINGS_ECHOES_HARD, FINDINGS_ECHOES_SOFT  # noqa: E402
+except Exception as _import_exc:     # noqa: BLE001 — the review must not die with the parser
+    # An unimportable parser is a reviewer that cannot be read, not a reviewer
+    # that found nothing. Every lens is then filed as failed WITH this cause,
+    # the status lands on reviewed-none, and pr-review exits 0 carrying the whole
+    # log — the same fail-open every other broken-reviewer path takes. Letting
+    # the ImportError escape instead killed the collector, left no summary file,
+    # and took the whole script down with a bare exit 1 and no JSON at all.
+    def payload_with(text, key, hard_echoes=(), soft_echoes=(), _exc=_import_exc):
+        return None, f"the shared parser could not be imported ({_exc})"
+    FINDINGS_ECHOES_HARD = ()
+    FINDINGS_ECHOES_SOFT = ()
 def _usable(f):
     """A finding has to SAY something.
 
@@ -808,7 +1065,7 @@ for lens in lenses:
     # ${VAR}, a trailing explanation), and the lens was then filed as "could not
     # look" — downgrading a lens that had actually found defects into
     # coverage-incomplete, with the findings surviving only in the log's raw field.
-    span, parsed = _review_payload(text)
+    span, parsed = payload_with(text, "findings", FINDINGS_ECHOES_HARD, FINDINGS_ECHOES_SOFT)
     if span is None:
         # "Could not parse the answer" is NOT "the reviewer broke", and the raw
         # text is kept so a dropped finding stays recoverable. `parsed` carries
@@ -912,7 +1169,18 @@ PYIDS
     : > "$WORK/cluster.fail"
   fi
 
-  python3 - "$WORK" "$LOG" <<'PYCLUSTER'
+  # `if`, not a bare command: python3 itself can fail to reach the try below
+  # at all — missing binary, OOM-killed, a syntax error in the heredoc — and a
+  # bare command's nonzero exit kills the WHOLE script here under
+  # `set -euo pipefail`, never reaching the guarded `read` two lines down or
+  # `exit 7` at the bottom, with findings already sitting in $LOG unreviewed.
+  # The try/except inside PYCLUSTER covers every failure that happens ONCE
+  # python3 is running; this `if` is the outer layer for the one it can't:
+  # python3 not running to begin with. `then :` is the SUCCESS branch (python3
+  # exited 0, whether via finish() or the inner except:pass) — an inverted
+  # `if !` here once ran the crash handler on every successful run and skipped
+  # it on every actual crash, the exact opposite of what the branches say.
+  if python3 - "$WORK" "$LOG" <<'PYCLUSTER'
 import json, os, sys
 
 def _open_private(path):
@@ -926,51 +1194,138 @@ def _open_private(path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
 
 work, log = sys.argv[1], sys.argv[2]
-d = json.load(open(log))
-raw = d["findings"]
 
-
-def finish(distinct, method, note=None):
-    d["distinct"] = distinct
-    d["distinctFindings"] = len(distinct)
-    d["dedup"] = method
-    if note:
-        d["dedupNote"] = note
-    json.dump(d, _open_private(log), indent=2)
-    with open(os.path.join(work, "distinct"), "w") as fh:
-        fh.write(f"{len(distinct)}\n")
-
-
-if os.path.exists(os.path.join(work, "cluster.fail")):
-    finish(raw, "failed", "clustering call failed; count is RAW, not deduplicated")
-    sys.exit(0)
 try:
-    env = json.load(open(os.path.join(work, "cluster.out")))
-    if env.get("is_error"):
-        raise ValueError("is_error")
-    text = env.get("result") or ""
-    st, en = text.find("{"), text.rfind("}")
-    groups = json.loads(text[st:en + 1])["groups"]
-    seen = sorted(i for g in groups for i in g)
-    # Reject a grouping that does not partition the input. A dropped or repeated
-    # id would silently change the count, which is the number the experiment turns on.
-    if seen != list(range(len(raw))):
-        raise ValueError(f"not a partition: {len(seen)} ids for {len(raw)} findings")
-    # Representative = highest severity in the group, so a High merged with a Low
-    # is still reported as a High.
-    order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
-    distinct = []
-    for g in groups:
-        members = [raw[i] for i in g]
-        rep = dict(sorted(members, key=lambda f: order.get(f.get("severity", "Low"), 9))[0])
-        if len(members) > 1:
-            rep["mergedFrom"] = [f"{m.get('lens')}:{m.get('file')}:{m.get('line')}" for m in members]
-        distinct.append(rep)
-    finish(distinct, "clustered")
+    # Everything that can fail here lives inside this one try — including the
+    # log read and the cluster.fail branch, which used to sit above it. A raise
+    # from either used to skip finish() entirely, leave no $WORK/distinct for
+    # the shell to read, and end pr-review at exit 1 under `set -euo pipefail`
+    # — no JSON, no exit 7, and pr-open opening a PR that DID have findings.
+    # The documented promise for this pass is fail-open to the raw count; a
+    # bad log read or a bad import is not exempt from it. The shell's own read
+    # of $WORK/distinct is guarded too (`|| COUNT="$RAWCOUNT"`, below) — this
+    # try covers the log read and finish() failing AFTER python3 started; the
+    # `if !` around this whole command covers python3 not starting at all.
+    d = json.load(open(log))
+    raw = d["findings"]
+
+    def finish(distinct, method, note=None):
+        d["distinct"] = distinct
+        d["distinctFindings"] = len(distinct)
+        d["dedup"] = method
+        if note:
+            d["dedupNote"] = note
+        json.dump(d, _open_private(log), indent=2)
+        with open(os.path.join(work, "distinct"), "w") as fh:
+            fh.write(f"{len(distinct)}\n")
+
+    if os.path.exists(os.path.join(work, "cluster.fail")):
+        # The cause used to be captured to cluster.err and then deleted unread
+        # by the EXIT trap — the same defect fail() already fixed for lenses
+        # (below: "Keep the CAUSE"). A rate limit, expired auth, and E2BIG on
+        # the findings prompt were indistinguishable in the log; now they aren't.
+        errpath = os.path.join(work, "cluster.err")
+        cause = open(errpath, errors="replace").read().strip() if os.path.exists(errpath) else ""
+        note = "clustering call failed; count is RAW, not deduplicated"
+        if cause:
+            # Clipped WITH a marker, not silently to one line: `_clip()` in the
+            # collector below states the same rule ("a silently clipped stack
+            # trace or response reads as complete, and these logs are the
+            # recovery path"), but this is a separate python3 process and
+            # cannot import that helper — a rate-limit message with the actual
+            # cause on line 2, or a multi-line auth error, used to lose
+            # everything past the first line with no sign anything was cut.
+            CAUSE_LIMIT = 500
+            note += ": " + (cause if len(cause) <= CAUSE_LIMIT else
+                            cause[:CAUSE_LIMIT] +
+                            f"\n…[truncated {len(cause) - CAUSE_LIMIT} of {len(cause)} bytes]")
+        finish(raw, "failed", note)
+    else:
+        sys.path.insert(0, work)
+        from prjson import payload_with, GROUPS_ECHOES_HARD  # same scanner the collector uses
+
+        env = json.load(open(os.path.join(work, "cluster.out")))
+        if env.get("is_error"):
+            raise ValueError("is_error")
+        text = env.get("result") or ""
+        # Balanced scan, not `first-{ .. last-}`: the greedy span ran from a
+        # brace in the model's preamble to a brace in its sign-off and parsed
+        # as neither, so a usable grouping was filed unusable and the count
+        # reverted to RAW — the arm btw#59 compares against a DEDUPLICATED
+        # control (#378). GROUPS_ECHOES_HARD keeps a trailing recap of this
+        # same prompt's own example grouping from winning by content, not just
+        # by position: an echoed `{"groups":[[0,3],[1],[2,4,5]]}` reads as the
+        # prompt's own placeholder almost always — EXCEPT when `raw` genuinely
+        # holds exactly 6 findings, where it is also the one shape a real,
+        # correct partition could legitimately take. Applying the exclusion
+        # only when it cannot possibly be genuine (`len(raw) != 6`) keeps the
+        # echo caught without discarding that coincidence's only good answer.
+        # The reason string is raised so it reaches `dedupNote`.
+        groups_echoes = GROUPS_ECHOES_HARD if len(raw) != 6 else ()
+        span, parsed = payload_with(text, "groups", groups_echoes)
+        if span is None:
+            raise ValueError(parsed)
+        groups = parsed["groups"]
+        seen = sorted(i for g in groups for i in g)
+        # Reject a grouping that does not partition the input. A dropped or
+        # repeated id would silently change the count, which is the number
+        # the experiment turns on.
+        if seen != list(range(len(raw))):
+            raise ValueError(f"not a partition: {len(seen)} ids for {len(raw)} findings")
+        # Representative = highest severity in the group, so a High merged
+        # with a Low is still reported as a High.
+        order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+        distinct = []
+        for g in groups:
+            members = [raw[i] for i in g]
+            rep = dict(sorted(members, key=lambda f: order.get(f.get("severity", "Low"), 9))[0])
+            if len(members) > 1:
+                rep["mergedFrom"] = [f"{m.get('lens')}:{m.get('file')}:{m.get('line')}" for m in members]
+            distinct.append(rep)
+        finish(distinct, "clustered")
 except Exception as exc:
-    finish(raw, "failed", f"clustering unusable ({exc}); count is RAW, not deduplicated")
+    try:
+        finish(raw, "failed", f"clustering unusable ({exc}); count is RAW, not deduplicated")
+    except Exception:
+        # finish() itself unusable, or raw/finish never got defined (the log
+        # read failed before either did) — $WORK/distinct is left absent, and
+        # the shell's guarded read falls back to $RAWCOUNT.
+        pass
 PYCLUSTER
-  read -r COUNT < "$WORK/distinct"
+  then
+    :
+  else
+    echo "pr-review: the clustering pass crashed before it could run; count is RAW, not deduplicated." >&2
+    # Best-effort, and separately guarded: $LOG itself may still be fine — the
+    # crash was in the clustering STAGE, not necessarily in reading or writing
+    # $LOG — so stamp the failed-shape keys onto it if it's readable at all.
+    # `--json` callers get `dedup: "failed"` instead of a schema-@1 object
+    # silently missing the count it gates on; if even THIS can't run, the
+    # guarded `read` below still keeps $COUNT correct either way.
+    python3 - "$LOG" <<'PYCLUSTERCRASH' 2>/dev/null || true
+import json, os, sys
+try:
+    log = sys.argv[1]
+    d = json.load(open(log))
+    if "dedup" not in d:
+        d["distinct"] = d.get("findings", [])
+        d["distinctFindings"] = len(d["distinct"])
+        d["dedup"] = "failed"
+        d["dedupNote"] = "clustering pass crashed before it could run; count is RAW, not deduplicated"
+        fh = os.fdopen(os.open(log, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), "w")
+        json.dump(d, fh, indent=2)
+except Exception:
+    pass
+PYCLUSTERCRASH
+  fi
+  # `cat`, not `read -r`, and checked for emptiness rather than relying on
+  # a nonzero exit status: `read` returns nonzero on a value with no trailing
+  # newline while STILL assigning it, so `read ... || COUNT="$RAWCOUNT"`
+  # would silently overwrite a correctly-read deduplicated count with the
+  # raw one on that path. It only ever worked because finish() always writes
+  # a trailing newline; this does not depend on that.
+  COUNT=$(cat "$WORK/distinct" 2>/dev/null) || COUNT=""
+  [ -n "$COUNT" ] || COUNT="$RAWCOUNT"
 else
   python3 - "$LOG" <<'PYNOCLUSTER'
 import json, os, sys
@@ -1022,17 +1377,43 @@ PYFAIL
       echo "✅ pr-review: no findings across $NRAN lenses. Log: $LOG"
     fi
   else
-    DEDUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dedup","?"))' "$LOG")
-    if [ "$DEDUP" = "failed" ]; then
+    # `|| DEDUP="?"`: a bare command substitution here is unguarded under
+    # `set -euo pipefail` — if $LOG itself somehow became unreadable between
+    # the collector writing it and this line (not something clustering
+    # failing causes; a host-level fault), this would otherwise kill the
+    # script one line before reaching `exit 7`, the same class of bug this
+    # whole pass exists to close.
+    DEDUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dedup","?"))' "$LOG" 2>/dev/null) || DEDUP="?"
+    # "?" is also the read-guard fallback path: the PYCLUSTER block died before
+    # finish() ever ran (log unreadable, or finish() itself raising), $WORK/distinct
+    # was never written, COUNT fell back to $RAWCOUNT, and $LOG carries no `dedup`
+    # key at all. That is exactly the "clustering call failed" case, not a
+    # successful dedup that happens to look unlabeled — treat it the same way.
+    if [ "$DEDUP" = "failed" ] || [ "$DEDUP" = "?" ]; then
       echo "🔎 pr-review: $COUNT finding(s) from $NRAN lens(es) — NOT deduplicated (clustering failed). Log: $LOG"
     else
       echo "🔎 pr-review: $COUNT distinct finding(s) from $NRAN lens(es) [$RAWCOUNT raw]. Log: $LOG"
     fi
-    python3 - "$LOG" <<'PYSHOW'
+    # `|| true`: printing the finding list is informational, not load-bearing
+    # for the exit code below — if $LOG turned out to be unreadable despite
+    # DEDUP's own guard above having just read it (a race, not something this
+    # pass can control), a bare heredoc command here would still kill the
+    # whole script under `set -e` one step before `exit 7`. `.get(...)` inside
+    # covers the ordinary case (a crash before finish() ran leaves `distinct`
+    # absent from an otherwise-readable $LOG); `|| true` covers $LOG itself
+    # being unreadable, which no amount of `.get()` inside the process can.
+    python3 - "$LOG" <<'PYSHOW' || true
 import json, sys
 d = json.load(open(sys.argv[1]))
 order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
-for f in sorted(d["distinct"], key=lambda x: order.get(x.get("severity", "Low"), 9)):
+# `.get(...)`, not `d["distinct"]`: the read-guard fallback above covers the
+# shell's COUNT variable but cannot repair $LOG itself when the crash happened
+# before finish() ran, so `distinct` may be absent here. A bare [] would print
+# nothing for a run that DID have findings; falling back to `findings` (the
+# raw, undeduplicated list) keeps them visible instead of a KeyError taking
+# this whole block down under `set -e` — exit 1, never reaching `exit 7` below,
+# with the PR opened unreviewed despite $LOG already holding real findings.
+for f in sorted(d.get("distinct", d.get("findings", [])), key=lambda x: order.get(x.get("severity", "Low"), 9)):
     print("  [{}/{}] {}:{}  {}".format(f.get("severity", "?"), f.get("lens", "?"),
                                        f.get("file", "?"), f.get("line", "?"), f.get("title", "")))
     print("      " + str(f.get("detail", "")))

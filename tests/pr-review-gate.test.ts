@@ -45,8 +45,23 @@ function git(cwd: string, args: string[]): string {
 
 interface Sandbox { root: string; remote: string; clone: string; binDir: string }
 
+// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM — including
+// the hazard cases, whose stub envelopes carry a 100KB payload each. One root
+// per case was left under /tmp on every run before this. `exit` alone does not
+// fire on a signal — Node's default disposition terminates without emitting
+// it — so the signal handlers close that gap and re-raise the conventional
+// exit code afterward.
+const SANDBOXES: string[] = [];
+function cleanupSandboxes(): void {
+	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+}
+process.on("exit", cleanupSandboxes);
+process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
+process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
+
 function makeSandbox(): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-gate-"));
+	SANDBOXES.push(root);
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", "main"]);
@@ -70,11 +85,38 @@ function makeSandbox(): Sandbox {
 // which must be treated as a FAILED lens rather than a clean one — "found
 // nothing" and "could not look" are different facts.
 type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv"
-	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly";
-function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string): Record<string, string> {
+	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly" | "clusterprose";
+function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string, postProse?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
-	if (mode === "prosebrace") {
+	if (mode === "clusterprose") {
+		// Prose in front of the payload, on BOTH calls: the lenses answer with
+		// findings, and the clustering call — the only prompt carrying "FINDINGS:" —
+		// answers with a grouping. `prose` is the hazard under test; the default is
+		// the brace that `find("{")`/`rfind("}")` mis-spanned (#378). `postProse`
+		// is the same hazard AFTER the payload instead of before, for the class of
+		// hazard that only bites there — a trailing echo of the prompt's own schema
+		// (#378 round 2) — since LAST-wins beat FIRST-wins on the leading cases but
+		// lost on this one.
+		//
+		// Envelopes go through FILES, not shell quoting: the hazards these cases
+		// carry are quotes and braces, and a stub that has to escape them is a stub
+		// that tests its own escaping.
+		const payload = `{"findings":[{"severity":"High","file":"feature.sh","line":2,"title":"stub finding","detail":"stubbed"}]}`;
+		// [[0,1],[2]] and not [[0],[1],[2]]: a grouping that MERGES makes distinct
+		// (2) differ from raw (3), so the assertion cannot pass on the fail-open
+		// path — which returns raw and would satisfy an identity partition.
+		const grouping = `{"groups":[[0,1],[2]]}`;
+		const pre = prose ?? 'Grouping note: avoid ${VAR} in prose.\n';
+		const post = postProse ?? "\nDone, see {ref}.";
+		const lensFile = path.join(sb.root, "lens-env.json");
+		const clusterFile = path.join(sb.root, "cluster-env.json");
+		fs.writeFileSync(lensFile, `{"is_error":false,"result":${JSON.stringify(pre + payload + post)}}`);
+		fs.writeFileSync(clusterFile, `{"is_error":false,"result":${JSON.stringify(pre + grouping + post)}}`);
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\ninput=$(cat)\ncase "$input" in\n  *FINDINGS:*) cat "${clusterFile}" ;;\n  *) cat "${lensFile}" ;;\nesac\nexit 0\n`,
+			{ mode: 0o755 });
+	} else if (mode === "prosebrace") {
 		// A reviewer that mentions `${VAR}` (or any brace) BEFORE its payload. The
 		// old collector took the FIRST balanced object, parsed `{VAR}`, and filed a
 		// lens that had actually found a High as "could not look" (macroscopeapp,
@@ -359,7 +401,11 @@ console.log("\nclustering fail-open:");
 {
 	const sb = makeSandbox();
 	const env = stubs(sb, "findings");
-	delete (env as any).PR_REVIEW_NO_CLUSTER;   // let it try; the stub cannot produce a partition
+	// "0", not `delete`: run() builds the child env as {...process.env, ...env},
+	// so deleting the key removes only the OVERRIDE — a host that exports
+	// PR_REVIEW_NO_CLUSTER=1 leaked through and the assertions below then measured
+	// the disabled branch instead of the failed one (#378).
+	env.PR_REVIEW_NO_CLUSTER = "0";   // let it try; the stub cannot produce a partition
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
@@ -369,6 +415,101 @@ console.log("\nclustering fail-open:");
 		`${d.distinctFindings} vs ${d.findings.length}`);
 	check(/NOT deduplicated/.test(out), "unusable clustering → output SAYS the count is not deduplicated", out);
 	check(typeof d.dedupNote === "string" && d.dedupNote.length > 0, "unusable clustering → records why", String(d.dedupNote));
+}
+// ...but a USABLE payload wrapped in prose must not be filed unusable, on EITHER
+// call. The collector stopped trusting brace POSITION in #379 and the clustering
+// pass followed in #378 — but a scanner that counts braces by hand is fooled by
+// every other thing a model writes around its answer. Each hazard below is
+// prepended to both the lens response and the grouping response, so one case
+// covers both passes: a lost lens shows up as fewer than 3 raw findings, a lost
+// grouping as `dedup: "failed"` and the count reverting to RAW.
+const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
+	// A brace in the explanation — `find("{")`/`rfind("}")` spanned from the first
+	// brace to the last, which is neither the payload nor valid JSON (#378).
+	{ name: "a brace in the prose", prose: 'Grouping note: avoid ${VAR} in prose.\n' },
+	// An ODD number of quotes. Hand-rolled string tracking toggles `in_str` on
+	// every '"', so one unbalanced quote — a quoted identifier, a 6" measurement —
+	// left the scanner inside a string across the real payload and it saw nothing.
+	{ name: 'an odd number of " in the prose', prose: 'Mind the 6" gap before the payload.\n' },
+	// An unmatched OPENING brace. Depth-counting fixed the stray closer and left
+	// this one: depth never returns to 0, so no span is ever yielded and the whole
+	// response is discarded — a lens quoting `|| { echo ...` does exactly this.
+	{ name: "an unmatched { in the prose", prose: "A fragment: || { echo hi\n" },
+	// A JSON-shaped preamble whose key is the RIGHT key with the WRONG type.
+	// Stopping at the first object that merely HAS the key is position-trust by
+	// another name — the thing the balanced scan exists to remove.
+	{ name: "a JSON preamble carrying the key with the wrong type",
+		prose: '{"findings":"none"}\n{"groups":"see below"}\n' },
+	// The model echoing the prompt's OWN schema before answering. Both echoes are
+	// well-formed objects with a `findings` list, so first-object-wins handed the
+	// answer to the prompt: the empty one recorded a lens that found defects as
+	// clean (exit 0, PR opens), the placeholder one invented a finding titled
+	// "short". This is the failure the gate exists to prevent, arriving through the
+	// parser instead of the reviewer.
+	{ name: "the prompt's own empty schema echoed first",
+		prose: 'Return {"findings":[]} if you find nothing. Here is my answer:\n' },
+	{ name: "the prompt's placeholder schema echoed first",
+		prose: '{"findings":[{"severity":"Critical|High|Medium|Low","file":"path","line":123,"title":"short","detail":"what is wrong and why it matters"}]}\nMy actual answer:\n' },
+	// Nesting deep enough to blow the decoder's stack. `raw_decode` raises
+	// RecursionError there, which is a RuntimeError and NOT a ValueError: catching
+	// only ValueError let it escape the scanner, kill the collector before it wrote
+	// its summary, and end pr-review at exit 1 — every lens's findings lost and the
+	// PR opened unreviewed. Measured: 20000 openers raise, 5000 do not.
+	{ name: "nesting deep enough to raise RecursionError", prose: '{"a":'.repeat(20000) + "\n" },
+	// The model echoing the prompt's OWN schema AFTER its real answer, not
+	// before. A pure LAST-wins fix (briefly shipped between #378's first and
+	// second commits) beat the leading-echo cases above and then lost to
+	// these: the trailing echo is the very last qualifying object in the
+	// response, so "take the last match" handed the answer right back to the
+	// prompt from the opposite direction (macroscopeapp, #378 round 2). Only
+	// a content-based selection — never trust either end of the response —
+	// survives both directions at once.
+	{ name: "the prompt's own empty schema echoed LAST",
+		post: '\nRemember: return {"findings":[]} if you find nothing.' },
+	{ name: "the prompt's placeholder schema echoed LAST",
+		post: '\nFor reference, the schema is {"findings":[{"severity":"Critical|High|Medium|Low",' +
+			'"file":"path","line":123,"title":"short","detail":"what is wrong and why it matters"}]}.' },
+	// The CLUSTERING prompt's own placeholder grouping, echoed on either side of
+	// the real partition. The findings side had this covered from both directions
+	// and the groups side had nothing: no hazard exercised a groups echo, so a
+	// reworded CRULES example would have drifted away from GROUPS_ECHOES_HARD in
+	// silence and a genuine trailing recap would have been taken for the answer —
+	// six groups over three findings, every index past 2 pointing at nothing.
+	// The literal is restated here on purpose, never imported: an echo constant
+	// that checks itself checks nothing.
+	{ name: "the clustering prompt's placeholder grouping echoed first",
+		prose: '{"groups":[[0,3],[1],[2,4,5]]}\nMy actual grouping:\n' },
+	{ name: "the clustering prompt's placeholder grouping echoed LAST",
+		post: '\nFor reference, the grouping schema is {"groups":[[0,3],[1],[2,4,5]]}.' },
+];
+for (const hazard of PROSE_HAZARDS) {
+	const sb = makeSandbox();
+	const env = stubs(sb, "clusterprose", undefined, hazard.prose, hazard.post);
+	env.PR_REVIEW_NO_CLUSTER = "0";
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	// Read defensively: a hazard that kills the collector leaves the log created
+	// but EMPTY, and a bare JSON.parse there ends the whole suite with a stack
+	// trace instead of a failed check — the run reports nothing about the other
+	// hazards, which is the same "could not look" / "found nothing" merge this
+	// file exists to keep apart.
+	const rawLog = files.length ? fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8") : "";
+	let d: any = null;
+	try { d = JSON.parse(rawLog); } catch { /* left null; asserted below */ }
+	check(d !== null, `${hazard.name} → the run still wrote a parseable log`,
+		`${rawLog.length} bytes, exit ${code}: ${out.slice(0, 300)}`);
+	if (d === null) continue;
+	check(d.findings.length === 3, `${hazard.name} → all three lenses still parsed`,
+		`${d.findings.length} raw: ${JSON.stringify(d.failedLenses)}`);
+	check(d.dedup === "clustered", `${hazard.name} → grouping still clustered, not 'failed'`,
+		`${d.dedup}: ${d.dedupNote || ""}`);
+	check(d.distinctFindings === 2, `${hazard.name} → the model's partition is honoured (2 of 3)`,
+		String(d.distinctFindings));
+	check(Array.isArray(d.distinct?.[0]?.mergedFrom) && d.distinct[0].mergedFrom.length === 2,
+		`${hazard.name} → the merged pair records what it merged`,
+		JSON.stringify(d.distinct?.[0]?.mergedFrom));
+	check(code === 7, `${hazard.name} → findings still block`, `got ${code}: ${out}`);
+	check(!/NOT deduplicated/.test(out), `${hazard.name} → output does not claim a raw count`, out);
 }
 {
 	// Partial coverage must be visible on the machine path too, not only the human one.
