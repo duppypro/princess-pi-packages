@@ -31,9 +31,11 @@
 #
 # `timeout` covers a reviewer that STALLS, and only that. A reviewer that answers
 # promptly with pathological output stalls nothing and reaches the collector,
-# where the JSON scan runs after the timeout has already been satisfied — four
-# scans per run (one per lens, then the clustering pass), sequential, in one
-# python3 process no `timeout` wraps. That path is bounded by
+# where the JSON scan runs after the timeout has already been satisfied. Four
+# scans per run, across TWO processes: the collector scans all three lens
+# responses sequentially in one python3, and the clustering pass scans again in
+# a second, separate python3. Neither is wrapped in `timeout`, and a maintainer
+# tracing the unwrapped path needs to look in both. That path is bounded by
 # MAX_FAILED_CANDIDATES instead: ~15-20s of CPU per scan at the cap, so tens of
 # seconds for a whole run, not the unbounded wedge. Two different stalls, two
 # different bounds; do not read the sentence above as covering both.
