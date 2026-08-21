@@ -38,7 +38,26 @@
 # ---
 
 INPUT=$(cat)
+
+# ---
+# The tool call is JSON and `jq` is how this hook reads it — there is no fallback
+# parser. #390: an empty COMMAND has two causes the code could not tell apart —
+# there was no command (benign) and the parser never ran (every guardrail below
+# is now absent) — and it reported the first, so a missing or broken `jq` removed
+# the whole gate without one error a human would notice. Unknown state is
+# protected state, the same rule applied to an unresolvable cd below. A genuinely
+# empty .tool_input.command on a SUCCESSFUL parse still exits 0.
+# ---
+if ! command -v jq >/dev/null 2>&1; then
+  echo "BLOCKED: git guardrails cannot read the tool call — required dependency 'jq' is missing or not executable on PATH. Install jq (apt install jq / brew install jq); until then every git guardrail is unenforceable and this hook fails closed." >&2
+  exit 2
+fi
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+JQ_STATUS=$?
+if [ "$JQ_STATUS" -ne 0 ]; then
+  echo "BLOCKED: git guardrails cannot read the tool call — required dependency 'jq' exited $JQ_STATUS. An unparsed input is an UNKNOWN command, and unknown is protected: this hook fails closed rather than reporting 'nothing to check'." >&2
+  exit 2
+fi
 if [ -z "$COMMAND" ]; then
   exit 0
 fi

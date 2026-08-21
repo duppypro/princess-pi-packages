@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -179,5 +179,91 @@ describe("git-guardrails regression witness (#260)", () => {
     const cwdOnly = witnesses.filter((c) => c.pre74_class === "cwd-only-branch");
     expect(cwdOnly.some((c) => c.pre74 === "allow" && c.verdict === "block")).toBe(true);
     expect(cwdOnly.some((c) => c.pre74 === "block" && c.verdict === "allow")).toBe(true);
+  });
+});
+
+// --- input-parse dependency (#390) ---
+//
+// The .sh hook reads the tool call with `jq`. An empty result has two causes it
+// could not tell apart — there was no command (benign), and the parser never ran
+// (every guardrail is now absent) — and it reported the first, so a missing or
+// broken `jq` silently removed the entire gate. Unknown state is protected
+// state, the same rule the file already applies to an unresolvable `cd`.
+//
+// The TS twin has no such step: Pi's bash-spawn-hook hands checkGitCommand() the
+// command string directly, so there is no parser to fail. Parity here is parity
+// of OUTCOME — neither implementation has an input path that can disarm it
+// without saying so — and the TS half is asserted as the ABSENCE of an external
+// parser rather than as a second stub.
+
+/** A PATH whose only entries are the named real binaries — plus whatever `extra`
+ *  writes into it. Anything not listed is genuinely missing for that run. */
+function stubPath(extra: (dir: string) => void, keep = ["bash", "cat", "git", "realpath"]): string {
+  const dir = mkdtempSync(join(tmpdir(), "guardrail-stubpath-"));
+  for (const bin of keep) {
+    const real = execSync(`command -v ${bin}`, { encoding: "utf8" }).trim();
+    symlinkSync(real, join(dir, bin));
+  }
+  extra(dir);
+  return dir;
+}
+
+function runHook(command: string, cwd: string, env: Record<string, string>) {
+  const input = JSON.stringify({ tool_input: { command, cwd } });
+  return spawnSync("bash", [SH_HOOK], { input, encoding: "utf8", env: { ...process.env, ...env } });
+}
+
+describe("git-guardrails input-parse dependency (#390)", () => {
+  const cwd = repoOnBranch("390-feat");
+  const DANGEROUS = "git push origin main";
+
+  test("a jq that exits non-zero blocks and names the dependency", () => {
+    const dir = stubPath((d) => {
+      writeFileSync(join(d, "jq"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+    });
+    const res = runHook(DANGEROUS, cwd, { PATH: dir });
+    expect(res.status, "a broken parser must not read as 'nothing to check'").toBe(2);
+    expect(res.stderr).toContain("jq");
+  });
+
+  test("a jq missing from PATH blocks and names the dependency", () => {
+    const dir = stubPath(() => {});
+    const res = runHook(DANGEROUS, cwd, { PATH: dir });
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain("jq");
+  });
+
+  test("a jq that is not executable blocks and names the dependency", () => {
+    const dir = stubPath((d) => {
+      writeFileSync(join(d, "jq"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+    });
+    const res = runHook(DANGEROUS, cwd, { PATH: dir });
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain("jq");
+  });
+
+  test("a genuinely empty command on a SUCCESSFUL parse still exits 0", () => {
+    const res = spawnSync("bash", [SH_HOOK], {
+      input: JSON.stringify({ tool_input: { cwd } }),
+      encoding: "utf8",
+    });
+    expect(res.status, "no command is not the same as no parser").toBe(0);
+  });
+
+  test("a working jq still gates normally", () => {
+    expect(shVerdict(DANGEROUS, cwd)).toBe("block");
+    expect(shVerdict("git push origin 390-feat", cwd)).toBe("allow");
+  });
+
+  test("the TS twin has no external input parser to lose", () => {
+    for (const f of ["extensions/lib/git-guardrails-core.ts", "extensions/git-guardrails.ts"]) {
+      const src = readFileSync(join(REPO_ROOT, f), "utf8");
+      expect(src, `${f} must not shell out to parse the tool call`).not.toContain("jq ");
+    }
+    // The command arrives as an argument, so there is no parse step between the
+    // tool call and the decision: the same string that reaches the .sh via jq
+    // reaches this directly.
+    expect(checkGitCommand(DANGEROUS, cwd)).not.toBeNull();
+    expect(checkGitCommand("", cwd)).toBeNull();
   });
 });

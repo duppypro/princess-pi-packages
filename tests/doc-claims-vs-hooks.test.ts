@@ -32,7 +32,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkGitCommand } from "../extensions/lib/git-guardrails-core";
@@ -50,6 +50,13 @@ interface Probe {
 	branch: string;
 	/** What the quoted sentence claims the guardrails do with it. */
 	verdict: Verdict;
+	/**
+	 * Extra environment for the `.sh` hook run (#390). A probe that names one is
+	 * about the HOOK's own dependencies, so it is checked against the `.sh` only —
+	 * the TS twin is called in-process and has no separate environment, and no
+	 * parse step to break. Recorded here rather than skipped silently.
+	 */
+	env?: Record<string, string>;
 }
 
 interface Claim {
@@ -115,6 +122,30 @@ const GH_MERGE_PROBES: Probe[] = [
 	{ command: "gh -R o/r pr view 42", branch: FEATURE, verdict: "allow" },
 ];
 
+// #390: a PATH whose only entries are the named real binaries, plus whatever
+// `extra` writes in. Anything not listed is genuinely missing for that run.
+function stubPath(extra: (dir: string) => void, keep = ["bash", "cat", "git", "realpath"]): string {
+	const dir = mkdtempSync(join(tmpdir(), "doc-claim-stubpath-"));
+	for (const bin of keep) {
+		symlinkSync(execSync(`command -v ${bin}`, { encoding: "utf8" }).trim(), join(dir, bin));
+	}
+	extra(dir);
+	return dir;
+}
+
+const JQ_BROKEN = stubPath((d) => writeFileSync(join(d, "jq"), "#!/bin/sh\nexit 127\n", { mode: 0o755 }));
+const JQ_MISSING = stubPath(() => {});
+const JQ_UNREADABLE = stubPath((d) => writeFileSync(join(d, "jq"), "#!/bin/sh\nexit 0\n", { mode: 0o644 }));
+
+const JQ_PROBES: Probe[] = [
+	{ command: "git push origin main", branch: FEATURE, verdict: "block", env: { PATH: JQ_BROKEN } },
+	{ command: "git push origin main", branch: FEATURE, verdict: "block", env: { PATH: JQ_MISSING } },
+	{ command: "git push origin main", branch: FEATURE, verdict: "block", env: { PATH: JQ_UNREADABLE } },
+	// ...and a working jq still decides on the merits, in both directions.
+	{ command: "git push origin main", branch: FEATURE, verdict: "block" },
+	{ command: `git push origin ${FEATURE}`, branch: FEATURE, verdict: "allow" },
+];
+
 const CLAIMS: Claim[] = [
 	{
 		doc: "hooks/block-dangerous-git.sh",
@@ -155,6 +186,12 @@ const CLAIMS: Claim[] = [
 		probes: GH_MERGE_PROBES,
 	},
 	{
+		doc: "docs/dev-workflow-spec.md",
+		quote: "A `jq` that is missing, not executable, or exits non-zero now\n**blocks (exit 2)** and names the dependency",
+		asserts: "the hook fails CLOSED when it cannot read the tool call (#390)",
+		probes: JQ_PROBES,
+	},
+	{
 		doc: join(homedir(), "git-projects", "CLAUDE.md"),
 		hostOnly: true,
 		quote: "Pushing a feature branch to a non-main ref is allowed, and always was",
@@ -190,9 +227,13 @@ function repoOnBranch(branch: string): string {
 	return dir;
 }
 
-function shVerdict(command: string, cwd: string): Verdict {
+function shVerdict(command: string, cwd: string, env?: Record<string, string>): Verdict {
 	const input = JSON.stringify({ tool_input: { command, cwd } });
-	const res = spawnSync("bash", [SH_HOOK], { input, encoding: "utf8" });
+	const res = spawnSync("bash", [SH_HOOK], {
+		input,
+		encoding: "utf8",
+		...(env ? { env: { ...process.env, ...env } } : {}),
+	});
 	if (res.status === 0) return "allow";
 	if (res.status === 2) return "block";
 	throw new Error(`hook exited ${res.status} (expected 0 or 2): ${res.stderr || res.stdout}`);
@@ -251,12 +292,14 @@ for (const claim of CLAIMS) {
 	// 2. Both hook implementations agree with what the sentence claims.
 	for (const p of claim.probes) {
 		const cwd = repoFor(p.branch);
-		const sh = shVerdict(p.command, cwd);
-		const ts = tsVerdict(p.command, cwd);
+		const sh = shVerdict(p.command, cwd, p.env);
+		// An env probe is about the .sh's own dependencies — the TS twin runs
+		// in-process, so there is no environment to give it and nothing to check.
+		const ts = p.env ? "n/a" : tsVerdict(p.command, cwd);
 		probesRun++;
 		check(
-			sh === p.verdict && ts === p.verdict,
-			`${label}: \`${p.command}\` on ${p.branch} → ${p.verdict}`,
+			sh === p.verdict && (ts === "n/a" || ts === p.verdict),
+			`${label}: \`${p.command}\`${p.env ? ` [env: ${Object.keys(p.env).join(",")}]` : ""} on ${p.branch} → ${p.verdict}`,
 			`sh hook said ${sh}, ts core said ${ts}; the document claims ${p.verdict}.\n` +
 				"Either the guardrails changed and the document is now false,\n" +
 				"or this expectation was wrong. Read the hook before editing either.",

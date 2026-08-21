@@ -539,6 +539,17 @@ deploys all three tracked hooks; `install-workflow-tools --check` reports drift 
 writing and exits 1, and `tests/hooks-deploy-drift.test.ts` fails the suite when any hook
 this host actually runs differs from `hooks/`.
 
+**`block-dangerous-git.sh` needs `jq` on `PATH`.** It parses the tool call's JSON with it
+and has no fallback parser. A `jq` that is missing, not executable, or exits non-zero now
+**blocks (exit 2)** and names the dependency, because an empty parse result has two causes
+the hook cannot tell apart: there was no command (benign), and the parser never ran (every
+guardrail is absent). It reported the first until #390, so a broken `jq` disarmed the whole
+gate without one error a human would notice — unknown state is protected state, the same
+rule the hook already applies to an unresolvable `cd`. A genuinely empty
+`.tool_input.command` on a **successful** parse still exits 0. The Pi twin needs nothing
+installed: `checkGitCommand()` is handed the command string, so it has no parse step to
+lose.
+
 `--check` asks three questions per hook, not one: is the file **there**, is it
 **executable**, and does it **match**. Identical bytes with the executable bit cleared is
 still a disarmed guardrail — Claude Code execs the path from `settings.json`, so a hook it
