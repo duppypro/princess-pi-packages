@@ -364,10 +364,11 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   the issue number alone suggests; `hooks/block-dangerous-git.sh` carries the same checks
   written as inline bash.
 - **Commits on `main` are blocked, not just pushes (#301, btw#21).** `git commit`, `merge`,
-  `rebase`, `cherry-pick`, `am`, and `pull` are refused when the sub-command's repo is on
-  `main`/`master`. Allowed on `main`: `pull --ff-only`, `merge --ff-only`, every
-  `--abort`/`--quit`, and `checkout -b` / `switch -c` (the escape — nothing here can
-  deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
+  `rebase`, `cherry-pick`, `am`, `pull`, and `revert` (added #391 — it writes a commit on the
+  current branch, which is exactly what this set exists to prevent) are refused when the
+  sub-command's repo is on `main`/`master`. Allowed on `main`: `pull --ff-only`,
+  `merge --ff-only`, every `--abort`/`--quit` (`revert --abort`/`--quit` included), and
+  `checkout -b` / `switch -c` (the escape — nothing here can deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
   every enforced check concentrates on PR review; `git-checkpoint` already refuses on `main`
   (#225) and this closes the raw-git path an agent reaches through Bash. **What the hook
   cannot see it fails safe on:** the branch is resolved *before* the line runs, so a

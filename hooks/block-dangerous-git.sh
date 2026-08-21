@@ -8,8 +8,9 @@
 #     allowed — git's own refusal on a dirty tree is the safeguard there.)
 #   Block on main/master only: push whose DESTINATION ref is main/master,
 #     bare push / reset --hard when the affected repo is on main/master,
-#     branch -D main/master; and (#301) commit / merge / rebase / cherry-pick /
-#     am / pull when the affected repo is on main/master — main advances only
+#     branch -D main/master; and (#301, #391) commit / merge / rebase /
+#     cherry-pick / am / pull / revert when the affected repo is on
+#     main/master — main advances only
 #     through PRs. Allowed there: --ff-only (pull/merge), every --abort/--quit,
 #     checkout -b / switch -c (the escape; can never deadlock).
 #   Line-state (#301): the hook runs before the line does, so `cd`/`pushd`
@@ -847,11 +848,12 @@ check_git_subcommand() {
     # Commits on main are blocked, not just pushes (#301, btw#21): main
     # advances only through PRs, so every enforced check concentrates on PR
     # review. `git-checkpoint` already refuses on main (#225); this closes the
-    # raw-git path. --abort/--quit undo (allowed); --ff-only creates no commit
+    # raw-git path. `revert` is here too (#391) — it commits like the rest.
+    # --abort/--quit undo (allowed); --ff-only creates no commit
     # (allowed, Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit
     # on a diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are
     # not in this set — the escape from main can never deadlock.
-    commit|merge|rebase|cherry-pick|am|pull)
+    commit|merge|rebase|cherry-pick|am|pull|revert)
       # Option ARGUMENTS are not options: `git commit -m --abort` is a commit
       # whose message is '--abort' (PR #305 review). Skip the word after any
       # argument-taking option, stop at `--`, and honour --abort/--quit only
@@ -864,7 +866,7 @@ check_git_subcommand() {
           -m|-F|-C|-c|-s|-X|-S|-x|--message|--file|--strategy|--strategy-option|--onto|--exec|--author|--date|--template|--fixup|--squash|--reuse-message|--reedit-message|--gpg-sign|--cleanup|--into-name|--patch-format|--whitespace|--directory|--exclude|--include|--mainline)
             skip6=1 ;;
           --abort|--quit)
-            case "$cmd" in merge|rebase|cherry-pick|am) return 0 ;; esac ;;
+            case "$cmd" in merge|rebase|cherry-pick|am|revert) return 0 ;; esac ;;
           --ff-only) ffonly=1 ;;
         esac
       done

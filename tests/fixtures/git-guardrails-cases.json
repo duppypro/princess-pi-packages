@@ -1549,7 +1549,7 @@
       "why": "#399: `switch` is the other spelling of the same bypass"
     },
     {
-      "id": "block-checkout-existing-main-then-revert",
+      "id": "block-checkout-existing-main-then-empty-commit",
       "command": "git checkout main && git commit --allow-empty -m x",
       "branch": "399-feat",
       "extra_branches": [
@@ -1597,6 +1597,51 @@
       ],
       "verdict": "block",
       "why": "#399 guard on the guard: `git checkout <tree-ish> <path>` restores files and does NOT switch — two positionals must never lift"
+    },
+    {
+      "id": "block-revert-on-main",
+      "command": "git revert HEAD",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#391: git revert WRITES a commit on the current branch — the exact act the #301 set exists to prevent, and it was absent from that set"
+    },
+    {
+      "id": "block-revert-no-edit-on-main",
+      "command": "git revert --no-edit HEAD",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#391: --no-edit only skips the editor; the commit still lands on main"
+    },
+    {
+      "id": "allow-revert-on-feature",
+      "command": "git revert HEAD",
+      "branch": "391-feat",
+      "verdict": "allow",
+      "why": "#391: revert is gated on main/master only, like every other commit-like sub-command"
+    },
+    {
+      "id": "allow-revert-abort-on-main",
+      "command": "git revert --abort",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#391: --abort undoes an in-progress revert and writes nothing — same exemption as merge/rebase/cherry-pick/am"
+    },
+    {
+      "id": "allow-revert-quit-on-main",
+      "command": "git revert --quit",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#391: --quit likewise leaves the tree alone"
+    },
+    {
+      "id": "block-checkout-existing-main-then-revert",
+      "command": "git checkout main && git revert HEAD",
+      "branch": "391-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#391 + #399: the two holes compose — a switch to main followed by a revert wrote a commit on main through both gaps"
     }
   ]
 }

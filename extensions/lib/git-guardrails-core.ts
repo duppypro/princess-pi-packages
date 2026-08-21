@@ -635,8 +635,11 @@ function skipBenignPrefix(T: string[], st: LineState): PrefixScan {
 }
 
 // Sub-commands that create or move commits on the current branch (#301).
-const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "pull"]);
-const UNDOABLE = new Set(["merge", "rebase", "cherry-pick", "am"]);
+// `revert` joined the set in #391: it writes a commit on the current branch,
+// which is the exact act the set exists to prevent, and its absence made
+// `git revert HEAD` on main advance main without a PR.
+const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "pull", "revert"]);
+const UNDOABLE = new Set(["merge", "rebase", "cherry-pick", "am", "revert"]);
 // Options whose SEPARATE next word is an argument. Over-skipping is safe (a
 // missed --abort/--ff-only only blocks); under-skipping is the fail-open case.
 const ARG_OPTIONS = new Set([
@@ -794,7 +797,8 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
   // Commits on main are blocked, not just pushes (#301, btw#21): main advances
   // only through PRs, so every enforced check concentrates on PR review.
   // `git-checkpoint` already refuses on main (#225); this closes the raw-git
-  // path. --abort/--quit undo (allowed); --ff-only creates no commit (allowed,
+  // path. `revert` is here too (#391) — it commits like the rest.
+  // --abort/--quit undo (allowed); --ff-only creates no commit (allowed,
   // Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit on a
   // diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are not in
   // this set — the escape from main can never deadlock.
