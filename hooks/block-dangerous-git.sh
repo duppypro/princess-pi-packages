@@ -62,19 +62,33 @@ fi
 if [ -z "$COMMAND" ]; then
   exit 0
 fi
-HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
-# Line-state (#301): HOOK_CWD is the EFFECTIVE cwd and moves with cd/pushd;
-# ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
-# earlier in the same line for the repo that switched (see effective_branch).
-ORIG_CWD="$HOOK_CWD"
 # Sentinel for "the effective cwd is UNKNOWN" (PR #305 round 4): a cd whose
 # operand cannot be resolved here (`cd "$VAR"` set in an earlier tool call,
 # `cd ~user`) may have moved the real shell into a main checkout, so the model
 # does not stay put — it becomes unknown, and unknown is treated as protected by
 # every branch-scoped check until a resolvable cd (or `cd -`/popd) restores it.
 # A double-slash path is never a real directory, so it rides through the
-# scope/snapshot plumbing as an ordinary cwd value.
+# scope/snapshot plumbing as an ordinary cwd value. Defined BEFORE the cwd read
+# below (#412 shape: the #390 fix checked the exit status of the .command read
+# only — this is the fix for the .cwd read, the 2nd of the same 2 reads) so a
+# jq that cannot run here can fail closed to the same sentinel, not "".
 UNKNOWN_CWD="//unknown"
+HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
+JQ_STATUS=$?
+if [ "$JQ_STATUS" -ne 0 ]; then
+  # A genuinely-absent cwd on a SUCCESSFUL parse still resolves normally
+  # (unchanged) — this only covers jq itself failing to run. An empty string
+  # here is NOT equivalent to UNKNOWN_CWD: it falls through branch_of()'s
+  # `[ -n "$dir" ]` check to a bare `git branch --show-current`, which reads
+  # whatever directory the HOOK PROCESS happens to be in — not the tool
+  # call's declared cwd — so branch-scoped checks could resolve against the
+  # wrong repo entirely instead of failing closed.
+  HOOK_CWD="$UNKNOWN_CWD"
+fi
+# Line-state (#301): HOOK_CWD is the EFFECTIVE cwd and moves with cd/pushd;
+# ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
+# earlier in the same line for the repo that switched (see effective_branch).
+ORIG_CWD="$HOOK_CWD"
 # LIFTS: newline-separated `<repo key>=<branch>` records, latest wins — one
 # entry per repo, so a two-repo line does not clobber itself (PR #305 review).
 LIFTS=$'\n'

@@ -307,3 +307,44 @@ describe("git-guardrails stripHeredocs — nested bare subshell group (#400 find
     );
   });
 });
+
+// ---
+// pr-review finding on #389/#390/#391/#399/#400: the #390 fix checked the exit
+// status of the FIRST jq read (.tool_input.command) but not the SECOND
+// (.tool_input.cwd) — a jq that fails on that second call silently leaves
+// HOOK_CWD/ORIG_CWD as "" instead of the existing UNKNOWN_CWD sentinel. "" is
+// not protected the way UNKNOWN_CWD is: branch_of() with an empty dir falls
+// through to a bare `git branch --show-current`, which reads whatever
+// directory the HOOK PROCESS itself happens to be running in — not the tool
+// call's declared cwd. This is the same shape as #412 (one of N identical jq
+// reads gets the fail-closed check, the rest do not).
+// ---
+describe("git-guardrails cwd-read fail-closed (#390 finding — second jq read)", () => {
+  test("a jq failure on the .cwd read fails closed to UNKNOWN_CWD, not '' resolved against the hook process's own cwd", () => {
+    // The hook PROCESS's cwd (spawnSync `cwd`) is on a feature branch. If the
+    // broken .cwd read falls through to a bare `git branch --show-current`
+    // instead of UNKNOWN_CWD, it reads THIS branch and wrongly allows a
+    // commit that must be protected because the real cwd is unknown.
+    const processCwdRepo = repoOnBranch("412-shape-feat");
+    const realJq = execSync("command -v jq", { encoding: "utf8" }).trim();
+    const dir = stubPath((d) => {
+      // Real jq for the .command read; fail only the .cwd read (its filter is
+      // the only one of the two containing ".cwd").
+      writeFileSync(
+        join(d, "jq"),
+        `#!/bin/sh\ncase "$*" in\n  *.cwd*) exit 5 ;;\nesac\nexec "${realJq}" "$@"\n`,
+        { mode: 0o755 },
+      );
+    });
+    const res = spawnSync("bash", [SH_HOOK], {
+      input: JSON.stringify({ tool_input: { command: "git commit -m x", cwd: "/somewhere/else" } }),
+      encoding: "utf8",
+      cwd: processCwdRepo,
+      env: { ...process.env, PATH: dir },
+    });
+    expect(
+      res.status,
+      "an unreadable cwd must fail closed like the command read does, not silently resolve against the hook's own process cwd",
+    ).toBe(2);
+  });
+});
