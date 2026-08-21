@@ -29,6 +29,15 @@
 # waited unconditionally and would have wedged pr-open on a stalled reviewer,
 # the one failure this paragraph claims cannot happen.
 #
+# `timeout` covers a reviewer that STALLS, and only that. A reviewer that answers
+# promptly with pathological output stalls nothing and reaches the collector,
+# where the JSON scan runs after the timeout has already been satisfied — four
+# scans per run (one per lens, then the clustering pass), sequential, in one
+# python3 process no `timeout` wraps. That path is bounded by
+# MAX_FAILED_CANDIDATES instead: ~15-20s of CPU per scan at the cap, so tens of
+# seconds for a whole run, not the unbounded wedge. Two different stalls, two
+# different bounds; do not read the sentence above as covering both.
+#
 # --- Exit codes ---
 #   0  reviewed, nothing found (or fail-open: reviewer unavailable)
 #   2  usage error — bad flags, or not run inside a git repository at all (the
@@ -622,7 +631,7 @@ import json
 
 MAX_FAILED_CANDIDATES = 30000
 # Bounds the rescan below. Measured (this file's own decoder, `'{"a":' * n`):
-# 2000 → 0.13s, 4000 → 0.49s, 8000 → 1.94s, 20000 → 8.6s (20001 failed
+# 2000 → 0.13s, 4000 → 0.49s, 8000 → 1.94s, 20000 → 8.6s (20000 failed
 # candidates), 30000 → ~14-16s, plateauing around ~17-18s from 100000 openers
 # on. Growth is quadratic only up to a point and then flattens — a naive
 # (n/8000)²·1.94s extrapolation from the 8000 point overstates the plateau
@@ -633,7 +642,7 @@ MAX_FAILED_CANDIDATES = 30000
 # log: quadratic and uncapped "wedges pr-open through a door the timeout does
 # not cover"). #378's own hazard test feeds exactly the 20000-opener case and
 # must still reach the real payload past it, so the cap sits with headroom
-# above the measured 20001 — comfortably clear of the legitimate case, and
+# above the measured 20000 — comfortably clear of the legitimate case, and
 # high enough that a reviewer's own output cap in practice keeps most real
 # responses far under it.
 
