@@ -493,6 +493,24 @@ REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
 # worse, so the run continues and says on stderr where it wrote.
 if [ -n "${PR_REVIEW_LOG_DIR:-}" ]; then
   LOG_DIR="$PR_REVIEW_LOG_DIR"
+  # "Outside the repository, so `git add -A` cannot commit it" is a SAFETY
+  # claim, and every other path here satisfies it by construction. This one is
+  # a caller-supplied string that can name anywhere — including the work tree,
+  # where a log full of reviewer output about unreleased code would be swept
+  # into a commit by the next `git add -A`. Refuse rather than silently
+  # relocating: the caller asked for a specific directory, and quietly writing
+  # somewhere else is how evidence goes missing (macroscopeapp, PR #410).
+  _repo_top=$(git rev-parse --show-toplevel)
+  _log_abs=$(cd "$LOG_DIR" 2>/dev/null && pwd -P || realpath -m "$LOG_DIR" 2>/dev/null || printf '%s' "$LOG_DIR")
+  case "$_log_abs" in
+    "$_repo_top"|"$_repo_top"/*)
+      echo "pr-review: PR_REVIEW_LOG_DIR ('$LOG_DIR') is inside the repository at '$_repo_top'." >&2
+      echo "   Run logs carry findings and reviewer output; inside the work tree, 'git add -A'" >&2
+      echo "   commits them. Point PR_REVIEW_LOG_DIR outside the repo, or unset it to use" >&2
+      echo "   \${XDG_STATE_HOME:-\$HOME/.local/state}/pr-review/." >&2
+      exit 3 ;;
+  esac
+  unset _repo_top _log_abs
 elif [ -n "${XDG_STATE_HOME:-}" ]; then
   LOG_DIR="$XDG_STATE_HOME/pr-review/$REPO_NAME"
 elif [ -n "${HOME:-}" ]; then
@@ -995,13 +1013,28 @@ RULES
     # reviewer need different actions — raise the knob, or go read the stderr —
     # and a reader could not tell which one had happened (#403).
     lens_start=$(date +%s)
-    if timeout --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
+    # `-v` under LC_ALL=C: timeout announces on ITS stderr when IT sends the
+    # signal, and says nothing otherwise. That announcement is the only direct
+    # evidence that the ceiling — rather than the OOM killer or the reviewer
+    # itself — ended the lens. Classifying 124/137 by elapsed time was an
+    # inference standing in for evidence that was available for the asking
+    # (macroscopeapp, PR #410). LC_ALL=C because the message is localized and
+    # this grep is a contract with it.
+    if LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
          claude -p --output-format json --model "$MODEL" \
          < "$WORK/$lens.prompt" > "$WORK/$lens.out" 2> "$WORK/$lens.err"; then
       lens_code=0
     else
       lens_code=$?
       : > "$WORK/$lens.fail"
+    fi
+    # Lift timeout's own line out of the reviewer's stderr: the marker becomes a
+    # file, and `stderr` in the log stays what the REVIEWER said, which is what a
+    # human reading it is looking for.
+    if grep -q '^timeout: sending signal' "$WORK/$lens.err" 2>/dev/null; then
+      : > "$WORK/$lens.timedout"
+      grep -v '^timeout: sending signal' "$WORK/$lens.err" > "$WORK/$lens.err.tmp" || true
+      mv "$WORK/$lens.err.tmp" "$WORK/$lens.err"
     fi
     # Elapsed for EVERY lens, not only the failures: "raise the timeout" is a
     # guess until the successful runs say how close to the ceiling they came.
@@ -1135,29 +1168,27 @@ def fail_exit(lens):
     124 of its own accord. Telling either one to raise PR_REVIEW_TIMEOUT names a
     knob that would not have helped — the wrong verb attached to a real failure.
 
-    So the ceiling is checked rather than assumed, against the elapsed seconds
-    recorded beside the code. A lens that died comfortably inside its ceiling was
-    killed by something else, and says so. A lens killed before it could record
-    an exit code is `unknown`, not a guess.
+    So the answer comes from `timeout -v`, which announces on its own stderr
+    when IT sends the signal and says nothing otherwise. That marker — lifted to
+    a `.timedout` file by the shell — is the evidence. 124/137 WITHOUT it is
+    `killed`: something outside the ceiling ended the lens, and telling the
+    caller to raise a knob would be the wrong verb. A lens killed before it could
+    record an exit code is `unknown`, not a guess.
 
-    The one case still decided by the code alone: 124/137 with no `.elapsed`
-    file. That needs the lens to die between the wrapper returning and the very
-    next line, so it is rare — but it reports `timeout` on weaker evidence than
-    the paragraph above describes, and saying so is cheaper than pretending
-    otherwise."""
-    code, elapsed = _read_int(lens, "code"), _read_int(lens, "elapsed")
-    ceiling = int(timeout_s) if timeout_s.isdigit() else None
+    `elapsedSec` is still recorded, and is still the useful number for deciding
+    where to set the ceiling — but it no longer classifies anything, because a
+    duration near the ceiling was only ever circumstantial (macroscopeapp, #410)."""
+    code = _read_int(lens, "code")
+    timed_out = os.path.exists(os.path.join(work, f"{lens}.timedout"))
+    if timed_out:
+        return fail(lens, f"timed out after {timeout_s}s", cause="timeout")
     if code is None:
         return fail(lens, "reviewer exited nonzero; no exit code was recorded",
                     cause="unknown")
     if code in (124, 137):
-        # SLACK absorbs the second `date +%s` landing on the far side of a tick,
-        # which would otherwise read a real expiry as 1s short of the ceiling.
-        SLACK = 2
-        if ceiling is not None and elapsed is not None and elapsed + SLACK < ceiling:
-            return fail(lens, f"killed after {elapsed}s, well inside the {ceiling}s ceiling",
-                        cause="killed")
-        return fail(lens, f"timed out after {timeout_s}s", cause="timeout")
+        elapsed = _read_int(lens, "elapsed")
+        where = f" after {elapsed}s" if elapsed is not None else ""
+        return fail(lens, f"killed{where} — the ceiling did not fire", cause="killed")
     return fail(lens, f"reviewer exited {code}", cause="failed")
 
 
@@ -1295,7 +1326,7 @@ for i, f in enumerate(d["findings"]):
 PYIDS
   } > "$WORK/cluster.prompt"
 
-  if timeout --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
+  if LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
        claude -p --output-format json --model "$MODEL" \
        < "$WORK/cluster.prompt" > "$WORK/cluster.out" 2>"$WORK/cluster.err"; then
     :

@@ -90,7 +90,7 @@ type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arra
 	// `bun run typecheck` and bun strips the annotation at runtime — an omitted
 	// member costs no error and buys no safety. Kept accurate by hand: the union
 	// is documentation of the stub roster, and that is its whole job (#403).
-	| "hang" | "sigkill";
+	| "hang" | "sigkill" | "exit124";
 function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string, postProse?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
@@ -158,6 +158,11 @@ function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string,
 		// knob, if any, would help (#403).
 		fs.writeFileSync(path.join(sb.binDir, "claude"),
 			`#!/usr/bin/env bash\nsleep 30\n`, { mode: 0o755 });
+	} else if (mode === "exit124") {
+		// The reviewer's OWN 124 — the code `timeout` uses, from a process the
+		// wrapper never signalled. Indistinguishable from expiry by exit code.
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nexit 124\n`, { mode: 0o755 });
 	} else if (mode === "sigkill") {
 		// Killed by a signal from outside the ceiling — the OOM killer's shape.
 		// Exit 137, elapsed ~0, ceiling nowhere near reached.
@@ -696,7 +701,9 @@ console.log("\npreconditions refuse with a code from the shared table:");
 	// bare word anywhere caught this script's own comments and error messages, which
 	// discuss timeouts at length; a check that flags prose gets muted, not fixed.
 	const lines = fs.readFileSync(PR_REVIEW, "utf8").split("\n");
-	const invocations = lines.filter((l) => /^\s*(if\s+)?timeout\s/.test(l));
+	// `LC_ALL=C timeout -v` since #410: the wrapper's own expiry announcement is
+	// what classifies a timeout, and the locale is part of that contract.
+	const invocations = lines.filter((l) => /^\s*(if\s+)?(LC_ALL=C\s+)?timeout\s/.test(l));
 	check(invocations.length === 2, `both timeout invocations found (got ${invocations.length})`,
 		invocations.join("\n"));
 	const bare = invocations.filter((l) => !/--kill-after/.test(l));
@@ -1276,6 +1283,37 @@ console.log("\na finding that says nothing is not a finding:");
 	}
 }
 
+{
+	// A log directory inside the work tree defeats the "git add -A cannot commit
+	// it" guarantee the docs make. Refused, not relocated: quietly writing
+	// somewhere else is how evidence goes missing (#410).
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	env.PR_REVIEW_LOG_DIR = path.join(sb.clone, "logs-inside");
+	const { code, out } = run(PR_REVIEW, sb.clone, env);
+	check(code === 3, "PR_REVIEW_LOG_DIR inside the repo → exit 3", `${code}: ${out}`);
+	check(/is inside the repository/.test(out), "…and says so", out);
+	check(/git add -A/.test(out), "…naming the consequence, not just the rule", out);
+	check(!fs.existsSync(path.join(sb.clone, "logs-inside")),
+		"…and writes nothing there", "directory was created");
+}
+{
+	// The timeout cause comes from `timeout -v`'s own announcement, not from a
+	// duration that merely looks like the ceiling. A stub that exits 124 on its
+	// own — no wrapper involvement — must NOT be called a timeout (#410).
+	const sb = makeSandbox();
+	const env = stubs(sb, "exit124");
+	const { out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.failedLenses.length === 3, "a reviewer exiting 124 itself fails every lens",
+		String(d.failedLenses.length));
+	check(d.failedLenses.every((f: any) => f.cause === "killed"),
+		"…and is 'killed', not 'timeout' — the wrapper never fired",
+		JSON.stringify(d.failedLenses.map((f: any) => f.cause)));
+	check(!/PR_REVIEW_TIMEOUT=/.test(out), "…so no one is told to raise the ceiling", out);
+}
+
 console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 {
 	// Timeout path: `timeout` kills the stub, exit 124.
@@ -1358,7 +1396,7 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 		JSON.stringify(d.failedLenses.map((f: any) => [f.cause, f.elapsedSec, f.exitCode])));
 	check(!/PR_REVIEW_TIMEOUT=/.test(out),
 		"…and is not told to raise a knob that would not have helped", out);
-	check(/killed after \d+s, well inside the 60s ceiling/.test(out),
+	check(/killed after \d+s — the ceiling did not fire/.test(out),
 		"…and the human line says what actually happened, positively — a negative check alone " +
 		"passes on empty output, which is how a deleted branch stays green", out);
 	check(/OOM/.test(out), "…and names where to look for the real killer", out);
