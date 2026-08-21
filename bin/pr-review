@@ -177,7 +177,19 @@ why and stderr, and exitCode/elapsedSec where they were recorded — either may
 be null. No caller ever parses the human sentence.
 The five emit_status paths (not a repo, precondition, diff failed, no changes,
 reviewer unavailable) emit a different, smaller object with NO schema key and a
-`message` key instead — treat a missing `schema` as "this run never started".
+`message` key instead. A missing `schema` means NO LENS RAN; `status` says why,
+and the five are not one outcome:
+  no-changes           the run COMPLETED — repo found, base resolved, `git diff`
+                       ran and came back empty. Exit 0, nothing to review. This
+                       is a success, and reading it as a startup failure is the
+                       same "could not look" / "found nothing" merge this gate
+                       exists to keep apart.
+  not-a-repo           never started.
+  precondition         never started (protected branch, no base determinable).
+  diff-failed          started, and the diff itself failed.
+  reviewer-unavailable started; `claude` or `python3` was missing, so it failed
+                       open. Exit 0, and NOT a review.
+Branch on `status`, never on the absence of `schema` alone.
 Usage errors and every exit 3 emit NO JSON at all, even under --json: a caller
 must handle an empty stdout, and read the exit code for those.
 
