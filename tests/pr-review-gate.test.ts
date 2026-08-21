@@ -1330,10 +1330,12 @@ console.log("\na finding that says nothing is not a finding:");
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
 	check(d.failedLenses.length === 3, "a reviewer exiting 124 itself fails every lens",
 		String(d.failedLenses.length));
-	check(d.failedLenses.every((f: any) => f.cause === "killed"),
-		"…and is 'killed', not 'timeout' — the wrapper never fired",
+	check(d.failedLenses.every((f: any) => f.cause === "failed"),
+		"…and is 'failed' — without the marker, 124 is just the reviewer's own exit code, " +
+		"which happens to be the one `timeout` also uses",
 		JSON.stringify(d.failedLenses.map((f: any) => f.cause)));
 	check(!/PR_REVIEW_TIMEOUT=/.test(out), "…so no one is told to raise the ceiling", out);
+	check(!/OOM/.test(out), "…and no one is sent to dmesg for an ordinary failure", out);
 }
 
 console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
@@ -1418,7 +1420,7 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 		JSON.stringify(d.failedLenses.map((f: any) => [f.cause, f.elapsedSec, f.exitCode])));
 	check(!/PR_REVIEW_TIMEOUT=/.test(out),
 		"…and is not told to raise a knob that would not have helped", out);
-	check(/killed after \d+s — the ceiling did not fire/.test(out),
+	check(/killed by a signal after \d+s — the ceiling did not fire/.test(out),
 		"…and the human line says what actually happened, positively — a negative check alone " +
 		"passes on empty output, which is how a deleted branch stays green", out);
 	check(/OOM/.test(out), "…and names where to look for the real killer", out);

@@ -1201,10 +1201,18 @@ def fail_exit(lens):
     if code is None:
         return fail(lens, "reviewer exited nonzero; no exit code was recorded",
                     cause="unknown")
-    if code in (124, 137):
+    if code == 137:
+        # 128+9. A process can `exit 137` deliberately, so this is strong
+        # evidence rather than proof — but SIGKILL from outside is the far more
+        # likely source, and it is the one worth pointing a human at.
         elapsed = _read_int(lens, "elapsed")
         where = f" after {elapsed}s" if elapsed is not None else ""
-        return fail(lens, f"killed{where} — the ceiling did not fire", cause="killed")
+        return fail(lens, f"killed by a signal{where} — the ceiling did not fire",
+                    cause="killed")
+    # 124 WITHOUT the marker is not evidence of anything external: it is the
+    # reviewer's own exit code, which happens to be the one `timeout` also uses.
+    # Calling it "killed" sent a human to dmesg for an ordinary failure
+    # (macroscopeapp, PR #410).
     return fail(lens, f"reviewer exited {code}", cause="failed")
 
 
