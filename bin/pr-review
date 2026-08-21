@@ -35,10 +35,24 @@
 # scans per run, across TWO processes: the collector scans all three lens
 # responses sequentially in one python3, and the clustering pass scans again in
 # a second, separate python3. Neither is wrapped in `timeout`, and a maintainer
-# tracing the unwrapped path needs to look in both. That path is bounded by
-# MAX_FAILED_CANDIDATES instead: ~15-20s of CPU per scan at the cap, so tens of
-# seconds for a whole run, not the unbounded wedge. Two different stalls, two
-# different bounds; do not read the sentence above as covering both.
+# tracing the unwrapped path needs to look in both.
+#
+# What actually bounds that path, stated precisely because the short version
+# ("bounded by MAX_FAILED_CANDIDATES") is wrong and was here for two commits
+# (macroscopeapp, PR #410):
+#   - MAX_FAILED_CANDIDATES caps ONE thing: the rescan of unparseable `{`
+#     candidates, ~15-20s of CPU per scan at the cap. It is the bound for a
+#     response full of malformed JSON, and for nothing else.
+#   - `json.load` of the lens envelope reads the file WHOLE, with no cap, and a
+#     response carrying no `{` at all is still traversed end to end. Both are
+#     bounded by the response SIZE, which pr-review does not limit.
+#   - The reviewer's own output cap is therefore the real ceiling on those two,
+#     and it belongs to `claude`, not to this script. A reviewer that emitted a
+#     multi-gigabyte envelope would be read whole. That is a tolerated exposure,
+#     not a defended one: the reviewer is a trusted local process, and capping
+#     the read would trade a hypothetical wedge for silently truncated findings.
+# Two different stalls, two different bounds; do not read the `timeout` sentence
+# above as covering both.
 #
 # --- Exit codes ---
 #   0  reviewed, nothing found (or fail-open: reviewer unavailable)
@@ -62,10 +76,17 @@
 #
 # --- Environment ---
 #   PR_REVIEW_MODEL    model for every lens and the clustering pass (default
-#                      claude-sonnet-5; explicit, never inherited). Overriding to
-#                      a slower model requires raising PR_REVIEW_TIMEOUT to match —
-#                      the default 180s will timeout a claude-opus-5 lens call.
-#   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 180)
+#                      claude-sonnet-5; explicit, never inherited). Nothing
+#                      compares this against the ceiling below, and #398
+#                      measured one opus lens exceeding 600s — so a slower
+#                      model still needs PR_REVIEW_TIMEOUT raised to match.
+#   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 600).
+#                      Must be a positive whole number — anything else exits 2
+#                      before any work happens. A fixed 30s --kill-after grace
+#                      follows expiry, and the clustering call carries the same
+#                      pair, so MODEL-CALL wall clock is at most 2*(ceiling+30).
+#                      It does not bound the run: the JSON scans afterwards sit
+#                      outside every timeout (see the header's two-bounds note).
 #   PR_REVIEW_LOG_DIR  where run logs land (default
 #                      ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>)
 #   PR_REVIEW_NO_CLUSTER=1  skip the clustering pass; distinct == raw
@@ -79,15 +100,21 @@ LENSES=("correctness" "reasoning" "contract")
 # Lenses run in parallel; cycle time = max(lens) + clustering. opus measured
 # 3–8 min/lens; cycles ran 9–10 min wall-clock (6 cycles on ppp#378 = ~54–60 min
 # of agent wait). sonnet-5 measured 30–90 s/lens; full cycle ~2–3 min.
-# Overriding to a slower model requires also raising PR_REVIEW_TIMEOUT (see header).
-# At the 180s default, a lens that exceeds the ceiling is counted as failed; if all
-# three fail, COUNT=0 → exit 0, which pr-open maps to "reviewer unavailable". That
-# path is NOT silent unless --quiet is passed — pr-review prints COVERAGE INCOMPLETE
-# to stderr and pr-open forwards it — but it does not block the PR, so the gate
-# effectively did not run.
-# An opus lens at 180–480 s will time out at most of that range under this ceiling.
+# A lens that exceeds the ceiling is counted as failed; if all three fail,
+# COUNT=0 → exit 0, and pr-open opens the PR with no message at all — it prints
+# "proceeding unreviewed" only for a NONZERO status, so this path is quieter
+# than a broken reviewer. That path is
+# printed as COVERAGE INCOMPLETE on stderr — but BOTH --quiet and --json
+# suppress that line, and it does not block the PR either way, so the gate can
+# report exit 0 having effectively not run. A machine caller must read
+# lensesRan, never the exit code alone.
+# #403 is that failure measured: at the old 180s default, ppp#378 got ONE of
+# three lenses on two consecutive runs and opened its PR on the survivor.
+# 600s is the value those measurements support, not a ceiling that guarantees
+# anything: one opus lens exceeded 600s during #398's own runs. Nothing here
+# compares MODEL against LENS_TIMEOUT, so a slower model still needs a raise.
 MODEL="${PR_REVIEW_MODEL:-claude-sonnet-5}"
-LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-180}"
+LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
 # A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
 # means "no timeout at all", so PR_REVIEW_TIMEOUT=0 silently removed the very
 # protection this variable exists to provide — and a typo like `10m` or `-5`
@@ -119,7 +146,9 @@ Findings are written to a JSON log OUTSIDE the repository, under
 ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>/ — on a default Linux host
 XDG_STATE_HOME is unset, so that is ~/.local/state/pr-review/<repo>/. Keeping the
 logs out of the tree is what stops `git add -A` committing them. A log holds the
-branch diff verbatim, so it is written 0600 (O_EXCL: a symlink at that path is
+findings, clipped reviewer output, and the base/head shas — enough to
+reconstruct what was reviewed, though not the diff itself — so it is written
+0600 (O_EXCL: a symlink at that path is
 refused, never followed) and a directory pr-review creates is 0700. A directory
 that already exists is warned about but still used if only you can WRITE it -- it
 and every directory above it, since renaming a parent redirects every later write.
@@ -128,13 +157,47 @@ temporary directory, because no file mode survives a writable directory. With HO
 too (cron, systemd, containers) the run still happens, into a private temporary
 directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
-environment: PR_REVIEW_MODEL (default claude-sonnet-5) · PR_REVIEW_TIMEOUT (default 180s,
-             bounds every claude call including clustering; override to a slower model
-             requires raising this too — see header) · PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
+environment: PR_REVIEW_MODEL (default claude-sonnet-5) · PR_REVIEW_TIMEOUT (default 600s,
+             a positive whole number or exit 2; bounds every claude call including
+             clustering) · PR_REVIEW_LOG_DIR (outranks XDG_STATE_HOME and HOME)
+             · PR_REVIEW_NO_CLUSTER=1
 
 --json emits that log verbatim: schema `pr-review/run@1`, carrying status,
 baseSha/headSha (the exact input, reproducible with `git diff BASE..HEAD`),
-lenses, lensesRan, failedLenses, findings and distinct.
+lenses, lensesRan, failedLenses, lensWarnings, findings, distinct,
+distinctFindings, dedup/dedupNote, branch, base, utc, model, and the coverage
+measurements lensTimeoutSec (the ceiling in force) and lensSeconds (per lens,
+seconds). Every failedLenses entry carries cause, one of: "timeout" (124/137 and the
+elapsed time reached the ceiling), "killed" (124/137 well inside it — an OOM
+kill is indistinguishable by exit code alone), "failed" (everything else the
+collector rejects, including a lens that exited 0 with no output or an
+unusable envelope), "unknown" (no exit code was recorded), "unreadable" (the
+lens answered and the collector could not use the answer). Entries also carry
+why and stderr, and exitCode/elapsedSec where they were recorded — either may
+be null. No caller ever parses the human sentence.
+The five emit_status paths (not a repo, precondition, diff failed, no changes,
+reviewer unavailable) emit a different, smaller object with NO schema key and a
+`message` key instead. A missing `schema` means NO LENS RAN; `status` says why,
+and the five are not one outcome:
+  no-changes           the run COMPLETED — repo found, base resolved, `git diff`
+                       ran and came back empty. Exit 0, nothing to review. This
+                       is a success, and reading it as a startup failure is the
+                       same "could not look" / "found nothing" merge this gate
+                       exists to keep apart.
+  not-a-repo           never started.
+  precondition         never started (protected branch, no base determinable).
+  diff-failed          started, and the diff itself failed.
+  reviewer-unavailable started; `claude` or `python3` was missing, so it failed
+                       open. Exit 0, and NOT a review.
+Branch on `status`, never on the absence of `schema` alone.
+Exit 3 does NOT predict whether JSON appears, and neither does any other code:
+the protected-branch and no-base preconditions and the failed diff go through
+emit_status and DO emit the small object, while the environment failures after
+that point (unsafe TMPDIR, an uncreatable log directory or log file, an
+unwritable work dir) print stderr and emit nothing. Usage errors emit nothing
+either. So a caller must handle an EMPTY STDOUT on any nonzero exit rather than
+mapping a code to a shape — the exit code says what went wrong, and the presence
+of a document says only how far the run got before it did.
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
             3 precondition (protected branch, diff failed) · 7 findings
@@ -178,6 +241,28 @@ while [ $# -gt 0 ]; do
     *) echo "pr-review: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# The model/ceiling rule, enforced rather than merely stated in three comments —
+# the "rule in prose, absent from code" shape this script's own contract lens is
+# told to flag. It cannot be checked in general: no table maps a model name to a
+# duration, and any string is a legal model. The ONE combination the
+# measurements condemn is checkable — a non-default model at the default
+# ceiling, the config behind #403's silent partial coverage.
+#
+# Placed HERE, after the flag loop, for two reasons. The numeric validation of
+# LENS_TIMEOUT must run first, or `[ "$LENS_TIMEOUT" -eq 600 ]` on a value like
+# `10m` fails under set -e and swallows the specific exit-2 message. And
+# QUIET/JSON_OUT must be parsed first: every other diagnostic here respects both,
+# and a warning that ignores them puts a line on the stderr of a caller who asked
+# for clean output (macroscopeapp, PR #410).
+DEFAULT_MODEL="claude-sonnet-5"
+DEFAULT_TIMEOUT=600
+if [ "$JSON_OUT" -eq 0 ] && [ "$QUIET" -eq 0 ] \
+   && [ "$MODEL" != "$DEFAULT_MODEL" ] && [ "$LENS_TIMEOUT" -eq "$DEFAULT_TIMEOUT" ]; then
+  echo "⚠️  pr-review: PR_REVIEW_MODEL is '$MODEL' at the default ${DEFAULT_TIMEOUT}s ceiling." >&2
+  echo "   #398 measured an opus lens exceeding 600s. If lenses time out, the run" >&2
+  echo "   still exits 0 with partial coverage — raise PR_REVIEW_TIMEOUT to match." >&2
+fi
 
 # Every exit path speaks the caller's language. A machine reader most needs to
 # tell 'nothing to review' from 'reviewer unavailable' from 'clean', and the old
@@ -440,12 +525,30 @@ REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
 # turned itself off and the message did not say why (macroscopeapp, PR #379).
 #
 # The last resort is a private `mktemp -d`, not a fixed `/tmp/pr-review/<repo>`:
-# these logs carry the branch diff verbatim, and a predictable path in a
+# these logs carry findings and clipped reviewer output, and a predictable path in a
 # world-writable directory is pre-creatable by any other user on the host.
 # Ephemeral logs degrade the btw#59 evidence trail; losing the review itself is
 # worse, so the run continues and says on stderr where it wrote.
 if [ -n "${PR_REVIEW_LOG_DIR:-}" ]; then
   LOG_DIR="$PR_REVIEW_LOG_DIR"
+  # "Outside the repository, so `git add -A` cannot commit it" is a SAFETY
+  # claim, and every other path here satisfies it by construction. This one is
+  # a caller-supplied string that can name anywhere — including the work tree,
+  # where a log full of reviewer output about unreleased code would be swept
+  # into a commit by the next `git add -A`. Refuse rather than silently
+  # relocating: the caller asked for a specific directory, and quietly writing
+  # somewhere else is how evidence goes missing (macroscopeapp, PR #410).
+  _repo_top=$(git rev-parse --show-toplevel)
+  _log_abs=$(cd "$LOG_DIR" 2>/dev/null && pwd -P || realpath -m "$LOG_DIR" 2>/dev/null || printf '%s' "$LOG_DIR")
+  case "$_log_abs" in
+    "$_repo_top"|"$_repo_top"/*)
+      echo "pr-review: PR_REVIEW_LOG_DIR ('$LOG_DIR') is inside the repository at '$_repo_top'." >&2
+      echo "   Run logs carry findings and reviewer output; inside the work tree, 'git add -A'" >&2
+      echo "   commits them. Point PR_REVIEW_LOG_DIR outside the repo, or unset it to use" >&2
+      echo "   \${XDG_STATE_HOME:-\$HOME/.local/state}/pr-review/." >&2
+      exit 3 ;;
+  esac
+  unset _repo_top _log_abs
 elif [ -n "${XDG_STATE_HOME:-}" ]; then
   LOG_DIR="$XDG_STATE_HOME/pr-review/$REPO_NAME"
 elif [ -n "${HOME:-}" ]; then
@@ -512,7 +615,7 @@ case "${LOG_DIR_VERDICT%%|*}" in
     ;;
   readable)
     echo "⚠️  pr-review: '$LOG_DIR' is readable by other users on this host, and its" >&2
-    echo "   run logs hold the branch diff verbatim. New logs are written 0600; ones" >&2
+    echo "   run logs hold findings and reviewer output. New logs are written 0600; ones" >&2
     echo "   already there keep the mode they were created with." >&2
     echo "   Run: chmod 700 '$LOG_DIR' && chmod 600 '$LOG_DIR'/*.json" >&2
     ;;
@@ -869,14 +972,17 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
 # rather than interpolated, because the heredoc that writes this whole file
 # is quote-delimited and takes no shell substitution. Nothing enforces the
 # two staying in sync. FINDINGS_ECHOES_SOFT and FINDINGS_ECHOES_HARD at least
-# have an independent restatement to catch drift: tests/pr-review-gate.test.ts's
-# hazard cases hardcode both literals separately from these constants, so a
-# reworded RULES schema would fail a hazard case rather than pass silently.
-# GROUPS_ECHOES_HARD is held to the same standard: the same file's hazard
-# cases echo this grouping both before and after the real answer, hardcoded
-# separately from this constant, so a reworded CRULES schema fails a hazard
-# case rather than drifting unnoticed. If either prompt's example changes,
-# these constants must change with it, and both sides now say so in a test.
+# have an independent restatement in tests/pr-review-gate.test.ts, whose hazard
+# cases hardcode both literals separately from these constants — so a drifted
+# CONSTANT fails a hazard case. A reworded RULES heredoc with the constant left
+# alone fails nothing; see the limit stated below, which applies to both halves.
+# GROUPS_ECHOES_HARD is held to the same standard, with the same LIMIT, and the
+# limit is worth stating because the earlier wording here overclaimed: the hazard
+# cases hardcode these literals separately from the constants, so they fail when
+# a CONSTANT drifts. They do NOT fail when the RULES or CRULES heredoc is
+# reworded and the constant is left alone — nothing in this file compares the
+# two, in either direction. If either prompt's example changes, these constants
+# must change with it, and only a human reading both keeps that true.
 #
 # The empty findings list is a SOFT echo: unlike the placeholder finding or
 # the placeholder grouping, it doubles as the one correct answer for "ran,
@@ -936,14 +1042,42 @@ RULES
     # `timeout` so a stalled reviewer cannot wedge pr-open. Expiry is recorded as
     # a failed lens, which is the same treatment as any other failure — never as
     # a clean one.
-    if timeout --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
+    #
+    # The exit code and the elapsed seconds are written as FACTS, each to its own
+    # file; the collector composes the sentence. The old code appended
+    # "exit N (timeout ${LENS_TIMEOUT}s or reviewer failure)" to the lens's
+    # stderr, which merged two different causes into one line AND overwrote the
+    # reviewer's own message with our guess about it. A timeout and a crashed
+    # reviewer need different actions — raise the knob, or go read the stderr —
+    # and a reader could not tell which one had happened (#403).
+    lens_start=$(date +%s)
+    # `-v` under LC_ALL=C: timeout announces on ITS stderr when IT sends the
+    # signal, and says nothing otherwise. That announcement is the only direct
+    # evidence that the ceiling — rather than the OOM killer or the reviewer
+    # itself — ended the lens. Classifying 124/137 by elapsed time was an
+    # inference standing in for evidence that was available for the asking
+    # (macroscopeapp, PR #410). LC_ALL=C because the message is localized and
+    # this grep is a contract with it.
+    if LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
          claude -p --output-format json --model "$MODEL" \
          < "$WORK/$lens.prompt" > "$WORK/$lens.out" 2> "$WORK/$lens.err"; then
-      :
+      lens_code=0
     else
-      echo "exit $? (timeout ${LENS_TIMEOUT}s or reviewer failure)" >> "$WORK/$lens.err"
+      lens_code=$?
       : > "$WORK/$lens.fail"
     fi
+    # Lift timeout's own line out of the reviewer's stderr: the marker becomes a
+    # file, and `stderr` in the log stays what the REVIEWER said, which is what a
+    # human reading it is looking for.
+    if grep -q '^timeout: sending signal' "$WORK/$lens.err" 2>/dev/null; then
+      : > "$WORK/$lens.timedout"
+      grep -v '^timeout: sending signal' "$WORK/$lens.err" > "$WORK/$lens.err.tmp" || true
+      mv "$WORK/$lens.err.tmp" "$WORK/$lens.err"
+    fi
+    # Elapsed for EVERY lens, not only the failures: "raise the timeout" is a
+    # guess until the successful runs say how close to the ceiling they came.
+    echo "$(( $(date +%s) - lens_start ))" > "$WORK/$lens.elapsed"
+    echo "$lens_code" > "$WORK/$lens.code"
   } &
   LENS_PIDS+=($!)
 done
@@ -961,7 +1095,7 @@ LENS_PIDS=()
 # execution in the release path at worst. Its summary goes to a FILE, not stdout,
 # because an unredirected print made `--json` emit two concatenated documents
 # with `findings` an integer in one and a list in the other.
-python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "$BASE_SHA" "$HEAD_SHA" "${LENSES[@]}" <<'PYEOF'
+LENS_TIMEOUT="$LENS_TIMEOUT" python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "$BASE_SHA" "$HEAD_SHA" "${LENSES[@]}" <<'PYEOF'
 import json, os, sys
 
 def _open_private(path):
@@ -988,6 +1122,9 @@ def _clip(text, limit):
 
 work, log, base, branch, stamp, model, base_sha, head_sha = sys.argv[1:9]
 lenses = sys.argv[9:]
+# Env, not argv: appending to argv would silently shift the `lenses` slice above,
+# and that slice is what every downstream count is built from.
+timeout_s = os.environ.get("LENS_TIMEOUT", "?")
 # The scanner lives in this run's work dir, written by the shell above, so the
 # clustering pass gets the same one. The path goes on sys.path only after argv is
 # unpacked, because `work` IS argv[1].
@@ -1025,20 +1162,95 @@ def _usable(f):
 findings, failed, warnings = [], [], []
 
 
-def fail(lens, why):
+def _read_int(lens, suffix):
+    """One recorded fact, or None. Absent is not zero: a lens killed before it
+    could write its own files must not report `elapsed 0` as though measured."""
+    path = os.path.join(work, f"{lens}.{suffix}")
+    try:
+        with open(path) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _lens_stderr(lens):
+    """Whatever the reviewer wrote to stderr, clipped — or "" if it wrote none.
+
+    Shared so `fail()` and `_unreadable()` cannot drift: _unreadable hardcoded ""
+    while its own docstring claimed parity with fail(), throwing away exactly the
+    CLI warning that would explain why a payload came back unparseable
+    (macroscopeapp, PR #410)."""
     err = os.path.join(work, f"{lens}.err")
-    detail = ""
-    if os.path.exists(err):
-        # Keep the CAUSE. It used to be captured and then deleted unread by the
-        # EXIT trap, leaving "N of 3 lenses failed" with no way to tell E2BIG
-        # from expired auth from a rate limit — while the script failed open.
-        detail = _clip(open(err, errors="replace").read().strip(), 500)
-    failed.append({"lens": lens, "why": why, "stderr": detail})
+    if not os.path.exists(err):
+        return ""
+    return _clip(open(err, errors="replace").read().strip(), 500)
+
+
+def _unreadable(lens, why, raw):
+    """One envelope, always the same keys. These two paths used to omit stderr,
+    exitCode and elapsedSec entirely while the published contract said the values
+    "may be null" — so a consumer doing f["exitCode"] got a KeyError, not a null,
+    and had to branch on key presence after all. Absent and null are different
+    facts; the docs promised the second, so the code supplies it."""
+    return {"lens": lens, "why": why, "cause": "unreadable", "raw": raw,
+            "stderr": _lens_stderr(lens), "exitCode": _read_int(lens, "code"),
+            "elapsedSec": _read_int(lens, "elapsed")}
+
+
+def fail(lens, why, cause="failed"):
+    # Keep the CAUSE. It used to be captured and then deleted unread by the EXIT
+    # trap, leaving "N of 3 lenses failed" with no way to tell E2BIG from expired
+    # auth from a rate limit — while the script failed open.
+    detail = _lens_stderr(lens)
+    failed.append({"lens": lens, "why": why, "cause": cause, "stderr": detail,
+                   "exitCode": _read_int(lens, "code"),
+                   "elapsedSec": _read_int(lens, "elapsed")})
+
+
+def fail_exit(lens):
+    """Name the cause from evidence, never from the exit code alone.
+
+    124 is what `timeout` returns when it kills the child at expiry, and 137 when
+    the child ignored SIGTERM and was SIGKILLed after --kill-after. Neither is
+    PROOF of expiry: the OOM killer also produces 137, and a reviewer may exit
+    124 of its own accord. Telling either one to raise PR_REVIEW_TIMEOUT names a
+    knob that would not have helped — the wrong verb attached to a real failure.
+
+    So the answer comes from `timeout -v`, which announces on its own stderr
+    when IT sends the signal and says nothing otherwise. That marker — lifted to
+    a `.timedout` file by the shell — is the evidence. 124/137 WITHOUT it is
+    `killed`: something outside the ceiling ended the lens, and telling the
+    caller to raise a knob would be the wrong verb. A lens killed before it could
+    record an exit code is `unknown`, not a guess.
+
+    `elapsedSec` is still recorded, and is still the useful number for deciding
+    where to set the ceiling — but it no longer classifies anything, because a
+    duration near the ceiling was only ever circumstantial (macroscopeapp, #410)."""
+    code = _read_int(lens, "code")
+    timed_out = os.path.exists(os.path.join(work, f"{lens}.timedout"))
+    if timed_out:
+        return fail(lens, f"timed out after {timeout_s}s", cause="timeout")
+    if code is None:
+        return fail(lens, "reviewer exited nonzero; no exit code was recorded",
+                    cause="unknown")
+    if code == 137:
+        # 128+9. A process can `exit 137` deliberately, so this is strong
+        # evidence rather than proof — but SIGKILL from outside is the far more
+        # likely source, and it is the one worth pointing a human at.
+        elapsed = _read_int(lens, "elapsed")
+        where = f" after {elapsed}s" if elapsed is not None else ""
+        return fail(lens, f"killed by a signal{where} — the ceiling did not fire",
+                    cause="killed")
+    # 124 WITHOUT the marker is not evidence of anything external: it is the
+    # reviewer's own exit code, which happens to be the one `timeout` also uses.
+    # Calling it "killed" sent a human to dmesg for an ordinary failure
+    # (macroscopeapp, PR #410).
+    return fail(lens, f"reviewer exited {code}", cause="failed")
 
 
 for lens in lenses:
     if os.path.exists(os.path.join(work, f"{lens}.fail")):
-        fail(lens, "reviewer exited nonzero or timed out"); continue
+        fail_exit(lens); continue
     path = os.path.join(work, f"{lens}.out")
     if not os.path.exists(path):
         fail(lens, "no output"); continue
@@ -1070,8 +1282,10 @@ for lens in lenses:
         # "Could not parse the answer" is NOT "the reviewer broke", and the raw
         # text is kept so a dropped finding stays recoverable. `parsed` carries
         # the reason string in this branch.
-        failed.append({"lens": lens, "why": str(parsed),
-                       "raw": _clip(text, 2000)})
+        # `cause` on EVERY entry, including this one. Publishing the enum while
+        # two paths omitted the key made a consumer branch on key PRESENCE — the
+        # exact prose-parsing the field exists to remove (#403 reconcile).
+        failed.append(_unreadable(lens, str(parsed), _clip(text, 2000)))
         continue
     s, e = span
     try:
@@ -1096,8 +1310,8 @@ for lens in lenses:
                                     f"not objects or carried no title or detail",
                              "raw": _clip(text[s:e + 1], 2000)})
     except Exception as exc:
-        failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",
-                       "raw": _clip(text[s:e + 1], 2000)})
+        failed.append(_unreadable(lens, f"findings JSON invalid: {exc}",
+                                  _clip(text[s:e + 1], 2000)))
         continue
 
 # STATUS distinguishes complete from partial coverage. Collapsing them into
@@ -1113,7 +1327,14 @@ json.dump({"schema": "pr-review/run@1",
            "status": status, "branch": branch, "base": base,
            "baseSha": base_sha or None, "headSha": head_sha or None, "utc": stamp,
            "model": model, "lenses": lenses, "failedLenses": failed,
-           "lensWarnings": warnings, "lensesRan": ran, "findings": findings},
+           "lensWarnings": warnings, "lensesRan": ran,
+           # Additive: schema stays pr-review/run@1. `lensTimeoutSec` is the
+           # ceiling in force for this run, so a reader comparing it against
+           # lensSeconds can see how close a lens came without knowing the
+           # default or what the caller exported.
+           "lensTimeoutSec": int(timeout_s) if timeout_s.isdigit() else None,
+           "lensSeconds": {l: _read_int(l, "elapsed") for l in lenses},
+           "findings": findings},
           _open_private(log), indent=2)
 with open(os.path.join(work, "summary"), "w") as fh:
     fh.write(f"{len(findings)} {len(failed)} {ran}\n")
@@ -1134,7 +1355,7 @@ read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
 #
 # So: one more call. It sits serially after the parallel lenses; at 30–90 s per
 # call the total cycle time is max(lens) + clustering. The cost is wall-clock, not
-# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 76).
+# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, set below LENSES).
 # It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
 # an un-deduplicated number that says so is usable; one that pretends is not.
 if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
@@ -1161,7 +1382,7 @@ for i, f in enumerate(d["findings"]):
 PYIDS
   } > "$WORK/cluster.prompt"
 
-  if timeout --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
+  if LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
        claude -p --output-format json --model "$MODEL" \
        < "$WORK/cluster.prompt" > "$WORK/cluster.out" 2>"$WORK/cluster.err"; then
     :
@@ -1366,8 +1587,23 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 for f in d["failedLenses"]:
     print("    {}: {}".format(f["lens"], f["why"]))
-    if f.get("stderr"):
+    # Each cause takes a different action, so each gets its own second line:
+    # timeout names the knob, killed points at dmesg, and everything else quotes
+    # the reviewer's own stderr. A `killed` lens's stderr is NOT printed — the
+    # branch consumes the chain — because an OOM-killed process rarely wrote
+    # any, and the log keeps it either way. Printing one merged sentence for all
+    # of them — the #403 bug — left the reader with a state and no verb.
+    if f.get("cause") == "timeout":
+        print("      raise it: PR_REVIEW_TIMEOUT=<seconds> (currently {})".format(
+            d.get("lensTimeoutSec") or "?"))
+    elif f.get("cause") == "killed":
+        print("      something outside the ceiling killed it — check dmesg for an OOM kill")
+    elif f.get("stderr"):
         print("      " + f["stderr"].splitlines()[0][:160])
+ran = {k: v for k, v in (d.get("lensSeconds") or {}).items() if v is not None
+       and not any(f["lens"] == k for f in d["failedLenses"])}
+if ran:
+    print("    lenses that finished: " + ", ".join(f"{k} {v}s" for k, v in sorted(ran.items())))
 PYFAIL
   fi
   if [ "$COUNT" -eq 0 ]; then
