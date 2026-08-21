@@ -190,8 +190,14 @@ and the five are not one outcome:
   reviewer-unavailable started; `claude` or `python3` was missing, so it failed
                        open. Exit 0, and NOT a review.
 Branch on `status`, never on the absence of `schema` alone.
-Usage errors and every exit 3 emit NO JSON at all, even under --json: a caller
-must handle an empty stdout, and read the exit code for those.
+Exit 3 does NOT predict whether JSON appears, and neither does any other code:
+the protected-branch and no-base preconditions and the failed diff go through
+emit_status and DO emit the small object, while the environment failures after
+that point (unsafe TMPDIR, an uncreatable log directory or log file, an
+unwritable work dir) print stderr and emit nothing. Usage errors emit nothing
+either. So a caller must handle an EMPTY STDOUT on any nonzero exit rather than
+mapping a code to a shape — the exit code says what went wrong, and the presence
+of a document says only how far the run got before it did.
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
             3 precondition (protected branch, diff failed) · 7 findings
