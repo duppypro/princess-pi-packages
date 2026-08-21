@@ -35,10 +35,24 @@
 # scans per run, across TWO processes: the collector scans all three lens
 # responses sequentially in one python3, and the clustering pass scans again in
 # a second, separate python3. Neither is wrapped in `timeout`, and a maintainer
-# tracing the unwrapped path needs to look in both. That path is bounded by
-# MAX_FAILED_CANDIDATES instead: ~15-20s of CPU per scan at the cap, so tens of
-# seconds for a whole run, not the unbounded wedge. Two different stalls, two
-# different bounds; do not read the sentence above as covering both.
+# tracing the unwrapped path needs to look in both.
+#
+# What actually bounds that path, stated precisely because the short version
+# ("bounded by MAX_FAILED_CANDIDATES") is wrong and was here for two commits
+# (macroscopeapp, PR #410):
+#   - MAX_FAILED_CANDIDATES caps ONE thing: the rescan of unparseable `{`
+#     candidates, ~15-20s of CPU per scan at the cap. It is the bound for a
+#     response full of malformed JSON, and for nothing else.
+#   - `json.load` of the lens envelope reads the file WHOLE, with no cap, and a
+#     response carrying no `{` at all is still traversed end to end. Both are
+#     bounded by the response SIZE, which pr-review does not limit.
+#   - The reviewer's own output cap is therefore the real ceiling on those two,
+#     and it belongs to `claude`, not to this script. A reviewer that emitted a
+#     multi-gigabyte envelope would be read whole. That is a tolerated exposure,
+#     not a defended one: the reviewer is a trusted local process, and capping
+#     the read would trade a hypothetical wedge for silently truncated findings.
+# Two different stalls, two different bounds; do not read the `timeout` sentence
+# above as covering both.
 #
 # --- Exit codes ---
 #   0  reviewed, nothing found (or fail-open: reviewer unavailable)
