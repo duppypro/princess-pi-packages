@@ -11,7 +11,8 @@
 #     branch -D main/master; and (#301, #391) commit / merge / rebase /
 #     cherry-pick / am / pull / revert when the affected repo is on
 #     main/master — main advances only
-#     through PRs. Allowed there: --ff-only (pull/merge), every --abort/--quit,
+#     through PRs. Allowed there: --ff-only (pull/merge), --abort/--quit for the
+#     sub-commands that have one (merge / rebase / cherry-pick / am / revert),
 #     checkout -b / switch -c (the escape; can never deadlock).
 #   Line-state (#301): the hook runs before the line does, so `cd`/`pushd`
 #     move the effective cwd for later sub-commands and `checkout -b`/`switch -c`

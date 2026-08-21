@@ -367,8 +367,9 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   `rebase`, `cherry-pick`, `am`, `pull`, and `revert` (added #391 — it writes a commit on the
   current branch, which is exactly what this set exists to prevent) are refused when the
   sub-command's repo is on `main`/`master`. Allowed on `main`: `pull --ff-only`,
-  `merge --ff-only`, every `--abort`/`--quit` (`revert --abort`/`--quit` included), and
-  `checkout -b` / `switch -c` (the escape — nothing here can deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
+  `merge --ff-only`, `--abort`/`--quit` for the sub-commands that have one (`merge`,
+  `rebase`, `cherry-pick`, `am`, and since #391 `revert`), and `checkout -b` / `switch -c`
+  (the escape — nothing here can deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
   every enforced check concentrates on PR review; `git-checkpoint` already refuses on `main`
   (#225) and this closes the raw-git path an agent reaches through Bash. **What the hook
   cannot see it fails safe on:** the branch is resolved *before* the line runs, so a
