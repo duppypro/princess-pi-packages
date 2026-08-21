@@ -87,7 +87,7 @@ LENSES=("correctness" "reasoning" "contract")
 # effectively did not run.
 # An opus lens at 180–480 s will time out at most of that range under this ceiling.
 MODEL="${PR_REVIEW_MODEL:-claude-sonnet-5}"
-LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-180}"
+LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
 # A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
 # means "no timeout at all", so PR_REVIEW_TIMEOUT=0 silently removed the very
 # protection this variable exists to provide — and a typo like `10m` or `-5`
@@ -936,14 +936,27 @@ RULES
     # `timeout` so a stalled reviewer cannot wedge pr-open. Expiry is recorded as
     # a failed lens, which is the same treatment as any other failure — never as
     # a clean one.
+    #
+    # The exit code and the elapsed seconds are written as FACTS, each to its own
+    # file; the collector composes the sentence. The old code appended
+    # "exit N (timeout ${LENS_TIMEOUT}s or reviewer failure)" to the lens's
+    # stderr, which merged two different causes into one line AND overwrote the
+    # reviewer's own message with our guess about it. A timeout and a crashed
+    # reviewer need different actions — raise the knob, or go read the stderr —
+    # and a reader could not tell which one had happened (#403).
+    lens_start=$(date +%s)
     if timeout --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
          claude -p --output-format json --model "$MODEL" \
          < "$WORK/$lens.prompt" > "$WORK/$lens.out" 2> "$WORK/$lens.err"; then
-      :
+      lens_code=0
     else
-      echo "exit $? (timeout ${LENS_TIMEOUT}s or reviewer failure)" >> "$WORK/$lens.err"
+      lens_code=$?
       : > "$WORK/$lens.fail"
     fi
+    # Elapsed for EVERY lens, not only the failures: "raise the timeout" is a
+    # guess until the successful runs say how close to the ceiling they came.
+    echo "$(( $(date +%s) - lens_start ))" > "$WORK/$lens.elapsed"
+    echo "$lens_code" > "$WORK/$lens.code"
   } &
   LENS_PIDS+=($!)
 done
@@ -961,7 +974,7 @@ LENS_PIDS=()
 # execution in the release path at worst. Its summary goes to a FILE, not stdout,
 # because an unredirected print made `--json` emit two concatenated documents
 # with `findings` an integer in one and a list in the other.
-python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "$BASE_SHA" "$HEAD_SHA" "${LENSES[@]}" <<'PYEOF'
+LENS_TIMEOUT="$LENS_TIMEOUT" python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "$BASE_SHA" "$HEAD_SHA" "${LENSES[@]}" <<'PYEOF'
 import json, os, sys
 
 def _open_private(path):
@@ -988,6 +1001,9 @@ def _clip(text, limit):
 
 work, log, base, branch, stamp, model, base_sha, head_sha = sys.argv[1:9]
 lenses = sys.argv[9:]
+# Env, not argv: appending to argv would silently shift the `lenses` slice above,
+# and that slice is what every downstream count is built from.
+timeout_s = os.environ.get("LENS_TIMEOUT", "?")
 # The scanner lives in this run's work dir, written by the shell above, so the
 # clustering pass gets the same one. The path goes on sys.path only after argv is
 # unpacked, because `work` IS argv[1].
@@ -1025,7 +1041,18 @@ def _usable(f):
 findings, failed, warnings = [], [], []
 
 
-def fail(lens, why):
+def _read_int(lens, suffix):
+    """One recorded fact, or None. Absent is not zero: a lens killed before it
+    could write its own files must not report `elapsed 0` as though measured."""
+    path = os.path.join(work, f"{lens}.{suffix}")
+    try:
+        with open(path) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def fail(lens, why, cause="failed"):
     err = os.path.join(work, f"{lens}.err")
     detail = ""
     if os.path.exists(err):
@@ -1033,12 +1060,26 @@ def fail(lens, why):
         # EXIT trap, leaving "N of 3 lenses failed" with no way to tell E2BIG
         # from expired auth from a rate limit — while the script failed open.
         detail = _clip(open(err, errors="replace").read().strip(), 500)
-    failed.append({"lens": lens, "why": why, "stderr": detail})
+    failed.append({"lens": lens, "why": why, "cause": cause, "stderr": detail,
+                   "exitCode": _read_int(lens, "code"),
+                   "elapsedSec": _read_int(lens, "elapsed")})
+
+
+def fail_exit(lens):
+    """Split the two causes `timeout` merged. 124 is what `timeout` returns when
+    it kills the child at expiry, and 137 when the child ignored SIGTERM and was
+    SIGKILLed after --kill-after; nothing else produces either. Any other code is
+    the reviewer's own, and its stderr is the thing worth reading."""
+    code = _read_int(lens, "code")
+    if code in (124, 137):
+        return fail(lens, f"timed out after {timeout_s}s", cause="timeout")
+    return fail(lens, f"reviewer exited {code}" if code is not None
+                else "reviewer exited nonzero", cause="failed")
 
 
 for lens in lenses:
     if os.path.exists(os.path.join(work, f"{lens}.fail")):
-        fail(lens, "reviewer exited nonzero or timed out"); continue
+        fail_exit(lens); continue
     path = os.path.join(work, f"{lens}.out")
     if not os.path.exists(path):
         fail(lens, "no output"); continue
@@ -1113,7 +1154,14 @@ json.dump({"schema": "pr-review/run@1",
            "status": status, "branch": branch, "base": base,
            "baseSha": base_sha or None, "headSha": head_sha or None, "utc": stamp,
            "model": model, "lenses": lenses, "failedLenses": failed,
-           "lensWarnings": warnings, "lensesRan": ran, "findings": findings},
+           "lensWarnings": warnings, "lensesRan": ran,
+           # Additive: schema stays pr-review/run@1. `lensTimeoutSec` is the
+           # ceiling in force for this run, so a reader comparing it against
+           # lensSeconds can see how close a lens came without knowing the
+           # default or what the caller exported.
+           "lensTimeoutSec": int(timeout_s) if timeout_s.isdigit() else None,
+           "lensSeconds": {l: _read_int(l, "elapsed") for l in lenses},
+           "findings": findings},
           _open_private(log), indent=2)
 with open(os.path.join(work, "summary"), "w") as fh:
     fh.write(f"{len(findings)} {len(failed)} {ran}\n")
@@ -1366,8 +1414,20 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 for f in d["failedLenses"]:
     print("    {}: {}".format(f["lens"], f["why"]))
-    if f.get("stderr"):
+    # A timeout and a crashed reviewer take different actions, so they get
+    # different second lines. The timeout names the knob and the value to beat;
+    # anything else quotes what the reviewer itself said, which is the only
+    # place the real cause can be. Printing one merged sentence for both — the
+    # #403 bug — left the reader with a state and no verb.
+    if f.get("cause") == "timeout":
+        print("      raise it: PR_REVIEW_TIMEOUT=<seconds> (currently {})".format(
+            d.get("lensTimeoutSec") or "?"))
+    elif f.get("stderr"):
         print("      " + f["stderr"].splitlines()[0][:160])
+ran = {k: v for k, v in (d.get("lensSeconds") or {}).items() if v is not None
+       and not any(f["lens"] == k for f in d["failedLenses"])}
+if ran:
+    print("    lenses that finished: " + ", ".join(f"{k} {v}s" for k, v in sorted(ran.items())))
 PYFAIL
   fi
   if [ "$COUNT" -eq 0 ]; then

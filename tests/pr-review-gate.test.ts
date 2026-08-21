@@ -145,6 +145,13 @@ function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string,
 		fs.writeFileSync(path.join(sb.binDir, "claude"),
 			`#!/usr/bin/env bash\nprintf '%s' '{"is_error":false,"result":"{\\"findings\\":[{\\"severity\\":\\"High\\",\\"file\\":\\"feature.sh\\",\\"title\\":\\"no shebang guard\\"}]}"}'; exit 0\n`,
 			{ mode: 0o755 });
+	} else if (mode === "hang") {
+		// A reviewer that never answers. `timeout` kills it, which is a DIFFERENT
+		// cause from a reviewer that errors — the script reported both with one
+		// sentence naming both ("timeout 180s or reviewer failure"), so the reader
+		// could not tell which knob, if any, would help (#403).
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nsleep 30\n`, { mode: 0o755 });
 	} else if (mode === "arrayenv") {
 		// An envelope that parses as an ARRAY, not an object. Used to raise
 		// AttributeError outside the try, kill the collector, and lose all lenses.
@@ -1212,6 +1219,65 @@ console.log("\na finding that says nothing is not a finding:");
 	check(code === 7, "a finding with a title but no line → still blocks (exit 7)",
 		`got ${code}: ${out}`);
 	check(/no shebang guard/.test(out), "…and is printed", out);
+}
+
+
+console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
+{
+	// Timeout path: `timeout` kills the stub, exit 124.
+	const sb = makeSandbox();
+	const env = stubs(sb, "hang");
+	env.PR_REVIEW_TIMEOUT = "1";
+	const { out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.failedLenses.length === 3, "every hung lens is recorded as failed", String(d.failedLenses.length));
+	check(d.failedLenses.every((f: any) => f.cause === "timeout"),
+		"a hung lens records cause 'timeout' — a FIELD, not a sentence to parse",
+		JSON.stringify(d.failedLenses.map((f: any) => f.cause)));
+	check(d.failedLenses.every((f: any) => f.exitCode === 124 || f.exitCode === 137),
+		"…and the exit code that proves it", JSON.stringify(d.failedLenses.map((f: any) => f.exitCode)));
+	check(/timed out/.test(out), "the human line says it timed out", out);
+	check(/PR_REVIEW_TIMEOUT/.test(out), "…and names the knob that raises it — the action, not just the state", out);
+	check(!/or reviewer failure/.test(out),
+		"…and does not also blame the reviewer, which is the ambiguity being removed", out);
+}
+{
+	// Failure path: the reviewer answers immediately with a nonzero exit.
+	const sb = makeSandbox();
+	const env = stubs(sb, "broken");
+	const { out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.failedLenses.every((f: any) => f.cause === "failed"),
+		"a reviewer that errors records cause 'failed', not 'timeout'",
+		JSON.stringify(d.failedLenses.map((f: any) => f.cause)));
+	check(!/timed out/.test(out), "…and the human line does not claim a timeout", out);
+	check(/boom/.test(out), "…and still quotes the reviewer's own stderr", out);
+}
+{
+	// The measurement #403's closer asks for: without it, "raise the timeout" is a
+	// guess. Every lens that RAN reports how long it took, in the machine path.
+	const sb = makeSandbox();
+	const env = stubs(sb, "clean");
+	run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.lensSeconds && typeof d.lensSeconds === "object", "the log records per-lens elapsed seconds",
+		JSON.stringify(d.lensSeconds));
+	check(["correctness", "reasoning", "contract"].every(l => typeof d.lensSeconds?.[l] === "number"),
+		"…one number per lens, so a timeout raise is measured rather than guessed",
+		JSON.stringify(d.lensSeconds));
+}
+{
+	// The default itself. 180s was set against opus-at-600 with no sonnet
+	// measurement behind it, and cost branch 378 two of three lenses (#403).
+	const src = fs.readFileSync(PR_REVIEW, "utf8");
+	const m = src.match(/LENS_TIMEOUT="\$\{PR_REVIEW_TIMEOUT:-(\d+)\}"/);
+	check(m !== null, "the default lens timeout is still a single readable literal", String(m));
+	check(m !== null && Number(m[1]) >= 600,
+		"the default lens timeout is at least 600s — the value that reviewed 3 of 3 lenses",
+		m ? m[1] : "unmatched");
 }
 
 console.log(`\n${failures === 0 ? "✅" : "❌"} pr-review gate: ${checks - failures} of ${checks} checks passed.`);
