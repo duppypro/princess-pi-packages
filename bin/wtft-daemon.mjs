@@ -2227,6 +2227,7 @@ var running = true;
 var sessionExisted = false;
 var pendingClaudeCommands = [];
 var discoveredClaudeSessions = new Set;
+var discoveredSubagentFiles = new Map;
 function shutdown(reason) {
   if (!running)
     return;
@@ -2385,13 +2386,25 @@ function scanForSubAgents() {
       pendingClaudeCommands.push(...stillPending);
   }
   const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
-  if (taskAgentFiles.length > 0) {
-    for (const file of taskAgentFiles) {
-      const sessionId = path9.basename(file, ".jsonl");
-      if (discoveredClaudeSessions.has(sessionId))
-        continue;
-      discoveredClaudeSessions.add(sessionId);
-      wroteAny = writeSessionToTagFile(file) || wroteAny;
+  for (const file of taskAgentFiles) {
+    const sessionId = path9.basename(file, ".jsonl");
+    let fileState = discoveredSubagentFiles.get(sessionId);
+    if (!fileState) {
+      fileState = { lastSize: 0, streamState: newParseStreamState() };
+      discoveredSubagentFiles.set(sessionId, fileState);
+    }
+    const rawInteractions = readNewSubagentLines(file, fileState);
+    if (rawInteractions.length === 0)
+      continue;
+    const deduped = deduplicateInteractions(rawInteractions);
+    attributeClaudeSubAgentCosts(deduped);
+    let batch = "";
+    for (const si of deduped) {
+      batch += serializeClassified(si);
+    }
+    if (batch) {
+      fs9.appendFileSync(tagPath, batch);
+      wroteAny = true;
     }
   }
   if (wroteAny) {
@@ -2414,8 +2427,29 @@ function writeSessionToTagFile(file) {
   } catch {}
   return false;
 }
-function parseNewLines(filePath) {
+function parseLinesIntoInteractions(newContent, fileStreamState, onInterrupt) {
   const interactions = [];
+  const lines = newContent.split(`
+`);
+  for (const line of lines) {
+    if (!line.trim())
+      continue;
+    try {
+      const entry = JSON.parse(line);
+      const isControl = applyControlEntry(entry, fileStreamState, () => onInterrupt(interactions));
+      if (isControl)
+        continue;
+      const interaction = parseEntryToInteraction(entry, fileStreamState.thinkingLevel, fileStreamState.compactionTokensBefore, fileStreamState.afterCompaction, fileStreamState.model);
+      if (interaction) {
+        interactions.push(interaction);
+        fileStreamState.compactionTokensBefore = undefined;
+        fileStreamState.afterCompaction = false;
+      }
+    } catch (_) {}
+  }
+  return interactions;
+}
+function parseNewLines(filePath) {
   try {
     const stat = fs9.statSync(filePath);
     const currentSize = stat.size;
@@ -2427,39 +2461,46 @@ function parseNewLines(filePath) {
       lastSize = 0;
     }
     if (currentSize <= lastSize)
-      return interactions;
+      return [];
     const fd = fs9.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - lastSize);
     fs9.readSync(fd, buf, 0, buf.length, lastSize);
     fs9.closeSync(fd);
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
-    const lines = newContent.split(`
-`);
-    for (const line of lines) {
-      if (!line.trim())
-        continue;
-      try {
-        const entry = JSON.parse(line);
-        const isControl = applyControlEntry(entry, streamState, () => {
-          if (interactions.length > 0) {
-            interactions[interactions.length - 1].interrupted = true;
-          } else {
-            stampInterruptOnPending = true;
-          }
-        });
-        if (isControl)
-          continue;
-        const interaction = parseEntryToInteraction(entry, streamState.thinkingLevel, streamState.compactionTokensBefore, streamState.afterCompaction, streamState.model);
-        if (interaction) {
-          interactions.push(interaction);
-          streamState.compactionTokensBefore = undefined;
-          streamState.afterCompaction = false;
-        }
-      } catch (_) {}
+    return parseLinesIntoInteractions(newContent, streamState, (interactions) => {
+      if (interactions.length > 0) {
+        interactions[interactions.length - 1].interrupted = true;
+      } else {
+        stampInterruptOnPending = true;
+      }
+    });
+  } catch (_) {
+    return [];
+  }
+}
+function readNewSubagentLines(filePath, fileState) {
+  try {
+    const stat = fs9.statSync(filePath);
+    const currentSize = stat.size;
+    if (currentSize < fileState.lastSize) {
+      fileState.lastSize = 0;
     }
-  } catch (_) {}
-  return interactions;
+    if (currentSize <= fileState.lastSize)
+      return [];
+    const fd = fs9.openSync(filePath, "r");
+    const buf = Buffer.alloc(currentSize - fileState.lastSize);
+    fs9.readSync(fd, buf, 0, buf.length, fileState.lastSize);
+    fs9.closeSync(fd);
+    fileState.lastSize = currentSize;
+    const newContent = buf.toString("utf8");
+    return parseLinesIntoInteractions(newContent, fileState.streamState, (interactions) => {
+      if (interactions.length > 0)
+        interactions[interactions.length - 1].interrupted = true;
+    });
+  } catch (_) {
+    return [];
+  }
 }
 function readLastMetaOffset(tagPath2) {
   try {

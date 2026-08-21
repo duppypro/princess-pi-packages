@@ -23,6 +23,7 @@ import {
 	serializeClassifiedWithOverheadSplit,
 	applyControlEntry,
 	newParseStreamState,
+	attributeClaudeSubAgentCosts,
 	extractCwdFromBashCommand,
 	discoverClaudeSubAgentSessionFiles,
 	discoverSubagentSessionFiles,
@@ -34,6 +35,7 @@ import {
 	loadExternalHarnesses,
 	WTFT_TAGGER_VERSION as TAGGER_VERSION
 } from "../extensions/lib/wtft-shared.js";
+import type { ParseStreamState } from "../extensions/lib/wtft-shared.js";
 
 
 
@@ -86,6 +88,16 @@ let sessionExisted = false; // becomes true first time we observe the session fi
 // and write their classified interactions to the tag file.
 const pendingClaudeCommands: { interaction: NonNullable<ReturnType<typeof parseEntryToInteraction>>; prevCtx: number }[] = [];
 const discoveredClaudeSessions = new Set<string>();
+
+// Task/agent sub-agent discovery (#82), incrementally re-parsed (#270): a
+// subagent transcript is discovered while it is still running, so parsing it
+// only once — at discovery — makes everything it writes afterward invisible
+// forever, and the undercount gets persisted into the tag file. Presence in
+// this map means "discovered"; each entry carries its OWN byte offset and
+// stream state so the file is re-read exactly like the parent session is
+// (parseNewLinesFrom below) — cheap when unchanged (one stat, no read), and
+// it naturally stops growing once the subagent stops writing.
+const discoveredSubagentFiles = new Map<string, { lastSize: number; streamState: ParseStreamState }>();
 
 // ---
 // SIGNAL HANDLING
@@ -282,14 +294,35 @@ function scanForSubAgents() {
     if (stillPending.length > 0) pendingClaudeCommands.push(...stillPending);
   }
 
-  // --- Task/agent/workflow sub-agents (#82) ---
+  // --- Task/agent/workflow sub-agents (#82), re-parsed while running (#270) ---
+  // A subagent is discovered while it is STILL RUNNING, so parsing it once at
+  // discovery would freeze its numbers at whatever it had written so far.
+  // Instead, every poll re-reads each known subagent file incrementally —
+  // exactly like the parent session (parseNewLines below) — so growth after
+  // discovery is still counted, and a finished subagent naturally stops being
+  // re-parsed once readNewSubagentLines finds no new bytes.
   const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
-  if (taskAgentFiles.length > 0) {
-    for (const file of taskAgentFiles) {
-      const sessionId = path.basename(file, '.jsonl');
-      if (discoveredClaudeSessions.has(sessionId)) continue;
-      discoveredClaudeSessions.add(sessionId);
-      wroteAny = writeSessionToTagFile(file) || wroteAny;
+  for (const file of taskAgentFiles) {
+    const sessionId = path.basename(file, '.jsonl');
+    let fileState = discoveredSubagentFiles.get(sessionId);
+    if (!fileState) {
+      fileState = { lastSize: 0, streamState: newParseStreamState() };
+      discoveredSubagentFiles.set(sessionId, fileState);
+    }
+    const rawInteractions = readNewSubagentLines(file, fileState);
+    if (rawInteractions.length === 0) continue; // unchanged since last poll
+    const deduped = deduplicateInteractions(rawInteractions);
+    // Nested claude-bash sub-agents (#138) spawned FROM this subagent's own
+    // commands — parseSessionFile does this for a whole-file read; do the
+    // same for this batch so incremental reads don't lose the attribution.
+    attributeClaudeSubAgentCosts(deduped);
+    let batch = '';
+    for (const si of deduped) {
+      batch += serializeClassified(si);
+    }
+    if (batch) {
+      fs.appendFileSync(tagPath, batch);
+      wroteAny = true;
     }
   }
 
@@ -317,9 +350,39 @@ function writeSessionToTagFile(file: string): boolean {
   return false;
 }
 
-function parseNewLines(filePath: string) {
-  // Pushes are null-guarded below, so the array holds only real Interactions.
+/** Parse new lines into interactions, threading control entries (thinking
+ *  level #77, model_change #128, compaction #90, interrupt #52 Phase 3)
+ *  through the given stream state. Shared by the parent's parseNewLines and
+ *  the subagent incremental reader (#270) so the two paths cannot drift
+ *  apart (#156) — same shape as parseSessionFile's whole-file loop. */
+function parseLinesIntoInteractions(
+  newContent: string,
+  fileStreamState: ReturnType<typeof newParseStreamState>,
+  onInterrupt: (interactions: NonNullable<ReturnType<typeof parseEntryToInteraction>>[]) => void
+) {
   const interactions: NonNullable<ReturnType<typeof parseEntryToInteraction>>[] = [];
+  const lines = newContent.split("\n");
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      const isControl = applyControlEntry(entry, fileStreamState, () => onInterrupt(interactions));
+      if (isControl) continue;
+
+      const interaction = parseEntryToInteraction(entry, fileStreamState.thinkingLevel, fileStreamState.compactionTokensBefore, fileStreamState.afterCompaction, fileStreamState.model);
+      if (interaction) {
+        interactions.push(interaction);
+        fileStreamState.compactionTokensBefore = undefined; // consumed
+        fileStreamState.afterCompaction = false; // consumed
+      }
+    } catch (_) {
+      // Skip unparseable lines (partial writes, non-JSON)
+    }
+  }
+  return interactions;
+}
+
+function parseNewLines(filePath: string) {
   try {
     const stat = fs.statSync(filePath);
     const currentSize = stat.size;
@@ -330,51 +393,59 @@ function parseNewLines(filePath: string) {
       }
       lastSize = 0;
     }
-    if (currentSize <= lastSize) return interactions;
+    if (currentSize <= lastSize) return [];
     const fd = fs.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - lastSize);
     fs.readSync(fd, buf, 0, buf.length, lastSize);
     fs.closeSync(fd);
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
-    const lines = newContent.split("\n");
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const entry = JSON.parse(line);
-        // Stream-control entries (thinking level #77, model_change #128,
-        // compaction #90, compact summary + interrupt #52 Phase 3). Recognition
-        // is per harness (#156); the state machine is shared with
-        // parseSessionFile, so the incremental and whole-file paths can no
-        // longer drift apart.
-        //
-        // Interrupt: the killed turn is either the last interaction of this
-        // batch, or still sitting unflushed in pendingItems (stamped in the
-        // main loop). If it was already flushed to the tag file, the stamp is
-        // dropped — bounded by one 667ms beat.
-        const isControl = applyControlEntry(entry, streamState, () => {
-          if (interactions.length > 0) {
-            interactions[interactions.length - 1].interrupted = true;
-          } else {
-            stampInterruptOnPending = true;
-          }
-        });
-        if (isControl) continue;
-
-        const interaction = parseEntryToInteraction(entry, streamState.thinkingLevel, streamState.compactionTokensBefore, streamState.afterCompaction, streamState.model);
-        if (interaction) {
-          interactions.push(interaction);
-          streamState.compactionTokensBefore = undefined; // consumed
-          streamState.afterCompaction = false; // consumed
-        }
-      } catch (_) {
-        // Skip unparseable lines (partial writes, non-JSON)
+    // Interrupt: the killed turn is either the last interaction of this
+    // batch, or still sitting unflushed in pendingItems (stamped in the
+    // main loop). If it was already flushed to the tag file, the stamp is
+    // dropped — bounded by one 667ms beat.
+    return parseLinesIntoInteractions(newContent, streamState, (interactions) => {
+      if (interactions.length > 0) {
+        interactions[interactions.length - 1].interrupted = true;
+      } else {
+        stampInterruptOnPending = true;
       }
-    }
+    });
   } catch (_) {
     // File may not exist yet
+    return [];
   }
-  return interactions;
+}
+
+/** Incrementally read a subagent transcript exactly like the parent session
+ *  is read — a byte offset plus threaded stream state — so tokens written
+ *  AFTER first discovery are still counted (#270). Mutates fileState.lastSize
+ *  in place. Cheap when unchanged: one stat, no read. */
+function readNewSubagentLines(filePath: string, fileState: { lastSize: number; streamState: ReturnType<typeof newParseStreamState> }) {
+  try {
+    const stat = fs.statSync(filePath);
+    const currentSize = stat.size;
+    if (currentSize < fileState.lastSize) {
+      // Truncated/rotated — rare for a subagent transcript, but keep
+      // symmetry with the parent's own reset-on-truncate handling.
+      fileState.lastSize = 0;
+    }
+    if (currentSize <= fileState.lastSize) return [];
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(currentSize - fileState.lastSize);
+    fs.readSync(fd, buf, 0, buf.length, fileState.lastSize);
+    fs.closeSync(fd);
+    fileState.lastSize = currentSize;
+    const newContent = buf.toString("utf8");
+    // A subagent transcript has no cross-poll pendingItems queue — an
+    // interrupt mid-batch just stamps the last interaction already parsed
+    // in this batch.
+    return parseLinesIntoInteractions(newContent, fileState.streamState, (interactions) => {
+      if (interactions.length > 0) interactions[interactions.length - 1].interrupted = true;
+    });
+  } catch (_) {
+    return [];
+  }
 }
 
 // ---
