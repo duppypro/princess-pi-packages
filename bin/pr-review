@@ -69,7 +69,9 @@
 #                      Must be a positive whole number — anything else exits 2
 #                      before any work happens. A fixed 30s --kill-after grace
 #                      follows expiry, and the clustering call carries the same
-#                      pair, so a whole run's worst case is 2*(ceiling+30).
+#                      pair, so MODEL-CALL wall clock is at most 2*(ceiling+30).
+#                      It does not bound the run: the JSON scans afterwards sit
+#                      outside every timeout (see the header's two-bounds note).
 #   PR_REVIEW_LOG_DIR  where run logs land (default
 #                      ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>)
 #   PR_REVIEW_NO_CLUSTER=1  skip the clustering pass; distinct == raw
@@ -124,7 +126,9 @@ Findings are written to a JSON log OUTSIDE the repository, under
 ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>/ — on a default Linux host
 XDG_STATE_HOME is unset, so that is ~/.local/state/pr-review/<repo>/. Keeping the
 logs out of the tree is what stops `git add -A` committing them. A log holds the
-branch diff verbatim, so it is written 0600 (O_EXCL: a symlink at that path is
+findings, clipped reviewer output, and the base/head shas — enough to
+reconstruct what was reviewed, though not the diff itself — so it is written
+0600 (O_EXCL: a symlink at that path is
 refused, never followed) and a directory pr-review creates is 0700. A directory
 that already exists is warned about but still used if only you can WRITE it -- it
 and every directory above it, since renaming a parent redirects every later write.
@@ -143,9 +147,12 @@ baseSha/headSha (the exact input, reproducible with `git diff BASE..HEAD`),
 lenses, lensesRan, failedLenses, lensWarnings, findings, distinct,
 distinctFindings, dedup/dedupNote, branch, base, utc, model, and the coverage
 measurements lensTimeoutSec (the ceiling in force) and lensSeconds (per lens,
-seconds). Each failedLenses entry carries cause ("timeout" | "failed"),
-exitCode and elapsedSec — so a caller never parses the human sentence to learn
-which one happened.
+seconds). Every failedLenses entry carries cause: "timeout" (the ceiling expired),
+"killed" (died well inside it — an OOM kill looks like a timeout by exit code
+alone), "failed" (the reviewer's own nonzero exit), "unknown" (no exit code was
+recorded), or "unreadable" (the lens answered and the answer could not be
+parsed). The first four also carry exitCode and elapsedSec; "unreadable"
+carries raw instead. No caller ever parses the human sentence.
 The EARLY-EXIT paths (not a repo, precondition, diff failed, no changes,
 reviewer unavailable) emit a different, smaller object with NO schema key and a
 `message` key instead — treat a missing `schema` as "this run never started".
@@ -454,7 +461,7 @@ REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
 # turned itself off and the message did not say why (macroscopeapp, PR #379).
 #
 # The last resort is a private `mktemp -d`, not a fixed `/tmp/pr-review/<repo>`:
-# these logs carry the branch diff verbatim, and a predictable path in a
+# these logs carry findings and clipped reviewer output, and a predictable path in a
 # world-writable directory is pre-creatable by any other user on the host.
 # Ephemeral logs degrade the btw#59 evidence trail; losing the review itself is
 # worse, so the run continues and says on stderr where it wrote.
@@ -526,7 +533,7 @@ case "${LOG_DIR_VERDICT%%|*}" in
     ;;
   readable)
     echo "⚠️  pr-review: '$LOG_DIR' is readable by other users on this host, and its" >&2
-    echo "   run logs hold the branch diff verbatim. New logs are written 0600; ones" >&2
+    echo "   run logs hold findings and reviewer output. New logs are written 0600; ones" >&2
     echo "   already there keep the mode they were created with." >&2
     echo "   Run: chmod 700 '$LOG_DIR' && chmod 600 '$LOG_DIR'/*.json" >&2
     ;;
@@ -1092,8 +1099,14 @@ def fail_exit(lens):
 
     So the ceiling is checked rather than assumed, against the elapsed seconds
     recorded beside the code. A lens that died comfortably inside its ceiling was
-    killed by something else, and says so. Absent evidence is its own answer:
-    a lens killed before it could record an exit code is `unknown`, not a guess."""
+    killed by something else, and says so. A lens killed before it could record
+    an exit code is `unknown`, not a guess.
+
+    The one case still decided by the code alone: 124/137 with no `.elapsed`
+    file. That needs the lens to die between the wrapper returning and the very
+    next line, so it is rare — but it reports `timeout` on weaker evidence than
+    the paragraph above describes, and saying so is cheaper than pretending
+    otherwise."""
     code, elapsed = _read_int(lens, "code"), _read_int(lens, "elapsed")
     ceiling = int(timeout_s) if timeout_s.isdigit() else None
     if code is None:
@@ -1144,7 +1157,10 @@ for lens in lenses:
         # "Could not parse the answer" is NOT "the reviewer broke", and the raw
         # text is kept so a dropped finding stays recoverable. `parsed` carries
         # the reason string in this branch.
-        failed.append({"lens": lens, "why": str(parsed),
+        # `cause` on EVERY entry, including this one. Publishing the enum while
+        # two paths omitted the key made a consumer branch on key PRESENCE — the
+        # exact prose-parsing the field exists to remove (#403 reconcile).
+        failed.append({"lens": lens, "why": str(parsed), "cause": "unreadable",
                        "raw": _clip(text, 2000)})
         continue
     s, e = span
@@ -1171,7 +1187,7 @@ for lens in lenses:
                              "raw": _clip(text[s:e + 1], 2000)})
     except Exception as exc:
         failed.append({"lens": lens, "why": f"findings JSON invalid: {exc}",
-                       "raw": _clip(text[s:e + 1], 2000)})
+                       "cause": "unreadable", "raw": _clip(text[s:e + 1], 2000)})
         continue
 
 # STATUS distinguishes complete from partial coverage. Collapsing them into

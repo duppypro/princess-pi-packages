@@ -1247,11 +1247,16 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
 	check(d.failedLenses.length === 3, "every hung lens is recorded as failed", String(d.failedLenses.length));
+	check(typeof d.lensTimeoutSec === "number" && d.lensTimeoutSec === 1,
+		"…and the log records the ceiling in force, so the human line's number is not invented",
+		String(d.lensTimeoutSec));
 	check(d.failedLenses.every((f: any) => f.cause === "timeout"),
 		"a hung lens records cause 'timeout' — a FIELD, not a sentence to parse",
 		JSON.stringify(d.failedLenses.map((f: any) => f.cause)));
 	check(d.failedLenses.every((f: any) => f.exitCode === 124 || f.exitCode === 137),
-		"…and the exit code that proves it", JSON.stringify(d.failedLenses.map((f: any) => f.exitCode)));
+		"…and the exit code consistent with it — necessary evidence, never sufficient, which is " +
+		"why the sigkill case below separates the same codes into 'killed'",
+		JSON.stringify(d.failedLenses.map((f: any) => f.exitCode)));
 	check(/timed out/.test(out), "the human line says it timed out", out);
 	check(/PR_REVIEW_TIMEOUT/.test(out), "…and names the knob that raises it — the action, not just the state", out);
 	// NOT `!/or reviewer failure/` — that literal only ever existed inside a
@@ -1271,6 +1276,10 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 	const { out } = run(PR_REVIEW, sb.clone, env);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	// `.every()` on an empty array is true, so the length floor comes first —
+	// without it these checks survive deleting failed-lens recording outright.
+	check(d.failedLenses.length === 3, "every broken lens is recorded as failed",
+		String(d.failedLenses.length));
 	check(d.failedLenses.every((f: any) => f.cause === "failed"),
 		"a reviewer that errors records cause 'failed', not 'timeout'",
 		JSON.stringify(d.failedLenses.map((f: any) => f.cause)));
@@ -1303,11 +1312,17 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 	const { out } = run(PR_REVIEW, sb.clone, env);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.failedLenses.length === 3, "every killed lens is recorded as failed",
+		String(d.failedLenses.length));
 	check(d.failedLenses.every((f: any) => f.cause === "killed"),
 		"a lens killed well inside the ceiling is 'killed', not 'timeout'",
 		JSON.stringify(d.failedLenses.map((f: any) => [f.cause, f.elapsedSec, f.exitCode])));
 	check(!/PR_REVIEW_TIMEOUT=/.test(out),
 		"…and is not told to raise a knob that would not have helped", out);
+	check(/killed after \d+s, well inside the 60s ceiling/.test(out),
+		"…and the human line says what actually happened, positively — a negative check alone " +
+		"passes on empty output, which is how a deleted branch stays green", out);
+	check(/OOM/.test(out), "…and names where to look for the real killer", out);
 }
 {
 	// The default itself. #398 moved the model opus→sonnet and the ceiling
