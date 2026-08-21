@@ -1121,7 +1121,7 @@
       "command": "git checkout 301-feat && git commit -m x",
       "branch": "main",
       "verdict": "block",
-      "why": "#301 fail-safe: a positional to checkout may be a path (file restore), so a plain checkout <name> never lifts the gate - run it as its own command"
+      "why": "#301/#399 fail-safe: 301-feat does NOT exist in this repo, so git would refuse the switch and the commit really would land on main — an unresolvable target never lifts"
     },
     {
       "id": "block-checkout-b-in-c-repo-then-commit-in-cwd",
@@ -1527,6 +1527,76 @@
       "branch": "feat",
       "verdict": "allow",
       "why": "#389 inverse: 'pr merge' as quoted prose is one token, never the sub-command"
+    },
+    {
+      "id": "block-checkout-existing-main-then-commit",
+      "command": "git checkout main && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#399: switching to a branch that EXISTS is the only way to reach main, and it recorded no lift — a two-token bypass of the gate that keeps main PR-only"
+    },
+    {
+      "id": "block-switch-existing-main-then-commit",
+      "command": "git switch main && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#399: `switch` is the other spelling of the same bypass"
+    },
+    {
+      "id": "block-checkout-existing-main-then-revert",
+      "command": "git checkout main && git commit --allow-empty -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#399: the lift must hold for every commit-like sub-command after the switch, not just the bare form"
+    },
+    {
+      "id": "allow-checkout-main-then-back-to-feature",
+      "command": "git checkout main && git checkout 399-feat && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "allow",
+      "why": "#399: the lift tracks where the line has MOVED TO — switching back to an existing feature branch leaves main again"
+    },
+    {
+      "id": "allow-switch-main-then-back-to-feature",
+      "command": "git switch main && git switch 399-feat && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "allow",
+      "why": "#399: same round trip with `switch`"
+    },
+    {
+      "id": "allow-checkout-existing-feature-then-commit-on-main",
+      "command": "git checkout 301-feat && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "301-feat"
+      ],
+      "verdict": "allow",
+      "why": "#399: an existing branch name is a real switch, not a pathspec — the commit lands off main"
+    },
+    {
+      "id": "block-checkout-treeish-path-restore-does-not-lift",
+      "command": "git checkout 301-feat src/foo.ts && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "301-feat"
+      ],
+      "verdict": "block",
+      "why": "#399 guard on the guard: `git checkout <tree-ish> <path>` restores files and does NOT switch — two positionals must never lift"
     }
   ]
 }

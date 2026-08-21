@@ -649,32 +649,55 @@ const ARG_OPTIONS = new Set([
 
 /**
  * Record a branch switch for the rest of the line (#301 line-state).
- * Only an unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate;
- * a plain positional lowers it when it names main/master and is otherwise
- * ignored (it may be a pathspec — guessing would fail open). A `--` means
- * pathspecs follow: file restore, no switch at all.
+ *
+ * Two ways a sub-command moves the line onto another branch:
+ *   create — `-b`/`-B`, `-c`/`-C`/`--create`/`--force-create`, `--orphan <name>`.
+ *   switch — a LONE positional that names an existing branch (or main/master).
+ *
+ * #399: the switch case used to be recorded only when the ref did NOT exist,
+ * which meant `git checkout main` — the only way to reach main, and the most
+ * ordinary command an agent could type — never registered, and the #301
+ * commit-like gate never fired. "Does the ref exist" answers whether git would
+ * SUCCEED, and that question belongs to the create case alone (`checkout -b
+ * <existing>` fails and leaves the repo where it was, PR #305 review). For a
+ * plain switch, an existing ref is precisely the evidence that it IS a branch
+ * switch rather than a pathspec.
+ *
+ * Still fail-closed where the answer is a guess: a `--` means pathspecs follow
+ * (file restore, no switch), more than one positional is the
+ * `git checkout <tree-ish> <path>…` restore form (which does not switch either),
+ * a name that is neither main/master nor an existing branch is a pathspec or a
+ * detached checkout, and an unresolved `$BRANCH` is nothing at all. main/master
+ * lifts whether or not the ref exists — if the switch fails, the line stays
+ * where it was, and treating the rest of it as protected is the safe direction.
  */
 function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
   if (rest.includes("--")) return;
   const createOpts = cmd === "checkout"
     ? new Set(["-b", "-B", "--orphan"])
     : new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
+  const positionals = rest.filter((t) => !t.startsWith("-"));
   let target = "";
+  let created = false;
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
-    if (createOpts.has(t)) { target = rest[i + 1] ?? ""; break; }
+    if (createOpts.has(t)) { target = rest[i + 1] ?? ""; created = true; break; }
     if (t.startsWith("-")) continue;
-    if (isMainRef(t)) { target = t; break; } // moving TO main lowers the gate
-    return; // positional that is not main: could be a path — no line-state change
+    if (positionals.length !== 1) return; // <tree-ish> <path>… restore: no switch
+    target = t;
+    break;
   }
   if (!target) return;
   const resolved = expandWord(target, st);
   if (resolved === null) return; // '$BRANCH' unresolved → no lift (fail-closed)
-  // `checkout -b` / `switch -c` / `--orphan` FAIL when the branch already
-  // exists, leaving the repo on main — so an existing name must not lift
-  // (PR #305 review). -B / -C / --force-create reset-or-create and always land.
-  const force = rest.some((t) => t === "-B" || t === "-C" || t === "--force-create");
-  if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
+  if (created) {
+    // -B / -C / --force-create reset-or-create and always land; the plain
+    // create forms fail on an existing name and leave the repo where it was.
+    const force = rest.some((t) => t === "-B" || t === "-C" || t === "--force-create");
+    if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
+  } else if (!isMainRef(resolved) && !refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) {
+    return; // not a branch: pathspec or detached checkout — no line-state change
+  }
   st.lifts.set(repoKey(cPath, st.cwd, gitDir), resolved);
 }
 

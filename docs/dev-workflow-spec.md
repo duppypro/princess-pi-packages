@@ -375,9 +375,14 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   move the effective cwd for the rest of the line (`cd -`/`popd` reset it), and
   `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan` mark the target repo as off `main`
   for the rest of the line, so `git checkout -b 123-slug && git commit` is allowed while
-  `git checkout main && git commit` stays blocked. A plain `checkout <existing>` /
-  `switch <existing>` does **not** lift the gate (a positional may be a path, and guessing
-  fails open) — run it as its own command. **Unknown never moves the model (PR #305
+  `git checkout main && git commit` stays blocked. Since #399 a plain `checkout <name>` /
+  `switch <name>` lifts too, whenever `<name>` is main/master or an **existing** branch and
+  it is the sub-command's only positional — that is what a real branch switch looks like,
+  and until #399 it registered nothing at all, so `git checkout main && git commit` was a
+  two-token bypass of the gate. Still no lift where the answer would be a guess: a `--`
+  (pathspecs follow), a second positional (`git checkout <tree-ish> <path>` restores files
+  without switching), or a name that is neither main/master nor an existing branch (a
+  pathspec, or a detached checkout). **Unknown never moves the model (PR #305
   review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
   too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`
   earlier in the same line, then from the environment; an unresolved branch operand never
@@ -385,7 +390,8 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   the real shell may now be in a main checkout — and unknown is protected until a
   resolvable `cd`, `cd -` or `popd` restores it (`cd a b` is rejected by bash, so it stays
   put); `checkout -b <existing>` / `switch -c <existing>` do not lift
-  (git refuses and leaves you on `main` — `-B`/`-C`/`--force-create` do); `( … )` groups
+  (git refuses and leaves you on `main` — `-B`/`-C`/`--force-create` do; this is the create
+  form only, and #399 is why it no longer suppresses a plain switch); `( … )` groups
   scope `cd` and assignments; `$( … )` / `bash -c` bodies, pipeline elements and
   backgrounded jobs are child shells and *nothing* they set carries back — not even a
   branch switch, because substitutions are inspected before the walk and would otherwise

@@ -244,38 +244,58 @@ apply_cd() {
   return 0
 }
 
-# Record a branch switch for the rest of the line (#301 line-state). Only an
-# unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate; a plain
-# positional lowers it when it names main/master and is otherwise ignored (it
-# may be a pathspec — guessing would fail open). A `--` means pathspecs
-# follow: file restore, no switch at all.
+# Record a branch switch for the rest of the line (#301 line-state).
+#
+# Two ways a sub-command moves the line onto another branch:
+#   create — -b/-B, -c/-C/--create/--force-create, --orphan <name>.
+#   switch — a LONE positional naming an existing branch (or main/master).
+#
+# #399: the switch case used to be recorded only when the ref did NOT exist, so
+# `git checkout main` — the only way to reach main, and the most ordinary command
+# an agent could type — never registered, and the #301 commit-like gate never
+# fired. "Does the ref exist" answers whether git would SUCCEED, and that
+# question belongs to the create case alone (`checkout -b <existing>` fails and
+# leaves the repo where it was, PR #305 review). For a plain switch, an existing
+# ref is precisely the evidence that it IS a branch switch rather than a pathspec.
+#
+# Still fail-closed where the answer is a guess: `--` means pathspecs follow
+# (file restore, no switch), more than one positional is the
+# `git checkout <tree-ish> <path>…` restore form (which does not switch either),
+# a name that is neither main/master nor an existing branch is a pathspec or a
+# detached checkout, and an unresolved $BRANCH is nothing at all. main/master
+# lifts whether or not the ref exists — if the switch fails, the line stays where
+# it was, and treating the rest of it as protected is the safe direction.
 apply_lift() {
   local cmd="$1" cpath="$2" gitdir="$3"; shift 3
   local -a rest=("$@")
-  local t target="" i=0 n=${#rest[@]}
+  local t target="" created=0 i=0 n=${#rest[@]} npos=0
   for t in "${rest[@]}"; do [ "$t" = "--" ] && return 0; done
+  for t in "${rest[@]}"; do case "$t" in -*) ;; *) npos=$((npos + 1)) ;; esac; done
   while [ "$i" -lt "$n" ]; do
     t="${rest[$i]}"
     if [ "$cmd" = "checkout" ]; then
-      case "$t" in -b|-B|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+      case "$t" in -b|-B|--orphan) target="${rest[$((i + 1))]:-}"; created=1; break ;; esac
     else
-      case "$t" in -c|-C|--create|--force-create|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+      case "$t" in -c|-C|--create|--force-create|--orphan) target="${rest[$((i + 1))]:-}"; created=1; break ;; esac
     fi
     case "$t" in -*) i=$((i + 1)); continue ;; esac
-    if is_main_ref "$t"; then target="$t"; break; fi   # moving TO main lowers the gate
-    return 0   # positional that is not main: could be a path — no line-state change
+    [ "$npos" -ne 1 ] && return 0   # <tree-ish> <path>… restore: no switch
+    target="$t"; break
   done
   [ -z "$target" ] && return 0
   target=$(expand_word "$target") || return 0   # '$BRANCH' unresolved → no lift (fail-closed)
-  # `checkout -b` / `switch -c` / `--orphan` FAIL when the branch already exists,
-  # leaving the repo on main — so an existing name must not lift (PR #305 review).
-  # -B / -C / --force-create reset-or-create and always land on the branch.
-  local force=0 t2
-  for t2 in "${rest[@]}"; do
-    case "$t2" in -B|-C|--force-create) force=1 ;; esac
-  done
-  if [ "$force" = 0 ] && ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
-    return 0
+  if [ "$created" = 1 ]; then
+    # -B / -C / --force-create reset-or-create and always land; the plain create
+    # forms fail on an existing name and leave the repo where it was.
+    local force=0 t2
+    for t2 in "${rest[@]}"; do
+      case "$t2" in -B|-C|--force-create) force=1 ;; esac
+    done
+    if [ "$force" = 0 ] && ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
+      return 0
+    fi
+  elif ! is_main_ref "$target" && ! ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
+    return 0   # not a branch: pathspec or detached checkout — no line-state change
   fi
   LIFTS+="$(repo_key "$cpath" "$gitdir")=$target"$'\n'
   return 0
