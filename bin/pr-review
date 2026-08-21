@@ -838,7 +838,15 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
     # reading the log at "no object carried the key" when one actually did —
     # and was rejected as the prompt's own placeholder, a different repair.
     if saw_echo:
-        return None, f"the only '{key}' object in the response was the prompt's own schema, echoed back"
+        # The decode error rides along instead of being dropped. When an
+        # unparseable candidate and an echo both exist, "the only object was an
+        # echo" is true of what SURVIVED and misleading about what happened —
+        # and the unparseable one is the likelier home of the real answer, so a
+        # human reading `why` in the log needs to see that it was there.
+        echoed = f"the only '{key}' object in the response was the prompt's own schema, echoed back"
+        if decode_error is not None:
+            return None, f"{echoed} (another object could not be decoded: {decode_error})"
+        return None, echoed
     if reason is None:
         reason = ("response contains no JSON object" if decode_error is None
                   else f"no JSON object in the response could be decoded ({decode_error})")
@@ -853,11 +861,11 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
 # have an independent restatement to catch drift: tests/pr-review-gate.test.ts's
 # hazard cases hardcode both literals separately from these constants, so a
 # reworded RULES schema would fail a hazard case rather than pass silently.
-# GROUPS_ECHOES_HARD has NO such check — no hazard case exercises a groups
-# echo at all — so a reworded CRULES schema here would drift unnoticed and a
-# real trailing recap of it would stop being caught. If either prompt's
-# example changes, these constants must change with it; only the findings
-# side is anything holding them to that today.
+# GROUPS_ECHOES_HARD is held to the same standard: the same file's hazard
+# cases echo this grouping both before and after the real answer, hardcoded
+# separately from this constant, so a reworded CRULES schema fails a hazard
+# case rather than drifting unnoticed. If either prompt's example changes,
+# these constants must change with it, and both sides now say so in a test.
 #
 # The empty findings list is a SOFT echo: unlike the placeholder finding or
 # the placeholder grouping, it doubles as the one correct answer for "ran,

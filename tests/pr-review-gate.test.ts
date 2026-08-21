@@ -469,6 +469,18 @@ const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	{ name: "the prompt's placeholder schema echoed LAST",
 		post: '\nFor reference, the schema is {"findings":[{"severity":"Critical|High|Medium|Low",' +
 			'"file":"path","line":123,"title":"short","detail":"what is wrong and why it matters"}]}.' },
+	// The CLUSTERING prompt's own placeholder grouping, echoed on either side of
+	// the real partition. The findings side had this covered from both directions
+	// and the groups side had nothing: no hazard exercised a groups echo, so a
+	// reworded CRULES example would have drifted away from GROUPS_ECHOES_HARD in
+	// silence and a genuine trailing recap would have been taken for the answer —
+	// six groups over three findings, every index past 2 pointing at nothing.
+	// The literal is restated here on purpose, never imported: an echo constant
+	// that checks itself checks nothing.
+	{ name: "the clustering prompt's placeholder grouping echoed first",
+		prose: '{"groups":[[0,3],[1],[2,4,5]]}\nMy actual grouping:\n' },
+	{ name: "the clustering prompt's placeholder grouping echoed LAST",
+		post: '\nFor reference, the grouping schema is {"groups":[[0,3],[1],[2,4,5]]}.' },
 ];
 for (const hazard of PROSE_HAZARDS) {
 	const sb = makeSandbox();
