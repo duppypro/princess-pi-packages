@@ -62,9 +62,10 @@
 #
 # --- Environment ---
 #   PR_REVIEW_MODEL    model for every lens and the clustering pass (default
-#                      claude-sonnet-5; explicit, never inherited). The 600s
-#                      ceiling below fits the measured opus range too, so
-#                      overriding the model no longer requires raising it.
+#                      claude-sonnet-5; explicit, never inherited). Nothing
+#                      compares this against the ceiling below, and #398
+#                      measured one opus lens exceeding 600s — so a slower
+#                      model still needs PR_REVIEW_TIMEOUT raised to match.
 #   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 600).
 #                      Must be a positive whole number — anything else exits 2
 #                      before any work happens. A fixed 30s --kill-after grace
