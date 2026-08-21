@@ -244,14 +244,14 @@ console.log("\npr-review exit codes:");
 		// A lens that could not run must never be counted as a clean lens.
 		const env = stubs(sb, "broken");
 		const { code, out } = run(PR_REVIEW, sb.clone, env);
-		check(code === 0, "claude broken → exit 0 (fails open)", `got ${code}: ${out}`);
+		check(code === 8, "claude broken, zero lenses ran → exit 8 (#401)", `got ${code}: ${out}`);
 		check(/lenses failed/.test(out), "claude broken → reports incomplete coverage, not 'clean'", out);
 	}
 	{
 		const env = stubs(sb, "iserror");
 		const { code, out } = run(PR_REVIEW, sb.clone, env);
 		check(/lenses failed/.test(out), "is_error envelope → counted as failed, not clean", out);
-		check(code === 0, "is_error envelope → still fails open", `got ${code}: ${out}`);
+		check(code === 8, "is_error envelope, zero lenses ran → exit 8 (#401)", `got ${code}: ${out}`);
 	}
 	{
 		// On the primary branch there is no feature diff to review.
@@ -317,6 +317,28 @@ console.log("\npr-open gate behaviour:");
 		check(code === 0, "claude absent → exit 0", `got ${code}`);
 		check(fs.existsSync(rec), "claude absent → PR still created (fails open)", "gh pr create was not reached");
 	}
+	fs.rmSync(rec, { force: true });
+	{
+		// #401 (PR #393): the reviewer WAS on PATH and every lens still failed —
+		// "could not review" must not read as "clean". pr-review exits 8, distinct
+		// from both 0 (clean/absent) and 7 (findings), and pr-open refuses rather
+		// than opening a PR that believes itself reviewed.
+		const env = stubs(sb, "broken", rec);
+		const { code, out } = run(PR_OPEN, sb.clone, env);
+		check(code === 8, "zero lenses ran → pr-open refuses, exit 8 (#401)", `got ${code}: ${out}`);
+		check(!fs.existsSync(rec), "zero lenses ran → NO PR created",
+			fs.existsSync(rec) ? fs.readFileSync(rec, "utf8") : "");
+		check(/--reviewed/.test(out), "zero lenses ran → names the override", out);
+	}
+	{
+		// The same escape hatch that already covers findings (exit 7) also covers
+		// this: --reviewed skips pr-review outright, so it never even runs.
+		const env = stubs(sb, "broken", rec);
+		const { code } = run(PR_OPEN, sb.clone, env, ["--reviewed"]);
+		check(code === 0, "--reviewed → exit 0 despite zero coverage", `got ${code}`);
+		check(fs.existsSync(rec), "--reviewed → PR created", "gh pr create was not reached");
+	}
+	fs.rmSync(rec, { force: true });
 }
 
 // --- the findings pr-review's own first run raised against itself (#377) ---
@@ -586,7 +608,7 @@ console.log("\nround-3 High regressions:");
 	const sb = makeSandbox();
 	const env = stubs(sb, "arrayenv");
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
-	check(code === 0, "array envelope → exit 0, collector survived", `got ${code}: ${out}`);
+	check(code === 8, "array envelope → exit 8, collector survived but zero lenses ran (#401)", `got ${code}: ${out}`);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	check(files.length === 1, "array envelope → a log was still written", JSON.stringify(files));
 	if (files.length) {
@@ -661,7 +683,7 @@ console.log("\nthe review payload is identified, not taken by position:");
 	const env = stubs(sb, "errorobject");
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
 	check(/lenses failed/.test(out), "{\"error\":…} → counted as failed, not as a clean review", out);
-	check(code === 0, "{\"error\":…} → still fails open", `got ${code}: ${out}`);
+	check(code === 8, "{\"error\":…} → exit 8, zero lenses ran (#401)", `got ${code}: ${out}`);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
 	check(d.lensesRan === 0, "{\"error\":…} → lensesRan 0, not 3", String(d.lensesRan));

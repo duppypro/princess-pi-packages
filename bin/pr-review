@@ -23,9 +23,17 @@
 # `--reviewed` on pr-open is the escape hatch, deliberately an explicit word.
 #
 # --- Why it fails open, and the exact limit of that promise ---
-# `claude` missing, erroring, or TIMING OUT means the PR still gets created: a
-# broken reviewer must never become a broken release path. The promise covers
-# hangs too, which is why every lens is wrapped in `timeout` — an earlier version
+# `claude` missing means the PR still gets created: a broken reviewer must
+# never become a broken release path when there was never a reviewer to run.
+# One or two lenses erroring or TIMING OUT while at least one completes is
+# fail-open too — that lens's coverage is gone but the run still looked.
+#
+# ALL THREE erroring or timing out is a different fact, and #401 (PR #393) is
+# why it is no longer collapsed into the same exit 0 as "reviewed, clean":
+# zero lenses completing means the reviewer never actually looked, and that is
+# exit 8 — pr-open refuses on it exactly like it refuses on findings (exit 7),
+# with the same `pr-open --reviewed` escape hatch. The promise covers hangs
+# too, which is why every lens is wrapped in `timeout` — an earlier version
 # waited unconditionally and would have wedged pr-open on a stalled reviewer,
 # the one failure this paragraph claims cannot happen.
 #
@@ -65,14 +73,22 @@
 #      (the cluster prompt, the collector's summary, a reviewer's raw output)
 #      are not, and the same ENOSPC there exits 1 bare instead; see the note below
 #   7  findings — the PR was NOT created; fix them or use `pr-open --reviewed`
+#   8  coverage failure (#401) — the reviewer WAS available and ran, but ZERO
+#      lenses completed (every one timed out, errored, or answered with an
+#      unusable envelope): the PR was NOT created. "found nothing" and "looked
+#      at nothing" are different facts, and #393 measured the old collapse —
+#      COUNT=0 from zero lenses exiting the same 0 as a clean review — open an
+#      unreviewed PR silently. Distinct from 0 the same way 7 is: fix the
+#      reviewer and re-run, or accept the gap with `pr-open --reviewed`. A
+#      lens that ran and simply found nothing (lensesRan>0, COUNT=0) is still 0.
 #
 # Under `set -euo pipefail` a few unguarded operations can still exit 1 with no
 # message and no JSON: an unwritable log directory, the collector raising, a
 # missing `timeout`. Those are NOT in the table above and this note is the honest
 # statement of that rather than a claim of exhaustiveness the shell cannot keep.
-# pr-open maps every non-7 status to "proceeding unreviewed", so the release path
-# stays safe; a machine caller must therefore treat "no stdout" as "reviewer
-# unavailable" and not as "clean".
+# pr-open maps every status outside {0, 7, 8} to "proceeding unreviewed", so the
+# release path stays safe; a machine caller must therefore treat "no stdout" as
+# "reviewer unavailable" and not as "clean".
 #
 # --- Environment ---
 #   PR_REVIEW_MODEL    model for every lens and the clustering pass (default
@@ -101,13 +117,16 @@ LENSES=("correctness" "reasoning" "contract")
 # 3–8 min/lens; cycles ran 9–10 min wall-clock (6 cycles on ppp#378 = ~54–60 min
 # of agent wait). sonnet-5 measured 30–90 s/lens; full cycle ~2–3 min.
 # A lens that exceeds the ceiling is counted as failed; if all three fail,
-# COUNT=0 → exit 0, and pr-open opens the PR with no message at all — it prints
-# "proceeding unreviewed" only for a NONZERO status, so this path is quieter
-# than a broken reviewer. That path is
-# printed as COVERAGE INCOMPLETE on stderr — but BOTH --quiet and --json
-# suppress that line, and it does not block the PR either way, so the gate can
-# report exit 0 having effectively not run. A machine caller must read
-# lensesRan, never the exit code alone.
+# NRAN=0 → exit 8 (#401), and pr-open REFUSES rather than opening the PR
+# unreviewed. This is exactly what #393 measured before the fix: at the old
+# 600s default with all three lenses failing, COUNT=0 exited the same 0 as a
+# clean review, pr-open printed nothing (it warned only for a NONZERO status),
+# and the PR opened silently unreviewed — a hand re-run on the same commit
+# then found 13 findings, three of them real. The COVERAGE INCOMPLETE line on
+# stderr is still suppressed by both --quiet and --json, so a caller wanting
+# per-lens detail still needs the JSON log — read lensesRan/status there, not
+# the human sentence — but the exit code alone now tells "clean" from
+# "did not run" apart, which it could not before.
 # #403 is that failure measured: at the old 180s default, ppp#378 got ONE of
 # three lenses on two consecutive runs and opened its PR on the survivor.
 # 600s is the value those measurements support, not a ceiling that guarantees
@@ -201,6 +220,7 @@ of a document says only how far the run got before it did.
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
             3 precondition (protected branch, diff failed) · 7 findings
+            8 coverage failure — reviewer ran, zero lenses completed (#401)
             (set -e can still surface an undocumented 1 — see the header)
 EOF
 }
@@ -1134,9 +1154,9 @@ try:
 except Exception as _import_exc:     # noqa: BLE001 — the review must not die with the parser
     # An unimportable parser is a reviewer that cannot be read, not a reviewer
     # that found nothing. Every lens is then filed as failed WITH this cause,
-    # the status lands on reviewed-none, and pr-review exits 0 carrying the whole
-    # log — the same fail-open every other broken-reviewer path takes. Letting
-    # the ImportError escape instead killed the collector, left no summary file,
+    # the status lands on reviewed-none, and pr-review exits 8 carrying the
+    # whole log (#401) — coverage failure, not a clean review. Letting the
+    # ImportError escape instead killed the collector, left no summary file,
     # and took the whole script down with a bare exit 1 and no JSON at all.
     def payload_with(text, key, hard_echoes=(), soft_echoes=(), _exc=_import_exc):
         return None, f"the shared parser could not be imported ({_exc})"
@@ -1658,4 +1678,11 @@ PYSHOW
 fi
 
 [ "$COUNT" -gt 0 ] && exit 7
+# #401 (PR #393): zero lenses completing is not the same fact as "reviewed,
+# clean" — the reviewer WAS available and still produced nothing, so pr-open
+# must refuse rather than open a PR that believes it was reviewed. Only the
+# "claude absent"/"python3 absent" paths above (via emit_status) stay true
+# fail-open at exit 0 — this is the case where the reviewer ran and looked at
+# nothing. A partial run (1 or 2 of 3 lenses) still falls through to exit 0.
+[ "$NRAN" -eq 0 ] && exit 8
 exit 0
