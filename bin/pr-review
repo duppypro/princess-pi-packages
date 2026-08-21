@@ -62,10 +62,14 @@
 #
 # --- Environment ---
 #   PR_REVIEW_MODEL    model for every lens and the clustering pass (default
-#                      claude-sonnet-5; explicit, never inherited). Overriding to
-#                      a slower model requires raising PR_REVIEW_TIMEOUT to match —
-#                      the default 180s will timeout a claude-opus-5 lens call.
-#   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 180)
+#                      claude-sonnet-5; explicit, never inherited). The 600s
+#                      ceiling below fits the measured opus range too, so
+#                      overriding the model no longer requires raising it.
+#   PR_REVIEW_TIMEOUT  per-lens wall-clock ceiling in seconds (default 600).
+#                      Must be a positive whole number — anything else exits 2
+#                      before any work happens. A fixed 30s --kill-after grace
+#                      follows expiry, and the clustering call carries the same
+#                      pair, so a whole run's worst case is 2*(ceiling+30).
 #   PR_REVIEW_LOG_DIR  where run logs land (default
 #                      ${XDG_STATE_HOME:-$HOME/.local/state}/pr-review/<repo>)
 #   PR_REVIEW_NO_CLUSTER=1  skip the clustering pass; distinct == raw
@@ -79,13 +83,14 @@ LENSES=("correctness" "reasoning" "contract")
 # Lenses run in parallel; cycle time = max(lens) + clustering. opus measured
 # 3–8 min/lens; cycles ran 9–10 min wall-clock (6 cycles on ppp#378 = ~54–60 min
 # of agent wait). sonnet-5 measured 30–90 s/lens; full cycle ~2–3 min.
-# Overriding to a slower model requires also raising PR_REVIEW_TIMEOUT (see header).
-# At the 180s default, a lens that exceeds the ceiling is counted as failed; if all
-# three fail, COUNT=0 → exit 0, which pr-open maps to "reviewer unavailable". That
-# path is NOT silent unless --quiet is passed — pr-review prints COVERAGE INCOMPLETE
-# to stderr and pr-open forwards it — but it does not block the PR, so the gate
-# effectively did not run.
-# An opus lens at 180–480 s will time out at most of that range under this ceiling.
+# A lens that exceeds the ceiling is counted as failed; if all three fail,
+# COUNT=0 → exit 0, which pr-open maps to "reviewer unavailable". That path is
+# NOT silent unless --quiet is passed — pr-review prints COVERAGE INCOMPLETE to
+# stderr and pr-open forwards it — but it does not block the PR, so the gate
+# effectively did not run. #403 is that failure measured: at the old 180s
+# default, ppp#378 got ONE of three lenses twice running and missed two real
+# findings, while exiting 0. 600s covers both measured ranges — sonnet at
+# 30–90 s and opus at 3–8 min — so neither model times out at the default.
 MODEL="${PR_REVIEW_MODEL:-claude-sonnet-5}"
 LENS_TIMEOUT="${PR_REVIEW_TIMEOUT:-600}"
 # A ceiling that is not a positive integer is not a ceiling. GNU `timeout 0`
@@ -128,13 +133,22 @@ temporary directory, because no file mode survives a writable directory. With HO
 too (cron, systemd, containers) the run still happens, into a private temporary
 directory named on stderr — set PR_REVIEW_LOG_DIR there to keep the logs.
 
-environment: PR_REVIEW_MODEL (default claude-sonnet-5) · PR_REVIEW_TIMEOUT (default 180s,
-             bounds every claude call including clustering; override to a slower model
-             requires raising this too — see header) · PR_REVIEW_LOG_DIR · PR_REVIEW_NO_CLUSTER=1
+environment: PR_REVIEW_MODEL (default claude-sonnet-5) · PR_REVIEW_TIMEOUT (default 600s,
+             a positive whole number or exit 2; bounds every claude call including
+             clustering) · PR_REVIEW_LOG_DIR (outranks XDG_STATE_HOME and HOME)
+             · PR_REVIEW_NO_CLUSTER=1
 
 --json emits that log verbatim: schema `pr-review/run@1`, carrying status,
 baseSha/headSha (the exact input, reproducible with `git diff BASE..HEAD`),
-lenses, lensesRan, failedLenses, findings and distinct.
+lenses, lensesRan, failedLenses, lensWarnings, findings, distinct,
+distinctFindings, dedup/dedupNote, branch, base, utc, model, and the coverage
+measurements lensTimeoutSec (the ceiling in force) and lensSeconds (per lens,
+seconds). Each failedLenses entry carries cause ("timeout" | "failed"),
+exitCode and elapsedSec — so a caller never parses the human sentence to learn
+which one happened.
+The EARLY-EXIT paths (not a repo, precondition, diff failed, no changes,
+reviewer unavailable) emit a different, smaller object with NO schema key and a
+`message` key instead — treat a missing `schema` as "this run never started".
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
             3 precondition (protected branch, diff failed) · 7 findings
@@ -872,11 +886,13 @@ def payload_with(text, key, hard_echoes=(), soft_echoes=()):
 # have an independent restatement to catch drift: tests/pr-review-gate.test.ts's
 # hazard cases hardcode both literals separately from these constants, so a
 # reworded RULES schema would fail a hazard case rather than pass silently.
-# GROUPS_ECHOES_HARD is held to the same standard: the same file's hazard
-# cases echo this grouping both before and after the real answer, hardcoded
-# separately from this constant, so a reworded CRULES schema fails a hazard
-# case rather than drifting unnoticed. If either prompt's example changes,
-# these constants must change with it, and both sides now say so in a test.
+# GROUPS_ECHOES_HARD is held to the same standard, with the same LIMIT, and the
+# limit is worth stating because the earlier wording here overclaimed: the hazard
+# cases hardcode these literals separately from the constants, so they fail when
+# a CONSTANT drifts. They do NOT fail when the RULES or CRULES heredoc is
+# reworded and the constant is left alone — nothing in this file compares the
+# two, in either direction. If either prompt's example changes, these constants
+# must change with it, and only a human reading both keeps that true.
 #
 # The empty findings list is a SOFT echo: unlike the placeholder finding or
 # the placeholder grouping, it doubles as the one correct answer for "ran,
@@ -1066,15 +1082,32 @@ def fail(lens, why, cause="failed"):
 
 
 def fail_exit(lens):
-    """Split the two causes `timeout` merged. 124 is what `timeout` returns when
-    it kills the child at expiry, and 137 when the child ignored SIGTERM and was
-    SIGKILLed after --kill-after; nothing else produces either. Any other code is
-    the reviewer's own, and its stderr is the thing worth reading."""
-    code = _read_int(lens, "code")
+    """Name the cause from evidence, never from the exit code alone.
+
+    124 is what `timeout` returns when it kills the child at expiry, and 137 when
+    the child ignored SIGTERM and was SIGKILLed after --kill-after. Neither is
+    PROOF of expiry: the OOM killer also produces 137, and a reviewer may exit
+    124 of its own accord. Telling either one to raise PR_REVIEW_TIMEOUT names a
+    knob that would not have helped — the wrong verb attached to a real failure.
+
+    So the ceiling is checked rather than assumed, against the elapsed seconds
+    recorded beside the code. A lens that died comfortably inside its ceiling was
+    killed by something else, and says so. Absent evidence is its own answer:
+    a lens killed before it could record an exit code is `unknown`, not a guess."""
+    code, elapsed = _read_int(lens, "code"), _read_int(lens, "elapsed")
+    ceiling = int(timeout_s) if timeout_s.isdigit() else None
+    if code is None:
+        return fail(lens, "reviewer exited nonzero; no exit code was recorded",
+                    cause="unknown")
     if code in (124, 137):
+        # SLACK absorbs the second `date +%s` landing on the far side of a tick,
+        # which would otherwise read a real expiry as 1s short of the ceiling.
+        SLACK = 2
+        if ceiling is not None and elapsed is not None and elapsed + SLACK < ceiling:
+            return fail(lens, f"killed after {elapsed}s, well inside the {ceiling}s ceiling",
+                        cause="killed")
         return fail(lens, f"timed out after {timeout_s}s", cause="timeout")
-    return fail(lens, f"reviewer exited {code}" if code is not None
-                else "reviewer exited nonzero", cause="failed")
+    return fail(lens, f"reviewer exited {code}", cause="failed")
 
 
 for lens in lenses:
@@ -1182,7 +1215,7 @@ read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
 #
 # So: one more call. It sits serially after the parallel lenses; at 30–90 s per
 # call the total cycle time is max(lens) + clustering. The cost is wall-clock, not
-# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, line 76).
+# tokens, which is why the ceiling applies here too (PR_REVIEW_TIMEOUT, set below LENSES).
 # It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
 # an un-deduplicated number that says so is usable; one that pretends is not.
 if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
@@ -1422,6 +1455,8 @@ for f in d["failedLenses"]:
     if f.get("cause") == "timeout":
         print("      raise it: PR_REVIEW_TIMEOUT=<seconds> (currently {})".format(
             d.get("lensTimeoutSec") or "?"))
+    elif f.get("cause") == "killed":
+        print("      something outside the ceiling killed it — check dmesg for an OOM kill")
     elif f.get("stderr"):
         print("      " + f["stderr"].splitlines()[0][:160])
 ran = {k: v for k, v in (d.get("lensSeconds") or {}).items() if v is not None

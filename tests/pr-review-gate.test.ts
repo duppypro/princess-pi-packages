@@ -85,7 +85,12 @@ function makeSandbox(): Sandbox {
 // which must be treated as a FAILED lens rather than a clean one — "found
 // nothing" and "could not look" are different facts.
 type ClaudeMode = "findings" | "clean" | "broken" | "iserror" | "absent" | "arrayenv"
-	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly" | "clusterprose";
+	| "prosebrace" | "errorobject" | "emptyfinding" | "titleonly" | "clusterprose"
+	// tsconfig scopes typecheck to bin/**/*.ts, so nothing here is checked by
+	// `bun run typecheck` and bun strips the annotation at runtime — an omitted
+	// member costs no error and buys no safety. Kept accurate by hand: the union
+	// is documentation of the stub roster, and that is its whole job (#403).
+	| "hang" | "sigkill";
 function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string, postProse?: string): Record<string, string> {
 	fs.rmSync(sb.binDir, { recursive: true, force: true });
 	fs.mkdirSync(sb.binDir, { recursive: true });
@@ -148,10 +153,16 @@ function stubs(sb: Sandbox, mode: ClaudeMode, ghRecord?: string, prose?: string,
 	} else if (mode === "hang") {
 		// A reviewer that never answers. `timeout` kills it, which is a DIFFERENT
 		// cause from a reviewer that errors — the script reported both with one
-		// sentence naming both ("timeout 180s or reviewer failure"), so the reader
-		// could not tell which knob, if any, would help (#403).
+		// sentence naming both ("exit N (timeout ${LENS_TIMEOUT}s or reviewer
+		// failure)", the ceiling interpolated), so the reader could not tell which
+		// knob, if any, would help (#403).
 		fs.writeFileSync(path.join(sb.binDir, "claude"),
 			`#!/usr/bin/env bash\nsleep 30\n`, { mode: 0o755 });
+	} else if (mode === "sigkill") {
+		// Killed by a signal from outside the ceiling — the OOM killer's shape.
+		// Exit 137, elapsed ~0, ceiling nowhere near reached.
+		fs.writeFileSync(path.join(sb.binDir, "claude"),
+			`#!/usr/bin/env bash\nkill -9 $$\n`, { mode: 0o755 });
 	} else if (mode === "arrayenv") {
 		// An envelope that parses as an ARRAY, not an object. Used to raise
 		// AttributeError outside the try, kill the collector, and lose all lenses.
@@ -479,11 +490,15 @@ const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	// The CLUSTERING prompt's own placeholder grouping, echoed on either side of
 	// the real partition. The findings side had this covered from both directions
 	// and the groups side had nothing: no hazard exercised a groups echo, so a
-	// reworded CRULES example would have drifted away from GROUPS_ECHOES_HARD in
-	// silence and a genuine trailing recap would have been taken for the answer —
-	// six groups over three findings, every index past 2 pointing at nothing.
-	// The literal is restated here on purpose, never imported: an echo constant
-	// that checks itself checks nothing.
+	// reworded GROUPS_ECHOES_HARD would have drifted away from the CRULES example
+	// in silence and a genuine trailing recap would have been taken for the answer
+	// — three groups over six ids, every id past 2 pointing at nothing when only
+	// three findings exist. The literal is restated here on purpose, never
+	// imported: an echo constant that checks itself checks nothing.
+	// ONE DIRECTION ONLY, and the earlier claim that this catches "a reworded
+	// CRULES schema" was wrong: this hazard hardcodes the same literal as the
+	// constant, so it fails when the CONSTANT drifts. Rewording the CRULES
+	// heredoc alone still fails nothing here.
 	{ name: "the clustering prompt's placeholder grouping echoed first",
 		prose: '{"groups":[[0,3],[1],[2,4,5]]}\nMy actual grouping:\n' },
 	{ name: "the clustering prompt's placeholder grouping echoed LAST",
@@ -1239,8 +1254,15 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 		"…and the exit code that proves it", JSON.stringify(d.failedLenses.map((f: any) => f.exitCode)));
 	check(/timed out/.test(out), "the human line says it timed out", out);
 	check(/PR_REVIEW_TIMEOUT/.test(out), "…and names the knob that raises it — the action, not just the state", out);
-	check(!/or reviewer failure/.test(out),
+	// NOT `!/or reviewer failure/` — that literal only ever existed inside a
+	// comment, so the check passed against any wording and would have survived
+	// deleting the split entirely. Assert the positive instead: the reviewer's
+	// own exit is not blamed, because there is no reviewer exit to blame.
+	check(!/reviewer exited/.test(out),
 		"…and does not also blame the reviewer, which is the ambiguity being removed", out);
+	check(d.failedLenses.every((f: any) => typeof f.elapsedSec === "number"),
+		"…and a failed lens still reports how long it took — the third field, not just two",
+		JSON.stringify(d.failedLenses.map((f: any) => f.elapsedSec)));
 }
 {
 	// Failure path: the reviewer answers immediately with a nonzero exit.
@@ -1270,8 +1292,30 @@ console.log("\na lens that TIMED OUT is not a lens that FAILED (#403):");
 		JSON.stringify(d.lensSeconds));
 }
 {
-	// The default itself. 180s was set against opus-at-600 with no sonnet
-	// measurement behind it, and cost branch 378 two of three lenses (#403).
+	// 124/137 is necessary evidence of a timeout, not sufficient. The OOM killer
+	// also produces 137, and a `claude` that exits 124 of its own accord produces
+	// 124 — both would be told "raise PR_REVIEW_TIMEOUT", a knob that would not
+	// have helped. The ceiling is checkable against the elapsed seconds we now
+	// record, so it is checked (#403 round 2).
+	const sb = makeSandbox();
+	const env = stubs(sb, "sigkill");
+	env.PR_REVIEW_TIMEOUT = "60";
+	const { out } = run(PR_REVIEW, sb.clone, env);
+	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
+	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
+	check(d.failedLenses.every((f: any) => f.cause === "killed"),
+		"a lens killed well inside the ceiling is 'killed', not 'timeout'",
+		JSON.stringify(d.failedLenses.map((f: any) => [f.cause, f.elapsedSec, f.exitCode])));
+	check(!/PR_REVIEW_TIMEOUT=/.test(out),
+		"…and is not told to raise a knob that would not have helped", out);
+}
+{
+	// The default itself. #398 moved the model opus→sonnet and the ceiling
+	// 600s→180s in one commit; the measurements behind those numbers live in
+	// that PR and in #403, not in this file. What #403 measured: at 180s,
+	// ppp#378 got 1 of 3 lenses on two consecutive runs and missed two findings
+	// that 900s surfaced. 600 is the floor pinned here — the value that was in
+	// force for the runs that reviewed 3 of 3.
 	const src = fs.readFileSync(PR_REVIEW, "utf8");
 	const m = src.match(/LENS_TIMEOUT="\$\{PR_REVIEW_TIMEOUT:-(\d+)\}"/);
 	check(m !== null, "the default lens timeout is still a single readable literal", String(m));
