@@ -1264,6 +1264,15 @@ console.log("\na finding that says nothing is not a finding:");
 	const dflt = stubs(sb, "clean");
 	check(!/at the default 600s ceiling/.test(run(PR_REVIEW, sb.clone, dflt).out),
 		"…and nothing for the default model, which is what the ceiling was measured against", out);
+	// A reviewer on #410 read `[ "$LENS_TIMEOUT" -eq 600 ]` as bash arithmetic and
+	// predicted `0600` would compare as octal 384, silently skipping the warning.
+	// It does not: the `[` builtin parses decimal, unlike $(( )). Pinned here
+	// because the claim is plausible enough to be "fixed" into a real bug.
+	const zeroed = stubs(sb, "clean");
+	zeroed.PR_REVIEW_MODEL = "claude-opus-5";
+	zeroed.PR_REVIEW_TIMEOUT = "0600";
+	check(/at the default 600s ceiling/.test(run(PR_REVIEW, sb.clone, zeroed).out),
+		"…and a leading-zero ceiling still counts as the default — `[ -eq ]` is decimal", "0600");
 	// Every other diagnostic here respects --quiet and --json; a warning that
 	// ignores them puts a line on the stderr of a caller who asked for clean
 	// output, which is a contract break however useful the line is (#410).
