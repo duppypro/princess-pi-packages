@@ -906,13 +906,42 @@ function checkOneSub(sub: string, st: LineState): string | null {
     : checkGhSubcommand(toks, scan.i);
 }
 
+// gh's GLOBAL options that consume a SEPARATE value (#389). Everything else
+// beginning with '-' is a boolean flag or a =-joined pair and consumes only
+// itself, so it can be skipped without swallowing the sub-command.
+const GH_GLOBAL_ARG_OPTIONS = new Set(["-R", "--repo", "--hostname"]);
+
+/**
+ * The first two POSITIONAL words after `gh` — its command and sub-command.
+ * Positional, not adjacent: `gh -R owner/repo pr merge 5` puts `pr` three
+ * tokens after `gh`, and cobra accepts flags interleaved anywhere, so
+ * `gh pr --repo o/r merge` is the same command too.
+ */
+function ghSubcommandWords(T: string[], start: number): string[] {
+  const words: string[] = [];
+  for (let i = start + 1; i < T.length && words.length < 2; i++) {
+    const t = T[i];
+    if (GH_GLOBAL_ARG_OPTIONS.has(t)) { i++; continue; } // option + its value
+    if (t.startsWith("-") && t !== "-") continue; // boolean flag / --key=value
+    words.push(t);
+  }
+  return words;
+}
+
 /**
  * Check for dangerous gh (GitHub CLI) commands. `start` indexes the `gh` word.
  * Separate from git guardrails because gh is not git — but gh pr merge
  * is the merge-to-main gate and must stay human-only.
+ *
+ * #389: this used to test positional ADJACENCY (T[start+1] === "pr"), so any
+ * global gh flag shifted the gate out of view — and `-R owner/repo` is the
+ * ordinary way an agent addresses a repo it is not standing in. The gate is
+ * the merge-to-main gate; it now finds the sub-command instead of a position,
+ * the way skipBenignPrefix already finds the command word past its wrappers.
  */
 function checkGhSubcommand(T: string[], start: number): string | null {
-  if (T[start + 1] === "pr" && T[start + 2] === "merge") {
+  const words = ghSubcommandWords(T, start);
+  if (words[0] === "pr" && words[1] === "merge") {
     return "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell.";
   }
   return null;

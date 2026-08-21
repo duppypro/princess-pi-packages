@@ -99,6 +99,22 @@ const ON_MAIN_PROBES: Probe[] = [
 	{ command: "git switch -c 999-escape", branch: "main", verdict: "allow" },
 ];
 
+// #389: "regardless of flags" is a claim about gh's GLOBAL options, and it was
+// false — check_gh_command tested positional adjacency, so `-R owner/repo`
+// (the ordinary way an agent addresses a repo it is not standing in) shifted
+// `pr merge` out of view and walked the human-only gate.
+const GH_MERGE_PROBES: Probe[] = [
+	{ command: "gh pr merge 5", branch: FEATURE, verdict: "block" },
+	{ command: "gh -R o/r pr merge 5", branch: FEATURE, verdict: "block" },
+	{ command: "gh --repo o/r pr merge 5", branch: FEATURE, verdict: "block" },
+	{ command: "gh --repo=o/r pr merge 5", branch: FEATURE, verdict: "block" },
+	{ command: "gh --hostname github.com pr merge", branch: FEATURE, verdict: "block" },
+	{ command: "sudo gh pr merge --squash", branch: FEATURE, verdict: "block" },
+	{ command: "GH_HOST=github.com gh pr merge", branch: FEATURE, verdict: "block" },
+	{ command: "gh pr create --base main", branch: FEATURE, verdict: "allow" },
+	{ command: "gh -R o/r pr view 42", branch: FEATURE, verdict: "allow" },
+];
+
 const CLAIMS: Claim[] = [
 	{
 		doc: "hooks/block-dangerous-git.sh",
@@ -131,6 +147,12 @@ const CLAIMS: Claim[] = [
 		probes: [
 			{ command: `git push -u origin ${FEATURE}`, branch: FEATURE, verdict: "allow" },
 		],
+	},
+	{
+		doc: "docs/dev-workflow-spec.md",
+		quote: "**`gh pr merge` in any form is human-only**, regardless of flags",
+		asserts: "no gh global option can shift the merge gate out of view (#389)",
+		probes: GH_MERGE_PROBES,
 	},
 	{
 		doc: join(homedir(), "git-projects", "CLAUDE.md"),

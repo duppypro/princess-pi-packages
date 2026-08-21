@@ -903,10 +903,28 @@ check_git_subcommand() {
 # Separate from git guardrails because gh is not git — but gh pr merge
 # is the merge-to-main gate and must stay human-only.
 # ---
+# gh's GLOBAL options that consume a SEPARATE value (#389). Everything else
+# beginning with '-' is a boolean flag or a =-joined pair and consumes only
+# itself, so it can be skipped without swallowing the sub-command.
+GH_GLOBAL_ARG_OPTIONS=" -R --repo --hostname "
+
+# #389: this used to test positional ADJACENCY (T[s+1] == "pr"), so any global
+# gh flag shifted the gate out of view — and `-R owner/repo` is the ordinary way
+# an agent addresses a repo it is not standing in. It now collects the first two
+# POSITIONAL words after `gh` (cobra accepts flags interleaved anywhere, so
+# `gh pr --repo o/r merge` is the same command as `gh -R o/r pr merge`), the way
+# skip_benign_prefix already finds the command word past its wrappers.
 check_gh_command() {
   local -a T=("${TOKENS[@]}")
-  local s=$PREFIX_START
-  if [ "${T[$((s + 1))]:-}" = "pr" ] && [ "${T[$((s + 2))]:-}" = "merge" ]; then
+  local n=${#T[@]} i=$((PREFIX_START + 1)) t
+  local -a words=()
+  while [ "$i" -lt "$n" ] && [ ${#words[@]} -lt 2 ]; do
+    t="${T[$i]}"
+    case "$GH_GLOBAL_ARG_OPTIONS" in *" $t "*) i=$((i + 2)); continue ;; esac
+    case "$t" in -?*) i=$((i + 1)); continue ;; esac
+    words+=("$t"); i=$((i + 1))
+  done
+  if [ "${words[0]:-}" = "pr" ] && [ "${words[1]:-}" = "merge" ]; then
     block "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell."
   fi
   return 0

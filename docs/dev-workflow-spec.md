@@ -504,14 +504,22 @@ origin before anyone looks. Left as a real fork (require confirmation before sta
 narrowing the default to `add -u`) rather than resolved unilaterally in a docs pass.
 
 **`gh pr merge` in any form is human-only**, regardless of flags — and since #249 that
-is a technical block, not only a convention. Measured against the deployed hook
-(2026-08-12):
+is a technical block, not only a convention. "Regardless of flags" was false until #389:
+the gate tested positional adjacency, so any global `gh` option — `-R owner/repo`, the
+ordinary way an agent addresses a repo it is not standing in — shifted `pr merge` out of
+view and exited 0. It now finds the sub-command as the first two POSITIONAL words after
+`gh`, skipping global options and their values. Measured against `hooks/block-dangerous-git.sh`
+(2026-08-21), and pinned in `tests/doc-claims-vs-hooks.test.ts`:
 
 ```
 gh pr merge 5 --squash                             → exit 2  blocked
 sudo gh pr merge --squash                          → exit 2  blocked
 GH_HOST=github.com gh pr merge                     → exit 2  blocked
+gh -R owner/repo pr merge 5                        → exit 2  blocked   (#389)
+gh --repo owner/repo pr merge 5                    → exit 2  blocked   (#389)
+gh --hostname github.com pr merge                  → exit 2  blocked   (#389)
 gh pr create --base main                           → exit 0  allowed
+gh -R owner/repo pr view 42                        → exit 0  allowed
 ```
 
 An agent runs `pr-open` and stops; a human runs `pr-merge`/`pr-reject`.

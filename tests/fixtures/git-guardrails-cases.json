@@ -1471,6 +1471,62 @@
       "branch": "feat",
       "verdict": "block",
       "why": "#400 guard on the guard: dropping quoted heredoc bodies inside $( … ) must not stop a REAL command substitution from being inspected"
+    },
+    {
+      "id": "block-gh-repo-short-flag-pr-merge",
+      "command": "gh -R o/r pr merge 5",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: check_gh_command tested positional adjacency (T[s+1]=='pr'), so any global gh flag shifted the merge gate out of view"
+    },
+    {
+      "id": "block-gh-repo-long-flag-pr-merge",
+      "command": "gh --repo o/r pr merge 5 --squash",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: --repo takes a separate value; the sub-command is two tokens further along"
+    },
+    {
+      "id": "block-gh-hostname-flag-pr-merge",
+      "command": "gh --hostname github.com pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: --hostname is the other value-taking gh global option"
+    },
+    {
+      "id": "block-gh-repo-equals-flag-pr-merge",
+      "command": "gh --repo=o/r pr merge 5",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: the =-joined form is a single token and must not shift the sub-command"
+    },
+    {
+      "id": "block-sudo-gh-repo-flag-pr-merge",
+      "command": "sudo gh -R o/r pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389 + #208: a wrapper prefix AND a gh global flag together must still reach the merge gate"
+    },
+    {
+      "id": "allow-gh-repo-flag-pr-view",
+      "command": "gh -R o/r pr view 42",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#389 inverse: skipping gh's global options must not turn every flagged gh command into a block"
+    },
+    {
+      "id": "allow-gh-repo-flag-pr-create",
+      "command": "gh --repo o/r pr create --base main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#389 inverse: pr create stays the agent's PR path even with -R/--repo"
+    },
+    {
+      "id": "allow-gh-repo-flag-issue-create-merge-word",
+      "command": "gh -R o/r issue create --title 'pr merge notes'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#389 inverse: 'pr merge' as quoted prose is one token, never the sub-command"
     }
   ]
 }
