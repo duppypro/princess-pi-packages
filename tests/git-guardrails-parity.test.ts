@@ -309,6 +309,41 @@ describe("git-guardrails stripHeredocs — nested bare subshell group (#400 find
 });
 
 // ---
+// #400 finding 2 (pr-review round 2 on this same branch): the `$(` PUSH was not
+// arith-guarded while its `)` POP was. A `$(` opened inside an active `$(( … ))`
+// therefore pushed a frame whose own `)` — still inside the arithmetic — the pop
+// skipped. The orphan frame was later consumed by an unrelated `)`, leaving the
+// wrong quote state for the REST OF THE SCAN, which is where the damage lands:
+// the corrupted `q` makes the closing `"` read as a fresh OPENING quote, and
+// every heredoc after it stops being recognised at all. Same class as finding 1
+// (guards that disagree about what counts as a closer), left uncovered for the
+// arithmetic case — which is exactly the "fixed at 1 of N sites" shape of #412.
+// State persists across lines, so the assertion is on a LATER line's heredoc.
+// ---
+describe("git-guardrails stripHeredocs — $( ) nested inside $(( )) (#400 finding, round 2)", () => {
+  // The orphan frame is created by `$(echo 1)` inside `$(( … ))`. It corrupts
+  // `q` at the outer closer, so the `<<'EOF3'` on the following line — a QUOTED
+  // delimiter, which the contract says is dropped at any depth — is missed.
+  const command = "echo \"$(echo $(( $(echo 1) + 1 )))\"\ncat <<'EOF3'\ngit push origin main\nEOF3";
+
+  test("ts: a quoted heredoc AFTER a $( ) nested in $(( )) is still stripped", () => {
+    const out = tsStripHeredocs(command);
+    expect(
+      out,
+      "an orphan substStack frame from arithmetic must not corrupt quote state for later lines",
+    ).not.toContain("git push origin main");
+  });
+
+  test("sh: a quoted heredoc AFTER a $( ) nested in $(( )) is still stripped", () => {
+    const out = shStripHeredocs(command);
+    expect(
+      out,
+      "an orphan substStack frame from arithmetic must not corrupt quote state for later lines",
+    ).not.toContain("git push origin main");
+  });
+});
+
+// ---
 // pr-review finding on #389/#390/#391/#399/#400: the #390 fix checked the exit
 // status of the FIRST jq read (.tool_input.command) but not the SECOND
 // (.tool_input.cwd) — a jq that fails on that second call silently leaves

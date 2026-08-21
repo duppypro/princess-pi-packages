@@ -397,7 +397,14 @@ strip_heredocs() {
       # `$(` - enter the substitution's own quoting context (not `$((`, which is
       # arithmetic and handled below). A single-quoted region is literal, so no
       # substitution starts there (#400).
-      if [ "$q" != "'" ] && [ "${line:$i:2}" = '$(' ] && [ "${line:$i:3}" != '$((' ]; then
+      #
+      # The `arith -eq 0` test is REQUIRED, and its absence was a bug: the
+      # matching pop below is arith-guarded, so a `$(` opened inside an active
+      # `$(( ... ))` pushed a frame whose own `)` - still inside the arithmetic -
+      # the pop skipped. The orphan frame was then consumed by a later, unrelated
+      # `)`, restoring the wrong quote state for the rest of the line. Push and
+      # pop must agree on their guards; the bare-`(` push below already did.
+      if [ "$q" != "'" ] && [ "$arith" -eq 0 ] && [ "${line:$i:2}" = '$(' ] && [ "${line:$i:3}" != '$((' ]; then
         qstack+=("$q"); [ -n "$q" ] && outerq=$((outerq + 1))
         q=""; i=$((i + 1)); continue
       fi

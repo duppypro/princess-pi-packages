@@ -257,7 +257,14 @@ export function stripHeredocs(command: string): string {
       // `$(` — enter the substitution's own quoting context (not `$((`, which
       // is arithmetic and handled below). A single-quoted region is literal,
       // so no substitution starts there.
-      if (q !== "'" && ch === "$" && line[i + 1] === "(" && line[i + 2] !== "(") {
+      //
+      // `arith === 0` is REQUIRED, and its absence was a bug: the matching pop
+      // below is arith-guarded, so a `$(` opened inside an active `$(( … ))`
+      // pushed a frame whose own `)` — still inside the arithmetic — the pop
+      // skipped. The orphan frame was then consumed by a later, unrelated `)`,
+      // restoring the wrong quote state for the rest of the line. Push and pop
+      // must agree on their guards; the bare-`(` push below already did.
+      if (q !== "'" && arith === 0 && ch === "$" && line[i + 1] === "(" && line[i + 2] !== "(") {
         substStack.push(q);
         if (q !== null) outerQuoted++;
         q = null;
