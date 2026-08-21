@@ -110,22 +110,6 @@ case "$LENS_TIMEOUT" in
   ''|*[!0-9]*) echo "pr-review: PR_REVIEW_TIMEOUT must be a positive whole number of seconds (got '$LENS_TIMEOUT')" >&2; exit 2 ;;
 esac
 [ "$LENS_TIMEOUT" -gt 0 ] || { echo "pr-review: PR_REVIEW_TIMEOUT must be greater than 0 — 'timeout 0' disables the ceiling entirely" >&2; exit 2; }
-# AFTER the validation above, never before: `[ "$LENS_TIMEOUT" -eq 600 ]` on a
-# non-numeric value fails under `set -e` and swallows the specific exit-2
-# message that tells the caller what is actually wrong.
-DEFAULT_MODEL="claude-sonnet-5"
-DEFAULT_TIMEOUT=600
-# The rule "a slower model needs the ceiling raised" was stated in three
-# comments and enforced nowhere — the shape this script's own contract lens is
-# told to flag. It cannot be checked properly: no table maps a model name to a
-# duration, and any string is a legal model. But the ONE combination the
-# measurements condemn is checkable — a non-default model at the default
-# ceiling, which is the config behind #403's silent partial coverage.
-if [ "$MODEL" != "$DEFAULT_MODEL" ] && [ "$LENS_TIMEOUT" -eq "$DEFAULT_TIMEOUT" ]; then
-  echo "⚠️  pr-review: PR_REVIEW_MODEL is '$MODEL' at the default ${DEFAULT_TIMEOUT}s ceiling." >&2
-  echo "   #398 measured an opus lens exceeding 600s. If lenses time out, the run" >&2
-  echo "   still exits 0 with partial coverage — raise PR_REVIEW_TIMEOUT to match." >&2
-fi
 # TERM asks; KILL insists. `timeout` sends only TERM, so a reviewer that traps or
 # ignores it keeps the lens wrapper — and the `wait` below — blocked forever,
 # which is precisely the hang the ceiling was added to prevent. The grace is a
@@ -225,6 +209,28 @@ while [ $# -gt 0 ]; do
     *) echo "pr-review: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# The model/ceiling rule, enforced rather than merely stated in three comments —
+# the "rule in prose, absent from code" shape this script's own contract lens is
+# told to flag. It cannot be checked in general: no table maps a model name to a
+# duration, and any string is a legal model. The ONE combination the
+# measurements condemn is checkable — a non-default model at the default
+# ceiling, the config behind #403's silent partial coverage.
+#
+# Placed HERE, after the flag loop, for two reasons. The numeric validation of
+# LENS_TIMEOUT must run first, or `[ "$LENS_TIMEOUT" -eq 600 ]` on a value like
+# `10m` fails under set -e and swallows the specific exit-2 message. And
+# QUIET/JSON_OUT must be parsed first: every other diagnostic here respects both,
+# and a warning that ignores them puts a line on the stderr of a caller who asked
+# for clean output (macroscopeapp, PR #410).
+DEFAULT_MODEL="claude-sonnet-5"
+DEFAULT_TIMEOUT=600
+if [ "$JSON_OUT" -eq 0 ] && [ "$QUIET" -eq 0 ] \
+   && [ "$MODEL" != "$DEFAULT_MODEL" ] && [ "$LENS_TIMEOUT" -eq "$DEFAULT_TIMEOUT" ]; then
+  echo "⚠️  pr-review: PR_REVIEW_MODEL is '$MODEL' at the default ${DEFAULT_TIMEOUT}s ceiling." >&2
+  echo "   #398 measured an opus lens exceeding 600s. If lenses time out, the run" >&2
+  echo "   still exits 0 with partial coverage — raise PR_REVIEW_TIMEOUT to match." >&2
+fi
 
 # Every exit path speaks the caller's language. A machine reader most needs to
 # tell 'nothing to review' from 'reviewer unavailable' from 'clean', and the old
@@ -1135,6 +1141,19 @@ def _read_int(lens, suffix):
         return None
 
 
+def _lens_stderr(lens):
+    """Whatever the reviewer wrote to stderr, clipped — or "" if it wrote none.
+
+    Shared so `fail()` and `_unreadable()` cannot drift: _unreadable hardcoded ""
+    while its own docstring claimed parity with fail(), throwing away exactly the
+    CLI warning that would explain why a payload came back unparseable
+    (macroscopeapp, PR #410)."""
+    err = os.path.join(work, f"{lens}.err")
+    if not os.path.exists(err):
+        return ""
+    return _clip(open(err, errors="replace").read().strip(), 500)
+
+
 def _unreadable(lens, why, raw):
     """One envelope, always the same keys. These two paths used to omit stderr,
     exitCode and elapsedSec entirely while the published contract said the values
@@ -1142,18 +1161,15 @@ def _unreadable(lens, why, raw):
     and had to branch on key presence after all. Absent and null are different
     facts; the docs promised the second, so the code supplies it."""
     return {"lens": lens, "why": why, "cause": "unreadable", "raw": raw,
-            "stderr": "", "exitCode": _read_int(lens, "code"),
+            "stderr": _lens_stderr(lens), "exitCode": _read_int(lens, "code"),
             "elapsedSec": _read_int(lens, "elapsed")}
 
 
 def fail(lens, why, cause="failed"):
-    err = os.path.join(work, f"{lens}.err")
-    detail = ""
-    if os.path.exists(err):
-        # Keep the CAUSE. It used to be captured and then deleted unread by the
-        # EXIT trap, leaving "N of 3 lenses failed" with no way to tell E2BIG
-        # from expired auth from a rate limit — while the script failed open.
-        detail = _clip(open(err, errors="replace").read().strip(), 500)
+    # Keep the CAUSE. It used to be captured and then deleted unread by the EXIT
+    # trap, leaving "N of 3 lenses failed" with no way to tell E2BIG from expired
+    # auth from a rate limit — while the script failed open.
+    detail = _lens_stderr(lens)
     failed.append({"lens": lens, "why": why, "cause": cause, "stderr": detail,
                    "exitCode": _read_int(lens, "code"),
                    "elapsedSec": _read_int(lens, "elapsed")})

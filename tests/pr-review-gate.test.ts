@@ -1264,6 +1264,15 @@ console.log("\na finding that says nothing is not a finding:");
 	const dflt = stubs(sb, "clean");
 	check(!/at the default 600s ceiling/.test(run(PR_REVIEW, sb.clone, dflt).out),
 		"…and nothing for the default model, which is what the ceiling was measured against", out);
+	// Every other diagnostic here respects --quiet and --json; a warning that
+	// ignores them puts a line on the stderr of a caller who asked for clean
+	// output, which is a contract break however useful the line is (#410).
+	for (const flag of ["--quiet", "--json"]) {
+		const q = stubs(sb, "clean");
+		q.PR_REVIEW_MODEL = "claude-opus-5";
+		check(!/at the default 600s ceiling/.test(run(PR_REVIEW, sb.clone, q, [flag]).out),
+			`…and is silent under ${flag}, like every other diagnostic`, flag);
+	}
 }
 {
 	// Every failedLenses entry, same keys. The two parse-failure paths omitted
@@ -1276,6 +1285,10 @@ console.log("\na finding that says nothing is not a finding:");
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
 	check(d.failedLenses.length === 3, "an unusable answer fails every lens", String(d.failedLenses.length));
+	// stderr is the reviewer's own, read from the same file fail() reads — not a
+	// hardcoded "" that threw away the CLI warning explaining the bad payload.
+	check(d.failedLenses.every((f: any) => typeof f.stderr === "string"),
+		"…and stderr is read, not stubbed", JSON.stringify(d.failedLenses.map((f: any) => f.stderr)));
 	for (const key of ["lens", "why", "cause", "stderr", "exitCode", "elapsedSec"]) {
 		check(d.failedLenses.every((f: any) => key in f),
 			`…and every entry carries '${key}' — present, even when null`,
