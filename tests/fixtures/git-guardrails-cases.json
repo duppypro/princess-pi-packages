@@ -1450,6 +1450,27 @@
       "branch": "301-feat",
       "verdict": "allow",
       "why": "`cd -` returns to the tool-call cwd (feature) — known again"
+    },
+    {
+      "id": "allow-quoted-heredoc-in-substitution-push",
+      "command": "gh issue create --title \"t\" --body \"$(cat <<'EOF'\nprose with an unpaired \" quote\ngit push origin main\nEOF\n)\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#400: a QUOTED heredoc body is inert text; nested in $( … ) it was left for the outer walk, where an unpaired quote in the prose ended the --body string and split the body into commands"
+    },
+    {
+      "id": "allow-quoted-heredoc-in-substitution-commit",
+      "command": "gh issue create --title \"t\" --body \"$(cat <<'EOF'\nprose with an unpaired \" quote\ngit checkout -B main && git commit -m x\nEOF\n)\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#400: same shape, #301 gate — filing a bug ABOUT the guardrails must not trip them"
+    },
+    {
+      "id": "block-substitution-git-push-still-checked",
+      "command": "gh issue create --title \"t\" --body \"$(git push origin main)\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#400 guard on the guard: dropping quoted heredoc bodies inside $( … ) must not stop a REAL command substitution from being inspected"
     }
   ]
 }

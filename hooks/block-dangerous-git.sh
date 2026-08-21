@@ -307,9 +307,25 @@ ref_exists() {
 # the real commands after, failing open (#74 review finding 13a). Char-scan
 # with quote state (persisting across lines, as shell quotes do) and $(( ))
 # tracking (a << there is a bit-shift, never a heredoc opener).
+#
+# #400: `$( ... )` starts a FRESH quoting context - the shell re-lexes inside it,
+# so `--body "$(cat <<'EOF' ... EOF)"` really does open a heredoc even though an
+# enclosing double quote is still open. The scan used to stay in double-quote
+# state across the `$(`, never saw the opener, and left the whole body for the
+# outer walk; one unpaired double quote in the prose then ended the --body
+# string and the remaining lines were split into sub-commands. That is how a
+# bug report ABOUT a git command gets blocked for quoting it.
+#
+# A QUOTED delimiter (<<'EOF' / <<"EOF") is inert by definition - no expansion,
+# no substitution - so its body is dropped at any depth. An UNQUOTED <<EOF body
+# still expands ($(git push ...) inside it executes), so its handling is
+# deliberately UNCHANGED: it is stripped only where no enclosing quote was open,
+# which is exactly the set of positions the old top-level-only scan reached.
+# outerq counts those enclosing quotes.
 strip_heredocs() {
   local line probe delim="" dashed=0 q="" arith=0
-  local i n ch j w d
+  local i n ch j w d qdelim outerq=0 qtop
+  local -a qstack=()
   while IFS= read -r line; do
     if [ -n "$delim" ]; then
       # <<- : terminator may be tab-indented (#74 review finding 7)
@@ -323,6 +339,18 @@ strip_heredocs() {
     n=${#line}
     for ((i = 0; i < n; i++)); do
       ch="${line:$i:1}"
+      # `$(` - enter the substitution's own quoting context (not `$((`, which is
+      # arithmetic and handled below). A single-quoted region is literal, so no
+      # substitution starts there (#400).
+      if [ "$q" != "'" ] && [ "${line:$i:2}" = '$(' ] && [ "${line:$i:3}" != '$((' ]; then
+        qstack+=("$q"); [ -n "$q" ] && outerq=$((outerq + 1))
+        q=""; i=$((i + 1)); continue
+      fi
+      if [ -z "$q" ] && [ "$arith" -eq 0 ] && [ "$ch" = ')' ] && [ ${#qstack[@]} -gt 0 ]; then
+        qtop="${qstack[$((${#qstack[@]} - 1))]}"; unset 'qstack[${#qstack[@]}-1]'
+        [ -n "$qtop" ] && outerq=$((outerq - 1))
+        q="$qtop"; continue
+      fi
       if [ "$q" = "'" ]; then
         [ "$ch" = "'" ] && q=""
       elif [ "$q" = '"' ]; then
@@ -342,12 +370,15 @@ strip_heredocs() {
         j=$((i + 2)); d=0
         [ "${line:$j:1}" = '-' ] && { d=1; j=$((j + 1)); }
         while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [[:space:]] ]]; do j=$((j + 1)); done
-        case "${line:$j:1}" in \'|\") j=$((j + 1)) ;; esac
+        qdelim=0
+        case "${line:$j:1}" in \'|\") qdelim=1; j=$((j + 1)) ;; esac
         w=""
         while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [A-Za-z0-9_.+-] ]]; do
           w+="${line:$j:1}"; j=$((j + 1))
         done
-        if [ -n "$w" ]; then
+        # Quoted delimiter -> inert body, drop it wherever it is. Unquoted ->
+        # only where nothing quoted encloses it, i.e. exactly the pre-#400 set.
+        if [ -n "$w" ] && { [ "$qdelim" = 1 ] || [ "$outerq" -eq 0 ]; }; then
           dashed=$d; delim="$w"
           break # body starts on the next line
         fi

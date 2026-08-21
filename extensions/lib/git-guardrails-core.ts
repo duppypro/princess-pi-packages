@@ -207,12 +207,30 @@ function applyCd(T: string[], st: LineState): boolean {
 // dashed/dotted names are valid (#74 review finding 13b).
 const HEREDOC_DELIM_CHARS = /[A-Za-z0-9_.+-]/;
 
+// ---
+// #400: `$( … )` starts a FRESH quoting context — the shell re-lexes inside it,
+// so `--body "$(cat <<'EOF' … EOF)"` really does open a heredoc even though an
+// enclosing `"` is still open. The scan used to stay in double-quote state
+// across the `$(`, never saw the opener, and left the whole body for the outer
+// walk; one unpaired `"` in the prose then ended the `--body` string and the
+// remaining lines were split into sub-commands. That is how a bug report ABOUT
+// a git command gets blocked for quoting it.
+//
+// A QUOTED delimiter (`<<'EOF'` / `<<"EOF"`) is inert by definition — no
+// expansion, no substitution — so its body is dropped at any depth. An
+// UNQUOTED `<<EOF` body still expands (`$(git push …)` inside it executes), so
+// its handling is deliberately UNCHANGED: it is stripped only where no
+// enclosing quote was open, which is exactly the set of positions the old
+// top-level-only scan reached. `outerQuoted` counts those enclosing quotes.
+// ---
 function stripHeredocs(command: string): string {
   const out: string[] = [];
   let delim: string | null = null;
   let dashed = false; // <<- : terminator may be tab-indented (#74 review finding 7)
   let q: "'" | '"' | null = null; // shell quotes span newlines — state persists across lines
   let arith = 0; // inside $(( )) a << is a bit-shift, never a heredoc opener
+  const substStack: ("'" | '"' | null)[] = []; // quote state saved at each `$(`
+  let outerQuoted = 0; // how many of those saved states had a quote open
   for (const line of command.split("\n")) {
     if (delim !== null) {
       const probe = dashed ? line.replace(/^\t+/, "") : line;
@@ -224,6 +242,22 @@ function stripHeredocs(command: string): string {
     // failing open (#74 review finding 13a).
     for (let i = 0; i < line.length; i++) {
       const ch = line[i];
+      // `$(` — enter the substitution's own quoting context (not `$((`, which
+      // is arithmetic and handled below). A single-quoted region is literal,
+      // so no substitution starts there.
+      if (q !== "'" && ch === "$" && line[i + 1] === "(" && line[i + 2] !== "(") {
+        substStack.push(q);
+        if (q !== null) outerQuoted++;
+        q = null;
+        i++;
+        continue;
+      }
+      if (q === null && arith === 0 && ch === ")" && substStack.length > 0) {
+        const outer = substStack.pop() ?? null;
+        if (outer !== null) outerQuoted--;
+        q = outer;
+        continue;
+      }
       if (q === "'") {
         if (ch === "'") q = null;
       } else if (q === '"') {
@@ -248,13 +282,16 @@ function stripHeredocs(command: string): string {
         let d = false;
         if (line[j] === "-") { d = true; j++; }
         while (j < line.length && /\s/.test(line[j])) j++;
-        if (line[j] === "'" || line[j] === '"') j++;
+        let quotedDelim = false;
+        if (line[j] === "'" || line[j] === '"') { quotedDelim = true; j++; }
         let word = "";
         while (j < line.length && HEREDOC_DELIM_CHARS.test(line[j])) {
           word += line[j];
           j++;
         }
-        if (word) {
+        // Quoted delimiter → inert body, drop it wherever it is. Unquoted →
+        // only where nothing quoted encloses it, i.e. exactly the pre-#400 set.
+        if (word && (quotedDelim || outerQuoted === 0)) {
           dashed = d;
           delim = word;
           break; // body starts on the next line
