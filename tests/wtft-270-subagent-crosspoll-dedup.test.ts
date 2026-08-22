@@ -14,11 +14,11 @@
  *   counted twice.
  *
  *   That is not a corner case. Measured over the twelve most recent live
- *   Claude Code transcripts on this host, 40-75% of message ids carrying `usage`
- *   are re-emitted (e.g. 117 of 293, 72 of 95), and a subagent transcript shows
- *   the growing-usage form directly: one id at output_tokens 8, 8, then 457,
- *   with `tool_result` lines and 1.3-4.2s of wall clock in between — straddling
- *   the daemon's 667ms beat by construction.
+ *   Claude Code transcripts on this host, 40-76% of message ids carrying `usage`
+ *   are re-emitted (e.g. 117 of 293 = 39.9%, 72 of 95 = 75.8%), and a subagent
+ *   transcript shows the growing-usage form directly: one id at output_tokens
+ *   8, 8, then 457, with `tool_result` lines and 1.3-4.2s of wall clock in
+ *   between — straddling the daemon's 667ms beat by construction.
  *
  *   Closer: a subagent transcript re-emitting one message.id with higher usage
  *   in a LATER poll than the first emission reads back as exactly ONE

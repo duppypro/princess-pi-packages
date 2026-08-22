@@ -95,8 +95,24 @@ const discoveredClaudeSessions = new Set<string>();
 // forever, and the undercount gets persisted into the tag file. Presence in
 // this map means "discovered"; each entry carries its OWN byte offset and
 // stream state so the file is re-read exactly like the parent session is
-// (parseNewLinesFrom below) — cheap when unchanged (one stat, no read), and
-// it naturally stops growing once the subagent stops writing.
+// (readNewSubagentLines below) — cheap when unchanged (one stat, no read).
+//
+// GROWTH, stated plainly: one {lastSize, streamState} entry per subagent
+// transcript discovered during this daemon's life, NEVER evicted. It is bounded
+// only in practice, by how many subagents one session spawns; the map does not
+// shrink when a subagent finishes, when its transcript is deleted, or when it
+// goes quiet. Re-PARSING does stop once a file yields no new bytes — that is a
+// cost bound, not a size bound, and the two are not the same claim.
+//
+// Eviction was written and then removed. The tempting rule — "the subagent
+// finished" — is unsafe: discoverSubagentSessionFiles re-lists every transcript
+// on disk on every poll, so an evicted-because-finished subagent is re-discovered
+// on the very next poll and re-read from offset 0, re-appending its whole
+// transcript each time. That is a guaranteed overcount, strictly worse than an
+// unbounded map of small entries. A file-is-gone rule avoids that but could not
+// be made to hold either: deciding "some known id is now stale" from scan sizes
+// alone is not sound, so the bound it advertised was not one it delivered.
+// An offset per live file is exactly the state an incremental read needs.
 const discoveredSubagentFiles = new Map<string, { lastSize: number; streamState: ParseStreamState }>();
 
 // ---
@@ -417,8 +433,12 @@ function parseNewLines(filePath: string) {
     if (currentSize <= lastSize) return [];
     const fd = fs.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - lastSize);
-    fs.readSync(fd, buf, 0, buf.length, lastSize);
-    fs.closeSync(fd);
+    // try/finally: a throwing readSync must not leak the descriptor (#270 review).
+    try {
+      fs.readSync(fd, buf, 0, buf.length, lastSize);
+    } finally {
+      fs.closeSync(fd);
+    }
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
     // Interrupt: the killed turn is either the last interaction of this
@@ -456,16 +476,18 @@ function readNewSubagentLines(filePath: string, fileState: { lastSize: number; s
         process.stderr.write(`[wtft-log-parser] subagent transcript truncated, resetting offset: ${path.basename(filePath)}\n`);
       }
       fileState.lastSize = 0;
-      // The turn held for a late interrupt stamp belongs to the file that just
-      // went away; stamping it after a rotation would correct the wrong record.
-      fileState.lastWritten = undefined;
-      fileState.stampInterruptOnLastWritten = false;
     }
     if (currentSize <= fileState.lastSize) return [];
     const fd = fs.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - fileState.lastSize);
-    fs.readSync(fd, buf, 0, buf.length, fileState.lastSize);
-    fs.closeSync(fd);
+    // try/finally: a throwing readSync must not leak the descriptor (#270 review).
+    // This runs once per subagent transcript per poll, so a leak here compounds
+    // far faster than the same shape in parseNewLines (once per parent session).
+    try {
+      fs.readSync(fd, buf, 0, buf.length, fileState.lastSize);
+    } finally {
+      fs.closeSync(fd);
+    }
     fileState.lastSize = currentSize;
     const newContent = buf.toString("utf8");
     // A subagent transcript has no cross-poll pendingItems queue — an

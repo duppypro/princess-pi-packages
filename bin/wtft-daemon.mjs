@@ -2473,8 +2473,11 @@ function parseNewLines(filePath) {
       return [];
     const fd = fs9.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - lastSize);
-    fs9.readSync(fd, buf, 0, buf.length, lastSize);
-    fs9.closeSync(fd);
+    try {
+      fs9.readSync(fd, buf, 0, buf.length, lastSize);
+    } finally {
+      fs9.closeSync(fd);
+    }
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
     return parseLinesIntoInteractions(newContent, streamState, (interactions) => {
@@ -2498,15 +2501,16 @@ function readNewSubagentLines(filePath, fileState) {
 `);
       }
       fileState.lastSize = 0;
-      fileState.lastWritten = undefined;
-      fileState.stampInterruptOnLastWritten = false;
     }
     if (currentSize <= fileState.lastSize)
       return [];
     const fd = fs9.openSync(filePath, "r");
     const buf = Buffer.alloc(currentSize - fileState.lastSize);
-    fs9.readSync(fd, buf, 0, buf.length, fileState.lastSize);
-    fs9.closeSync(fd);
+    try {
+      fs9.readSync(fd, buf, 0, buf.length, fileState.lastSize);
+    } finally {
+      fs9.closeSync(fd);
+    }
     fileState.lastSize = currentSize;
     const newContent = buf.toString("utf8");
     return parseLinesIntoInteractions(newContent, fileState.streamState, (interactions) => {
