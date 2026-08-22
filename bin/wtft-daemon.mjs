@@ -2386,13 +2386,6 @@ function scanForSubAgents() {
       pendingClaudeCommands.push(...stillPending);
   }
   const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
-  if (taskAgentFiles.length > 0 && discoveredSubagentFiles.size > taskAgentFiles.length) {
-    const live = new Set(taskAgentFiles.map((f) => path9.basename(f, ".jsonl")));
-    for (const knownId of [...discoveredSubagentFiles.keys()]) {
-      if (!live.has(knownId))
-        discoveredSubagentFiles.delete(knownId);
-    }
-  }
   for (const file of taskAgentFiles) {
     const sessionId = path9.basename(file, ".jsonl");
     let fileState = discoveredSubagentFiles.get(sessionId);
