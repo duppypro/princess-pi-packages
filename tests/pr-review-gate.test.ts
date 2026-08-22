@@ -16,6 +16,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_REVIEW = path.join(REPO_ROOT, "bin", "pr-review");
@@ -60,7 +61,7 @@ process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
 process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
 
 function makeSandbox(): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-gate-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-gate-")));
 	SANDBOXES.push(root);
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
@@ -674,7 +675,7 @@ console.log("\nround-3 High regressions:");
 	// contradiction the exit-7 row was added to resolve.
 	const sb = makeSandbox();
 	const env = stubs(sb, "clean");
-	const plain = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-norepo-"));
+	const plain = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-norepo-")));
 	const { code } = run(PR_REVIEW, plain, env);
 	check(code === 2, "not a git repo → exit 2 (matches the #224 table)", `got ${code}`);
 	fs.rmSync(plain, { recursive: true, force: true });

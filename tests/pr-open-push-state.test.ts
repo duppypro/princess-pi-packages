@@ -26,6 +26,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
+import { assertStubbedInSandbox } from "./lib/stub-path";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
@@ -107,7 +109,7 @@ interface Sandbox {
  * touches the network.
  */
 function makeSandbox(branch: string): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-push-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-push-")));
 	SANDBOXES.push(root);
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
@@ -159,6 +161,15 @@ echo "https://github.com/duppypro/princess-pi-packages/pull/999"
  * assertion here needs both the exit code AND the output on the same path.
  */
 function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean; pushArgs: string[] } {
+	// Every run asserts the invariant, not just the first: a sandbox whose PATH
+	// resolves a REAL `claude` bills a live reviewer call, which is exactly how
+	// 507 of them went unnoticed in one day (#395).
+	const env = {
+		...process.env, ...GIT_ENV,
+		PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
+		PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
+	};
+	assertStubbedInSandbox(env, sb.root);
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
@@ -178,13 +189,7 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 		// `python3` and `timeout` resolvable, and a fixed "/usr/bin:/bin"
 		// allowlist broke that on any host that installs them elsewhere
 		// (homebrew, nix, asdf).
-		env: {
-			...process.env, ...GIT_ENV,
-			PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
-			// …and the review log stays in the sandbox rather than in the
-			// developer's state dir, where 196 of them accumulated unnoticed.
-			PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
-		},
+		env,
 	});
 	const out = `${r.stdout || ""}${r.stderr || ""}`;
 	const argv = fs.readFileSync(sb.argvLog, "utf8");

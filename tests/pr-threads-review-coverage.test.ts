@@ -31,6 +31,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_THREADS = path.join(REPO_ROOT, "bin", "pr-threads");
@@ -197,7 +198,7 @@ echo "duppypro/princess-pi-packages"
 }
 
 function runPrThreads(pages: string[], args: string[] = ["1"]): { code: number; out: string } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-threads-coverage-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-threads-coverage-")));
 	const binDir = stubGh(dir, pages);
 	try {
 		const out = execFileSync("bash", [PR_THREADS, ...args], {

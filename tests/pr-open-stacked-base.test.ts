@@ -20,6 +20,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
+import { assertStubbedInSandbox } from "./lib/stub-path";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
@@ -98,7 +100,7 @@ interface Sandbox {
  * the case needs and push it.
  */
 function makeSandbox(): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-")));
 	SANDBOXES.push(root);
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
@@ -147,6 +149,15 @@ echo "https://github.com/duppypro/princess-pi-packages/pull/999"
  * checks stayed red after the feature worked, because the test could not see it.
  */
 function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean } {
+	// Every run asserts the invariant, not just the first: a sandbox whose PATH
+	// resolves a REAL `claude` bills a live reviewer call, which is exactly how
+	// 507 of them went unnoticed in one day (#395).
+	const env = {
+		...process.env, ...GIT_ENV,
+		PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
+		PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
+	};
+	assertStubbedInSandbox(env, sb.root);
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
@@ -162,11 +173,7 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 		// hardcoded list: pr-review also needs python3/timeout resolvable, and a
 		// fixed "/usr/bin:/bin" allowlist broke on any host that installs those
 		// elsewhere (homebrew, nix, asdf).
-		env: {
-			...process.env, ...GIT_ENV,
-			PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
-			PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
-		},
+		env,
 	});
 	const out = `${r.stdout || ""}${r.stderr || ""}`;
 	const createdPr = fs.readFileSync(sb.argvLog, "utf8").includes("pr create");
