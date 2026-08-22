@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { flattenSubdomainToLabel, loadCfEnv, parseAclFile, aclEntriesToInclude } from "../extensions/lib/serve/cloudflare.js";
+import { trackSandbox } from "./lib/sandbox";
 
 let passed = 0;
 function ok(name: string, fn: () => void) {
@@ -29,7 +30,7 @@ ok("caps at 63 chars, no trailing dash", () => {
 ok("empty flatten throws", () => assert.throws(() => flattenSubdomainToLabel("___"), /empty DNS label/));
 
 console.log("loadCfEnv");
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cf66-"));
+const tmp = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "cf66-")));
 ok("parses a complete cf.env", () => {
 	const p = path.join(tmp, "cf.env");
 	fs.writeFileSync(p, `CF_API_TOKEN=tok\nCF_ACCOUNT_ID=acc\nCF_ZONE_ID="zone"\nCF_TUNNEL_ID='tun'\n# comment\n`);
@@ -46,27 +47,27 @@ ok("missing required key → names it", () => {
 
 console.log("parseAclFile");
 ok("reads + validates emails, strips comments", () => {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "acl66-")));
 	fs.writeFileSync(path.join(d, ".serve-acl"), `# who\na@x.com\nb@y.com  # inline\n`);
 	assert.deepEqual(parseAclFile(d), ["a@x.com", "b@y.com"]);
 });
 ok("accepts @domain rules alongside addresses", () => {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "acl66-")));
 	fs.writeFileSync(path.join(d, ".serve-acl"), `@roguelivestock.com\nmelissa@roguelivestock.com  # individual\n`);
 	assert.deepEqual(parseAclFile(d), ["@roguelivestock.com", "melissa@roguelivestock.com"]);
 });
 ok("malformed @domain (no dot) throws", () => {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "acl66-")));
 	fs.writeFileSync(path.join(d, ".serve-acl"), `@localhost\n`);
 	assert.throws(() => parseAclFile(d), /Invalid domain rule/);
 });
 ok("invalid email throws", () => {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "acl66-")));
 	fs.writeFileSync(path.join(d, ".serve-acl"), `not-an-email\n`);
 	assert.throws(() => parseAclFile(d), /Invalid email/);
 });
 ok("all-comment file → 'at least one' error", () => {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), "acl66-"));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "acl66-")));
 	fs.writeFileSync(path.join(d, ".serve-acl"), `# only comments\n`);
 	assert.throws(() => parseAclFile(d), /at least one valid email/);
 });

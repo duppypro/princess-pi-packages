@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const GITIGNORE = path.join(REPO_ROOT, ".gitignore");
@@ -62,7 +63,7 @@ console.log("Worktree location convention (#257)");
 //    This is the check that a second machine would have failed before #257.
 // ---
 {
-	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wt-location-"));
+	const tmp = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wt-location-")));
 	try {
 		git(["init", "-q"], tmp);
 		fs.copyFileSync(GITIGNORE, path.join(tmp, ".gitignore"));

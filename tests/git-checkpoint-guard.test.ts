@@ -21,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const GIT_CHECKPOINT = path.join(REPO_ROOT, "bin", "git-checkpoint");
@@ -71,7 +72,7 @@ interface Sandbox {
 }
 
 function makeSandbox(primary: "main" | "master" = "main"): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "git-checkpoint-guard-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "git-checkpoint-guard-")));
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", primary]);

@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
+import { trackSandbox } from "./lib/sandbox";
 
 const PORT = 61934;
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
@@ -31,7 +32,7 @@ function rawGet(reqPath: string): Promise<{ status: number; body: string }> {
 
 async function run() {
 	// --- Fixture: root "b" and SIBLING "bc" sharing the string prefix ---
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), "serve60-"));
+	const base = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "serve60-")));
 	const root = path.join(base, "b");
 	const sibling = path.join(base, "bc");
 	fs.mkdirSync(root);

@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const HERDR_REAP = path.join(REPO_ROOT, "bin", "herdr-reap");
@@ -95,7 +96,7 @@ function makeStub(opts: {
 	workspaceListFailsAfter?: boolean;
 	workspaceListFailsBefore?: boolean;
 }): Stub {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-stub-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-stub-")));
 	const bin = path.join(dir, "bin");
 	fs.mkdirSync(bin);
 
@@ -197,12 +198,12 @@ function runReap(stub: Stub, args: string[], env: Record<string, string | undefi
 
 /** A directory that exists. */
 function liveDir(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "herdr-live-"));
+	return trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-live-")));
 }
 
 /** A directory that existed and no longer does — and the string herdr reports for it. */
 function deadCwd(suffix = true): string {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-dead-"));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-dead-")));
 	fs.rmSync(d, { recursive: true, force: true }); // synchronous; no delay needed or wanted
 	return suffix ? `${d} (deleted)` : d;
 }
@@ -462,7 +463,7 @@ console.log("herdr-reap (#277)\n");
 // can parse.
 // ---
 {
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-odd-"));
+	const base = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-odd-")));
 	const nasty = path.join(base, 'we ird"quote\\back');
 	fs.mkdirSync(nasty);
 	fs.rmSync(nasty, { recursive: true, force: true });
@@ -557,7 +558,7 @@ console.log("herdr-reap (#277)\n");
 // permission bits this case is entirely about.
 // ---
 {
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-noexec-"));
+	const base = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-noexec-")));
 	const hidden = path.join(base, "wt");
 	fs.mkdirSync(hidden);
 	fs.chmodSync(base, 0o000);
@@ -585,7 +586,7 @@ console.log("herdr-reap (#277)\n");
 // the one it reaped. (Review finding on PR #312.)
 // ---
 {
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-ctl-"));
+	const base = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-ctl-")));
 	const ctl = path.join(base, "ctl\u0001bel\ttab");
 	fs.mkdirSync(ctl);
 	fs.rmSync(ctl, { recursive: true, force: true });
@@ -601,7 +602,7 @@ console.log("herdr-reap (#277)\n");
 // the suffix is kernel prose leaking through a JSON field, corroboration only.
 // ---
 {
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-real-"));
+	const base = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-real-")));
 	const real = path.join(base, "foo (deleted)");
 	fs.mkdirSync(real);
 	const stub = makeStub({ panes: [{ pane_id: "wS:p2", tab_id: "wS:tREAL", cwd: real }] });
@@ -692,7 +693,7 @@ console.log("herdr-reap (#277)\n");
 // resolved from `dirname $0`.
 // ---
 {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-brokenlib-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "herdr-brokenlib-")));
 	fs.copyFileSync(HERDR_REAP, path.join(dir, "herdr-reap"));
 	fs.chmodSync(path.join(dir, "herdr-reap"), 0o755);
 	fs.writeFileSync(path.join(dir, "herdr-tab"), "this ( is not ( valid bash\n", { mode: 0o755 });

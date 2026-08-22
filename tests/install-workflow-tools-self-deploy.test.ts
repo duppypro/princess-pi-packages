@@ -25,6 +25,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, test } from "bun:test";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
@@ -61,7 +62,7 @@ const FIXTURE_SKILLS = (() => {
 })();
 
 function freshHome(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "iwt-self-home-"));
+	return trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-self-home-")));
 }
 
 /**
@@ -129,7 +130,7 @@ function pathWithoutJq(): string {
 	// jq-absent path it claims to.
 	const jqDirs = parts.filter(hasJq);
 	if (jqDirs.length === 0) return process.env.PATH ?? "";
-	const shadowDir = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-"));
+	const shadowDir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-")));
 	for (const entry of fs.readdirSync(jqDirs[0])) {
 		if (entry === "jq") continue;
 		try {
@@ -258,7 +259,7 @@ describe("install-workflow-tools deploys itself (#263)", () => {
 		// treat "unknown" as "not this repo" and the installer died claiming it
 		// couldn't find a repo that was right there.
 		const home = freshHome();
-		const fixtureRepo = seedFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-repo-")));
+		const fixtureRepo = seedFixtureRepo(trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-no-jq-repo-"))));
 
 		const { code, out } = run(
 			path.join(fixtureRepo, "bin", "install-workflow-tools"),
