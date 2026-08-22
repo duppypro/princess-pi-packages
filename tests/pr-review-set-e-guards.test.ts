@@ -50,12 +50,15 @@ function scan(source: string): { line: number; text: string; guarded: boolean }[
 		if (/^if\s/.test(text) && !/(^|;\s*)then\b/.test(text)) inCondition = true;
 
 		if (/(^|[\s(=])python3(\s|$)/.test(text) && !/command -v python3/.test(text)) {
+			// No assignment-form clause. `VAR=$(python3 …)` with no `||` DOES trip
+			// errexit (`set -e; x=$(false); echo unreached` never echoes), so
+			// treating the assignment shape as self-guarding would have passed the
+			// exact regression this file exists to catch — dropping the trailing
+			// `|| DEDUP="?"` from bin/pr-review's one such line (pr-review round 1,
+			// reasoning lens, High). `||` is the only thing that absorbs it, and
+			// the `/\|\|/` test already sees it.
 			const guarded =
-				groupDepth > 0 ||
-				inCondition ||
-				/^if\s/.test(text) ||
-				/\|\|/.test(text) ||
-				/^\w+=\$\(/.test(text); // assignment: its own `|| VAR=` fallback is on the same line
+				groupDepth > 0 || inCondition || /^if\s/.test(text) || /\|\|/.test(text);
 			out.push({ line: i + 1, text, guarded });
 		}
 		if (inCondition && /(^|;\s*)then\b/.test(text)) inCondition = false;
@@ -110,6 +113,14 @@ describe("#412 every python3 invocation in bin/pr-review is guarded", () => {
 	test("H7 — the --json path cannot exit 1 with empty stdout", () => {
 		expect(source).toMatch(/if ! cat "\$LOG"; then/);
 		expect(source).not.toMatch(/^ {2}cat "\$LOG"$/m);
+	});
+
+	test("an assignment with no || fallback is NOT guarded", () => {
+		// `x=$(false)` under set -e kills the script, so this shape is a hazard,
+		// not a guard. The scanner said otherwise until pr-review round 1.
+		const found = scan("DEDUP=$(python3 -c 'print(1)')");
+		expect(found.length).toBe(1);
+		expect(found[0].guarded).toBe(false);
 	});
 
 	test("the scanner accepts each guarded shape this file uses", () => {

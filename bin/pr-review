@@ -33,9 +33,10 @@
 # zero lenses completing means the reviewer never actually looked, and that is
 # exit 8 — pr-open refuses on it exactly like it refuses on findings (exit 7),
 # with the same `pr-open --reviewed` escape hatch. Since #412 exit 8 also covers
-# the collector failing to write its results, or its summary failing to read
-# back: both mean the coverage of this run is unknown, and unknown coverage is
-# the same answer as none. The promise covers hangs
+# the collector failing to write its results, its summary failing to read back,
+# and the log itself failing to read back on the --json path: each means the
+# coverage of this run is unknown, and unknown coverage is the same answer as
+# none. The promise covers hangs
 # too, which is why every lens is wrapped in `timeout` — an earlier version
 # waited unconditionally and would have wedged pr-open on a stalled reviewer,
 # the one failure this paragraph claims cannot happen.
@@ -297,13 +298,18 @@ emit_status() {  # emit_status <status> <human message> <exit code>
     # message — and $BASE flows in here verbatim from --base — produced an
     # invalid escape and broke the "exactly one parseable document" contract on
     # precisely the error paths a machine reader most needs.
-    # `if !`, not a bare command (#412 H8): this runs BEFORE `exit "$3"`, so a
-    # python3 that raises here replaces the status code the caller was given
-    # with the shell's own exit 1 — and pr-open reads every code but 7 and 8 as
-    # "proceed". The printf fallback is the same one the missing-python3 branch
-    # uses, so a machine reader still gets exactly one parseable document.
-    if ! command -v python3 >/dev/null 2>&1 ||
-       ! python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":sys.argv[2]}))' "$1" "$2"; then
+    # Guarded (#412 H8): this runs BEFORE `exit "$3"`, so a python3 that raises
+    # here replaces the status code the caller was given with the shell's own
+    # exit 1 — and pr-open reads every code but 7 and 8 as "proceed".
+    #
+    # The two causes keep their own messages (pr-review round 1, contract lens,
+    # Low): "python3 is not on PATH" and "python3 ran and the status emitter
+    # itself broke" are different diagnoses, and collapsing the second into the
+    # first tells a reader to go looking for a missing binary that is present.
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":sys.argv[2]}))' "$1" "$2" ||
+        printf '{"status":"%s","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"pr-review could not encode its own status"}\n' "$1"
+    else
       printf '{"status":"%s","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"reviewer unavailable"}\n' "$1"
     fi
   elif [ "$QUIET" -eq 0 ]; then
@@ -1654,11 +1660,22 @@ fi
 if [ "$JSON_OUT" -eq 1 ]; then
   # Guarded (#412 H7): this is the path a machine caller uses, and a bare `cat`
   # of an unreadable $LOG exits 1 with EMPTY stdout — no document at all, and an
-  # exit code that says "reviewer unavailable, proceed". The fallback keeps the
-  # "exactly one parseable document" contract and lets the real exit code below
-  # (7 on findings, 8 on no coverage) stand.
+  # exit code that says "reviewer unavailable, proceed".
+  #
+  # It routes through emit_status rather than printing a hand-built document
+  # (pr-review round 1, contract lens, High). A fabricated object carrying
+  # `schema: pr-review/run@1` promises the collector's full shape — lenses,
+  # shas, lensSeconds — and a machine reader trusting the tag KeyErrors on
+  # every one of them. emit_status emits the small, schema-less object the
+  # other five failure paths use, which is exactly the documented signal for
+  # "no full run to read". It also exits 8 here rather than falling through:
+  # $COUNT was read before this line, so falling through could print
+  # `findings: []` and then exit 7 — a document and an exit code that
+  # contradict each other. Exit 8 says the one true thing left, that the
+  # coverage of this run cannot be established, and pr-open refuses on it.
   if ! cat "$LOG"; then
-    printf '{"schema":"pr-review/run@1","status":"reviewed-none","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"the run log could not be read back"}\n'
+    emit_status "reviewed-none" \
+      "⚠️  pr-review: the run log at $LOG could not be read back." 8
   fi
 elif [ "$QUIET" -eq 0 ]; then
   # The ✅ is gated on coverage, not just on the count, and reports the number of
