@@ -13,12 +13,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
-import { checkGitCommand } from "../extensions/lib/git-guardrails-core";
+import { checkGitCommand, stripHeredocs as tsStripHeredocs } from "../extensions/lib/git-guardrails-core";
 import fixture from "./fixtures/git-guardrails-cases.json";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -35,6 +35,32 @@ interface Case {
   /** Branches that must EXIST in the cwd repo (needs a root commit) — for the
    *  `checkout -b <existing>` fail-closed cases (PR #305 review). */
   extra_branches?: string[];
+  /** Remotes to configure in the cwd repo. `<remote>/<branch>` only DWIMs to a
+   *  NEW LOCAL branch `<branch>` when `<remote>` is a real configured remote —
+   *  a local branch named `feature/main` must not be read as main (#389). */
+  remotes?: string[];
+  /** Remote-tracking refs to create (`origin/main`), so the DWIM cases are run
+   *  against the state git actually needs to perform them (#389). */
+  remote_branches?: string[];
+  /** Worktree contents of the cwd repo, beyond its branches (#399 finding 2).
+   *  A switch to another branch only lands when the tree is clean, so the
+   *  lift has to be decided against real dirtiness, not a mock:
+   *    "clean-tracked" — one committed tracked file, unmodified
+   *    "dirty"         — that file modified and not committed
+   *    "untracked"     — that file clean, plus an untracked file beside it
+   *                      (untracked files never block a checkout) */
+  worktree?: "clean-tracked" | "dirty" | "untracked";
+  /** Same three states for the `-C <path>` repo — the dirtiness test must read
+   *  the repo the sub-command ACTS on, not the shell's cwd (#399 finding 2). */
+  c_path_worktree?: "clean-tracked" | "dirty" | "untracked";
+  /** Branches that must EXIST in the `-C <path>` repo. */
+  c_path_extra_branches?: string[];
+  /** Branch the repo was on BEFORE the current one, so `-` / `@{-N}` resolves
+   *  to it (#419 review). Implies a root commit. */
+  previous_branch?: string;
+  /** An alternate work tree for `--work-tree`, left in the given state. The
+   *  command's literal `/worktree` is replaced with its path (#419 review). */
+  work_tree?: "clean-tracked" | "dirty";
   why: string;
   /** What the frozen pre-#74 ancestor returned. Absent = no historical claim. */
   pre74?: "allow" | "block";
@@ -54,14 +80,49 @@ function nonRepoDir(): string {
   return mkdtempSync(join(tmpdir(), "guardrail-nonrepo-"));
 }
 
+/** Give <dir> a committed tracked file, then leave the worktree in <state>. */
+function materializeWorktree(dir: string, state: Case["worktree"]): void {
+  if (state === undefined) return;
+  writeFileSync(join(dir, "tracked.txt"), "committed\n");
+  execSync("git add tracked.txt", { cwd: dir });
+  if (state === "dirty") writeFileSync(join(dir, "tracked.txt"), "modified\n");
+  if (state === "untracked") writeFileSync(join(dir, "untracked.txt"), "new\n");
+}
+
 /** Materialize a case's declared branch state into (command, cwd). */
 function materialize(c: Case): { command: string; cwd: string } {
   let command = c.command;
   const cwdBranch = c.cwd_branch !== undefined ? c.cwd_branch : c.branch;
   const cwd = cwdBranch ? repoOnBranch(cwdBranch) : nonRepoDir();
-  if (c.extra_branches?.length) {
+  // A branch (local or remote-tracking) needs something to point at. The
+  // tracked file is staged BEFORE that commit so a "dirty" worktree is a
+  // modification to a committed file — the only kind that blocks a checkout.
+  if (c.extra_branches?.length || c.remote_branches?.length || c.worktree || c.previous_branch || c.work_tree) {
+    materializeWorktree(cwd, c.worktree === "dirty" ? "clean-tracked" : c.worktree);
     execSync(`git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init`, { cwd });
-    for (const b of c.extra_branches) execSync(`git branch "${b}"`, { cwd });
+    if (c.worktree === "dirty") writeFileSync(join(cwd, "tracked.txt"), "modified\n");
+  }
+  for (const b of c.extra_branches ?? []) execSync(`git branch "${b}"`, { cwd });
+  // `-`/`@{-1}` read HEAD's reflog, so the previous position has to be real:
+  // create that branch, go to it, come back. Now `@{-1}` names it (#419 review).
+  if (c.previous_branch) {
+    execSync(`git branch "${c.previous_branch}" 2>/dev/null || true`, { cwd, shell: "/bin/bash" });
+    execSync(`git checkout -q "${c.previous_branch}"`, { cwd });
+    execSync(`git checkout -q "${cwdBranch}"`, { cwd });
+  }
+  // A second tree for `--work-tree`: git checks out INTO it, so its own local
+  // changes are what make the switch refuse — not the cwd tree's (#419 review).
+  if (c.work_tree) {
+    const wt = mkdtempSync(join(tmpdir(), "guardrail-worktree-"));
+    execSync(`git --git-dir="${join(cwd, ".git")}" --work-tree="${wt}" checkout -q -f "${cwdBranch}"`, { cwd });
+    if (c.work_tree === "dirty") writeFileSync(join(wt, "tracked.txt"), "modified\n");
+    command = command.replaceAll("/worktree", wt);
+  }
+  for (const r of c.remotes ?? []) {
+    execSync(`git remote add "${r}" "https://example.invalid/${r}.git"`, { cwd });
+  }
+  for (const rb of c.remote_branches ?? []) {
+    execSync(`git update-ref "refs/remotes/${rb}" HEAD`, { cwd });
   }
   if (c.c_path_branch !== undefined) {
     if (c.c_path_rel !== undefined) {
@@ -70,6 +131,12 @@ function materialize(c: Case): { command: string; cwd: string } {
       execSync(`git init -q -b "${c.c_path_branch}" "${c.c_path_rel}"`, { cwd });
     } else {
       const cRepo = repoOnBranch(c.c_path_branch);
+      if (c.c_path_extra_branches?.length || c.c_path_worktree) {
+        materializeWorktree(cRepo, c.c_path_worktree === "dirty" ? "clean-tracked" : c.c_path_worktree);
+        execSync(`git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init`, { cwd: cRepo });
+        if (c.c_path_worktree === "dirty") writeFileSync(join(cRepo, "tracked.txt"), "modified\n");
+        for (const b of c.c_path_extra_branches ?? []) execSync(`git branch "${b}"`, { cwd: cRepo });
+      }
       command = command.replaceAll("/repo", cRepo);
     }
   }
@@ -180,4 +247,292 @@ describe("git-guardrails regression witness (#260)", () => {
     expect(cwdOnly.some((c) => c.pre74 === "allow" && c.verdict === "block")).toBe(true);
     expect(cwdOnly.some((c) => c.pre74 === "block" && c.verdict === "allow")).toBe(true);
   });
+});
+
+// --- input-parse dependency (#390) ---
+//
+// The .sh hook reads the tool call with `jq`. An empty result has two causes it
+// could not tell apart — there was no command (benign), and the parser never ran
+// (every guardrail is now absent) — and it reported the first, so a missing or
+// broken `jq` silently removed the entire gate. Unknown state is protected
+// state, the same rule the file already applies to an unresolvable `cd`.
+//
+// The TS twin has no such step: Pi's bash-spawn-hook hands checkGitCommand() the
+// command string directly, so there is no parser to fail. Parity here is parity
+// of OUTCOME — neither implementation has an input path that can disarm it
+// without saying so — and the TS half is asserted as the ABSENCE of an external
+// parser rather than as a second stub.
+
+/** A PATH whose only entries are the named real binaries — plus whatever `extra`
+ *  writes into it. Anything not listed is genuinely missing for that run. */
+function stubPath(extra: (dir: string) => void, keep = ["bash", "cat", "git", "realpath"]): string {
+  const dir = mkdtempSync(join(tmpdir(), "guardrail-stubpath-"));
+  for (const bin of keep) {
+    const real = execSync(`command -v ${bin}`, { encoding: "utf8" }).trim();
+    symlinkSync(real, join(dir, bin));
+  }
+  extra(dir);
+  return dir;
+}
+
+function runHook(command: string, cwd: string, env: Record<string, string>) {
+  const input = JSON.stringify({ tool_input: { command, cwd } });
+  return spawnSync("bash", [SH_HOOK], { input, encoding: "utf8", env: { ...process.env, ...env } });
+}
+
+describe("git-guardrails input-parse dependency (#390)", () => {
+  const cwd = repoOnBranch("390-feat");
+  const DANGEROUS = "git push origin main";
+
+  test("a jq that exits non-zero blocks and names the dependency", () => {
+    const dir = stubPath((d) => {
+      writeFileSync(join(d, "jq"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+    });
+    const res = runHook(DANGEROUS, cwd, { PATH: dir });
+    expect(res.status, "a broken parser must not read as 'nothing to check'").toBe(2);
+    expect(res.stderr).toContain("jq");
+  });
+
+  test("a jq missing from PATH blocks and names the dependency", () => {
+    const dir = stubPath(() => {});
+    const res = runHook(DANGEROUS, cwd, { PATH: dir });
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain("jq");
+  });
+
+  // pr-review round 3: this test used to assert only status 2 + "jq" in stderr,
+  // which BOTH branches satisfy — so it passed while `command -v` was catching
+  // only the missing case and the non-executable one fell through to the
+  // JQ_STATUS check. It could not tell the two apart, which is the whole claim.
+  // `command -v` reports a PATH match without testing the execute bit (bash 5,
+  // mode-644 jq as the only jq on PATH: exits 0 and prints the path; invoking it
+  // exits 126). Assert the MESSAGE, since that is what the fix changes — the
+  // dependency guard now says what it means where it says it.
+  test("a jq that is not executable is caught by the dependency guard, not the exit-status fallback", () => {
+    const dir = stubPath((d) => {
+      writeFileSync(join(d, "jq"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+    });
+    const res = runHook(DANGEROUS, cwd, { PATH: dir });
+    expect(res.status, "a parser that cannot run must not read as 'nothing to check'").toBe(2);
+    expect(
+      res.stderr,
+      "the non-executable case must arrive under the message written for it",
+    ).toContain("not executable");
+    expect(
+      res.stderr,
+      "it must NOT fall through to the 'jq exited N' fallback, which is a different claim",
+    ).not.toContain("exited");
+  });
+
+  test("a genuinely empty command on a SUCCESSFUL parse still exits 0", () => {
+    const res = spawnSync("bash", [SH_HOOK], {
+      input: JSON.stringify({ tool_input: { cwd } }),
+      encoding: "utf8",
+    });
+    expect(res.status, "no command is not the same as no parser").toBe(0);
+  });
+
+  test("a working jq still gates normally", () => {
+    expect(shVerdict(DANGEROUS, cwd)).toBe("block");
+    expect(shVerdict("git push origin 390-feat", cwd)).toBe("allow");
+  });
+
+  test("the TS twin has no external input parser to lose", () => {
+    for (const f of ["extensions/lib/git-guardrails-core.ts", "extensions/git-guardrails.ts"]) {
+      const src = readFileSync(join(REPO_ROOT, f), "utf8");
+      expect(src, `${f} must not shell out to parse the tool call`).not.toContain("jq ");
+    }
+    // The command arrives as an argument, so there is no parse step between the
+    // tool call and the decision: the same string that reaches the .sh via jq
+    // reaches this directly.
+    expect(checkGitCommand(DANGEROUS, cwd)).not.toBeNull();
+    expect(checkGitCommand("", cwd)).toBeNull();
+  });
+});
+
+// ---
+// #400 finding 1 (pr-review on #389/#390/#391/#399/#400): substStack pops on the
+// FIRST `)` after a `$(` with q===null, whether or not that `)` actually closes
+// the `$(` — a bare `(...)` subshell group nested inside is never counted, so its
+// `)` prematurely restores the quote state meant for the real closer. This is
+// masked end-to-end today because checkSubstitutions() independently re-finds
+// `$( )` boundaries with a correct paren counter and recurses — so a test must
+// assert on stripHeredocs's OWN output, never only the checkGitCommand verdict.
+// ---
+function shStripHeredocs(command: string): string {
+  const fnSrc = readFileSync(SH_HOOK, "utf8");
+  const m = fnSrc.match(/\nstrip_heredocs\(\) \{[\s\S]*?\n\}\n/);
+  if (!m) throw new Error("could not locate strip_heredocs() in hooks/block-dangerous-git.sh");
+  const res = spawnSync("bash", ["-c", `${m[0]}\nstrip_heredocs "$1"`, "--", command], {
+    encoding: "utf8",
+  });
+  if (res.status !== 0) throw new Error(`strip_heredocs failed: ${res.stderr}`);
+  return res.stdout.replace(/\n$/, "");
+}
+
+describe("git-guardrails stripHeredocs — nested bare subshell group (#400 finding)", () => {
+  // `(true)` is a bare subshell group nested inside the `$( )` — its `)` must
+  // not be mistaken for the closer of the outer `$(`.
+  const command = "echo \"$(true; (true); cat <<'EOF2'\ngit push origin main\nEOF2\n)\"";
+
+  test("ts: the quoted heredoc body is dropped even with a nested bare ( ) group inside $( )", () => {
+    const out = tsStripHeredocs(command);
+    expect(out, "heredoc body must be stripped at any depth for a QUOTED delimiter").not.toContain(
+      "git push origin main",
+    );
+  });
+
+  test("sh: the quoted heredoc body is dropped even with a nested bare ( ) group inside $( )", () => {
+    const out = shStripHeredocs(command);
+    expect(out, "heredoc body must be stripped at any depth for a QUOTED delimiter").not.toContain(
+      "git push origin main",
+    );
+  });
+});
+
+// ---
+// #400 finding 2 (pr-review round 2 on this same branch): the `$(` PUSH was not
+// arith-guarded while its `)` POP was. A `$(` opened inside an active `$(( … ))`
+// therefore pushed a frame whose own `)` — still inside the arithmetic — the pop
+// skipped. The orphan frame was later consumed by an unrelated `)`, leaving the
+// wrong quote state for the REST OF THE SCAN, which is where the damage lands:
+// the corrupted `q` makes the closing `"` read as a fresh OPENING quote, and
+// every heredoc after it stops being recognised at all. Same class as finding 1
+// (guards that disagree about what counts as a closer), left uncovered for the
+// arithmetic case — which is exactly the "fixed at 1 of N sites" shape of #412.
+// State persists across lines, so the assertion is on a LATER line's heredoc.
+// ---
+describe("git-guardrails stripHeredocs — $( ) nested inside $(( )) (#400 finding, round 2)", () => {
+  // The orphan frame is created by `$(echo 1)` inside `$(( … ))`. It corrupts
+  // `q` at the outer closer, so the `<<'EOF3'` on the following line — a QUOTED
+  // delimiter, which the contract says is dropped at any depth — is missed.
+  const command = "echo \"$(echo $(( $(echo 1) + 1 )))\"\ncat <<'EOF3'\ngit push origin main\nEOF3";
+
+  test("ts: a quoted heredoc AFTER a $( ) nested in $(( )) is still stripped", () => {
+    const out = tsStripHeredocs(command);
+    expect(
+      out,
+      "an orphan substStack frame from arithmetic must not corrupt quote state for later lines",
+    ).not.toContain("git push origin main");
+  });
+
+  test("sh: a quoted heredoc AFTER a $( ) nested in $(( )) is still stripped", () => {
+    const out = shStripHeredocs(command);
+    expect(
+      out,
+      "an orphan substStack frame from arithmetic must not corrupt quote state for later lines",
+    ).not.toContain("git push origin main");
+  });
+});
+
+// ---
+// pr-review finding on #389/#390/#391/#399/#400: the #390 fix checked the exit
+// status of the FIRST jq read (.tool_input.command) but not the SECOND
+// (.tool_input.cwd) — a jq that fails on that second call silently leaves
+// HOOK_CWD/ORIG_CWD as "" instead of the existing UNKNOWN_CWD sentinel. "" is
+// not protected the way UNKNOWN_CWD is: branch_of() with an empty dir falls
+// through to a bare `git branch --show-current`, which reads whatever
+// directory the HOOK PROCESS itself happens to be running in — not the tool
+// call's declared cwd. This is the same shape as #412 (one of N identical jq
+// reads gets the fail-closed check, the rest do not).
+// ---
+describe("git-guardrails cwd-read fail-closed (#390 finding — second jq read)", () => {
+  test("a jq failure on the .cwd read fails closed to UNKNOWN_CWD, not '' resolved against the hook process's own cwd", () => {
+    // The hook PROCESS's cwd (spawnSync `cwd`) is on a feature branch. If the
+    // broken .cwd read falls through to a bare `git branch --show-current`
+    // instead of UNKNOWN_CWD, it reads THIS branch and wrongly allows a
+    // commit that must be protected because the real cwd is unknown.
+    const processCwdRepo = repoOnBranch("412-shape-feat");
+    const realJq = execSync("command -v jq", { encoding: "utf8" }).trim();
+    const dir = stubPath((d) => {
+      // Real jq for the .command read; fail only the .cwd read (its filter is
+      // the only one of the two containing ".cwd").
+      writeFileSync(
+        join(d, "jq"),
+        `#!/bin/sh\ncase "$*" in\n  *.cwd*) exit 5 ;;\nesac\nexec "${realJq}" "$@"\n`,
+        { mode: 0o755 },
+      );
+    });
+    const res = spawnSync("bash", [SH_HOOK], {
+      input: JSON.stringify({ tool_input: { command: "git commit -m x", cwd: "/somewhere/else" } }),
+      encoding: "utf8",
+      cwd: processCwdRepo,
+      env: { ...process.env, PATH: dir },
+    });
+    expect(
+      res.status,
+      "an unreadable cwd must fail closed like the command read does, not silently resolve against the hook's own process cwd",
+    ).toBe(2);
+  });
+});
+
+// ---
+// #389 finding A: a heredoc delimiter is a WORD, and a word can be built from
+// adjacent quoted and unquoted pieces — `cat <<'END'x` is delimited by the
+// CONCATENATION `ENDx`, verified against bash itself (a line `ENDx` terminates
+// the body; a bare `END` does not, and bash warns "here-document at line 1
+// delimited by end-of-file (wanted `ENDx')").
+//
+// stripHeredocs recorded only the quoted piece (`END`), so it never met its
+// terminator, stayed in body mode to end-of-input, and ate the REST OF THE
+// COMMAND — including real commands after the heredoc. That is a fail-open on
+// every gate downstream, measured as verdict `null` for a line ending in
+// `git push origin main`.
+//
+// The shell rule the fix has to carry: if ANY piece of the delimiter is quoted,
+// the WHOLE delimiter is quoted, so the body is inert text and is dropped at
+// any depth. Assertions are on stripHeredocs's OWN output — checkSubstitutions
+// re-derives `$( )` boundaries independently and has masked this class twice on
+// this branch already.
+// ---
+const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+describe("git-guardrails stripHeredocs — delimiter concatenated from quoted + unquoted pieces (#389 finding A)", () => {
+  const PAYLOAD = "git push origin main";
+  const forms: { name: string; opener: string; term: string }[] = [
+    { name: "<<'END'x — quoted piece then unquoted", opener: "cat <<'END'x", term: "ENDx" },
+    { name: "<<x'END' — unquoted piece then quoted", opener: "cat <<x'END'", term: "xEND" },
+    { name: '<<"END"x — double-quoted piece then unquoted', opener: 'cat <<"END"x', term: "ENDx" },
+    { name: "<<E'ND' — one word split mid-way", opener: "cat <<E'ND'", term: "END" },
+    { name: "<<'EN'\"D\" — two quoted pieces, different quotes", opener: "cat <<'EN'\"D\"", term: "END" },
+  ];
+  for (const f of forms) {
+    // Line 2 is heredoc BODY (must be dropped); line 4 is a REAL command after
+    // the terminator (must survive). Exactly one occurrence must remain.
+    const command = `${f.opener}\n${PAYLOAD}\n${f.term}\n${PAYLOAD}`;
+    const why = "the delimiter is the concatenation, so the body ends at the terminator and the command after it survives";
+
+    test(`ts: ${f.name}`, () => {
+      expect(occurrences(tsStripHeredocs(command), PAYLOAD), why).toBe(1);
+    });
+    test(`sh: ${f.name}`, () => {
+      expect(occurrences(shStripHeredocs(command), PAYLOAD), why).toBe(1);
+    });
+  }
+
+  // Any quoted piece makes the WHOLE delimiter quoted → inert body → dropped at
+  // any depth, including inside a `$( )` nested in an open double quote.
+  const deep = `echo "$(cat <<E'ND'\n${PAYLOAD}\nEND\n)"`;
+  const deepWhy = "a partially quoted delimiter is a QUOTED delimiter, whose body is dropped at any depth";
+  test("ts: a split-quoted delimiter is treated as quoted inside $( ) under an open quote", () => {
+    expect(occurrences(tsStripHeredocs(deep), PAYLOAD), deepWhy).toBe(0);
+  });
+  test("sh: a split-quoted delimiter is treated as quoted inside $( ) under an open quote", () => {
+    expect(occurrences(shStripHeredocs(deep), PAYLOAD), deepWhy).toBe(0);
+  });
+
+  // Not-regressed guards: the plain forms already on this branch.
+  const guards: { name: string; command: string; left: number }[] = [
+    { name: "<<EOF at top level still strips its body", command: `cat <<EOF\n${PAYLOAD}\nEOF\n${PAYLOAD}`, left: 1 },
+    { name: "<<-EOF still honours a tab-indented terminator", command: `cat <<-EOF\n${PAYLOAD}\n\tEOF\n${PAYLOAD}`, left: 1 },
+    { name: "<<<herestring has no body to strip", command: `cat <<<"${PAYLOAD}"`, left: 1 },
+  ];
+  for (const g of guards) {
+    test(`ts: ${g.name}`, () => {
+      expect(occurrences(tsStripHeredocs(g.command), PAYLOAD)).toBe(g.left);
+    });
+    test(`sh: ${g.name}`, () => {
+      expect(occurrences(shStripHeredocs(g.command), PAYLOAD)).toBe(g.left);
+    });
+  }
 });

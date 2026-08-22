@@ -364,10 +364,12 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   the issue number alone suggests; `hooks/block-dangerous-git.sh` carries the same checks
   written as inline bash.
 - **Commits on `main` are blocked, not just pushes (#301, btw#21).** `git commit`, `merge`,
-  `rebase`, `cherry-pick`, `am`, and `pull` are refused when the sub-command's repo is on
-  `main`/`master`. Allowed on `main`: `pull --ff-only`, `merge --ff-only`, every
-  `--abort`/`--quit`, and `checkout -b` / `switch -c` (the escape — nothing here can
-  deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
+  `rebase`, `cherry-pick`, `am`, `pull`, and `revert` (added #391 — it writes a commit on the
+  current branch, which is exactly what this set exists to prevent) are refused when the
+  sub-command's repo is on `main`/`master`. Allowed on `main`: `pull --ff-only`,
+  `merge --ff-only`, `--abort`/`--quit` for the sub-commands that have one (`merge`,
+  `rebase`, `cherry-pick`, `am`, and since #391 `revert`), and `checkout -b` / `switch -c`
+  (the escape — nothing here can deadlock). Intent (Duppy, 2026-08-16): no work advances on `main` except through a PR, so
   every enforced check concentrates on PR review; `git-checkpoint` already refuses on `main`
   (#225) and this closes the raw-git path an agent reaches through Bash. **What the hook
   cannot see it fails safe on:** the branch is resolved *before* the line runs, so a
@@ -375,9 +377,81 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   move the effective cwd for the rest of the line (`cd -`/`popd` reset it), and
   `checkout -b|-B|--orphan` / `switch -c|-C|--create|--force-create|--orphan` mark the target repo as off `main`
   for the rest of the line, so `git checkout -b 123-slug && git commit` is allowed while
-  `git checkout main && git commit` stays blocked. A plain `checkout <existing>` /
-  `switch <existing>` does **not** lift the gate (a positional may be a path, and guessing
-  fails open) — run it as its own command. **Unknown never moves the model (PR #305
+  `git checkout main && git commit` stays blocked. Since #399 a plain `checkout <name>` /
+  `switch <name>` lifts too, whenever `<name>` is main/master or an **existing** branch and
+  it is the sub-command's only positional — that is what a real branch switch looks like,
+  and until #399 it registered nothing at all, so `git checkout main && git commit` was a
+  two-token bypass of the gate. Since #389 a **`<remote>/main`** name lifts as `main`:
+  `git switch -t origin/main` — and `--track`, `--track=direct`, `--no-track`, and
+  `git checkout --track origin/main` — all answer *"Switched to a new branch 'main'"*
+  (measured, git 2.43.0), so the branch the gate must judge is the LOCAL one git creates;
+  `refs/heads/origin/main` never exists, so before #389 no lift was recorded at all and the
+  idiomatic tracking form walked straight through the gate. Two conditions, both
+  load-bearing: only a first segment that is a **configured remote of that repo** is
+  stripped, so a local branch named `feature/main` stays `feature/main` and is not main;
+  and only when a **tracking flag** (`-t`, `--track`, `--track=<mode>`, `--no-track`) is
+  present, because that is exactly what makes git create a local branch. Without one,
+  `git checkout origin/main` **detaches** — a commit there does not advance `main` — and
+  `git switch origin/main` is fatal, so neither lifts; blocking them was a false positive
+  of the #400 class. Still no lift where the answer would be a guess: a **restore-form
+  option** — `--`, `-p`/`--patch`, `--pathspec-from-file[=<file>]`, `--pathspec-file-nul`,
+  `--ours`/`--theirs`, `--overlay`/`--no-overlay` — a second positional (`git checkout
+  <tree-ish> <path>` restores files without switching, and `git switch --track direct
+  origin/main` is two positionals that git itself refuses), or a name that is neither
+  main/master nor an existing branch (a pathspec, or a detached checkout). The restore-form
+  list is **measured, not guessed** (git 2.43.0, each beside an existing `feature` with HEAD
+  on `main`): `--pathspec-from-file` answers *"Updated 1 path from …"*, `-p` answers *"No
+  changes."*, and `--ours`/`--theirs`/`--overlay` are fatal *"cannot be used with switching
+  branches"* — HEAD stays on `main` in all of them, and until #399's fallout was fixed
+  `git checkout feature --pathspec-from-file=paths && git commit` was allowed on `main`
+  because the option starts with `-` and so never counted as a positional. `--conflict=<style>`
+  looks equally path-ish and **does** switch, so it is deliberately absent and still lifts —
+  terminating on every unknown option would be a false block of the #400 class.
+  And since the lift is recorded *optimistically* — the hook runs **before** the command —
+  a switch git **refuses** would leave the gate believing the line moved off `main`. Measured
+  (git 2.43.0, repo on `main`, `feature` exists, `f.txt` locally modified):
+  `git checkout feature && git commit -m x` errors *"Your local changes … would be
+  overwritten by checkout"*, HEAD stays on `main`, and the commit lands there. So a lift to a
+  **non-main** target needs the switch to be reasonably certain to land: **a dirty worktree
+  does not lift** unless a force flag overrides the refusal — `-f`/`--force` for both, plus
+  `--discard-changes` for `switch` only (measured: `git checkout --discard-changes feature`
+  answers *"unknown option"* and never switches). Dirtiness is **tracked files only**
+  (`git status --porcelain --untracked-files=no`, read from the repo the sub-command acts on,
+  honouring `-C`/`--git-dir`): untracked files never block a checkout, staged changes do.
+  `main`/`master` is exempt on purpose — it lifts either way, because if that switch fails the
+  line stays put and the rest is protected regardless. The rule is deliberately coarse and it
+  **over-blocks**: a dirty file that does not differ between the two branches carries over and
+  the switch really would succeed, but the hook cannot know that without diffing the target.
+  The cost is one extra command — run the `checkout` on its own line, then `commit` on the
+  next, which is judged against the branch the repo is actually on (verified: both calls exit
+  0). **`-` and `@{-N}` are branch switches (#419 review):** `-` is git's shorthand for
+  `@{-1}`, the branch you were on before, and `git switch -` is documented as synonymous with it.
+  Measured (git 2.43.0): from a feature branch whose previous branch was `main`,
+  `git checkout - && git commit -m x` lands on `main` and the commit **advances it**. The token
+  starts with `-`, so every option test skipped it and no lift was recorded — a pre-existing hole
+  of the #301 class, not #399 fallout. Both spellings now resolve through HEAD's reflog
+  (`git rev-parse --abbrev-ref`) before the lift, and an unresolvable one (no reflog yet, or a
+  detached previous position, which answers a sha or `HEAD`) records **no** lift: if the switch
+  cannot be resolved here it may not happen there either, so the line stays where the repo is.
+  **`--work-tree` selects the tree that decides dirtiness (#419 review):** it does not move
+  `HEAD`, so it never changes which *branch* a check reads — but it is the tree git checks out
+  **into**, and that tree's local changes are what make git refuse. Measured with the cwd tree
+  **clean** and the `--work-tree` tree **dirty**: `git --work-tree=<dirty> checkout feature`
+  errors *"Your local changes … would be overwritten by checkout"*, `HEAD` stays put, and the
+  following commit lands on `main` — while a dirtiness test that read the cwd saw a clean tree
+  and lifted. It is now captured and used for that test alone. **A `--detach` lifts to no branch at all (#419 review):** `--detach`, and its `-d` short
+  form, on *either* sub-command leaves `HEAD` on a commit rather than a branch, so a commit made
+  after it cannot advance any local branch. Measured (git 2.43.0, repo on `main`):
+  `checkout --detach main`, `checkout -d main`, `switch --detach main`, `switch -d main` and a
+  bare `checkout --detach` all answer *"HEAD is now at …"* with `git branch --show-current`
+  **empty**. The lift therefore records that empty name — recording the *target* blocked the
+  following commit for a command that cannot reach `main` at all. Simply not lifting would not
+  fix it: that leaves the line's earlier on-`main` state standing and the commit stays blocked.
+  Every fail-closed test above still runs — a detaching checkout is refused by the same dirty
+  worktree (measured, `HEAD` unmoved) and by the same missing ref — so detach changes only the
+  value recorded, never whether a lift happens. One over-block is left deliberately:
+  `--detach <sha>` records no lift, because a bare sha is no branch and resolving arbitrary
+  commit-ish would widen the allow set on a guess. **Unknown never moves the model (PR #305
   review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
   too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`
   earlier in the same line, then from the environment; an unresolved branch operand never
@@ -385,7 +459,8 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   the real shell may now be in a main checkout — and unknown is protected until a
   resolvable `cd`, `cd -` or `popd` restores it (`cd a b` is rejected by bash, so it stays
   put); `checkout -b <existing>` / `switch -c <existing>` do not lift
-  (git refuses and leaves you on `main` — `-B`/`-C`/`--force-create` do); `( … )` groups
+  (git refuses and leaves you on `main` — `-B`/`-C`/`--force-create` do; this is the create
+  form only, and #399 is why it no longer suppresses a plain switch); `( … )` groups
   scope `cd` and assignments; `$( … )` / `bash -c` bodies, pipeline elements and
   backgrounded jobs are child shells and *nothing* they set carries back — not even a
   branch switch, because substitutions are inspected before the walk and would otherwise
@@ -504,14 +579,22 @@ origin before anyone looks. Left as a real fork (require confirmation before sta
 narrowing the default to `add -u`) rather than resolved unilaterally in a docs pass.
 
 **`gh pr merge` in any form is human-only**, regardless of flags — and since #249 that
-is a technical block, not only a convention. Measured against the deployed hook
-(2026-08-12):
+is a technical block, not only a convention. "Regardless of flags" was false until #389:
+the gate tested positional adjacency, so any global `gh` option — `-R owner/repo`, the
+ordinary way an agent addresses a repo it is not standing in — shifted `pr merge` out of
+view and exited 0. It now finds the sub-command as the first two POSITIONAL words after
+`gh`, skipping global options and their values. Measured against `hooks/block-dangerous-git.sh`
+(2026-08-21), and pinned in `tests/doc-claims-vs-hooks.test.ts`:
 
 ```
 gh pr merge 5 --squash                             → exit 2  blocked
 sudo gh pr merge --squash                          → exit 2  blocked
 GH_HOST=github.com gh pr merge                     → exit 2  blocked
+gh -R owner/repo pr merge 5                        → exit 2  blocked   (#389)
+gh --repo owner/repo pr merge 5                    → exit 2  blocked   (#389)
+gh --hostname github.com pr merge                  → exit 2  blocked   (#389)
 gh pr create --base main                           → exit 0  allowed
+gh -R owner/repo pr view 42                        → exit 0  allowed
 ```
 
 An agent runs `pr-open` and stops; a human runs `pr-merge`/`pr-reject`.
@@ -523,6 +606,17 @@ path, so whatever sits there is what runs, merged or not. `bin/install-workflow-
 deploys all three tracked hooks; `install-workflow-tools --check` reports drift without
 writing and exits 1, and `tests/hooks-deploy-drift.test.ts` fails the suite when any hook
 this host actually runs differs from `hooks/`.
+
+**`block-dangerous-git.sh` needs `jq` on `PATH`.** It parses the tool call's JSON with it
+and has no fallback parser. A `jq` that is missing, not executable, or exits non-zero now
+**blocks (exit 2)** and names the dependency, because an empty parse result has two causes
+the hook cannot tell apart: there was no command (benign), and the parser never ran (every
+guardrail is absent). It reported the first until #390, so a broken `jq` disarmed the whole
+gate without one error a human would notice — unknown state is protected state, the same
+rule the hook already applies to an unresolvable `cd`. A genuinely empty
+`.tool_input.command` on a **successful** parse still exits 0. The Pi twin needs nothing
+installed: `checkGitCommand()` is handed the command string, so it has no parse step to
+lose.
 
 `--check` asks three questions per hook, not one: is the file **there**, is it
 **executable**, and does it **match**. Identical bytes with the executable bit cleared is

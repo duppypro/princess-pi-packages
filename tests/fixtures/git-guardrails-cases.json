@@ -1121,7 +1121,7 @@
       "command": "git checkout 301-feat && git commit -m x",
       "branch": "main",
       "verdict": "block",
-      "why": "#301 fail-safe: a positional to checkout may be a path (file restore), so a plain checkout <name> never lifts the gate - run it as its own command"
+      "why": "#301/#399 fail-safe: 301-feat does NOT exist in this repo, so git would refuse the switch and the commit really would land on main — an unresolvable target never lifts"
     },
     {
       "id": "block-checkout-b-in-c-repo-then-commit-in-cwd",
@@ -1450,6 +1450,729 @@
       "branch": "301-feat",
       "verdict": "allow",
       "why": "`cd -` returns to the tool-call cwd (feature) — known again"
+    },
+    {
+      "id": "allow-quoted-heredoc-in-substitution-push",
+      "command": "gh issue create --title \"t\" --body \"$(cat <<'EOF'\nprose with an unpaired \" quote\ngit push origin main\nEOF\n)\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#400: a QUOTED heredoc body is inert text; nested in $( … ) it was left for the outer walk, where an unpaired quote in the prose ended the --body string and split the body into commands"
+    },
+    {
+      "id": "allow-quoted-heredoc-in-substitution-commit",
+      "command": "gh issue create --title \"t\" --body \"$(cat <<'EOF'\nprose with an unpaired \" quote\ngit checkout -B main && git commit -m x\nEOF\n)\"",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#400: same shape, #301 gate — filing a bug ABOUT the guardrails must not trip them"
+    },
+    {
+      "id": "block-substitution-git-push-still-checked",
+      "command": "gh issue create --title \"t\" --body \"$(git push origin main)\"",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#400 guard on the guard: dropping quoted heredoc bodies inside $( … ) must not stop a REAL command substitution from being inspected"
+    },
+    {
+      "id": "block-gh-repo-short-flag-pr-merge",
+      "command": "gh -R o/r pr merge 5",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: check_gh_command tested positional adjacency (T[s+1]=='pr'), so any global gh flag shifted the merge gate out of view"
+    },
+    {
+      "id": "block-gh-repo-long-flag-pr-merge",
+      "command": "gh --repo o/r pr merge 5 --squash",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: --repo takes a separate value; the sub-command is two tokens further along"
+    },
+    {
+      "id": "block-gh-hostname-flag-pr-merge",
+      "command": "gh --hostname github.com pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: --hostname is the other value-taking gh global option"
+    },
+    {
+      "id": "block-gh-repo-equals-flag-pr-merge",
+      "command": "gh --repo=o/r pr merge 5",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389: the =-joined form is a single token and must not shift the sub-command"
+    },
+    {
+      "id": "block-sudo-gh-repo-flag-pr-merge",
+      "command": "sudo gh -R o/r pr merge",
+      "branch": "feat",
+      "verdict": "block",
+      "why": "#389 + #208: a wrapper prefix AND a gh global flag together must still reach the merge gate"
+    },
+    {
+      "id": "allow-gh-repo-flag-pr-view",
+      "command": "gh -R o/r pr view 42",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#389 inverse: skipping gh's global options must not turn every flagged gh command into a block"
+    },
+    {
+      "id": "allow-gh-repo-flag-pr-create",
+      "command": "gh --repo o/r pr create --base main",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#389 inverse: pr create stays the agent's PR path even with -R/--repo"
+    },
+    {
+      "id": "allow-gh-repo-flag-issue-create-merge-word",
+      "command": "gh -R o/r issue create --title 'pr merge notes'",
+      "branch": "feat",
+      "verdict": "allow",
+      "why": "#389 inverse: 'pr merge' as quoted prose is one token, never the sub-command"
+    },
+    {
+      "id": "block-checkout-existing-main-then-commit",
+      "command": "git checkout main && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#399: switching to a branch that EXISTS is the only way to reach main, and it recorded no lift — a two-token bypass of the gate that keeps main PR-only"
+    },
+    {
+      "id": "block-switch-existing-main-then-commit",
+      "command": "git switch main && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#399: `switch` is the other spelling of the same bypass"
+    },
+    {
+      "id": "block-checkout-existing-main-then-empty-commit",
+      "command": "git checkout main && git commit --allow-empty -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#399: the lift must hold for every commit-like sub-command after the switch, not just the bare form"
+    },
+    {
+      "id": "allow-checkout-main-then-back-to-feature",
+      "command": "git checkout main && git checkout 399-feat && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "allow",
+      "why": "#399: the lift tracks where the line has MOVED TO — switching back to an existing feature branch leaves main again"
+    },
+    {
+      "id": "allow-switch-main-then-back-to-feature",
+      "command": "git switch main && git switch 399-feat && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "allow",
+      "why": "#399: same round trip with `switch`"
+    },
+    {
+      "id": "allow-checkout-existing-feature-then-commit-on-main",
+      "command": "git checkout 301-feat && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "301-feat"
+      ],
+      "verdict": "allow",
+      "why": "#399: an existing branch name is a real switch, not a pathspec — the commit lands off main"
+    },
+    {
+      "id": "block-checkout-treeish-path-restore-does-not-lift",
+      "command": "git checkout 301-feat src/foo.ts && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "301-feat"
+      ],
+      "verdict": "block",
+      "why": "#399 guard on the guard: `git checkout <tree-ish> <path>` restores files and does NOT switch — two positionals must never lift"
+    },
+    {
+      "id": "block-revert-on-main",
+      "command": "git revert HEAD",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#391: git revert WRITES a commit on the current branch — the exact act the #301 set exists to prevent, and it was absent from that set"
+    },
+    {
+      "id": "block-revert-no-edit-on-main",
+      "command": "git revert --no-edit HEAD",
+      "branch": "main",
+      "verdict": "block",
+      "why": "#391: --no-edit only skips the editor; the commit still lands on main"
+    },
+    {
+      "id": "allow-revert-on-feature",
+      "command": "git revert HEAD",
+      "branch": "391-feat",
+      "verdict": "allow",
+      "why": "#391: revert is gated on main/master only, like every other commit-like sub-command"
+    },
+    {
+      "id": "allow-revert-abort-on-main",
+      "command": "git revert --abort",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#391: --abort undoes an in-progress revert and writes nothing — same exemption as merge/rebase/cherry-pick/am"
+    },
+    {
+      "id": "allow-revert-quit-on-main",
+      "command": "git revert --quit",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#391: --quit likewise leaves the tree alone"
+    },
+    {
+      "id": "block-checkout-existing-main-then-revert",
+      "command": "git checkout main && git revert HEAD",
+      "branch": "391-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "verdict": "block",
+      "why": "#391 + #399: the two holes compose — a switch to main followed by a revert wrote a commit on main through both gaps"
+    },
+    {
+      "id": "block-push-after-heredoc-concatenated-delimiter",
+      "command": "cat <<'END'x\ngit push origin main\nENDx\ngit push origin main",
+      "branch": "389-feat",
+      "verdict": "block",
+      "why": "#389 finding A: the shell delimiter is the concatenation ENDx, so the body ends at line 3 and line 4 is a REAL push to main; recording only 'END' ate the rest of the command and let it through"
+    },
+    {
+      "id": "block-push-after-heredoc-delimiter-split-mid-word",
+      "command": "cat <<E'ND'\ngit push origin main\nEND\ngit push origin main",
+      "branch": "389-feat",
+      "verdict": "block",
+      "why": "#389 finding A: <<E'ND' is delimited by END — the unquoted piece before the quote is part of the same word"
+    },
+    {
+      "id": "allow-quoted-heredoc-concatenated-delimiter-body-is-inert",
+      "command": "cat <<'END'x\ngit push origin main\nENDx",
+      "branch": "389-feat",
+      "verdict": "allow",
+      "why": "#389 finding A: any quoted piece makes the WHOLE delimiter quoted, so the body is inert text and must not be read as a command"
+    },
+    {
+      "id": "block-switch-track-short-remote-main-then-commit",
+      "command": "git switch -t origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: `-t origin/main` creates and switches to a NEW LOCAL branch 'main' (measured, git 2.43.0) — the lift must be recorded against the local name, not the remote-tracking one",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-track-long-remote-main-then-commit",
+      "command": "git switch --track origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: --track is a boolean flag, so origin/main is still the lone positional and still lands on a new local main",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-track-equals-direct-remote-main-then-commit",
+      "command": "git switch --track=direct origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: --track=<mode> is the value form of the same boolean flag — 'Switched to a new branch main'",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-no-track-remote-main-then-commit",
+      "command": "git switch --no-track origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: --no-track ALSO lands on a new local main (measured) — the DWIM is about the remote-named target, not about tracking",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-checkout-track-remote-main-then-commit",
+      "command": "git checkout --track origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: checkout --track origin/main is the same DWIM — 'Switched to a new branch main'",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "allow-checkout-remote-main-detached-then-commit",
+      "command": "git checkout origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 narrowing: WITHOUT a tracking flag, `git checkout origin/main` DETACHES (measured, git 2.43.0: \"Note: switching to 'origin/main'\") — a commit on a detached HEAD does not advance main, so lifting it was a false block of the #400 class",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "allow-switch-remote-main-fatal-then-commit",
+      "command": "git switch origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 narrowing: `git switch origin/main` is fatal (measured, git 2.43.0: \"a branch is expected, got remote branch\") — no switch happens, so the commit lands on the feature branch and must not be blocked",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "allow-switch-local-branch-named-feature-main-then-commit",
+      "command": "git switch feature/main && git commit -m x",
+      "branch": "389-feat",
+      "extra_branches": [
+        "feature/main"
+      ],
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 finding B false-positive guard: only a FIRST SEGMENT that is a configured remote is stripped — 'feature' is not a remote, so feature/main stays feature/main and is not main"
+    },
+    {
+      "id": "allow-switch-track-two-positionals-git-refuses",
+      "command": "git switch --track direct origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 finding B: measured, not claimed — git 2.43.0 answers 'fatal: missing branch name; try -c' and never switches, so the line stays on the feature branch (two positionals already mean no lift)",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-main-dwim-no-local-main-then-commit",
+      "command": "git switch main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "remote_branches": [
+        "origin/main"
+      ],
+      "verdict": "block",
+      "why": "#399 + #389: with no LOCAL main, `git switch main` DWIMs to creating one from origin/main — the positional IS main, so #399's lift already covers it; the sibling `git checkout main` case pinned this for checkout only"
+    },
+    {
+      "id": "block-checkout-pathspec-from-file-equals-does-not-lift",
+      "command": "git checkout feature --pathspec-from-file=paths.txt && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `--pathspec-from-file` is the RESTORE form — measured git 2.43.0 answers 'Updated 1 path from …' and HEAD stays on main. It starts with '-' so it was excluded from the positional count, leaving `feature` as a lone positional that lifted; the commit then landed on main"
+    },
+    {
+      "id": "block-checkout-pathspec-from-file-separate-does-not-lift",
+      "command": "git checkout feature --pathspec-from-file paths.txt && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: the separate-argument spelling restores exactly the same way (measured, HEAD stays on main) — a fix that matched only `--pathspec-from-file=` would leave this half open"
+    },
+    {
+      "id": "block-checkout-pathspec-file-nul-does-not-lift",
+      "command": "git checkout feature --pathspec-file-nul --pathspec-from-file=paths.txt && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `--pathspec-file-nul` is the sibling of `--pathspec-from-file` (git refuses it alone: 'requires --pathspec-from-file'); either option present means paths, not a switch"
+    },
+    {
+      "id": "block-checkout-patch-short-does-not-lift",
+      "command": "git checkout -p feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `checkout -p <branch>` restores hunks interactively — measured git 2.43.0 prints 'No changes.' and HEAD stays on main, so the following commit is a commit on main"
+    },
+    {
+      "id": "block-checkout-patch-long-does-not-lift",
+      "command": "git checkout --patch feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `--patch` is the long spelling of `-p` and restores the same way (measured) — both spellings must terminate"
+    },
+    {
+      "id": "block-checkout-ours-does-not-lift",
+      "command": "git checkout --ours feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: measured git 2.43.0 answers \"fatal: '--ours/--theirs' cannot be used with switching branches\" — the checkout never runs, so HEAD stays on main"
+    },
+    {
+      "id": "block-checkout-theirs-does-not-lift",
+      "command": "git checkout --theirs feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: the `--theirs` half of the same measured refusal — HEAD stays on main"
+    },
+    {
+      "id": "block-checkout-overlay-does-not-lift",
+      "command": "git checkout --no-overlay feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: measured git 2.43.0 answers \"fatal: '--[no]-overlay' cannot be used with switching branches\" — an overlay-mode option means paths, and HEAD stays on main"
+    },
+    {
+      "id": "allow-checkout-conflict-style-still-lifts",
+      "command": "git checkout --conflict=merge feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "allow",
+      "why": "#399 fallout, the other direction: `--conflict=<style>` is NOT a restore form — measured git 2.43.0 answers 'Switched to branch feature'. Terminating on every unrecognized option would turn this into a false block of the #400 class"
+    },
+    {
+      "id": "allow-switch-patch-is-not-a-switch-option-then-commit",
+      "command": "git switch -p feature && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main",
+        "feature"
+      ],
+      "verdict": "allow",
+      "why": "#399 fallout: `git switch` has no -p — measured git 2.43.0 exits 129 'unknown switch p' and never moves HEAD, so the line stays on the feature branch and the commit is fine there"
+    },
+    {
+      "id": "block-checkout-dirty-tree-then-commit-on-main",
+      "command": "git checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the lift is recorded BEFORE the command runs. With uncommitted changes to a tracked file git may refuse the switch ('error: Your local changes to the following files would be overwritten by checkout', measured git 2.43.0, HEAD stays on main) — and then the commit lands on main. The hook cannot know which way it goes, so a dirty tree does not lift"
+    },
+    {
+      "id": "block-switch-dirty-tree-then-commit-on-main",
+      "command": "git switch feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: `git switch` gives the identical refusal on a dirty tree (measured), so it fails closed the same way"
+    },
+    {
+      "id": "allow-checkout-clean-tree-then-commit-on-main",
+      "command": "git checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#399 fallout, the over-block bound: a CLEAN worktree must be untouched by the dirty-tree rule — the switch lands, and the commit belongs to the feature branch"
+    },
+    {
+      "id": "allow-checkout-untracked-only-then-commit-on-main",
+      "command": "git checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "untracked",
+      "verdict": "allow",
+      "why": "#399 fallout: untracked files never block a checkout (measured: 'Switched to branch feature' with an untracked file present), so the dirtiness test is tracked-only — `git status --porcelain --untracked-files=no`"
+    },
+    {
+      "id": "allow-checkout-force-dirty-tree-then-commit-on-main",
+      "command": "git checkout -f feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `-f` throws the local modifications away and the switch DOES land (measured, 'Switched to branch feature'), so it lifts even on a dirty tree"
+    },
+    {
+      "id": "allow-checkout-force-long-dirty-tree-then-commit-on-main",
+      "command": "git checkout --force feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `--force` is the long spelling of `-f` and lands the same way (measured)"
+    },
+    {
+      "id": "allow-switch-force-dirty-tree-then-commit-on-main",
+      "command": "git switch -f feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `git switch -f` lands on a dirty tree too (measured), so the force set is not checkout-only"
+    },
+    {
+      "id": "allow-switch-discard-changes-dirty-tree-then-commit-on-main",
+      "command": "git switch --discard-changes feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `--discard-changes` is switch's own spelling of the override and lands (measured, 'Switched to branch feature')"
+    },
+    {
+      "id": "block-checkout-discard-changes-is-not-a-checkout-option",
+      "command": "git checkout --discard-changes feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the force set is per-sub-command, not shared — measured git 2.43.0 answers 'error: unknown option `discard-changes`' for checkout and HEAD stays on main, so treating it as an override there would reopen the hole"
+    },
+    {
+      "id": "block-checkout-main-dirty-tree-still-lifts-then-commit",
+      "command": "git checkout main && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the main/master case is deliberately unchanged — main lifts whether or not the switch lands, because if it fails the line stays put and treating the rest as protected is the safe direction either way"
+    },
+    {
+      "id": "block-checkout-c-repo-dirty-then-commit-in-c-repo",
+      "command": "git -C /repo checkout feature && git -C /repo commit -m x",
+      "cwd_branch": "399-feat",
+      "c_path_branch": "main",
+      "c_path_extra_branches": [
+        "feature"
+      ],
+      "c_path_worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the dirtiness test reads the repo the sub-command ACTS on. The -C repo is on main with a dirty tree, the shell's cwd repo is clean and on a feature branch — reading the wrong one would let the commit through on main"
+    },
+    {
+      "id": "allow-checkout-c-repo-clean-while-cwd-dirty",
+      "command": "git -C /repo checkout feature && git -C /repo commit -m x",
+      "cwd_branch": "399-feat",
+      "worktree": "dirty",
+      "c_path_branch": "main",
+      "c_path_extra_branches": [
+        "feature"
+      ],
+      "c_path_worktree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#399 fallout, the mirror of the case above: the cwd repo is dirty and the -C repo is clean, so the switch in the -C repo lands and lifts. An implementation that tested the shell's cwd would block this — a false positive of the #400 class"
+    },
+    {
+      "id": "allow-checkout-detach-main-then-commit",
+      "command": "git checkout --detach main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `--detach` leaves HEAD on a COMMIT, not a branch. Measured git 2.43.0: 'HEAD is now at …' and `git branch --show-current` is EMPTY, so the following commit cannot advance main. The lift records the empty branch name — the review's suggested early return would NOT fix this, because it leaves the earlier on-main state standing and the commit stays blocked"
+    },
+    {
+      "id": "allow-checkout-d-short-detach-main-then-commit",
+      "command": "git checkout -d main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `-d` is checkout's short form of `--detach` in git 2.43.0 (measured: 'HEAD is now at …', show-current empty). The review named only `--detach`; the class is wider"
+    },
+    {
+      "id": "allow-switch-detach-main-then-commit",
+      "command": "git switch --detach main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `git switch --detach` detaches identically (measured), so the rule is not checkout-only"
+    },
+    {
+      "id": "allow-switch-d-short-detach-main-then-commit",
+      "command": "git switch -d main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `-d` is switch's documented short form of `--detach` (measured)"
+    },
+    {
+      "id": "allow-checkout-detach-no-positional-then-commit",
+      "command": "git checkout --detach && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: a bare `--detach` detaches at HEAD with no target at all. It lands even on a dirty tree (measured — the tree does not change), so it lifts to the detached state without the fail-closed tests that guard a real switch"
+    },
+    {
+      "id": "allow-checkout-detach-feature-clean-then-commit",
+      "command": "git checkout --detach feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#419 review, no-regression case (NOT evidence of the detach rule): detaching AT another branch on a clean tree. It reads `allow` either way — a plain `checkout feature` lifts off main too — so it pins only that the detach path does not break the ordinary one. The discriminating cases are the `--detach main` four"
+    },
+    {
+      "id": "block-checkout-detach-dirty-tree-then-commit-on-main",
+      "command": "git checkout --detach feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#419 review, the fail-closed bound: a DETACHING checkout is refused by the same dirty worktree as a branch switch (measured: 'error: Your local changes … would be overwritten by checkout', HEAD stays on main) — so the commit would land on main. Detach changes only the value recorded, never whether a lift happens"
+    },
+    {
+      "id": "block-checkout-dash-previous-branch-is-main",
+      "command": "git checkout - && git commit -m x",
+      "branch": "419-feat",
+      "previous_branch": "main",
+      "verdict": "block",
+      "why": "#419 review: `-` is git's shorthand for `@{-1}`. Measured git 2.43.0 — from a feature branch whose previous branch was main, `git checkout -` lands ON main and the commit advances it. The token starts with `-`, so every option test skipped it, no lift was recorded, and the gate judged the commit against a branch the repo had not been on since the first word of the line. Pre-existing hole of the #301 class, NOT #399 fallout"
+    },
+    {
+      "id": "block-switch-dash-previous-branch-is-main",
+      "command": "git switch - && git commit -m x",
+      "branch": "419-feat",
+      "previous_branch": "main",
+      "verdict": "block",
+      "why": "#419 review: `git switch -` is documented as synonymous with `@{-1}` and behaves identically (measured), so the rule is not checkout-only"
+    },
+    {
+      "id": "block-checkout-at-minus-one-literal-is-main",
+      "command": "git checkout @{-1} && git commit -m x",
+      "branch": "419-feat",
+      "previous_branch": "main",
+      "verdict": "block",
+      "why": "#419 review: the literal `@{-N}` spelling is the same mechanism and the same bypass — it is no branch name, so `refs/heads/@{-1}` never existed and the pre-fix code recorded no lift"
+    },
+    {
+      "id": "allow-checkout-dash-previous-branch-is-a-feature",
+      "command": "git checkout - && git commit -m x",
+      "branch": "419-other",
+      "previous_branch": "419-feat",
+      "verdict": "allow",
+      "why": "#419 review, the false-positive bound: `-` resolves to a FEATURE branch here, so the commit does not touch main and must stay allowed. An implementation that blocked every `-` on principle would be a false positive of the #400 class"
+    },
+    {
+      "id": "allow-checkout-dash-unresolvable-previous-branch",
+      "command": "git checkout - && git commit -m x",
+      "branch": "419-feat",
+      "verdict": "allow",
+      "why": "#419 review, the fail-closed bound read the other way: with no previous position in HEAD's reflog `@{-1}` does not resolve, so NO lift is recorded and the commit is judged against the branch the repo is actually on (419-feat) — allowed, because if the switch cannot resolve here it will not happen there either"
+    },
+    {
+      "id": "block-work-tree-dirty-tree-then-commit-on-main",
+      "command": "git --work-tree=/worktree checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "work_tree": "dirty",
+      "verdict": "block",
+      "why": "#419 review: `--work-tree` selects the tree git checks out INTO, and that tree's local changes are what make it refuse. Measured git 2.43.0 with the cwd tree CLEAN and the --work-tree tree DIRTY: 'error: Your local changes … would be overwritten by checkout', HEAD stays on main, and the commit lands there — while a dirtiness test that read the cwd saw a clean tree and lifted",
+      "worktree": "clean-tracked"
+    },
+    {
+      "id": "allow-work-tree-clean-tree-then-commit-on-main",
+      "command": "git --work-tree=/worktree checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "work_tree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#419 review, the over-block bound for the same rule: a CLEAN --work-tree must still lift, or capturing the option would have traded a bypass for a false block",
+      "worktree": "clean-tracked"
+    },
+    {
+      "id": "allow-git-dir-and-work-tree-clean-then-commit-on-main",
+      "command": "git --git-dir=.git --work-tree=/worktree checkout feature && git --git-dir=.git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "work_tree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#419 review round 4: with BOTH --git-dir and --work-tree, worktree_dirty built its environment as `${worktree:+GIT_WORK_TREE=…}`. Bash decides what is an assignment prefix at PARSE time, so that expanded word became the COMMAND NAME, the status probe failed, and the fail-closed path reported every tree — clean ones included — as dirty. Measured: real git answers 'Switched to branch feature'. Both prefixes are literal now. `--git-dir` is repeated on the commit deliberately: a lift recorded under one --git-dir spelling is keyed separately from a plain `git commit`, which is a DIFFERENT and pre-existing defect (reproducible on main's own hook) and must not confound this case"
+    },
+    {
+      "id": "block-git-dir-and-work-tree-dirty-then-commit-on-main",
+      "command": "git --git-dir=.git --work-tree=/worktree checkout feature && git --git-dir=.git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "work_tree": "dirty",
+      "verdict": "block",
+      "why": "#419 review round 4, the other side: fixing the probe must not open the bypass it guards. The --work-tree tree is dirty and the cwd tree is clean, so the switch may be refused (measured with diverged branches: 'error: Your local changes … would be overwritten by checkout') and the commit would land on main"
     }
   ]
 }

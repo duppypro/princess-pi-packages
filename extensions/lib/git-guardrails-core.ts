@@ -154,6 +154,163 @@ function refExists(cPath: string, st: LineState, gitDir: string, ref: string): b
   }
 }
 
+/**
+ * Does the repo the sub-command acts on have uncommitted changes to TRACKED
+ * files? Same -C/--git-dir resolution as refExists.
+ *
+ * Tracked-only (`--untracked-files=no`) because untracked files never block a
+ * checkout — measured git 2.43.0: a switch with only an untracked file present
+ * answers "Switched to branch 'feature'". Staged changes DO block it (the same
+ * "would be overwritten" refusal), which is why this is `status --porcelain`
+ * rather than `diff --quiet`. A git that fails to answer at all reads as dirty:
+ * unknown state is protected state.
+ */
+function worktreeDirty(cPath: string, st: LineState, gitDir: string, workTree = ""): boolean {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  // #419 review: `--work-tree` selects the tree git will actually check out
+  // into, and that is the tree whose local changes make git refuse. Measured
+  // (git 2.43.0): with the cwd tree CLEAN and the --work-tree tree DIRTY,
+  // `git --work-tree=<dirty> checkout feature` answers "error: Your local
+  // changes … would be overwritten by checkout" and HEAD stays put — while a
+  // dirtiness test that read the cwd saw a clean tree and lifted. Relative
+  // paths resolve from the -C directory, exactly like --git-dir.
+  const wt = workTree ? resolve(dir || ".", workTree) : "";
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (gitDir) env.GIT_DIR = resolve(dir || ".", gitDir);
+  if (wt) env.GIT_WORK_TREE = wt;
+  try {
+    const out = execSync("git status --porcelain --untracked-files=no", {
+      // cwd stays the REPO dir: with --work-tree but no --git-dir there is no
+      // .git under the alternate tree, so discovery from there fails outright.
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env,
+    });
+    return out.trim() !== "";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * #419 review: `-` is git's shorthand for `@{-1}`, the branch you were on
+ * before. `git checkout - && git commit -m x` from a feature branch whose
+ * previous branch was main lands you ON main and the commit advances it —
+ * measured, git 2.43.0. The token starts with `-`, so every option test in
+ * applyLift skipped it, no lift was recorded, and the gate judged the commit
+ * against the feature branch the repo had not been on since the first word of
+ * the line. A pre-existing hole of the #301 class, not #399 fallout: before
+ * #399 a plain switch never lifted either, so this read `allow` just the same.
+ *
+ * Returns the branch `-` / `@{-N}` names, or null when it cannot be resolved
+ * (no reflog yet, or the previous position was a detached HEAD, in which case
+ * --abbrev-ref answers a sha or `HEAD` and no branch is named). null means no
+ * lift, which is the fail-closed direction: if the switch cannot be resolved
+ * here it may not happen there either, and the line stays where the repo is.
+ */
+function previousBranch(ref: string, cPath: string, st: LineState, gitDir: string): string | null {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  const target = ref === "-" ? "@{-1}" : ref;
+  try {
+    const out = execSync(`git rev-parse --abbrev-ref ${JSON.stringify(target)}`, {
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+    }).trim();
+    // a detached previous position resolves to a sha or to `HEAD`, never a branch
+    if (!out || out === "HEAD" || out === target || !/^[A-Za-z0-9._/-]+$/.test(out)) return null;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does this sub-command carry a flag that overrides git's refusal to switch with
+ * local changes? Measured, git 2.43.0, dirty tree: `checkout -f`, `checkout
+ * --force`, `switch -f` and `switch --discard-changes` all answer "Switched to
+ * branch 'feature'". The set is PER-SUB-COMMAND, not shared: `git checkout
+ * --discard-changes feature` answers "error: unknown option `discard-changes`"
+ * and never switches, so accepting it there would reopen the hole it closes.
+ * `-m`/`--merge` is deliberately absent: it landed in every case measured here,
+ * but git documents the operation as failing when the three-way merge is not
+ * possible, so it is not certain to land — and the conservative side of that
+ * uncertainty is a lift not taken.
+ */
+function forceSwitch(cmd: string, rest: string[]): boolean {
+  return rest.some(
+    (t) => t === "-f" || t === "--force" || (t === "--discard-changes" && cmd === "switch"),
+  );
+}
+
+/** Configured remotes of the repo the sub-command acts on. Same -C/--git-dir
+ *  resolution as refExists. */
+function gitRemotes(cPath: string, st: LineState, gitDir: string): string[] {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  try {
+    return execSync("git remote", {
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+    })
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #389: a target that names a REMOTE ref does not create a branch by that name.
+ * `git switch -t origin/main`, `--track origin/main`, `--track=direct
+ * origin/main`, `--no-track origin/main` and `git checkout --track origin/main`
+ * all answer "Switched to a new branch 'main'" (measured, git 2.43.0): the
+ * branch git creates and lands you on is the LOCAL `main`. `refs/heads/origin/main`
+ * never exists, so the pre-#389 test found no branch, recorded no lift, and the
+ * #301 on-main gate judged the following `git commit` against the feature
+ * branch — bypassed by the most idiomatic form there is.
+ *
+ * Returns the local branch name when <ref> is `<remote>/main` (or `/master`)
+ * AND <remote> is a CONFIGURED remote of the affected repo, else null. Both
+ * halves carry weight:
+ *   - only a first segment that is a real remote is stripped, so a local branch
+ *     literally named `feature/main` keeps its name — `feature` is no remote;
+ *   - answering only for main/master keeps this TIGHTENING-ONLY: a
+ *     `<remote>/<feature>` target can never turn a standing block into an
+ *     allow, and main/master is the only question the gate asks.
+ * The caller gates this on `hasTrackFlag`, so the neighbouring forms that do
+ * NOT create a local branch are left alone: `git checkout origin/main` gives a
+ * detached HEAD (a commit there does not advance main) and `git switch
+ * origin/main` is fatal (no switch at all). Lifting those was a false block of
+ * the #400 class, and a guardrail that cries wolf is one people route around.
+ * The split is exact, not a guess: a tracking flag is present in every measured
+ * form that creates a local branch and absent from every one that does not.
+ */
+/** Does this sub-command carry a tracking flag? That is what turns a
+ *  `<remote>/<branch>` target into a NEW LOCAL branch instead of a detached
+ *  HEAD (checkout) or a fatal error (switch) — verified against git 2.43.0.
+ *  `--no-track` counts: the DWIM keys on the remote-named target, not on
+ *  whether tracking is configured, so this set is flag-VALUE agnostic. */
+function hasTrackFlag(rest: string[]): boolean {
+  return rest.some(
+    (t) => t === "-t" || t === "--track" || t === "--no-track" || t.startsWith("--track="),
+  );
+}
+
+function dwimMainBranch(ref: string, cPath: string, st: LineState, gitDir: string): string | null {
+  const slash = ref.indexOf("/");
+  if (slash <= 0) return null;
+  const remote = ref.slice(0, slash);
+  const branch = ref.slice(slash + 1);
+  // Cheap test first — no subprocess for the overwhelmingly common target.
+  if (!isMainRef(branch)) return null;
+  return gitRemotes(cPath, st, gitDir).includes(remote) ? branch : null;
+}
+
 function repoKey(cPath: string, cwd: string, gitDir: string): string {
   const dir = cPath ? resolve(cwd || ".", cPath) : cwd;
   return `${dir}|${gitDir ? resolve(dir || ".", gitDir) : ""}`;
@@ -207,12 +364,42 @@ function applyCd(T: string[], st: LineState): boolean {
 // dashed/dotted names are valid (#74 review finding 13b).
 const HEREDOC_DELIM_CHARS = /[A-Za-z0-9_.+-]/;
 
-function stripHeredocs(command: string): string {
+// ---
+// #400: `$( … )` starts a FRESH quoting context — the shell re-lexes inside it,
+// so `--body "$(cat <<'EOF' … EOF)"` really does open a heredoc even though an
+// enclosing `"` is still open. The scan used to stay in double-quote state
+// across the `$(`, never saw the opener, and left the whole body for the outer
+// walk; one unpaired `"` in the prose then ended the `--body` string and the
+// remaining lines were split into sub-commands. That is how a bug report ABOUT
+// a git command gets blocked for quoting it.
+//
+// A QUOTED delimiter (`<<'EOF'` / `<<"EOF"`) is inert by definition — no
+// expansion, no substitution — so its body is dropped at any depth. An
+// UNQUOTED `<<EOF` body still expands (`$(git push …)` inside it executes), so
+// its handling is deliberately UNCHANGED: it is stripped only where no
+// enclosing quote was open, which is exactly the set of positions the old
+// top-level-only scan reached. `outerQuoted` counts those enclosing quotes.
+// ---
+// Exported for tests/git-guardrails-parity.test.ts (#400 finding 1): the
+// end-to-end checkGitCommand() verdict stays correct today by coincidence —
+// checkSubstitutions() independently re-derives $( ) boundaries with a
+// correct paren counter and re-strips inside the recursion. A test must
+// assert on stripHeredocs's OWN output, or it proves nothing.
+export function stripHeredocs(command: string): string {
   const out: string[] = [];
   let delim: string | null = null;
   let dashed = false; // <<- : terminator may be tab-indented (#74 review finding 7)
   let q: "'" | '"' | null = null; // shell quotes span newlines — state persists across lines
   let arith = 0; // inside $(( )) a << is a bit-shift, never a heredoc opener
+  // Quote state saved at each `$(`, or the sentinel "GROUP" for a bare `(...)`
+  // subshell group (#400 finding 1 review): a bare `(` doesn't open a fresh
+  // quoting context the way `$(` does, but its `)` still has to be popped by
+  // its OWN closer, not mistaken for the closer of an enclosing `$(`. Without
+  // counting it, `$(true; (true); cat <<'EOF' ...)` popped the `$(`'s saved
+  // quote state on the FIRST `)` — the one closing `(true)` — leaving the real
+  // closer to be treated as ordinary text and the heredoc never entered.
+  const substStack: ("'" | '"' | null | "GROUP")[] = [];
+  let outerQuoted = 0; // how many of those saved states had a quote open
   for (const line of command.split("\n")) {
     if (delim !== null) {
       const probe = dashed ? line.replace(/^\t+/, "") : line;
@@ -224,6 +411,38 @@ function stripHeredocs(command: string): string {
     // failing open (#74 review finding 13a).
     for (let i = 0; i < line.length; i++) {
       const ch = line[i];
+      // `$(` — enter the substitution's own quoting context (not `$((`, which
+      // is arithmetic and handled below). A single-quoted region is literal,
+      // so no substitution starts there.
+      //
+      // `arith === 0` is REQUIRED, and its absence was a bug: the matching pop
+      // below is arith-guarded, so a `$(` opened inside an active `$(( … ))`
+      // pushed a frame whose own `)` — still inside the arithmetic — the pop
+      // skipped. The orphan frame was then consumed by a later, unrelated `)`,
+      // restoring the wrong quote state for the rest of the line. Push and pop
+      // must agree on their guards; the bare-`(` push below already did.
+      if (q !== "'" && arith === 0 && ch === "$" && line[i + 1] === "(" && line[i + 2] !== "(") {
+        substStack.push(q);
+        if (q !== null) outerQuoted++;
+        q = null;
+        i++;
+        continue;
+      }
+      if (q === null && arith === 0 && ch === ")" && substStack.length > 0) {
+        const frame = substStack.pop() ?? null;
+        if (frame !== "GROUP") {
+          if (frame !== null) outerQuoted--;
+          q = frame;
+        }
+        continue;
+      }
+      // Bare `(` — a subshell/grouping paren, not a `$(` (that case already
+      // `continue`d above). It doesn't touch `q`, but it MUST be counted so
+      // its own `)` doesn't get mistaken for the closer of an enclosing `$(`.
+      if (q === null && arith === 0 && ch === "(") {
+        substStack.push("GROUP");
+        continue;
+      }
       if (q === "'") {
         if (ch === "'") q = null;
       } else if (q === '"') {
@@ -248,13 +467,48 @@ function stripHeredocs(command: string): string {
         let d = false;
         if (line[j] === "-") { d = true; j++; }
         while (j < line.length && /\s/.test(line[j])) j++;
-        if (line[j] === "'" || line[j] === '"') j++;
+        // #389: the delimiter is a shell WORD, and a word is the
+        // CONCATENATION of its adjacent quoted and unquoted pieces — `<<'END'x`
+        // is delimited by `ENDx`, `<<x'END'` by `xEND`, `<<E'ND'` by `END`
+        // (verified against bash: a line `ENDx` terminates the first, a bare
+        // `END` does not). Recording only the first piece left a delimiter that
+        // never arrives: the scan stayed in body mode to end-of-input and ate
+        // every real command AFTER the heredoc — a fail-open on every gate
+        // downstream. Keep collecting pieces until an unquoted word boundary.
+        // Shell rule: if ANY piece is quoted, the WHOLE delimiter is quoted, so
+        // the body is inert text and is dropped at any depth.
+        let quotedDelim = false;
         let word = "";
-        while (j < line.length && HEREDOC_DELIM_CHARS.test(line[j])) {
-          word += line[j];
-          j++;
+        while (j < line.length) {
+          const c = line[j];
+          if (c === "'") {
+            quotedDelim = true;
+            j++;
+            while (j < line.length && line[j] !== "'") word += line[j++];
+            if (j < line.length) j++; // closing quote
+          } else if (c === '"') {
+            quotedDelim = true;
+            j++;
+            while (j < line.length && line[j] !== '"') {
+              if (line[j] === "\\" && j + 1 < line.length) j++;
+              word += line[j++];
+            }
+            if (j < line.length) j++; // closing quote
+          } else if (c === "\\" && j + 1 < line.length) {
+            // `<<\EOF` — a backslash quotes the next character, and quoting any
+            // piece quotes the whole delimiter.
+            quotedDelim = true;
+            j++;
+            word += line[j++];
+          } else if (HEREDOC_DELIM_CHARS.test(c)) {
+            word += line[j++];
+          } else {
+            break; // unquoted word boundary ends the delimiter
+          }
         }
-        if (word) {
+        // Quoted delimiter → inert body, drop it wherever it is. Unquoted →
+        // only where nothing quoted encloses it, i.e. exactly the pre-#400 set.
+        if (word && (quotedDelim || outerQuoted === 0)) {
           dashed = d;
           delim = word;
           break; // body starts on the next line
@@ -598,8 +852,11 @@ function skipBenignPrefix(T: string[], st: LineState): PrefixScan {
 }
 
 // Sub-commands that create or move commits on the current branch (#301).
-const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "pull"]);
-const UNDOABLE = new Set(["merge", "rebase", "cherry-pick", "am"]);
+// `revert` joined the set in #391: it writes a commit on the current branch,
+// which is the exact act the set exists to prevent, and its absence made
+// `git revert HEAD` on main advance main without a PR.
+const COMMIT_LIKE = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "pull", "revert"]);
+const UNDOABLE = new Set(["merge", "rebase", "cherry-pick", "am", "revert"]);
 // Options whose SEPARATE next word is an argument. Over-skipping is safe (a
 // missed --abort/--ff-only only blocks); under-skipping is the fail-open case.
 const ARG_OPTIONS = new Set([
@@ -611,34 +868,166 @@ const ARG_OPTIONS = new Set([
 ]);
 
 /**
- * Record a branch switch for the rest of the line (#301 line-state).
- * Only an unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate;
- * a plain positional lowers it when it names main/master and is otherwise
- * ignored (it may be a pathspec — guessing would fail open). A `--` means
- * pathspecs follow: file restore, no switch at all.
+ * Options that make a `checkout`/`switch` a RESTORE or otherwise NO-SWITCH
+ * form. Every one of these leaves HEAD where it was, so the lone positional
+ * beside it is a tree-ish or a pathspec, never a branch to lift.
+ *
+ * #399 fallout: `--` was the only terminator, and `--pathspec-from-file` starts
+ * with `-`, so it was skipped by the positional count — `git checkout feature
+ * --pathspec-from-file=paths` left `feature` as the lone positional, lifted,
+ * and the `git commit` after it ran unguarded on main. Measured against git
+ * 2.43.0, each entry below with `feature` as its positional and HEAD on main:
+ *   `--pathspec-from-file=<f>` / `--pathspec-from-file <f>` → "Updated 1 path
+ *     from …", HEAD=main; `--pathspec-file-nul` → "requires
+ *     --pathspec-from-file"
+ *   `-p` / `--patch` → "No changes.", HEAD=main (restores hunks, never switches)
+ *   `--ours` / `--theirs` → "fatal: '--ours/--theirs' cannot be used with
+ *     switching branches"; `--overlay` / `--no-overlay` → the same fatal for
+ *     '--[no]-overlay'
+ * The list is measured, not guessed, and stays that way: `--conflict=<style>`
+ * looks equally path-ish and DOES switch ("Switched to branch 'feature'"), so
+ * it is deliberately absent. Terminating on every unknown option would make
+ * that a false block — the #400 class of defect.
  */
-function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
-  if (rest.includes("--")) return;
+const RESTORE_FORM_OPTS = new Set([
+  "--", "-p", "--patch", "--pathspec-from-file", "--pathspec-file-nul",
+  "--ours", "--theirs", "--overlay", "--no-overlay",
+]);
+
+function isRestoreForm(rest: string[]): boolean {
+  return rest.some((t) => RESTORE_FORM_OPTS.has(t) || t.startsWith("--pathspec-from-file="));
+}
+
+/**
+ * Record a branch switch for the rest of the line (#301 line-state).
+ *
+ * Two ways a sub-command moves the line onto another branch:
+ *   create — `-b`/`-B`, `-c`/`-C`/`--create`/`--force-create`, `--orphan <name>`.
+ *   switch — a LONE positional that names an existing branch (or main/master).
+ *
+ * #399: the switch case used to be recorded only when the ref did NOT exist,
+ * which meant `git checkout main` — the only way to reach main, and the most
+ * ordinary command an agent could type — never registered, and the #301
+ * commit-like gate never fired. "Does the ref exist" answers whether git would
+ * SUCCEED, and that question belongs to the create case alone (`checkout -b
+ * <existing>` fails and leaves the repo where it was, PR #305 review). For a
+ * plain switch, an existing ref is precisely the evidence that it IS a branch
+ * switch rather than a pathspec.
+ *
+ * Still fail-closed where the answer is a guess: a RESTORE-FORM option means no
+ * switch (see RESTORE_FORM_OPTS), more than one positional is the
+ * `git checkout <tree-ish> <path>…` restore form (which does not switch either),
+ * a name that is neither main/master nor an existing branch is a pathspec or a
+ * detached checkout, an unresolved `$BRANCH` is nothing at all, and a DIRTY
+ * worktree means git may refuse the switch outright (see `worktreeDirty`).
+ * main/master lifts whether or not the ref exists — if the switch fails, the
+ * line stays where it was, and treating the rest of it as protected is the safe
+ * direction.
+ */
+function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState, workTree = ""): void {
+  if (isRestoreForm(rest)) return; // no switch happens: nothing to lift
+  // #419 review: `--detach`, and its `-d` short form, for BOTH sub-commands.
+  // Detaching leaves HEAD on a COMMIT rather than a branch, so a commit made
+  // after it cannot advance ANY local branch — least of all main. Measured
+  // (git 2.43.0, repo on main): `checkout --detach main`, `checkout -d main`,
+  // `switch --detach main`, `switch -d main` and a bare `checkout --detach`
+  // all answer "HEAD is now at …" and leave `git branch --show-current` EMPTY.
+  //
+  // So the lift records the EMPTY branch name — exactly what git reports for a
+  // detached worktree — instead of the target, which names the commit we
+  // detached AT, not a branch we are on. Recording the target blocked the
+  // following commit for a command that cannot reach main at all.
+  //
+  // Returning early here would NOT fix that: it leaves the line's earlier
+  // state (on main) standing and the commit stays blocked. The lift has to be
+  // TO the detached state, not absent — which is why the review's suggested
+  // early return is not the remedy applied.
+  //
+  // Every fail-closed test below still runs, because a detaching checkout is
+  // refused by the same dirty worktree (measured) and by the same missing ref.
+  // Detach changes only the VALUE recorded, never whether a lift happens.
+  // Known remaining over-block, deliberate: `--detach <sha>` still records no
+  // lift, because <sha> is no branch and resolving arbitrary commit-ish would
+  // widen the allow set on a guess.
+  const detach = rest.some((t) => t === "-d" || t === "--detach");
   const createOpts = cmd === "checkout"
     ? new Set(["-b", "-B", "--orphan"])
     : new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
+  // `-` and `@{-N}` name the previous branch, and `-` would otherwise be eaten
+  // by the option test below — so they count as positionals (#419 review).
+  const isPrevRef = (t: string) => t === "-" || /^@\{-\d+\}$/.test(t);
+  const positionals = rest.filter((t) => !t.startsWith("-") || isPrevRef(t));
   let target = "";
+  let created = false;
+  let prevResolved = false;
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
-    if (createOpts.has(t)) { target = rest[i + 1] ?? ""; break; }
+    if (createOpts.has(t)) { target = rest[i + 1] ?? ""; created = true; break; }
+    if (isPrevRef(t)) {
+      if (positionals.length !== 1) return;
+      const prev = previousBranch(t, cPath, st, gitDir);
+      if (prev === null) return; // unresolvable → no lift (fail-closed)
+      target = prev;
+      prevResolved = true;
+      break;
+    }
     if (t.startsWith("-")) continue;
-    if (isMainRef(t)) { target = t; break; } // moving TO main lowers the gate
-    return; // positional that is not main: could be a path — no line-state change
+    if (positionals.length !== 1) return; // <tree-ish> <path>… restore: no switch
+    target = t;
+    break;
   }
-  if (!target) return;
-  const resolved = expandWord(target, st);
+  if (!target) {
+    // A bare `git checkout --detach` / `git switch --detach` detaches at HEAD
+    // and lands even on a dirty tree (measured) — the tree does not change.
+    if (detach && !created) st.lifts.set(repoKey(cPath, st.cwd, gitDir), "");
+    return;
+  }
+  let resolved = prevResolved ? target : expandWord(target, st);
   if (resolved === null) return; // '$BRANCH' unresolved → no lift (fail-closed)
-  // `checkout -b` / `switch -c` / `--orphan` FAIL when the branch already
-  // exists, leaving the repo on main — so an existing name must not lift
-  // (PR #305 review). -B / -C / --force-create reset-or-create and always land.
-  const force = rest.some((t) => t === "-B" || t === "-C" || t === "--force-create");
-  if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
-  st.lifts.set(repoKey(cPath, st.cwd, gitDir), resolved);
+  if (created) {
+    // -B / -C / --force-create reset-or-create and always land; the plain
+    // create forms fail on an existing name and leave the repo where it was.
+    // (The create forms name the local branch outright, so no `<remote>/…`
+    // DWIM applies here — `switch -c foo origin/main` creates `foo`.)
+    const force = rest.some((t) => t === "-B" || t === "-C" || t === "--force-create");
+    if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
+  } else {
+    // #389: `<remote>/main` lands on a NEW LOCAL `main` — lift the LOCAL name.
+    // Only when a tracking flag is present. Measured against git 2.43.0: the
+    // DWIM that creates a local branch from a remote-named target requires one
+    // of -t / --track / --track=<mode> / --no-track. WITHOUT one,
+    // `git checkout origin/main` DETACHES — a commit there does not advance
+    // main — and `git switch origin/main` is fatal. Neither lands on a branch,
+    // so lifting them was a false block, the #400 class of defect.
+    const dwim = hasTrackFlag(rest) ? dwimMainBranch(resolved, cPath, st, gitDir) : null;
+    if (dwim !== null) {
+      resolved = dwim;
+    } else if (!isMainRef(resolved) && !refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) {
+      return; // not a branch: pathspec or detached checkout — no line-state change
+    }
+    // #399 fallout: the lift is recorded OPTIMISTICALLY — the hook runs before
+    // the command, so a switch git REFUSES leaves the gate believing the line
+    // moved off main. Measured (git 2.43.0, repo on main, `feature` exists,
+    // f.txt locally modified): `git checkout feature && git commit -m x` errors
+    // "Your local changes … would be overwritten by checkout", HEAD stays on
+    // main — and the commit lands there. So a lift to a NON-main target is
+    // recorded only when the switch is reasonably certain to land: a clean
+    // tree, or a force flag that overrides the refusal outright.
+    //
+    // Deliberately coarse, and it over-blocks: a dirty file that does not
+    // differ between the two branches carries over and the switch succeeds, but
+    // the hook cannot know that without diffing the target. The cost is one
+    // extra command — run the checkout on its own line, then commit — and the
+    // direction matches this file's rule that unknown state is protected state.
+    //
+    // main/master is untouched on purpose: it lifts either way, because if that
+    // switch fails the line stays put and the rest is protected regardless.
+    if (!isMainRef(resolved) && !forceSwitch(cmd, rest) && worktreeDirty(cPath, st, gitDir, workTree)) {
+      return;
+    }
+  }
+  // Detached: the line is on no branch at all — record that, not the target.
+  st.lifts.set(repoKey(cPath, st.cwd, gitDir), detach && !created ? "" : resolved);
 }
 
 /**
@@ -650,10 +1039,12 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
 
   // git global options before the subcommand; capture -C <path> and
   // --git-dir <path> (both select the affected repo — finding 17).
-  // --work-tree is skipped, not captured: it moves the worktree, but HEAD
-  // (the branch) still comes from the git dir.
+  // --work-tree does not move HEAD — the BRANCH still comes from the git dir —
+  // but it does select the tree whose local changes make a checkout refuse, so
+  // it is captured and used for the dirtiness test alone (#419 review).
   let cPath = "";
   let gitDir = "";
+  let workTree = "";
   while (i < T.length) {
     const t = T[i];
     if (t === "-C") {
@@ -668,7 +1059,13 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
     } else if (t.startsWith("--git-dir=")) {
       gitDir = t.slice("--git-dir=".length);
       i += 1;
-    } else if (t === "--work-tree" || t === "-c") {
+    } else if (t === "--work-tree") {
+      workTree = T[i + 1] ?? "";
+      i += 2;
+    } else if (t.startsWith("--work-tree=")) {
+      workTree = t.slice("--work-tree=".length);
+      i += 1;
+    } else if (t === "-c") {
       i += 2;
     } else if (t.startsWith("-")) {
       i += 1;
@@ -724,17 +1121,18 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
     if (rest.includes(".")) {
       return `discards uncommitted work ('git ${cmd} .', always blocked).`;
     }
-    if (cmd === "checkout") applyLift(cmd, rest, cPath, gitDir, st);
+    if (cmd === "checkout") applyLift(cmd, rest, cPath, gitDir, st, workTree);
     return null;
   }
   if (cmd === "switch") {
-    applyLift(cmd, rest, cPath, gitDir, st);
+    applyLift(cmd, rest, cPath, gitDir, st, workTree);
     return null;
   }
   // Commits on main are blocked, not just pushes (#301, btw#21): main advances
   // only through PRs, so every enforced check concentrates on PR review.
   // `git-checkpoint` already refuses on main (#225); this closes the raw-git
-  // path. --abort/--quit undo (allowed); --ff-only creates no commit (allowed,
+  // path. `revert` is here too (#391) — it commits like the rest.
+  // --abort/--quit undo (allowed); --ff-only creates no commit (allowed,
   // Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit on a
   // diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are not in
   // this set — the escape from main can never deadlock.
@@ -869,13 +1267,42 @@ function checkOneSub(sub: string, st: LineState): string | null {
     : checkGhSubcommand(toks, scan.i);
 }
 
+// gh's GLOBAL options that consume a SEPARATE value (#389). Everything else
+// beginning with '-' is a boolean flag or a =-joined pair and consumes only
+// itself, so it can be skipped without swallowing the sub-command.
+const GH_GLOBAL_ARG_OPTIONS = new Set(["-R", "--repo", "--hostname"]);
+
+/**
+ * The first two POSITIONAL words after `gh` — its command and sub-command.
+ * Positional, not adjacent: `gh -R owner/repo pr merge 5` puts `pr` three
+ * tokens after `gh`, and cobra accepts flags interleaved anywhere, so
+ * `gh pr --repo o/r merge` is the same command too.
+ */
+function ghSubcommandWords(T: string[], start: number): string[] {
+  const words: string[] = [];
+  for (let i = start + 1; i < T.length && words.length < 2; i++) {
+    const t = T[i];
+    if (GH_GLOBAL_ARG_OPTIONS.has(t)) { i++; continue; } // option + its value
+    if (t.startsWith("-") && t !== "-") continue; // boolean flag / --key=value
+    words.push(t);
+  }
+  return words;
+}
+
 /**
  * Check for dangerous gh (GitHub CLI) commands. `start` indexes the `gh` word.
  * Separate from git guardrails because gh is not git — but gh pr merge
  * is the merge-to-main gate and must stay human-only.
+ *
+ * #389: this used to test positional ADJACENCY (T[start+1] === "pr"), so any
+ * global gh flag shifted the gate out of view — and `-R owner/repo` is the
+ * ordinary way an agent addresses a repo it is not standing in. The gate is
+ * the merge-to-main gate; it now finds the sub-command instead of a position,
+ * the way skipBenignPrefix already finds the command word past its wrappers.
  */
 function checkGhSubcommand(T: string[], start: number): string | null {
-  if (T[start + 1] === "pr" && T[start + 2] === "merge") {
+  const words = ghSubcommandWords(T, start);
+  if (words[0] === "pr" && words[1] === "merge") {
     return "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell.";
   }
   return null;

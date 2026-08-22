@@ -8,9 +8,11 @@
 #     allowed — git's own refusal on a dirty tree is the safeguard there.)
 #   Block on main/master only: push whose DESTINATION ref is main/master,
 #     bare push / reset --hard when the affected repo is on main/master,
-#     branch -D main/master; and (#301) commit / merge / rebase / cherry-pick /
-#     am / pull when the affected repo is on main/master — main advances only
-#     through PRs. Allowed there: --ff-only (pull/merge), every --abort/--quit,
+#     branch -D main/master; and (#301, #391) commit / merge / rebase /
+#     cherry-pick / am / pull / revert when the affected repo is on
+#     main/master — main advances only
+#     through PRs. Allowed there: --ff-only (pull/merge), --abort/--quit for the
+#     sub-commands that have one (merge / rebase / cherry-pick / am / revert),
 #     checkout -b / switch -c (the escape; can never deadlock).
 #   Line-state (#301): the hook runs before the line does, so `cd`/`pushd`
 #     move the effective cwd for later sub-commands and `checkout -b`/`switch -c`
@@ -37,23 +39,64 @@
 # ---
 
 INPUT=$(cat)
+
+# ---
+# The tool call is JSON and `jq` is how this hook reads it — there is no fallback
+# parser. #390: an empty COMMAND has two causes the code could not tell apart —
+# there was no command (benign) and the parser never ran (every guardrail below
+# is now absent) — and it reported the first, so a missing or broken `jq` removed
+# the whole gate without one error a human would notice. Unknown state is
+# protected state, the same rule applied to an unresolvable cd below. A genuinely
+# empty .tool_input.command on a SUCCESSFUL parse still exits 0.
+# ---
+# `command -v` alone would NOT make the "not executable" half of this message
+# true: it reports a PATH match without testing the execute bit. Measured on
+# bash 5 with a mode-644 jq as the only jq on PATH — `command -v jq` exits 0 and
+# prints the path, while invoking it exits 126. That case still failed closed at
+# the JQ_STATUS check below, so nothing was ever bypassed, but it arrived under
+# a different, vaguer message than the one written for it. `-x` is what makes
+# the sentence true where it is printed.
+JQ_BIN=$(command -v jq 2>/dev/null || true)
+if [ -z "$JQ_BIN" ] || [ ! -x "$JQ_BIN" ]; then
+  echo "BLOCKED: git guardrails cannot read the tool call — required dependency 'jq' is missing or not executable on PATH. Install jq (apt install jq / brew install jq); until then every git guardrail is unenforceable and this hook fails closed." >&2
+  exit 2
+fi
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+JQ_STATUS=$?
+if [ "$JQ_STATUS" -ne 0 ]; then
+  echo "BLOCKED: git guardrails cannot read the tool call — required dependency 'jq' exited $JQ_STATUS. An unparsed input is an UNKNOWN command, and unknown is protected: this hook fails closed rather than reporting 'nothing to check'." >&2
+  exit 2
+fi
 if [ -z "$COMMAND" ]; then
   exit 0
 fi
-HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
-# Line-state (#301): HOOK_CWD is the EFFECTIVE cwd and moves with cd/pushd;
-# ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
-# earlier in the same line for the repo that switched (see effective_branch).
-ORIG_CWD="$HOOK_CWD"
 # Sentinel for "the effective cwd is UNKNOWN" (PR #305 round 4): a cd whose
 # operand cannot be resolved here (`cd "$VAR"` set in an earlier tool call,
 # `cd ~user`) may have moved the real shell into a main checkout, so the model
 # does not stay put — it becomes unknown, and unknown is treated as protected by
 # every branch-scoped check until a resolvable cd (or `cd -`/popd) restores it.
 # A double-slash path is never a real directory, so it rides through the
-# scope/snapshot plumbing as an ordinary cwd value.
+# scope/snapshot plumbing as an ordinary cwd value. Defined BEFORE the cwd read
+# below (#412 shape: the #390 fix checked the exit status of the .command read
+# only — this is the fix for the .cwd read, the 2nd of the same 2 reads) so a
+# jq that cannot run here can fail closed to the same sentinel, not "".
 UNKNOWN_CWD="//unknown"
+HOOK_CWD=$(echo "$INPUT" | jq -r '.tool_input.cwd // .cwd // ""')
+JQ_STATUS=$?
+if [ "$JQ_STATUS" -ne 0 ]; then
+  # A genuinely-absent cwd on a SUCCESSFUL parse still resolves normally
+  # (unchanged) — this only covers jq itself failing to run. An empty string
+  # here is NOT equivalent to UNKNOWN_CWD: it falls through branch_of()'s
+  # `[ -n "$dir" ]` check to a bare `git branch --show-current`, which reads
+  # whatever directory the HOOK PROCESS happens to be in — not the tool
+  # call's declared cwd — so branch-scoped checks could resolve against the
+  # wrong repo entirely instead of failing closed.
+  HOOK_CWD="$UNKNOWN_CWD"
+fi
+# Line-state (#301): HOOK_CWD is the EFFECTIVE cwd and moves with cd/pushd;
+# ORIG_CWD is the tool-call cwd it resets to. LIFT_* record a branch switch
+# earlier in the same line for the repo that switched (see effective_branch).
+ORIG_CWD="$HOOK_CWD"
 # LIFTS: newline-separated `<repo key>=<branch>` records, latest wins — one
 # entry per repo, so a two-repo line does not clobber itself (PR #305 review).
 LIFTS=$'\n'
@@ -244,41 +287,346 @@ apply_cd() {
   return 0
 }
 
-# Record a branch switch for the rest of the line (#301 line-state). Only an
-# unambiguous NEW branch (-b/-B, -c/-C/--create/--force-create, --orphan <name>) lifts the gate; a plain
-# positional lowers it when it names main/master and is otherwise ignored (it
-# may be a pathspec — guessing would fail open). A `--` means pathspecs
-# follow: file restore, no switch at all.
+# Record a branch switch for the rest of the line (#301 line-state).
+#
+# Two ways a sub-command moves the line onto another branch:
+#   create — -b/-B, -c/-C/--create/--force-create, --orphan <name>.
+#   switch — a LONE positional naming an existing branch (or main/master).
+#
+# #399: the switch case used to be recorded only when the ref did NOT exist, so
+# `git checkout main` — the only way to reach main, and the most ordinary command
+# an agent could type — never registered, and the #301 commit-like gate never
+# fired. "Does the ref exist" answers whether git would SUCCEED, and that
+# question belongs to the create case alone (`checkout -b <existing>` fails and
+# leaves the repo where it was, PR #305 review). For a plain switch, an existing
+# ref is precisely the evidence that it IS a branch switch rather than a pathspec.
+#
+# Still fail-closed where the answer is a guess: a RESTORE-FORM option means
+# no switch (see restore_form below), more than one positional is the
+# `git checkout <tree-ish> <path>…` restore form (which does not switch either),
+# a name that is neither main/master nor an existing branch is a pathspec or a
+# detached checkout, an unresolved $BRANCH is nothing at all, and a DIRTY
+# worktree means git may refuse the switch outright (see worktree_dirty).
+# main/master lifts whether or not the ref exists — if the switch fails, the line
+# stays where it was, and treating the rest of it as protected is the safe
+# direction.
+# Does this `checkout`/`switch` carry an option that makes it a RESTORE or
+# otherwise NO-SWITCH form? Every one of these leaves HEAD where it was, so the
+# lone positional beside it is a tree-ish or a pathspec, never a branch to lift.
+#
+# #399 fallout: `--` was the only terminator, and `--pathspec-from-file` starts
+# with `-`, so it was skipped by the positional count — `git checkout feature
+# --pathspec-from-file=paths` left `feature` as the lone positional, lifted, and
+# the `git commit` after it ran unguarded on main. Measured against git 2.43.0,
+# each entry below with `feature` as its positional and HEAD on main:
+#   --pathspec-from-file=<f> / --pathspec-from-file <f> → "Updated 1 path from
+#     …", HEAD=main;  --pathspec-file-nul → "requires --pathspec-from-file"
+#   -p / --patch → "No changes.", HEAD=main (restores hunks, never switches)
+#   --ours / --theirs → "fatal: '--ours/--theirs' cannot be used with switching
+#     branches";  --overlay / --no-overlay → the same fatal for '--[no]-overlay'
+# The list is measured, not guessed, and stays that way: `--conflict=<style>`
+# looks equally path-ish and DOES switch ("Switched to branch 'feature'"), so it
+# is deliberately absent. Terminating on every unknown option would make that a
+# false block — the #400 class of defect.
+restore_form() {
+  local t
+  for t in "$@"; do
+    case "$t" in
+      --|-p|--patch|--pathspec-from-file|--pathspec-from-file=*|--pathspec-file-nul|--ours|--theirs|--overlay|--no-overlay)
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
 apply_lift() {
-  local cmd="$1" cpath="$2" gitdir="$3"; shift 3
+  local cmd="$1" cpath="$2" gitdir="$3" worktree="$4"; shift 4
   local -a rest=("$@")
-  local t target="" i=0 n=${#rest[@]}
-  for t in "${rest[@]}"; do [ "$t" = "--" ] && return 0; done
+  local t target="" created=0 i=0 n=${#rest[@]} npos=0 prev_resolved=0
+  restore_form "${rest[@]}" && return 0   # no switch happens: nothing to lift
+  # #419 review: `--detach`, and its `-d` short form, for BOTH sub-commands.
+  # Detaching leaves HEAD on a COMMIT rather than a branch, so a commit made
+  # after it cannot advance ANY local branch — least of all main. Measured
+  # (git 2.43.0, repo on main): `checkout --detach main`, `checkout -d main`,
+  # `switch --detach main`, `switch -d main` and a bare `checkout --detach`
+  # all answer "HEAD is now at …" and leave `git branch --show-current` EMPTY.
+  #
+  # So the lift records the EMPTY branch name — exactly what git reports for a
+  # detached worktree — instead of the target, which names the commit we
+  # detached AT, not a branch we are on. Recording the target blocked the
+  # following commit for a command that cannot reach main at all.
+  #
+  # Returning early here would NOT fix that: it leaves the line's earlier state
+  # (on main) standing and the commit stays blocked. The lift has to be TO the
+  # detached state, not absent — which is why the review's suggested `return 0`
+  # is not the remedy applied.
+  #
+  # Every fail-closed test below still runs, because a detaching checkout is
+  # refused by the same dirty worktree (measured: "error: Your local changes …
+  # would be overwritten by checkout", HEAD unmoved) and by the same missing
+  # ref. Detach changes only the VALUE recorded, never whether a lift happens.
+  # Known remaining over-block, deliberate: `--detach <sha>` still records no
+  # lift, because <sha> is no branch and resolving arbitrary commit-ish would
+  # widen the allow set on a guess.
+  local detach=0 t4
+  for t4 in "${rest[@]}"; do
+    case "$t4" in -d|--detach) detach=1; break ;; esac
+  done
+  for t in "${rest[@]}"; do case "$t" in -|@\{-*\}) npos=$((npos + 1)) ;; -*) ;; *) npos=$((npos + 1)) ;; esac; done
   while [ "$i" -lt "$n" ]; do
     t="${rest[$i]}"
     if [ "$cmd" = "checkout" ]; then
-      case "$t" in -b|-B|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+      case "$t" in -b|-B|--orphan) target="${rest[$((i + 1))]:-}"; created=1; break ;; esac
     else
-      case "$t" in -c|-C|--create|--force-create|--orphan) target="${rest[$((i + 1))]:-}"; break ;; esac
+      case "$t" in -c|-C|--create|--force-create|--orphan) target="${rest[$((i + 1))]:-}"; created=1; break ;; esac
     fi
+    # `-` and `@{-N}` name the previous branch; `-` would otherwise be eaten
+    # by the option test on the next line (#419 review).
+    case "$t" in
+      -|@\{-*\})
+        [ "$npos" -ne 1 ] && return 0
+        target=$(previous_branch "$cpath" "$gitdir" "$t") || return 0
+        prev_resolved=1; break ;;
+    esac
     case "$t" in -*) i=$((i + 1)); continue ;; esac
-    if is_main_ref "$t"; then target="$t"; break; fi   # moving TO main lowers the gate
-    return 0   # positional that is not main: could be a path — no line-state change
+    [ "$npos" -ne 1 ] && return 0   # <tree-ish> <path>… restore: no switch
+    target="$t"; break
   done
-  [ -z "$target" ] && return 0
-  target=$(expand_word "$target") || return 0   # '$BRANCH' unresolved → no lift (fail-closed)
-  # `checkout -b` / `switch -c` / `--orphan` FAIL when the branch already exists,
-  # leaving the repo on main — so an existing name must not lift (PR #305 review).
-  # -B / -C / --force-create reset-or-create and always land on the branch.
-  local force=0 t2
-  for t2 in "${rest[@]}"; do
-    case "$t2" in -B|-C|--force-create) force=1 ;; esac
-  done
-  if [ "$force" = 0 ] && ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
+  if [ -z "$target" ]; then
+    # A bare `git checkout --detach` / `git switch --detach` detaches at HEAD
+    # and lands even on a dirty tree (measured) — the tree does not change.
+    [ "$detach" = 1 ] && [ "$created" = 0 ] &&
+      LIFTS+="$(repo_key "$cpath" "$gitdir")="$'\n'
     return 0
   fi
+  if [ "$prev_resolved" = 0 ]; then
+    target=$(expand_word "$target") || return 0   # '$BRANCH' unresolved → no lift (fail-closed)
+  fi
+  if [ "$created" = 1 ]; then
+    # -B / -C / --force-create reset-or-create and always land; the plain create
+    # forms fail on an existing name and leave the repo where it was.
+    # (The create forms name the local branch outright, so no <remote>/... DWIM
+    # applies here — `switch -c foo origin/main` creates `foo`.)
+    local force=0 t2
+    for t2 in "${rest[@]}"; do
+      case "$t2" in -B|-C|--force-create) force=1 ;; esac
+    done
+    if [ "$force" = 0 ] && ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
+      return 0
+    fi
+  else
+    # #389: `<remote>/main` lands on a NEW LOCAL main — lift the LOCAL name.
+    # Only when a tracking flag is present. Measured against git 2.43.0: the
+    # DWIM that creates a local branch from a remote-named target requires one
+    # of -t / --track / --track=<mode> / --no-track. WITHOUT one,
+    # `git checkout origin/main` DETACHES - a commit there does not advance
+    # main - and `git switch origin/main` is fatal. Neither lands on a branch,
+    # so lifting them was a false block, the #400 class of defect.
+    local dwim
+    if has_track_flag "${rest[@]}" && dwim=$(dwim_main_branch "$cpath" "$gitdir" "$target"); then
+      target="$dwim"
+    elif ! is_main_ref "$target" && ! ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
+      return 0   # not a branch: pathspec or detached checkout — no line-state change
+    fi
+    # #399 fallout: the lift is recorded OPTIMISTICALLY — the hook runs before
+    # the command, so a switch git REFUSES leaves the gate believing the line
+    # moved off main. Measured (git 2.43.0, repo on main, `feature` exists,
+    # f.txt locally modified): `git checkout feature && git commit -m x` errors
+    # "Your local changes … would be overwritten by checkout", HEAD stays on
+    # main — and the commit lands there. So a lift to a NON-main target is
+    # recorded only when the switch is reasonably certain to land: a clean tree,
+    # or a force flag that overrides the refusal outright.
+    #
+    # Deliberately coarse, and it over-blocks: a dirty file that does not differ
+    # between the two branches carries over and the switch succeeds, but the
+    # hook cannot know that without diffing the target. The cost is one extra
+    # command — run the checkout on its own line, then commit — and the
+    # direction matches this file's rule that unknown state is protected state.
+    #
+    # main/master is untouched on purpose: it lifts either way, because if that
+    # switch fails the line stays put and the rest is protected regardless.
+    if ! is_main_ref "$target" && ! force_switch "$cmd" "${rest[@]}" \
+       && worktree_dirty "$cpath" "$gitdir" "$worktree"; then
+      return 0
+    fi
+  fi
+  # Detached: the line is on no branch at all — record that, not the target.
+  [ "$detach" = 1 ] && [ "$created" = 0 ] && target=""
   LIFTS+="$(repo_key "$cpath" "$gitdir")=$target"$'\n'
   return 0
+}
+
+# Configured remotes of the repo the sub-command acts on. Same -C/--git-dir
+# resolution as ref_exists.
+git_remotes() {
+  local dir="$1" gitdir="$2"
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  if [ -n "$gitdir" ]; then
+    [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
+    GIT_DIR="$gitdir" git remote 2>/dev/null || true
+  else
+    git -C "${dir:-.}" remote 2>/dev/null || true
+  fi
+}
+
+# #389: a target that names a REMOTE ref does not create a branch by that name.
+# `git switch -t origin/main`, `--track origin/main`, `--track=direct
+# origin/main`, `--no-track origin/main` and `git checkout --track origin/main`
+# all answer "Switched to a new branch 'main'" (measured, git 2.43.0): the branch
+# git creates and lands you on is the LOCAL main. refs/heads/origin/main never
+# exists, so the pre-#389 test found no branch, recorded no lift, and the #301
+# on-main gate judged the following `git commit` against the feature branch -
+# bypassed by the most idiomatic form there is.
+#
+# Prints the local branch name and returns 0 when <ref> is <remote>/main (or
+# /master) AND <remote> is a CONFIGURED remote of the affected repo. Both halves
+# carry weight:
+#   - only a first segment that is a real remote is stripped, so a local branch
+#     literally named `feature/main` keeps its name - `feature` is no remote;
+#   - answering only for main/master keeps this TIGHTENING-ONLY: a
+#     <remote>/<feature> target can never turn a standing block into an allow,
+#     and main/master is the only question the gate asks.
+# The neighbouring forms that do NOT create a local branch (`git checkout
+# origin/main` -> detached HEAD, `git switch origin/main` -> fatal) lift too,
+# The caller gates this on has_track_flag, so the neighbouring forms that do NOT
+# create a local branch are left alone: `git checkout origin/main` gives a
+# detached HEAD (a commit there does not advance main) and `git switch
+# origin/main` is fatal (no switch at all). Lifting those was a false block of
+# the #400 class. The split is exact, not a guess: a tracking flag is present in
+# every measured form that creates a local branch and absent from every one that
+# does not.
+# Does this sub-command carry a tracking flag? That is what turns a
+# `<remote>/<branch>` target into a NEW LOCAL branch instead of a detached HEAD
+# (checkout) or a fatal error (switch) - verified against git 2.43.0.
+# `--no-track` counts: the DWIM keys on the remote-named target, not on whether
+# tracking is configured, so this set is flag-VALUE agnostic.
+has_track_flag() {
+  local t
+  for t in "$@"; do
+    case "$t" in -t|--track|--no-track|--track=*) return 0 ;; esac
+  done
+  return 1
+}
+
+dwim_main_branch() {
+  local cpath="$1" gitdir="$2" ref="$3"
+  local remote="${ref%%/*}" branch="${ref#*/}" remotes
+  [ "$remote" = "$ref" ] && return 1   # no slash: not a <remote>/<branch> target
+  [ -z "$remote" ] && return 1
+  # Cheap test first - no subprocess for the overwhelmingly common target.
+  is_main_ref "$branch" || return 1
+  remotes=$(git_remotes "$cpath" "$gitdir")
+  case $'\n'"$remotes"$'\n' in
+    *$'\n'"$remote"$'\n'*) printf '%s' "$branch"; return 0 ;;
+  esac
+  return 1
+}
+
+# Does the repo the sub-command acts on have uncommitted changes to TRACKED
+# files? Same -C/--git-dir resolution as ref_exists.
+#
+# Tracked-only (--untracked-files=no) because untracked files never block a
+# checkout — measured git 2.43.0: a switch with only an untracked file present
+# answers "Switched to branch 'feature'". Staged changes DO block it (same
+# "would be overwritten" refusal), which is why this is `status --porcelain`
+# rather than `diff --quiet`. A git that fails to answer at all reads as dirty:
+# unknown state is protected state.
+# #419 review: `-` is git's shorthand for `@{-1}`, the branch you were on
+# before. `git checkout - && git commit -m x` from a feature branch whose
+# previous branch was main lands you ON main and the commit advances it —
+# measured, git 2.43.0. The token starts with `-`, so every option test in
+# apply_lift skipped it, no lift was recorded, and the gate judged the commit
+# against the feature branch the repo had not been on since the first word of
+# the line. A pre-existing hole of the #301 class, not #399 fallout: before
+# #399 a plain switch never lifted either, so this read `allow` just the same.
+#
+# Prints the branch `-` / `@{-N}` names, or nothing when it cannot be resolved
+# (no reflog yet, or the previous position was a detached HEAD, in which case
+# --abbrev-ref answers a sha or `HEAD` and no branch is named). Nothing means
+# no lift, which is the fail-closed direction: if the switch cannot be
+# resolved here it may not happen there either, and the line stays where the
+# repo actually is.
+previous_branch() {
+  local dir="$1" gitdir="$2" ref="$3" out
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  [ "$ref" = "-" ] && ref="@{-1}"
+  if [ -n "$gitdir" ]; then
+    [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
+    out=$(GIT_DIR="$gitdir" git rev-parse --abbrev-ref "$ref" 2>/dev/null) || return 1
+  else
+    out=$(git -C "${dir:-.}" rev-parse --abbrev-ref "$ref" 2>/dev/null) || return 1
+  fi
+  # a detached previous position resolves to a sha or to `HEAD`, never a branch
+  case "$out" in ''|HEAD|*[!A-Za-z0-9._/-]*) return 1 ;; esac
+  [ "$out" = "$ref" ] && return 1          # unresolved: rev-parse echoed it back
+  printf '%s' "$out"
+}
+
+worktree_dirty() {
+  local dir="$1" gitdir="$2" worktree="${3:-}" out
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  # #419 review: `--work-tree` selects the tree git will actually check out
+  # into, and that is the tree whose local changes make git refuse. Measured
+  # (git 2.43.0): with the cwd tree CLEAN and the --work-tree tree DIRTY,
+  # `git --work-tree=<dirty> checkout feature` answers "error: Your local
+  # changes … would be overwritten by checkout" and HEAD stays put — while a
+  # dirtiness test that read the cwd saw a clean tree and lifted. Relative
+  # paths resolve from the -C directory, exactly like --git-dir.
+  if [ -n "$worktree" ]; then
+    [ "${worktree#/}" = "$worktree" ] && worktree="${dir:-.}/$worktree"
+  fi
+  if [ -n "$gitdir" ]; then
+    [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
+    # Both assignment prefixes are LITERAL on purpose (#419 review round 4). An
+    # expanded `${worktree:+GIT_WORK_TREE=...}` is not an assignment: bash
+    # decides what is an assignment prefix at PARSE time, so the expanded word
+    # became the command NAME, the probe failed, and the fail-closed path below
+    # reported every tree — clean ones included — as dirty. Measured on a CLEAN
+    # alternate tree: `git --git-dir=… --work-tree=… checkout feature && git
+    # commit` was blocked while real git answered "Switched to branch
+    # 'feature'". An over-block, not a bypass, but a false one.
+    if [ -n "$worktree" ]; then
+      out=$(GIT_DIR="$gitdir" GIT_WORK_TREE="$worktree" \
+        git -C "$worktree" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+    else
+      out=$(GIT_DIR="$gitdir" git status --porcelain --untracked-files=no 2>/dev/null) || return 0
+    fi
+  elif [ -n "$worktree" ]; then
+    out=$(GIT_WORK_TREE="$worktree" git -C "${dir:-.}" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+  else
+    out=$(git -C "${dir:-.}" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+  fi
+  [ -n "$out" ]
+}
+
+# Does this sub-command carry a flag that overrides git's refusal to switch with
+# local changes? Measured, git 2.43.0, dirty tree: `checkout -f`, `checkout
+# --force`, `switch -f` and `switch --discard-changes` all answer "Switched to
+# branch 'feature'". The set is PER-SUB-COMMAND, not shared: `git checkout
+# --discard-changes feature` answers "error: unknown option `discard-changes`"
+# and never switches, so accepting it there would reopen the hole it closes.
+# `-m`/`--merge` is deliberately absent: it landed in every case measured here,
+# but git documents the operation as failing when the three-way merge is not
+# possible, so it is not certain to land — and the conservative side of that
+# uncertainty is a lift not taken.
+force_switch() {
+  local cmd="$1" t; shift
+  for t in "$@"; do
+    case "$t" in
+      -f|--force) return 0 ;;
+      --discard-changes) if [ "$cmd" = "switch" ]; then return 0; fi ;;
+    esac
+  done
+  return 1
 }
 
 # Does <ref> exist in the repo the sub-command acts on? Same -C/--git-dir
@@ -307,9 +655,25 @@ ref_exists() {
 # the real commands after, failing open (#74 review finding 13a). Char-scan
 # with quote state (persisting across lines, as shell quotes do) and $(( ))
 # tracking (a << there is a bit-shift, never a heredoc opener).
+#
+# #400: `$( ... )` starts a FRESH quoting context - the shell re-lexes inside it,
+# so `--body "$(cat <<'EOF' ... EOF)"` really does open a heredoc even though an
+# enclosing double quote is still open. The scan used to stay in double-quote
+# state across the `$(`, never saw the opener, and left the whole body for the
+# outer walk; one unpaired double quote in the prose then ended the --body
+# string and the remaining lines were split into sub-commands. That is how a
+# bug report ABOUT a git command gets blocked for quoting it.
+#
+# A QUOTED delimiter (<<'EOF' / <<"EOF") is inert by definition - no expansion,
+# no substitution - so its body is dropped at any depth. An UNQUOTED <<EOF body
+# still expands ($(git push ...) inside it executes), so its handling is
+# deliberately UNCHANGED: it is stripped only where no enclosing quote was open,
+# which is exactly the set of positions the old top-level-only scan reached.
+# outerq counts those enclosing quotes.
 strip_heredocs() {
   local line probe delim="" dashed=0 q="" arith=0
-  local i n ch j w d
+  local i n ch j w d qdelim dch outerq=0 qtop
+  local -a qstack=()
   while IFS= read -r line; do
     if [ -n "$delim" ]; then
       # <<- : terminator may be tab-indented (#74 review finding 7)
@@ -323,6 +687,38 @@ strip_heredocs() {
     n=${#line}
     for ((i = 0; i < n; i++)); do
       ch="${line:$i:1}"
+      # `$(` - enter the substitution's own quoting context (not `$((`, which is
+      # arithmetic and handled below). A single-quoted region is literal, so no
+      # substitution starts there (#400).
+      #
+      # The `arith -eq 0` test is REQUIRED, and its absence was a bug: the
+      # matching pop below is arith-guarded, so a `$(` opened inside an active
+      # `$(( ... ))` pushed a frame whose own `)` - still inside the arithmetic -
+      # the pop skipped. The orphan frame was then consumed by a later, unrelated
+      # `)`, restoring the wrong quote state for the rest of the line. Push and
+      # pop must agree on their guards; the bare-`(` push below already did.
+      if [ "$q" != "'" ] && [ "$arith" -eq 0 ] && [ "${line:$i:2}" = '$(' ] && [ "${line:$i:3}" != '$((' ]; then
+        qstack+=("$q"); [ -n "$q" ] && outerq=$((outerq + 1))
+        q=""; i=$((i + 1)); continue
+      fi
+      if [ -z "$q" ] && [ "$arith" -eq 0 ] && [ "$ch" = ')' ] && [ ${#qstack[@]} -gt 0 ]; then
+        qtop="${qstack[$((${#qstack[@]} - 1))]}"; unset 'qstack[${#qstack[@]}-1]'
+        if [ "$qtop" != "GROUP" ]; then
+          [ -n "$qtop" ] && outerq=$((outerq - 1))
+          q="$qtop"
+        fi
+        continue
+      fi
+      # Bare `(` - a subshell/grouping paren, not a `$(` (that case already
+      # `continue`d above). It doesn't touch q, but it MUST be pushed so its
+      # own `)` isn't mistaken for the closer of an enclosing `$(` (#400
+      # finding 1 review): `$(true; (true); cat <<'EOF' ...)` was popping the
+      # `$(`'s saved quote state on the FIRST `)` - the one closing `(true)` -
+      # leaving the real closer to read as ordinary text and the heredoc to
+      # never open.
+      if [ -z "$q" ] && [ "$arith" -eq 0 ] && [ "$ch" = '(' ]; then
+        qstack+=("GROUP"); continue
+      fi
       if [ "$q" = "'" ]; then
         [ "$ch" = "'" ] && q=""
       elif [ "$q" = '"' ]; then
@@ -342,12 +738,47 @@ strip_heredocs() {
         j=$((i + 2)); d=0
         [ "${line:$j:1}" = '-' ] && { d=1; j=$((j + 1)); }
         while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [[:space:]] ]]; do j=$((j + 1)); done
-        case "${line:$j:1}" in \'|\") j=$((j + 1)) ;; esac
+        # #389: the delimiter is a shell WORD, and a word is the CONCATENATION
+        # of its adjacent quoted and unquoted pieces - <<'END'x is delimited by
+        # ENDx, <<x'END' by xEND, <<E'ND' by END (verified against bash: a line
+        # ENDx terminates the first, a bare END does not). Recording only the
+        # first piece left a delimiter that never arrives: the scan stayed in
+        # body mode to end-of-input and ate every real command AFTER the
+        # heredoc - a fail-open on every gate downstream. Keep collecting pieces
+        # until an unquoted word boundary. Shell rule: if ANY piece is quoted,
+        # the WHOLE delimiter is quoted, so the body is inert text and is
+        # dropped at any depth.
+        qdelim=0
         w=""
-        while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [A-Za-z0-9_.+-] ]]; do
-          w+="${line:$j:1}"; j=$((j + 1))
+        while [ "$j" -lt "$n" ]; do
+          dch="${line:$j:1}"
+          if [ "$dch" = "'" ]; then
+            qdelim=1; j=$((j + 1))
+            while [ "$j" -lt "$n" ] && [ "${line:$j:1}" != "'" ]; do
+              w+="${line:$j:1}"; j=$((j + 1))
+            done
+            [ "$j" -lt "$n" ] && j=$((j + 1))   # closing quote
+          elif [ "$dch" = '"' ]; then
+            qdelim=1; j=$((j + 1))
+            while [ "$j" -lt "$n" ] && [ "${line:$j:1}" != '"' ]; do
+              if [ "${line:$j:1}" = '\' ] && [ $((j + 1)) -lt "$n" ]; then j=$((j + 1)); fi
+              w+="${line:$j:1}"; j=$((j + 1))
+            done
+            [ "$j" -lt "$n" ] && j=$((j + 1))   # closing quote
+          elif [ "$dch" = '\' ] && [ $((j + 1)) -lt "$n" ]; then
+            # <<\EOF - a backslash quotes the next character, and quoting any
+            # piece quotes the whole delimiter.
+            qdelim=1; j=$((j + 1))
+            w+="${line:$j:1}"; j=$((j + 1))
+          elif [[ "$dch" =~ [A-Za-z0-9_.+-] ]]; then
+            w+="$dch"; j=$((j + 1))
+          else
+            break   # unquoted word boundary ends the delimiter
+          fi
         done
-        if [ -n "$w" ]; then
+        # Quoted delimiter -> inert body, drop it wherever it is. Unquoted ->
+        # only where nothing quoted encloses it, i.e. exactly the pre-#400 set.
+        if [ -n "$w" ] && { [ "$qdelim" = 1 ] || [ "$outerq" -eq 0 ]; }; then
           dashed=$d; delim="$w"
           break # body starts on the next line
         fi
@@ -705,7 +1136,7 @@ check_git_subcommand() {
 
   # git global options before the subcommand; capture -C <path> and
   # --git-dir <path> (both select the affected repo — finding 17)
-  local cpath="" gitdir=""
+  local cpath="" gitdir="" worktree=""
   while [ "$i" -lt "$n" ]; do
     case "${T[$i]}" in
       -C)
@@ -719,12 +1150,17 @@ check_git_subcommand() {
         fi
         i=$((i + 2)) ;;
       -c) i=$((i + 2)) ;;
-      # --git-dir selects the affected repo (finding 17); --work-tree does
-      # not move HEAD, so it is skipped (both separate-arg and = forms)
+      # --git-dir selects the affected repo (finding 17). --work-tree does not
+      # move HEAD, so it never changes which BRANCH a check reads — but it does
+      # change which TREE is dirty, and #419 review measured the bypass that
+      # follows: `git --work-tree=<dirty> checkout feature && git commit -m x`
+      # was allowed while git refused the switch and the commit landed on main.
+      # So it is captured, and used for the dirtiness test alone.
       --git-dir) gitdir="${T[$((i + 1))]:-}"; i=$((i + 2)) ;;
       --git-dir=*) gitdir="${T[$i]#--git-dir=}"; i=$((i + 1)) ;;
-      --work-tree) i=$((i + 2)) ;;
-      --work-tree=*|--no-pager|-P|--paginate|-p) i=$((i + 1)) ;;
+      --work-tree) worktree="${T[$((i + 1))]:-}"; i=$((i + 2)) ;;
+      --work-tree=*) worktree="${T[$i]#--work-tree=}"; i=$((i + 1)) ;;
+      --no-pager|-P|--paginate|-p) i=$((i + 1)) ;;
       -*) i=$((i + 1)) ;;
       *) break ;;
     esac
@@ -788,19 +1224,20 @@ check_git_subcommand() {
           block "discards uncommitted work ('git $cmd .', always blocked)."
         fi
       done
-      [ "$cmd" = "checkout" ] && apply_lift checkout "$cpath" "$gitdir" "${T[@]:$i}"
+      [ "$cmd" = "checkout" ] && apply_lift checkout "$cpath" "$gitdir" "$worktree" "${T[@]:$i}"
       ;;
     switch)
-      apply_lift switch "$cpath" "$gitdir" "${T[@]:$i}"
+      apply_lift switch "$cpath" "$gitdir" "$worktree" "${T[@]:$i}"
       ;;
     # Commits on main are blocked, not just pushes (#301, btw#21): main
     # advances only through PRs, so every enforced check concentrates on PR
     # review. `git-checkpoint` already refuses on main (#225); this closes the
-    # raw-git path. --abort/--quit undo (allowed); --ff-only creates no commit
+    # raw-git path. `revert` is here too (#391) — it commits like the rest.
+    # --abort/--quit undo (allowed); --ff-only creates no commit
     # (allowed, Duppy 2026-08-16); a plain `pull` is fetch+merge and can commit
     # on a diverged main, so it needs --ff-only. `checkout -b`/`switch -c` are
     # not in this set — the escape from main can never deadlock.
-    commit|merge|rebase|cherry-pick|am|pull)
+    commit|merge|rebase|cherry-pick|am|pull|revert)
       # Option ARGUMENTS are not options: `git commit -m --abort` is a commit
       # whose message is '--abort' (PR #305 review). Skip the word after any
       # argument-taking option, stop at `--`, and honour --abort/--quit only
@@ -813,7 +1250,7 @@ check_git_subcommand() {
           -m|-F|-C|-c|-s|-X|-S|-x|--message|--file|--strategy|--strategy-option|--onto|--exec|--author|--date|--template|--fixup|--squash|--reuse-message|--reedit-message|--gpg-sign|--cleanup|--into-name|--patch-format|--whitespace|--directory|--exclude|--include|--mainline)
             skip6=1 ;;
           --abort|--quit)
-            case "$cmd" in merge|rebase|cherry-pick|am) return 0 ;; esac ;;
+            case "$cmd" in merge|rebase|cherry-pick|am|revert) return 0 ;; esac ;;
           --ff-only) ffonly=1 ;;
         esac
       done
@@ -872,10 +1309,28 @@ check_git_subcommand() {
 # Separate from git guardrails because gh is not git — but gh pr merge
 # is the merge-to-main gate and must stay human-only.
 # ---
+# gh's GLOBAL options that consume a SEPARATE value (#389). Everything else
+# beginning with '-' is a boolean flag or a =-joined pair and consumes only
+# itself, so it can be skipped without swallowing the sub-command.
+GH_GLOBAL_ARG_OPTIONS=" -R --repo --hostname "
+
+# #389: this used to test positional ADJACENCY (T[s+1] == "pr"), so any global
+# gh flag shifted the gate out of view — and `-R owner/repo` is the ordinary way
+# an agent addresses a repo it is not standing in. It now collects the first two
+# POSITIONAL words after `gh` (cobra accepts flags interleaved anywhere, so
+# `gh pr --repo o/r merge` is the same command as `gh -R o/r pr merge`), the way
+# skip_benign_prefix already finds the command word past its wrappers.
 check_gh_command() {
   local -a T=("${TOKENS[@]}")
-  local s=$PREFIX_START
-  if [ "${T[$((s + 1))]:-}" = "pr" ] && [ "${T[$((s + 2))]:-}" = "merge" ]; then
+  local n=${#T[@]} i=$((PREFIX_START + 1)) t
+  local -a words=()
+  while [ "$i" -lt "$n" ] && [ ${#words[@]} -lt 2 ]; do
+    t="${T[$i]}"
+    case "$GH_GLOBAL_ARG_OPTIONS" in *" $t "*) i=$((i + 2)); continue ;; esac
+    case "$t" in -?*) i=$((i + 1)); continue ;; esac
+    words+=("$t"); i=$((i + 1))
+  done
+  if [ "${words[0]:-}" = "pr" ] && [ "${words[1]:-}" = "merge" ]; then
     block "gh pr merge is human-only — merge PRs manually via GitHub or a separate shell."
   fi
   return 0
