@@ -30,8 +30,13 @@ function unregisteredCallSites(source: string): number {
 	// nothing and the false-negative class is gone.
 	// `mkSandbox` is not counted at all: it contains no `mkdtempSync` call of its
 	// own to find, so a file using it has nothing left to register.
-	const calls = source.match(/(?<![.\w])(?:[A-Za-z_$][\w$]*\.)?mkdtempSync\(/g) ?? [];
-	const registered = source.match(/trackSandbox\((?:[A-Za-z_$][\w$]*\.)?mkdtempSync\(/g) ?? [];
+	// `*`, not `?`, on the property chain: `nodeFs.promises.mkdtempSync(` has two
+	// dots, and with `?` the lookbehind rejected every start position, so a
+	// deeper chain matched NOTHING and reported zero unregistered calls — a
+	// false negative in the check whose whole job is to have none (pr-review
+	// round 3, correctness lens).
+	const calls = source.match(/(?<![.\w])(?:[A-Za-z_$][\w$]*\.)*mkdtempSync\(/g) ?? [];
+	const registered = source.match(/trackSandbox\((?:[A-Za-z_$][\w$]*\.)*mkdtempSync\(/g) ?? [];
 	return calls.length - registered.length;
 }
 

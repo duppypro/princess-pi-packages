@@ -20,7 +20,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 
 const SANDBOXES: string[] = [];
 
-process.on("exit", () => {
+function sweep(): void {
 	for (const root of SANDBOXES.splice(0)) {
 		try {
 			rmSync(root, { recursive: true, force: true });
@@ -29,7 +29,16 @@ process.on("exit", () => {
 			// code — the test result is the answer here, not the cleanup.
 		}
 	}
-});
+}
+
+process.on("exit", sweep);
+// `exit` alone does not fire on a signal — Node's default disposition terminates
+// the process without emitting it — so Ctrl-C mid-run left every sandbox built
+// so far behind. The two pr-open suites carried their own copy of this for that
+// reason; it belongs here, where all 54 get it. Re-raise the conventional code
+// afterwards so the caller still sees why the run ended.
+process.on("SIGINT", () => { sweep(); process.exit(130); });
+process.on("SIGTERM", () => { sweep(); process.exit(143); });
 
 /** Register an already-created directory for removal at process exit. */
 export function trackSandbox(dir: string): string {

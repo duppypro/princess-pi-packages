@@ -30,8 +30,17 @@ export function assertStubbedInSandbox(
 	const r = spawnSync("bash", ["-c", `command -v ${bin}`], { env, encoding: "utf8" });
 	const resolved = (r.stdout || "").trim();
 	if (!resolved) {
+		// bash failing to run at all produces the same empty stdout as "no such
+		// binary", and reporting the second when it was the first sends the reader
+		// looking for a missing stub that is present (pr-review round 3, contract
+		// lens). Carry what the spawn actually said.
+		const why = r.error
+			? `bash itself did not run: ${r.error.message}`
+			: r.status !== 0
+				? `command -v exited ${r.status}${r.stderr ? `: ${r.stderr.trim()}` : ""}`
+				: "no such binary on the sandbox PATH";
 		throw new Error(
-			`sandbox PATH resolves no '${bin}' at all — a suite that shells out to it ` +
+			`sandbox PATH resolves no '${bin}' — ${why}. A suite that shells out to it ` +
 				`would reach whatever the host later installs (#395)`,
 		);
 	}
