@@ -198,10 +198,12 @@ unusable envelope), "unknown" (no exit code was recorded), "unreadable" (the
 lens answered and the collector could not use the answer). Entries also carry
 why and stderr, and exitCode/elapsedSec where they were recorded — either may
 be null. No caller ever parses the human sentence.
-The five emit_status paths (not a repo, precondition, diff failed, no changes,
-reviewer unavailable) emit a different, smaller object with NO schema key and a
-`message` key instead. A missing `schema` means NO LENS RAN; `status` says why,
-and the five are not one outcome:
+The SIX emit_status paths (not a repo, precondition, diff failed, no changes,
+reviewer unavailable, reviewed-none) emit a different, smaller object with NO
+schema key and a `message` key instead. A missing `schema` means THIS RUN COULD
+NOT RELAY A FULL DOCUMENT — which is not the same as "no lens ran", and #412 is
+why the distinction now matters. `status` says which, and the six are not one
+outcome:
   no-changes           the run COMPLETED — repo found, base resolved, `git diff`
                        ran and came back empty. Exit 0, nothing to review. This
                        is a success, and reading it as a startup failure is the
@@ -212,6 +214,16 @@ and the five are not one outcome:
   diff-failed          started, and the diff itself failed.
   reviewer-unavailable started; `claude` or `python3` was missing, so it failed
                        open. Exit 0, and NOT a review.
+  reviewed-none        exit 8, and the ONE case where lenses may in fact have
+                       run: the collector could not write its results, its
+                       summary could not be read back, or --json could not read
+                       $LOG back (#412). A full document may exist on disk and
+                       simply be unrelayable — that is why this status carries
+                       no schema key while the others carry none because there
+                       was nothing to carry. Treat it as coverage UNKNOWN, which
+                       pr-open refuses on exactly like zero coverage. The same
+                       status with a schema-carrying document means what it
+                       always did: every lens failed (#401).
 Branch on `status`, never on the absence of `schema` alone.
 Exit 3 does NOT predict whether JSON appears, and neither does any other code:
 the protected-branch and no-base preconditions and the failed diff go through
@@ -224,7 +236,8 @@ of a document says only how far the run got before it did.
 
 exit codes: 0 clean (or reviewer unavailable) · 2 usage / not a git repo
             3 precondition (protected branch, diff failed) · 7 findings
-            8 coverage failure — reviewer ran, zero lenses completed (#401)
+            8 coverage failure — zero lenses completed (#401), or the results
+              could not be written or read back at all (#412)
             (set -e can still surface an undocumented 1 — see the header)
 EOF
 }
@@ -1434,6 +1447,10 @@ if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
   # the failure skips the clustering call and takes the same fail-open-to-RAW
   # path a crashed clustering pass takes.
   CLUSTER_PROMPT_OK=1
+  # Two guarded writes, not one guarded group (pr-review round 3, reasoning
+  # lens): `{ cat; python3; }` reports only the LAST command's status, so a
+  # failed `cat` of the rules preamble was masked by a python3 that then
+  # succeeded, and clustering ran on a prompt missing its instructions.
   if ! {
     cat <<'CRULES'
 You are given code-review findings produced by three independent reviewers with different
@@ -1448,17 +1465,21 @@ Every id must appear exactly once.
 
 FINDINGS:
 CRULES
-    python3 - "$LOG" <<'PYIDS'
+  } > "$WORK/cluster.prompt"; then
+    CLUSTER_PROMPT_OK=0
+  fi
+  if [ "$CLUSTER_PROMPT_OK" -eq 1 ] && ! python3 - "$LOG" >> "$WORK/cluster.prompt" <<'PYIDS'
 import json, sys
 d = json.load(open(sys.argv[1]))
 for i, f in enumerate(d["findings"]):
     print(f'{i}: [{f.get("severity","?")}] {f.get("file","?")}:{f.get("line","?")} — '
           f'{f.get("title","")} :: {str(f.get("detail",""))[:300]}')
 PYIDS
-  } > "$WORK/cluster.prompt"; then
+  then
     CLUSTER_PROMPT_OK=0
-    echo "pr-review: the clustering prompt could not be built; count is RAW, not deduplicated." >&2
   fi
+  [ "$CLUSTER_PROMPT_OK" -eq 1 ] ||
+    echo "pr-review: the clustering prompt could not be built; count is RAW, not deduplicated." >&2
 
   if [ "$CLUSTER_PROMPT_OK" -eq 1 ] &&
      LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
