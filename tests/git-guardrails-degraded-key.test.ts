@@ -83,6 +83,29 @@ describe("#421 unresolvable repo identity fails closed", () => {
 		expect(shVerdict(command, cwd)).toBe("allow");
 	});
 
+	// A payload that omits .cwd entirely is a live state, not a malformed one:
+	// the hook's jq read succeeds and leaves HOOK_CWD empty, which is NOT the
+	// UNKNOWN sentinel. Both twins then resolve a relative --git-dir where the
+	// process already stands. repo_key alone prefixed it with the empty dir,
+	// producing `/.git`, so identity resolution failed and the FIX for #421
+	// turned an everyday line into a false block (PR #424 review).
+	test("an omitted cwd still resolves a relative --git-dir, in both twins", () => {
+		const cwd = repoOn("main");
+		const command = "git --git-dir=.git checkout -b 421-z && git commit -m x";
+		const res = spawnSync("bash", [SH_HOOK], {
+			input: JSON.stringify({ tool_input: { command } }),
+			cwd,
+			encoding: "utf8",
+		});
+		expect(res.status).toBe(0);
+		// The TS twin is handed "" for the same absent cwd; its own process cwd
+		// cannot be moved here, so it is exercised through checkGitCommand with
+		// an absolute --git-dir naming the same repo — the shape repo_key builds
+		// once the relative spelling is resolved.
+		expect(checkGitCommand(command, "")).toBeNull();
+		expect(checkGitCommand(`git --git-dir=${cwd}/.git checkout -b 421-z && git commit -m x`, cwd)).toBeNull();
+	});
+
 	test("the everyday create-and-commit line is untouched", () => {
 		const cwd = repoOn("main");
 		const command = "git --git-dir=.git checkout -b 421-y && git commit -m x";

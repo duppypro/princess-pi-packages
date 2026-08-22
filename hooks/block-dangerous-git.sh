@@ -198,7 +198,13 @@ repo_key() {
     dir="$HOOK_CWD/$dir"
   fi
   [ -z "$dir" ] && dir="$HOOK_CWD"
-  if [ -n "$gitdir" ] && [ "${gitdir#/}" = "$gitdir" ]; then
+  # `[ -n "$dir" ]` matches branch_of: with no cwd in the payload at all
+  # (a SUCCESSFUL jq read of an absent .cwd — line 84 — leaves it empty, which
+  # is NOT the UNKNOWN sentinel), prefixing turns `--git-dir=.git` into
+  # `/.git`, identity resolution fails, and the line degrades to protected.
+  # Leaving it relative lets git resolve it exactly where branch_of does, so
+  # the two agree on which repo the lift belongs to (PR #424 review).
+  if [ -n "$gitdir" ] && [ "${gitdir#/}" = "$gitdir" ] && [ -n "$dir" ]; then
     gitdir="$dir/$gitdir"
   fi
   if [ -n "$gitdir" ]; then
