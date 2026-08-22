@@ -518,6 +518,62 @@ console.log("\nclustering fail-open:");
 // prepended to both the lens response and the grouping response, so one case
 // covers both passes: a lost lens shows up as fewer than 3 raw findings, a lost
 // grouping as `dedup: "failed"` and the count reverting to RAW.
+/**
+ * The smallest `{"a":` count that makes THIS interpreter's `raw_decode` raise
+ * RecursionError, plus a margin (#426).
+ *
+ * Probed, not hardcoded. The threshold is a property of the python build's
+ * recursion limit, so a literal that stops raising elsewhere would leave the
+ * hazard case below silently vacuous — still PASSing, but no longer proving
+ * that a RecursionError (a RuntimeError, NOT a ValueError) is caught rather
+ * than escaping the scanner and killing the collector.
+ *
+ * It is also what the 20000 literal cost: the raise happens at the FIRST
+ * candidate and the remaining attempts prove nothing, while `bin/pr-review`'s
+ * rescan walks all of them at one character per failure. Measured on this host,
+ * 20000 openers cost 8.6s per scan and four scans run per case — 35.5s of the
+ * suite's 66s, for a margin of 2x over a threshold of 9997. The quadratic walk
+ * itself is #426's other half and belongs in bin/pr-review, not here.
+ */
+const RECURSION_OPENERS: number = (() => {
+	const FALLBACK = 20000;
+	// Doubling alone is too coarse: it answers 16000 for a threshold of 9997, and
+	// the cost is quadratic in the answer. Double to bracket, then bisect — about
+	// fourteen more raw_decode calls, each from position 0 on a short string.
+	const probe = spawnSync("python3", ["-c", `
+import json
+dec = json.JSONDecoder()
+
+def raises(n):
+    try:
+        dec.raw_decode('{"a":' * n, 0)
+    except RecursionError:
+        return True
+    except ValueError:
+        return False
+    return False
+
+lo, hi = 1000, 1000
+while hi <= 200000 and not raises(hi):
+    lo, hi = hi, hi * 2
+if hi > 200000:
+    print(0)
+else:
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if raises(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    print(lo)
+`], { encoding: "utf8" });
+	const found = Number.parseInt((probe.stdout || "").trim(), 10);
+	// A margin over the probed doubling step, so a slightly deeper limit on some
+	// other build still raises. 0 or an unusable probe falls back to the literal
+	// this replaced — slow, but never wrong.
+	return Number.isFinite(found) && found > 0 ? Math.ceil(found * 1.2) : FALLBACK;
+})();
+
 const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	// A brace in the explanation — `find("{")`/`rfind("}")` spanned from the first
 	// brace to the last, which is neither the payload nor valid JSON (#378).
@@ -549,8 +605,10 @@ const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	// RecursionError there, which is a RuntimeError and NOT a ValueError: catching
 	// only ValueError let it escape the scanner, kill the collector before it wrote
 	// its summary, and end pr-review at exit 1 — every lens's findings lost and the
-	// PR opened unreviewed. Measured: 20000 openers raise, 5000 do not.
-	{ name: "nesting deep enough to raise RecursionError", prose: '{"a":'.repeat(20000) + "\n" },
+	// PR opened unreviewed. The count comes from RECURSION_OPENERS above, which
+	// probes this interpreter rather than trusting a literal (#426).
+	{ name: "nesting deep enough to raise RecursionError",
+		prose: '{"a":'.repeat(RECURSION_OPENERS) + "\n" },
 	// The model echoing the prompt's OWN schema AFTER its real answer, not
 	// before. A pure LAST-wins fix (briefly shipped between #378's first and
 	// second commits) beat the leading-echo cases above and then lost to
