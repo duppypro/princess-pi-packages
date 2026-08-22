@@ -304,6 +304,18 @@ fi
 # Every exit path speaks the caller's language. A machine reader most needs to
 # tell 'nothing to review' from 'reviewer unavailable' from 'clean', and the old
 # version emitted a human sentence, an empty stdout, and JSON respectively.
+# A degraded-state diagnostic for a human, suppressed under --json and --quiet
+# (PR #427 review, macroscopeapp). Three of these were written as bare `echo
+# ... >&2` and ignored both flags, putting a line on the stderr of a caller who
+# asked for clean output — the contract break #410 pinned a test for, and one of
+# the three sat directly above a comment ASSERTING it was suppressed. Fatal
+# usage errors above are deliberately NOT routed through this: they exit
+# nonzero, and a caller silencing chatter still needs to know why nothing ran.
+note() {
+  [ "$JSON_OUT" -eq 0 ] && [ "$QUIET" -eq 0 ] || return 0
+  echo "$1" >&2
+}
+
 emit_status() {  # emit_status <status> <human message> <exit code>
   if [ "$JSON_OUT" -eq 1 ]; then
     # Built by a JSON encoder, not `sed 's/"/\\"/g'`. That escaped double quotes
@@ -1480,7 +1492,7 @@ PYIDS
     CLUSTER_PROMPT_OK=0
   fi
   [ "$CLUSTER_PROMPT_OK" -eq 1 ] ||
-    echo "pr-review: the clustering prompt could not be built; count is RAW, not deduplicated." >&2
+    note "pr-review: the clustering prompt could not be built; count is RAW, not deduplicated."
 
   if [ "$CLUSTER_PROMPT_OK" -eq 1 ] &&
      LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
@@ -1626,7 +1638,7 @@ PYCLUSTER
   then
     :
   else
-    echo "pr-review: the clustering pass crashed before it could run; count is RAW, not deduplicated." >&2
+    note "pr-review: the clustering pass crashed before it could run; count is RAW, not deduplicated."
     # Best-effort, and separately guarded: $LOG itself may still be fine — the
     # crash was in the clustering STAGE, not necessarily in reading or writing
     # $LOG — so stamp the failed-shape keys onto it if it's readable at all.
@@ -1683,7 +1695,7 @@ PYNOCLUSTER
   then
     :
   else
-    echo "pr-review: could not annotate the log with its distinct count; the count below is RAW." >&2
+    note "pr-review: could not annotate the log with its distinct count; the count below is RAW."
     # The stderr line is suppressed by both --json and --quiet, so a machine
     # caller would otherwise receive a pr-review/run@1 document missing
     # `distinct`/`distinctFindings`/`dedup` with no way to know (pr-review round
