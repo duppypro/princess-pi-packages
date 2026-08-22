@@ -486,9 +486,19 @@ function readNewSubagentLines(filePath: string, fileState: SubagentFileState) {
     const stat = fs.statSync(filePath);
     const currentSize = stat.size;
     if (currentSize < fileState.lastSize) {
-      // Truncated/rotated — rare for a subagent transcript, but keep
-      // symmetry with the parent's own reset-on-truncate handling.
+      // Truncated/rotated — rare for a subagent transcript, but keep symmetry
+      // with the parent's own reset-on-truncate handling, diagnostic included
+      // (#270 review): a silent offset reset is the harder failure to diagnose,
+      // and the parent has named this on stderr since #155. Name the file too —
+      // unlike the parent, there are many of these.
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent transcript truncated, resetting offset: ${path.basename(filePath)}\n`);
+      }
       fileState.lastSize = 0;
+      // The turn held for a late interrupt stamp belongs to the file that just
+      // went away; stamping it after a rotation would correct the wrong record.
+      fileState.lastWritten = undefined;
+      fileState.stampInterruptOnLastWritten = false;
     }
     if (currentSize <= fileState.lastSize) return [];
     const fd = fs.openSync(filePath, "r");

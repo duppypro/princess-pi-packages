@@ -2509,7 +2509,13 @@ function readNewSubagentLines(filePath, fileState) {
     const stat = fs9.statSync(filePath);
     const currentSize = stat.size;
     if (currentSize < fileState.lastSize) {
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent transcript truncated, resetting offset: ${path9.basename(filePath)}
+`);
+      }
       fileState.lastSize = 0;
+      fileState.lastWritten = undefined;
+      fileState.stampInterruptOnLastWritten = false;
     }
     if (currentSize <= fileState.lastSize)
       return [];
