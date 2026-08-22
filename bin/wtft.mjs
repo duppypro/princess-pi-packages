@@ -3581,6 +3581,42 @@ function classifiedToInteraction(obj) {
     _cat: obj.cat || undefined
   };
 }
+function dedupeClassifiedById(interactions) {
+  const groups = new Map;
+  const slots = [];
+  const slotIds = [];
+  let anyDuplicate = false;
+  for (const i of interactions) {
+    const id = i.messageId;
+    if (!id) {
+      slots.push(i);
+      slotIds.push(null);
+      continue;
+    }
+    const group = groups.get(id);
+    if (group) {
+      group.push(i);
+      anyDuplicate = true;
+      continue;
+    }
+    groups.set(id, [i]);
+    slots.push(null);
+    slotIds.push(id);
+  }
+  if (!anyDuplicate)
+    return interactions;
+  const out = [];
+  for (let s = 0;s < slots.length; s++) {
+    const direct = slots[s];
+    if (direct) {
+      out.push(direct);
+      continue;
+    }
+    const group = groups.get(slotIds[s]);
+    out.push(group.length === 1 ? group[0] : deduplicateInteractions(group)[0]);
+  }
+  return out;
+}
 function readClassifiedTagFile(tagPath) {
   const interactions = [];
   try {
@@ -3599,7 +3635,7 @@ function readClassifiedTagFile(tagPath) {
       } catch {}
     }
   } catch {}
-  return interactions;
+  return dedupeClassifiedById(interactions);
 }
 var WTFT_TAGGER_VERSION = "2.7.1";
 function serializeClassifiedWithOverheadSplit(interaction, prevCtxTokens) {
@@ -4230,6 +4266,7 @@ async function watchTagFile(sessionPath, tagPathHint, settings) {
             } catch {}
           }
           if (newCount > 0) {
+            allInteractions = dedupeClassifiedById(allInteractions);
             updateDaemonHealth();
             needsRedraw = true;
             render();

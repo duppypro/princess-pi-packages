@@ -140,6 +140,67 @@ export function classifiedToInteraction(obj: any): Interaction | null {
  * @param tagPath - Absolute path to the .wtft-tag.v{N}.jsonl file
  * @returns Array of Interactions (costs already computed by daemon)
  */
+/**
+ * Collapse tag-file lines that share a `message.id` down to one interaction,
+ * keeping the highest-cost copy (#270 review).
+ *
+ * The tag file is append-only and the daemon reads its sources incrementally,
+ * so one billed message can reach it as more than one line: a harness re-emits
+ * an assistant message with growing `usage` as it streams, and any two of those
+ * emissions can land in different poll windows, where a within-batch dedup
+ * cannot see them together. Measured over the twelve most recent live Claude
+ * Code transcripts on this host, 40-75% of message ids carrying `usage` are
+ * re-emitted at least once (117 of 293, 72 of 95, ...), with the growing-usage
+ * form separated by `tool_result` lines and seconds of wall clock — far wider
+ * than the 667ms beat. Without this, those lines are summed and every consumer
+ * over-reports.
+ *
+ * This is the consumer half of a contract the wire format already declares:
+ * serializeClassified writes `id` specifically "for cross-run dedup in tag-file
+ * consumers (#65)", and until now no consumer did it.
+ *
+ * Max cost, never the sum and never the first — dropping the updated (higher)
+ * usage would just trade the overcount for the undercount #270 exists to fix.
+ * The compaction/recache meter-split is unaffected: its overhead line carries
+ * `<id>#oh`, a distinct id, so the pair survives the collapse.
+ *
+ * First-appearance order is preserved so this is a pure subtraction — callers
+ * that read the tag file in append order (bucket rendering, `limit`) see the
+ * same sequence minus the duplicates. Returns the input array unchanged when
+ * nothing repeats, which is the common case.
+ */
+export function dedupeClassifiedById(interactions: Interaction[]): Interaction[] {
+	const groups = new Map<string, Interaction[]>();
+	// One slot per output position: an interaction with no id goes in directly,
+	// an id gets a placeholder at its FIRST appearance and is resolved below.
+	const slots: (Interaction | null)[] = [];
+	const slotIds: (string | null)[] = [];
+	let anyDuplicate = false;
+
+	for (const i of interactions) {
+		const id = i.messageId;
+		if (!id) { slots.push(i); slotIds.push(null); continue; }
+		const group = groups.get(id);
+		if (group) { group.push(i); anyDuplicate = true; continue; }
+		groups.set(id, [i]);
+		slots.push(null); slotIds.push(id);
+	}
+
+	if (!anyDuplicate) return interactions;
+
+	const out: Interaction[] = [];
+	for (let s = 0; s < slots.length; s++) {
+		const direct = slots[s];
+		if (direct) { out.push(direct); continue; }
+		const group = groups.get(slotIds[s]!)!;
+		// deduplicateInteractions is the single definition of "same message,
+		// keep the max-cost copy, union its files/commands". A single-id group
+		// always collapses to exactly one element.
+		out.push(group.length === 1 ? group[0] : deduplicateInteractions(group)[0]);
+	}
+	return out;
+}
+
 export function readClassifiedTagFile(tagPath: string): Interaction[] {
 	const interactions: Interaction[] = [];
 	try {
@@ -158,7 +219,9 @@ export function readClassifiedTagFile(tagPath: string): Interaction[] {
 	} catch {
 		// File may not exist yet
 	}
-	return interactions;
+	// One billed message can occupy several lines here — collapse before any
+	// caller sums it (#270 review).
+	return dedupeClassifiedById(interactions);
 }
 
 // INOTIFY-BASED WATCH MODE (#53)
@@ -1182,6 +1245,12 @@ export async function watchTagFile(
 					}
 
 					if (newCount > 0) {
+						// This path appends straight to the accumulator and never
+						// goes through readClassifiedTagFile, so it needs the same
+						// collapse (#270 review) — otherwise the live watch, the
+						// one surface a human is actually staring at, is the only
+						// consumer that still double-counts a re-emitted message.
+						allInteractions = dedupeClassifiedById(allInteractions);
 						updateDaemonHealth();
 						needsRedraw = true;
 						render();
