@@ -13,6 +13,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 
 /**
  * Throw unless `command -v <bin>` under `env` resolves to a path inside `root`.
@@ -44,7 +45,17 @@ export function assertStubbedInSandbox(
 				`would reach whatever the host later installs (#395)`,
 		);
 	}
-	if (!resolved.startsWith(root)) {
+	// A string-prefix test (`resolved.startsWith(root)`) would pass a sibling
+	// directory whose name happens to extend `root`, e.g. `${root}-evil/claude`
+	// — same prefix, different directory, not contained at all. Resolve both
+	// sides and require either an exact match or containment under a real path
+	// separator boundary.
+	const normalizedRoot = path.resolve(root);
+	const normalizedResolved = path.resolve(resolved);
+	const isContained =
+		normalizedResolved === normalizedRoot ||
+		normalizedResolved.startsWith(normalizedRoot + path.sep);
+	if (!isContained) {
 		throw new Error(
 			`sandbox PATH resolves '${bin}' to ${resolved}, OUTSIDE the sandbox ${root} — ` +
 				`this is the shape that billed 507 real reviewer calls in one day (#395)`,
