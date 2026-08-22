@@ -44,6 +44,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 const BIN = path.join(REPO_ROOT, "bin");
@@ -98,7 +99,7 @@ function installerScripts(): string[] {
  * No `origin` remote: a fall-through to fetch/push dies locally.
  */
 function sandbox() {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "help-contract-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "help-contract-")));
 	const gitEnv = {
 		...process.env,
 		GIT_AUTHOR_NAME: "t",
@@ -369,7 +370,7 @@ for (const [s, args, flag] of EMPTY_VALUE) {
 // `gh pr close`, so this gets its own sandbox with its own log; the incident
 // assertion above still governs SB, where gh must never be called at all.
 function scriptedGhSandbox() {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reason-argv-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "reason-argv-")));
 	const gitEnv = {
 		...process.env,
 		GIT_AUTHOR_NAME: "t",

@@ -37,6 +37,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkGitCommand } from "../extensions/lib/git-guardrails-core";
 import { skip } from "./lib/skips";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SH_HOOK = join(REPO_ROOT, "hooks", "block-dangerous-git.sh");
@@ -125,7 +126,7 @@ const GH_MERGE_PROBES: Probe[] = [
 // #390: a PATH whose only entries are the named real binaries, plus whatever
 // `extra` writes in. Anything not listed is genuinely missing for that run.
 function stubPath(extra: (dir: string) => void, keep = ["bash", "cat", "git", "realpath"]): string {
-	const dir = mkdtempSync(join(tmpdir(), "doc-claim-stubpath-"));
+	const dir = trackSandbox(mkdtempSync(join(tmpdir(), "doc-claim-stubpath-")));
 	for (const bin of keep) {
 		symlinkSync(execSync(`command -v ${bin}`, { encoding: "utf8" }).trim(), join(dir, bin));
 	}
@@ -222,7 +223,7 @@ function check(cond: boolean, label: string, detail = ""): void {
 const flat = (s: string): string => s.replace(/\s+/g, " ").trim();
 
 function repoOnBranch(branch: string): string {
-	const dir = mkdtempSync(join(tmpdir(), "doc-claim-"));
+	const dir = trackSandbox(mkdtempSync(join(tmpdir(), "doc-claim-")));
 	execSync(`git init -q -b "${branch}"`, { cwd: dir });
 	return dir;
 }

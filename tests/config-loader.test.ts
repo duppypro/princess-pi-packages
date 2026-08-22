@@ -6,6 +6,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { trackSandbox } from "./lib/sandbox";
 
 // We import from the TS source directly (test runner resolves via tsx).
 // The loader uses process.cwd() — we must chdir into the temp tree for walk-up tests.
@@ -26,7 +27,7 @@ function ok(label: string, condition: boolean, detail?: string) {
 }
 
 function setup() {
-	testDir = mkdtempSync(join(tmpdir(), "config-loader-test-"));
+	testDir = trackSandbox(mkdtempSync(join(tmpdir(), "config-loader-test-")));
 	process.chdir(testDir);
 	// Isolate from real user config (prevents old-path fallback from leaking in)
 	process.env.XDG_CONFIG_HOME = join(testDir, ".config");

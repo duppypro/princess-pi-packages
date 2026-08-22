@@ -37,6 +37,7 @@ import {
 	type ServerRecord,
 } from "../extensions/lib/serve/registry.ts";
 import { scanUnclaimedServerLike, discoverServers } from "../extensions/lib/serve/process.ts";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const SERVE_CLI = path.join(REPO_ROOT, "bin", "serve.mjs");
@@ -82,7 +83,7 @@ function cleanup(): void {
 process.on("exit", cleanup);
 
 function mkTmp(prefix: string): string {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 	tmpDirs.push(d);
 	return d;
 }

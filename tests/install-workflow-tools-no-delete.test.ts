@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
@@ -31,7 +32,7 @@ function check(cond: boolean, label: string, detail = ""): void {
 }
 
 function freshHome(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "iwt-home-"));
+	return trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-home-")));
 }
 
 function run(home: string, extraPath?: string): { code: number; out: string } {
@@ -123,7 +124,7 @@ console.log("install-workflow-tools: removes nothing, reports stale tools (#235)
 {
 	const home = freshHome();
 	fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-	const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-elsewhere-"));
+	const elsewhere = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-elsewhere-")));
 	const stalePath = path.join(elsewhere, "git-ship");
 	fs.writeFileSync(stalePath, "#!/bin/sh\necho old\n");
 	fs.chmodSync(stalePath, 0o755);
@@ -140,7 +141,7 @@ console.log("install-workflow-tools: removes nothing, reports stale tools (#235)
 {
 	const home = freshHome();
 	fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-	const notOnPath = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-not-on-path-"));
+	const notOnPath = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-not-on-path-")));
 	fs.writeFileSync(path.join(notOnPath, "merge"), "#!/bin/sh\necho old\n");
 
 	const { code, out } = run(home); // note: notOnPath never added to PATH
@@ -163,7 +164,7 @@ console.log("install-workflow-tools: removes nothing, reports stale tools (#235)
 {
 	const home = freshHome();
 	fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-	const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-collision-"));
+	const elsewhere = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-collision-")));
 	const collision = path.join(elsewhere, "merge");
 	fs.writeFileSync(collision, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00])); // ELF magic, no shebang
 	fs.chmodSync(collision, 0o755);

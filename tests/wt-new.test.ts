@@ -30,6 +30,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const WT_NEW = path.join(REPO_ROOT, "bin", "wt-new");
@@ -72,7 +73,7 @@ interface Sandbox {
 
 function makeSandbox(opts: { primary?: string } = {}): Sandbox {
 	const primary = opts.primary ?? "main";
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-")));
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", primary]);
@@ -98,7 +99,7 @@ function makeSandbox(opts: { primary?: string } = {}): Sandbox {
 // clone BEFORE the clone under test.
 function makeSandboxWithRealOriginHead(opts: { primary?: string } = {}): Sandbox {
 	const primary = opts.primary ?? "main";
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-")));
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", primary]);
@@ -140,7 +141,7 @@ interface SeededRemote {
 function makeSeededRemote(): SeededRemote {
 	const primary = "main";
 	const staleBranch = "270-stale-on-origin";
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wt-new-")));
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", primary]);

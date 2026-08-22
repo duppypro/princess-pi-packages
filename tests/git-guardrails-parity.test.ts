@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { checkGitCommand, stripHeredocs as tsStripHeredocs } from "../extensions/lib/git-guardrails-core";
 import fixture from "./fixtures/git-guardrails-cases.json";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SH_HOOK = join(REPO_ROOT, "hooks", "block-dangerous-git.sh");
@@ -71,13 +72,13 @@ interface Case {
 // --- test doubles: real throwaway repos, real branches ---
 
 function repoOnBranch(branch: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "guardrail-case-"));
+  const dir = trackSandbox(mkdtempSync(join(tmpdir(), "guardrail-case-")));
   execSync(`git init -q -b "${branch}"`, { cwd: dir });
   return dir;
 }
 
 function nonRepoDir(): string {
-  return mkdtempSync(join(tmpdir(), "guardrail-nonrepo-"));
+  return trackSandbox(mkdtempSync(join(tmpdir(), "guardrail-nonrepo-")));
 }
 
 /** Give <dir> a committed tracked file, then leave the worktree in <state>. */
@@ -113,7 +114,7 @@ function materialize(c: Case): { command: string; cwd: string } {
   // A second tree for `--work-tree`: git checks out INTO it, so its own local
   // changes are what make the switch refuse — not the cwd tree's (#419 review).
   if (c.work_tree) {
-    const wt = mkdtempSync(join(tmpdir(), "guardrail-worktree-"));
+    const wt = trackSandbox(mkdtempSync(join(tmpdir(), "guardrail-worktree-")));
     execSync(`git --git-dir="${join(cwd, ".git")}" --work-tree="${wt}" checkout -q -f "${cwdBranch}"`, { cwd });
     if (c.work_tree === "dirty") writeFileSync(join(wt, "tracked.txt"), "modified\n");
     command = command.replaceAll("/worktree", wt);
@@ -266,7 +267,7 @@ describe("git-guardrails regression witness (#260)", () => {
 /** A PATH whose only entries are the named real binaries — plus whatever `extra`
  *  writes into it. Anything not listed is genuinely missing for that run. */
 function stubPath(extra: (dir: string) => void, keep = ["bash", "cat", "git", "realpath"]): string {
-  const dir = mkdtempSync(join(tmpdir(), "guardrail-stubpath-"));
+  const dir = trackSandbox(mkdtempSync(join(tmpdir(), "guardrail-stubpath-")));
   for (const bin of keep) {
     const real = execSync(`command -v ${bin}`, { encoding: "utf8" }).trim();
     symlinkSync(real, join(dir, bin));

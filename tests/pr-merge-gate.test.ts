@@ -28,6 +28,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_MERGE = path.join(REPO_ROOT, "bin", "pr-merge");
@@ -144,7 +145,7 @@ interface SandboxOpts {
 
 /** A real git repo with a feature branch — pr-merge only needs `git branch --show-current` to work. */
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-merge-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-merge-")));
 	const worktree = path.join(root, "wt");
 	fs.mkdirSync(worktree);
 	git(worktree, ["init", "-q", "-b", branch]);
