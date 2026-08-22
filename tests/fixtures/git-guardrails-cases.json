@@ -2086,6 +2086,69 @@
       "worktree": "dirty",
       "verdict": "block",
       "why": "#419 review, the fail-closed bound: a DETACHING checkout is refused by the same dirty worktree as a branch switch (measured: 'error: Your local changes … would be overwritten by checkout', HEAD stays on main) — so the commit would land on main. Detach changes only the value recorded, never whether a lift happens"
+    },
+    {
+      "id": "block-checkout-dash-previous-branch-is-main",
+      "command": "git checkout - && git commit -m x",
+      "branch": "419-feat",
+      "previous_branch": "main",
+      "verdict": "block",
+      "why": "#419 review: `-` is git's shorthand for `@{-1}`. Measured git 2.43.0 — from a feature branch whose previous branch was main, `git checkout -` lands ON main and the commit advances it. The token starts with `-`, so every option test skipped it, no lift was recorded, and the gate judged the commit against a branch the repo had not been on since the first word of the line. Pre-existing hole of the #301 class, NOT #399 fallout"
+    },
+    {
+      "id": "block-switch-dash-previous-branch-is-main",
+      "command": "git switch - && git commit -m x",
+      "branch": "419-feat",
+      "previous_branch": "main",
+      "verdict": "block",
+      "why": "#419 review: `git switch -` is documented as synonymous with `@{-1}` and behaves identically (measured), so the rule is not checkout-only"
+    },
+    {
+      "id": "block-checkout-at-minus-one-literal-is-main",
+      "command": "git checkout @{-1} && git commit -m x",
+      "branch": "419-feat",
+      "previous_branch": "main",
+      "verdict": "block",
+      "why": "#419 review: the literal `@{-N}` spelling is the same mechanism and the same bypass — it is no branch name, so `refs/heads/@{-1}` never existed and the pre-fix code recorded no lift"
+    },
+    {
+      "id": "allow-checkout-dash-previous-branch-is-a-feature",
+      "command": "git checkout - && git commit -m x",
+      "branch": "419-other",
+      "previous_branch": "419-feat",
+      "verdict": "allow",
+      "why": "#419 review, the false-positive bound: `-` resolves to a FEATURE branch here, so the commit does not touch main and must stay allowed. An implementation that blocked every `-` on principle would be a false positive of the #400 class"
+    },
+    {
+      "id": "allow-checkout-dash-unresolvable-previous-branch",
+      "command": "git checkout - && git commit -m x",
+      "branch": "419-feat",
+      "verdict": "allow",
+      "why": "#419 review, the fail-closed bound read the other way: with no previous position in HEAD's reflog `@{-1}` does not resolve, so NO lift is recorded and the commit is judged against the branch the repo is actually on (419-feat) — allowed, because if the switch cannot resolve here it will not happen there either"
+    },
+    {
+      "id": "block-work-tree-dirty-tree-then-commit-on-main",
+      "command": "git --work-tree=/worktree checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "work_tree": "dirty",
+      "verdict": "block",
+      "why": "#419 review: `--work-tree` selects the tree git checks out INTO, and that tree's local changes are what make it refuse. Measured git 2.43.0 with the cwd tree CLEAN and the --work-tree tree DIRTY: 'error: Your local changes … would be overwritten by checkout', HEAD stays on main, and the commit lands there — while a dirtiness test that read the cwd saw a clean tree and lifted",
+      "worktree": "clean-tracked"
+    },
+    {
+      "id": "allow-work-tree-clean-tree-then-commit-on-main",
+      "command": "git --work-tree=/worktree checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "work_tree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#419 review, the over-block bound for the same rule: a CLEAN --work-tree must still lift, or capturing the option would have traded a bypass for a false block",
+      "worktree": "clean-tracked"
     }
   ]
 }

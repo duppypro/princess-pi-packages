@@ -340,9 +340,9 @@ restore_form() {
 }
 
 apply_lift() {
-  local cmd="$1" cpath="$2" gitdir="$3"; shift 3
+  local cmd="$1" cpath="$2" gitdir="$3" worktree="$4"; shift 4
   local -a rest=("$@")
-  local t target="" created=0 i=0 n=${#rest[@]} npos=0
+  local t target="" created=0 i=0 n=${#rest[@]} npos=0 prev_resolved=0
   restore_form "${rest[@]}" && return 0   # no switch happens: nothing to lift
   # #419 review: `--detach`, and its `-d` short form, for BOTH sub-commands.
   # Detaching leaves HEAD on a COMMIT rather than a branch, so a commit made
@@ -372,7 +372,7 @@ apply_lift() {
   for t4 in "${rest[@]}"; do
     case "$t4" in -d|--detach) detach=1; break ;; esac
   done
-  for t in "${rest[@]}"; do case "$t" in -*) ;; *) npos=$((npos + 1)) ;; esac; done
+  for t in "${rest[@]}"; do case "$t" in -|@\{-*\}) npos=$((npos + 1)) ;; -*) ;; *) npos=$((npos + 1)) ;; esac; done
   while [ "$i" -lt "$n" ]; do
     t="${rest[$i]}"
     if [ "$cmd" = "checkout" ]; then
@@ -380,6 +380,14 @@ apply_lift() {
     else
       case "$t" in -c|-C|--create|--force-create|--orphan) target="${rest[$((i + 1))]:-}"; created=1; break ;; esac
     fi
+    # `-` and `@{-N}` name the previous branch; `-` would otherwise be eaten
+    # by the option test on the next line (#419 review).
+    case "$t" in
+      -|@\{-*\})
+        [ "$npos" -ne 1 ] && return 0
+        target=$(previous_branch "$cpath" "$gitdir" "$t") || return 0
+        prev_resolved=1; break ;;
+    esac
     case "$t" in -*) i=$((i + 1)); continue ;; esac
     [ "$npos" -ne 1 ] && return 0   # <tree-ish> <path>… restore: no switch
     target="$t"; break
@@ -391,7 +399,9 @@ apply_lift() {
       LIFTS+="$(repo_key "$cpath" "$gitdir")="$'\n'
     return 0
   fi
-  target=$(expand_word "$target") || return 0   # '$BRANCH' unresolved → no lift (fail-closed)
+  if [ "$prev_resolved" = 0 ]; then
+    target=$(expand_word "$target") || return 0   # '$BRANCH' unresolved → no lift (fail-closed)
+  fi
   if [ "$created" = 1 ]; then
     # -B / -C / --force-create reset-or-create and always land; the plain create
     # forms fail on an existing name and leave the repo where it was.
@@ -436,7 +446,7 @@ apply_lift() {
     # main/master is untouched on purpose: it lifts either way, because if that
     # switch fails the line stays put and the rest is protected regardless.
     if ! is_main_ref "$target" && ! force_switch "$cmd" "${rest[@]}" \
-       && worktree_dirty "$cpath" "$gitdir"; then
+       && worktree_dirty "$cpath" "$gitdir" "$worktree"; then
       return 0
     fi
   fi
@@ -524,15 +534,62 @@ dwim_main_branch() {
 # "would be overwritten" refusal), which is why this is `status --porcelain`
 # rather than `diff --quiet`. A git that fails to answer at all reads as dirty:
 # unknown state is protected state.
-worktree_dirty() {
-  local dir="$1" gitdir="$2" out
+# #419 review: `-` is git's shorthand for `@{-1}`, the branch you were on
+# before. `git checkout - && git commit -m x` from a feature branch whose
+# previous branch was main lands you ON main and the commit advances it —
+# measured, git 2.43.0. The token starts with `-`, so every option test in
+# apply_lift skipped it, no lift was recorded, and the gate judged the commit
+# against the feature branch the repo had not been on since the first word of
+# the line. A pre-existing hole of the #301 class, not #399 fallout: before
+# #399 a plain switch never lifted either, so this read `allow` just the same.
+#
+# Prints the branch `-` / `@{-N}` names, or nothing when it cannot be resolved
+# (no reflog yet, or the previous position was a detached HEAD, in which case
+# --abbrev-ref answers a sha or `HEAD` and no branch is named). Nothing means
+# no lift, which is the fail-closed direction: if the switch cannot be
+# resolved here it may not happen there either, and the line stays where the
+# repo actually is.
+previous_branch() {
+  local dir="$1" gitdir="$2" ref="$3" out
   if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
     dir="$HOOK_CWD/$dir"
   fi
   [ -z "$dir" ] && dir="$HOOK_CWD"
+  [ "$ref" = "-" ] && ref="@{-1}"
   if [ -n "$gitdir" ]; then
     [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
-    out=$(GIT_DIR="$gitdir" git status --porcelain --untracked-files=no 2>/dev/null) || return 0
+    out=$(GIT_DIR="$gitdir" git rev-parse --abbrev-ref "$ref" 2>/dev/null) || return 1
+  else
+    out=$(git -C "${dir:-.}" rev-parse --abbrev-ref "$ref" 2>/dev/null) || return 1
+  fi
+  # a detached previous position resolves to a sha or to `HEAD`, never a branch
+  case "$out" in ''|HEAD|*[!A-Za-z0-9._/-]*) return 1 ;; esac
+  [ "$out" = "$ref" ] && return 1          # unresolved: rev-parse echoed it back
+  printf '%s' "$out"
+}
+
+worktree_dirty() {
+  local dir="$1" gitdir="$2" worktree="${3:-}" out
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  # #419 review: `--work-tree` selects the tree git will actually check out
+  # into, and that is the tree whose local changes make git refuse. Measured
+  # (git 2.43.0): with the cwd tree CLEAN and the --work-tree tree DIRTY,
+  # `git --work-tree=<dirty> checkout feature` answers "error: Your local
+  # changes … would be overwritten by checkout" and HEAD stays put — while a
+  # dirtiness test that read the cwd saw a clean tree and lifted. Relative
+  # paths resolve from the -C directory, exactly like --git-dir.
+  if [ -n "$worktree" ]; then
+    [ "${worktree#/}" = "$worktree" ] && worktree="${dir:-.}/$worktree"
+  fi
+  if [ -n "$gitdir" ]; then
+    [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
+    out=$(GIT_DIR="$gitdir" ${worktree:+GIT_WORK_TREE="$worktree"} \
+      git -C "${worktree:-${dir:-.}}" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+  elif [ -n "$worktree" ]; then
+    out=$(GIT_WORK_TREE="$worktree" git -C "${dir:-.}" status --porcelain --untracked-files=no 2>/dev/null) || return 0
   else
     out=$(git -C "${dir:-.}" status --porcelain --untracked-files=no 2>/dev/null) || return 0
   fi
@@ -1067,7 +1124,7 @@ check_git_subcommand() {
 
   # git global options before the subcommand; capture -C <path> and
   # --git-dir <path> (both select the affected repo — finding 17)
-  local cpath="" gitdir=""
+  local cpath="" gitdir="" worktree=""
   while [ "$i" -lt "$n" ]; do
     case "${T[$i]}" in
       -C)
@@ -1081,12 +1138,17 @@ check_git_subcommand() {
         fi
         i=$((i + 2)) ;;
       -c) i=$((i + 2)) ;;
-      # --git-dir selects the affected repo (finding 17); --work-tree does
-      # not move HEAD, so it is skipped (both separate-arg and = forms)
+      # --git-dir selects the affected repo (finding 17). --work-tree does not
+      # move HEAD, so it never changes which BRANCH a check reads — but it does
+      # change which TREE is dirty, and #419 review measured the bypass that
+      # follows: `git --work-tree=<dirty> checkout feature && git commit -m x`
+      # was allowed while git refused the switch and the commit landed on main.
+      # So it is captured, and used for the dirtiness test alone.
       --git-dir) gitdir="${T[$((i + 1))]:-}"; i=$((i + 2)) ;;
       --git-dir=*) gitdir="${T[$i]#--git-dir=}"; i=$((i + 1)) ;;
-      --work-tree) i=$((i + 2)) ;;
-      --work-tree=*|--no-pager|-P|--paginate|-p) i=$((i + 1)) ;;
+      --work-tree) worktree="${T[$((i + 1))]:-}"; i=$((i + 2)) ;;
+      --work-tree=*) worktree="${T[$i]#--work-tree=}"; i=$((i + 1)) ;;
+      --no-pager|-P|--paginate|-p) i=$((i + 1)) ;;
       -*) i=$((i + 1)) ;;
       *) break ;;
     esac
@@ -1150,10 +1212,10 @@ check_git_subcommand() {
           block "discards uncommitted work ('git $cmd .', always blocked)."
         fi
       done
-      [ "$cmd" = "checkout" ] && apply_lift checkout "$cpath" "$gitdir" "${T[@]:$i}"
+      [ "$cmd" = "checkout" ] && apply_lift checkout "$cpath" "$gitdir" "$worktree" "${T[@]:$i}"
       ;;
     switch)
-      apply_lift switch "$cpath" "$gitdir" "${T[@]:$i}"
+      apply_lift switch "$cpath" "$gitdir" "$worktree" "${T[@]:$i}"
       ;;
     # Commits on main are blocked, not just pushes (#301, btw#21): main
     # advances only through PRs, so every enforced check concentrates on PR

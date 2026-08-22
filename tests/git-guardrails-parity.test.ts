@@ -55,6 +55,12 @@ interface Case {
   c_path_worktree?: "clean-tracked" | "dirty" | "untracked";
   /** Branches that must EXIST in the `-C <path>` repo. */
   c_path_extra_branches?: string[];
+  /** Branch the repo was on BEFORE the current one, so `-` / `@{-N}` resolves
+   *  to it (#419 review). Implies a root commit. */
+  previous_branch?: string;
+  /** An alternate work tree for `--work-tree`, left in the given state. The
+   *  command's literal `/worktree` is replaced with its path (#419 review). */
+  work_tree?: "clean-tracked" | "dirty";
   why: string;
   /** What the frozen pre-#74 ancestor returned. Absent = no historical claim. */
   pre74?: "allow" | "block";
@@ -91,12 +97,27 @@ function materialize(c: Case): { command: string; cwd: string } {
   // A branch (local or remote-tracking) needs something to point at. The
   // tracked file is staged BEFORE that commit so a "dirty" worktree is a
   // modification to a committed file — the only kind that blocks a checkout.
-  if (c.extra_branches?.length || c.remote_branches?.length || c.worktree) {
+  if (c.extra_branches?.length || c.remote_branches?.length || c.worktree || c.previous_branch || c.work_tree) {
     materializeWorktree(cwd, c.worktree === "dirty" ? "clean-tracked" : c.worktree);
     execSync(`git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init`, { cwd });
     if (c.worktree === "dirty") writeFileSync(join(cwd, "tracked.txt"), "modified\n");
   }
   for (const b of c.extra_branches ?? []) execSync(`git branch "${b}"`, { cwd });
+  // `-`/`@{-1}` read HEAD's reflog, so the previous position has to be real:
+  // create that branch, go to it, come back. Now `@{-1}` names it (#419 review).
+  if (c.previous_branch) {
+    execSync(`git branch "${c.previous_branch}" 2>/dev/null || true`, { cwd, shell: "/bin/bash" });
+    execSync(`git checkout -q "${c.previous_branch}"`, { cwd });
+    execSync(`git checkout -q "${cwdBranch}"`, { cwd });
+  }
+  // A second tree for `--work-tree`: git checks out INTO it, so its own local
+  // changes are what make the switch refuse — not the cwd tree's (#419 review).
+  if (c.work_tree) {
+    const wt = mkdtempSync(join(tmpdir(), "guardrail-worktree-"));
+    execSync(`git --git-dir="${join(cwd, ".git")}" --work-tree="${wt}" checkout -q -f "${cwdBranch}"`, { cwd });
+    if (c.work_tree === "dirty") writeFileSync(join(wt, "tracked.txt"), "modified\n");
+    command = command.replaceAll("/worktree", wt);
+  }
   for (const r of c.remotes ?? []) {
     execSync(`git remote add "${r}" "https://example.invalid/${r}.git"`, { cwd });
   }

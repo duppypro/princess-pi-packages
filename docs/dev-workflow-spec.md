@@ -424,7 +424,22 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   the switch really would succeed, but the hook cannot know that without diffing the target.
   The cost is one extra command — run the `checkout` on its own line, then `commit` on the
   next, which is judged against the branch the repo is actually on (verified: both calls exit
-  0). **A `--detach` lifts to no branch at all (#419 review):** `--detach`, and its `-d` short
+  0). **`-` and `@{-N}` are branch switches (#419 review):** `-` is git's shorthand for
+  `@{-1}`, the branch you were on before, and `git switch -` is documented as synonymous with it.
+  Measured (git 2.43.0): from a feature branch whose previous branch was `main`,
+  `git checkout - && git commit -m x` lands on `main` and the commit **advances it**. The token
+  starts with `-`, so every option test skipped it and no lift was recorded — a pre-existing hole
+  of the #301 class, not #399 fallout. Both spellings now resolve through HEAD's reflog
+  (`git rev-parse --abbrev-ref`) before the lift, and an unresolvable one (no reflog yet, or a
+  detached previous position, which answers a sha or `HEAD`) records **no** lift: if the switch
+  cannot be resolved here it may not happen there either, so the line stays where the repo is.
+  **`--work-tree` selects the tree that decides dirtiness (#419 review):** it does not move
+  `HEAD`, so it never changes which *branch* a check reads — but it is the tree git checks out
+  **into**, and that tree's local changes are what make git refuse. Measured with the cwd tree
+  **clean** and the `--work-tree` tree **dirty**: `git --work-tree=<dirty> checkout feature`
+  errors *"Your local changes … would be overwritten by checkout"*, `HEAD` stays put, and the
+  following commit lands on `main` — while a dirtiness test that read the cwd saw a clean tree
+  and lifted. It is now captured and used for that test alone. **A `--detach` lifts to no branch at all (#419 review):** `--detach`, and its `-d` short
   form, on *either* sub-command leaves `HEAD` on a commit rather than a branch, so a commit made
   after it cannot advance any local branch. Measured (git 2.43.0, repo on `main`):
   `checkout --detach main`, `checkout -d main`, `switch --detach main`, `switch -d main` and a

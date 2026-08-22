@@ -165,18 +165,65 @@ function refExists(cPath: string, st: LineState, gitDir: string, ref: string): b
  * rather than `diff --quiet`. A git that fails to answer at all reads as dirty:
  * unknown state is protected state.
  */
-function worktreeDirty(cPath: string, st: LineState, gitDir: string): boolean {
+function worktreeDirty(cPath: string, st: LineState, gitDir: string, workTree = ""): boolean {
   const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  // #419 review: `--work-tree` selects the tree git will actually check out
+  // into, and that is the tree whose local changes make git refuse. Measured
+  // (git 2.43.0): with the cwd tree CLEAN and the --work-tree tree DIRTY,
+  // `git --work-tree=<dirty> checkout feature` answers "error: Your local
+  // changes … would be overwritten by checkout" and HEAD stays put — while a
+  // dirtiness test that read the cwd saw a clean tree and lifted. Relative
+  // paths resolve from the -C directory, exactly like --git-dir.
+  const wt = workTree ? resolve(dir || ".", workTree) : "";
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (gitDir) env.GIT_DIR = resolve(dir || ".", gitDir);
+  if (wt) env.GIT_WORK_TREE = wt;
   try {
     const out = execSync("git status --porcelain --untracked-files=no", {
+      // cwd stays the REPO dir: with --work-tree but no --git-dir there is no
+      // .git under the alternate tree, so discovery from there fails outright.
       cwd: dir || ".",
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+      env,
     });
     return out.trim() !== "";
   } catch {
     return true;
+  }
+}
+
+/**
+ * #419 review: `-` is git's shorthand for `@{-1}`, the branch you were on
+ * before. `git checkout - && git commit -m x` from a feature branch whose
+ * previous branch was main lands you ON main and the commit advances it —
+ * measured, git 2.43.0. The token starts with `-`, so every option test in
+ * applyLift skipped it, no lift was recorded, and the gate judged the commit
+ * against the feature branch the repo had not been on since the first word of
+ * the line. A pre-existing hole of the #301 class, not #399 fallout: before
+ * #399 a plain switch never lifted either, so this read `allow` just the same.
+ *
+ * Returns the branch `-` / `@{-N}` names, or null when it cannot be resolved
+ * (no reflog yet, or the previous position was a detached HEAD, in which case
+ * --abbrev-ref answers a sha or `HEAD` and no branch is named). null means no
+ * lift, which is the fail-closed direction: if the switch cannot be resolved
+ * here it may not happen there either, and the line stays where the repo is.
+ */
+function previousBranch(ref: string, cPath: string, st: LineState, gitDir: string): string | null {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  const target = ref === "-" ? "@{-1}" : ref;
+  try {
+    const out = execSync(`git rev-parse --abbrev-ref ${JSON.stringify(target)}`, {
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+    }).trim();
+    // a detached previous position resolves to a sha or to `HEAD`, never a branch
+    if (!out || out === "HEAD" || out === target || !/^[A-Za-z0-9._/-]+$/.test(out)) return null;
+    return out;
+  } catch {
+    return null;
   }
 }
 
@@ -877,7 +924,7 @@ function isRestoreForm(rest: string[]): boolean {
  * line stays where it was, and treating the rest of it as protected is the safe
  * direction.
  */
-function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
+function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState, workTree = ""): void {
   if (isRestoreForm(rest)) return; // no switch happens: nothing to lift
   // #419 review: `--detach`, and its `-d` short form, for BOTH sub-commands.
   // Detaching leaves HEAD on a COMMIT rather than a branch, so a commit made
@@ -906,12 +953,24 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
   const createOpts = cmd === "checkout"
     ? new Set(["-b", "-B", "--orphan"])
     : new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
-  const positionals = rest.filter((t) => !t.startsWith("-"));
+  // `-` and `@{-N}` name the previous branch, and `-` would otherwise be eaten
+  // by the option test below — so they count as positionals (#419 review).
+  const isPrevRef = (t: string) => t === "-" || /^@\{-\d+\}$/.test(t);
+  const positionals = rest.filter((t) => !t.startsWith("-") || isPrevRef(t));
   let target = "";
   let created = false;
+  let prevResolved = false;
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
     if (createOpts.has(t)) { target = rest[i + 1] ?? ""; created = true; break; }
+    if (isPrevRef(t)) {
+      if (positionals.length !== 1) return;
+      const prev = previousBranch(t, cPath, st, gitDir);
+      if (prev === null) return; // unresolvable → no lift (fail-closed)
+      target = prev;
+      prevResolved = true;
+      break;
+    }
     if (t.startsWith("-")) continue;
     if (positionals.length !== 1) return; // <tree-ish> <path>… restore: no switch
     target = t;
@@ -923,7 +982,7 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
     if (detach && !created) st.lifts.set(repoKey(cPath, st.cwd, gitDir), "");
     return;
   }
-  let resolved = expandWord(target, st);
+  let resolved = prevResolved ? target : expandWord(target, st);
   if (resolved === null) return; // '$BRANCH' unresolved → no lift (fail-closed)
   if (created) {
     // -B / -C / --force-create reset-or-create and always land; the plain
@@ -963,7 +1022,7 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
     //
     // main/master is untouched on purpose: it lifts either way, because if that
     // switch fails the line stays put and the rest is protected regardless.
-    if (!isMainRef(resolved) && !forceSwitch(cmd, rest) && worktreeDirty(cPath, st, gitDir)) {
+    if (!isMainRef(resolved) && !forceSwitch(cmd, rest) && worktreeDirty(cPath, st, gitDir, workTree)) {
       return;
     }
   }
@@ -980,10 +1039,12 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
 
   // git global options before the subcommand; capture -C <path> and
   // --git-dir <path> (both select the affected repo — finding 17).
-  // --work-tree is skipped, not captured: it moves the worktree, but HEAD
-  // (the branch) still comes from the git dir.
+  // --work-tree does not move HEAD — the BRANCH still comes from the git dir —
+  // but it does select the tree whose local changes make a checkout refuse, so
+  // it is captured and used for the dirtiness test alone (#419 review).
   let cPath = "";
   let gitDir = "";
+  let workTree = "";
   while (i < T.length) {
     const t = T[i];
     if (t === "-C") {
@@ -998,7 +1059,13 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
     } else if (t.startsWith("--git-dir=")) {
       gitDir = t.slice("--git-dir=".length);
       i += 1;
-    } else if (t === "--work-tree" || t === "-c") {
+    } else if (t === "--work-tree") {
+      workTree = T[i + 1] ?? "";
+      i += 2;
+    } else if (t.startsWith("--work-tree=")) {
+      workTree = t.slice("--work-tree=".length);
+      i += 1;
+    } else if (t === "-c") {
       i += 2;
     } else if (t.startsWith("-")) {
       i += 1;
@@ -1054,11 +1121,11 @@ function checkGitSubcommand(T: string[], start: number, st: LineState): string |
     if (rest.includes(".")) {
       return `discards uncommitted work ('git ${cmd} .', always blocked).`;
     }
-    if (cmd === "checkout") applyLift(cmd, rest, cPath, gitDir, st);
+    if (cmd === "checkout") applyLift(cmd, rest, cPath, gitDir, st, workTree);
     return null;
   }
   if (cmd === "switch") {
-    applyLift(cmd, rest, cPath, gitDir, st);
+    applyLift(cmd, rest, cPath, gitDir, st, workTree);
     return null;
   }
   // Commits on main are blocked, not just pushes (#301, btw#21): main advances
