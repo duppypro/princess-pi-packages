@@ -139,13 +139,27 @@ interface SubagentFileState {
 // same content), and a set would silently drop the second — the exact class of
 // bug this rewrite exists to remove.
 //
-// MEASURED, not assumed (147 real subagent transcripts on this host, median
-// 417KB / max 1.18MB): whole-file parse + dedupe + serialize + sha1 costs
-// 2.89ms median, 4.79ms p90, 9.06ms max PER FILE. All 147 re-parsed in the same
-// beat — a case that cannot occur, since only files that CHANGED are re-read —
-// totals 421.7ms against the 667ms poll budget. sha1 hex over the line rather
-// than the line itself: 171KB vs 2.23MB across those same 4,383 interactions,
-// and the hashing is 0.4ms of the 5.2ms on the largest file.
+// MEASURED, not assumed — and now REPRODUCIBLE (PR review): every figure below
+// comes out of `bun research/270-subagent-parse-bench.ts`, which mirrors this
+// loop's per-file work exactly. The first version of this block was an ad-hoc
+// run nobody saved, and the review caught that its numbers could not be
+// reconciled with each other — it set a "max PER FILE" (by TIME) beside "the
+// largest file" (by SIZE) as though they were one transcript, and quoted an
+// interaction count with no antecedent. Both are fixed below, and the script is
+// committed so the next reader can re-derive rather than trust.
+//
+// 156 real subagent transcripts on this host, median 413KB / max 1.12MB:
+// whole-file parse + dedupe + serialize + sha1 costs 1.70ms median, 3.36ms p90,
+// 6.38ms max PER FILE. All 156 re-parsed in the same beat — a case that cannot
+// occur, since only files that CHANGED are re-read — totals 284.6ms against the
+// 667ms poll budget. sha1 hex over the line rather than the line itself: 187KB
+// vs 2.42MB across those 4,777 interactions.
+//
+// The slowest and the largest transcript are NOT the same file, which is the
+// reconciliation the old text was missing: slowest is 0.40MB / 6.38ms, of which
+// hashing is 0.32ms; largest is 1.12MB but only 3.53ms, hashing 0.08ms. Cost
+// tracks interaction count, not bytes — so the size ceiling is not the thing to
+// watch here.
 //
 // GROWTH, stated plainly: one SubagentFileState per subagent transcript
 // discovered during this daemon's life, NEVER evicted, and each one grows by a
@@ -407,6 +421,14 @@ function scanForSubAgents() {
       }
       continue;
     }
+    // KNOWN GAP, stated rather than left for the next reader to find (PR
+    // review): a transcript rewritten to exactly the same byte length inside a
+    // single mtime tick — resolution is filesystem-dependent, 1ms to 1s — reads
+    // as unchanged here and is skipped until some later write moves size or
+    // mtime. Narrow, and not worth a content hash of every file every poll:
+    // that is the whole cost this size/mtime gate exists to avoid. The other
+    // edge cases on this path (truncation-shrink below, write failure further
+    // down) are called out explicitly, so this one is too.
     if (size === fileState.size && mtimeMs === fileState.mtimeMs) continue;
 
     if (size < fileState.size) {

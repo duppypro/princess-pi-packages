@@ -149,7 +149,7 @@ export function classifiedToInteraction(obj: any): Interaction | null {
  * an assistant message with growing `usage` as it streams, and any two of those
  * emissions can land in different poll windows, where a within-batch dedup
  * cannot see them together. Measured over the twelve most recent live Claude
- * Code transcripts on this host, 40-76% of message ids carrying `usage` are
+ * Code transcripts on this host, 39-76% of message ids carrying `usage` are
  * re-emitted at least once (117 of 293 = 39.9%, 72 of 95 = 75.8%, ...), with
  * the growing-usage form separated by `tool_result` lines and seconds of wall
  * clock — far wider than the 667ms beat. Without this, those lines are summed

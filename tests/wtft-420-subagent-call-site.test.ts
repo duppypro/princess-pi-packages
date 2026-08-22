@@ -7,7 +7,7 @@
  *   whole file" rule (docs/wtft-incremental-render-spec.md, "Per-Call, Not
  *   Global") was enforced by a comment only:
  *   "do NOT add a second call here, that is the round-3 High"
- *   (bin/wtft-daemon.ts:391-392). `seenSessionIds` (extensions/lib/wtft-parser.ts:980)
+ *   (bin/wtft-daemon.ts, the subagent re-parse loop). `seenSessionIds` (extensions/lib/wtft-parser.ts, inside attributeClaudeSubAgentCosts)
  *   is a `Set` scoped to one call, so a second production call site over a
  *   partial slice — e.g. a byte-offset reader added for the still-one-shot
  *   `claude -p` bash sub-agent path (bin/wtft-daemon.ts:341-346, #420 review)

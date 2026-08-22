@@ -34,6 +34,7 @@ import {
 	readClassifiedTagFile,
 	WTFT_TAGGER_VERSION,
 } from "../bin/wtft.mjs";
+import { skip } from "./lib/skips";
 
 const DAEMON_BIN = path.resolve(import.meta.dirname, "..", "bin", "wtft-daemon.mjs");
 
@@ -135,7 +136,26 @@ try {
 
 	// Make the tag file un-appendable, then let a new subagent turn arrive.
 	// Every write the daemon attempts in this window fails with EACCES.
+	//
+	// ...unless we are root, for whom mode bits do not deny writes at all (PR
+	// review). Every assertion below would then hold trivially — daemon alive,
+	// turn lands, count 1 — while the catch/retry path this test is named for
+	// never runs, which is worse than not running the test: it is a green tick
+	// for coverage that does not exist. Verified rather than assumed: the chmod
+	// is applied and then a real append is attempted.
 	fs.chmodSync(tagPath, 0o444);
+	let chmodDenies = false;
+	try {
+		fs.appendFileSync(tagPath, "");
+	} catch {
+		chmodDenies = true;
+	}
+	if (!chmodDenies) {
+		// NOT process.exit: the `finally` below is what kills the spawned daemon
+		// and removes the fixture dirs, and exit() would skip it, leaving a
+		// daemon running against a deleted tree.
+		skip("write-guard: chmod 0444 does not deny writes for this user (running as root?) — the EACCES path cannot be exercised here");
+	} else {
 	fs.appendFileSync(subagentPath, turnLine(TURN2_ID, T0 + 5_000, 8000, 300));
 
 	// Several polls' worth of failed writes.
@@ -164,6 +184,7 @@ try {
 	assert(`the already-written turn is not re-appended during recovery (${turn1Count} === 1)`, turn1Count === 1);
 	const turn2Count = rawTagLinesFor(tagPath, TURN2_ID);
 	assert(`the recovered turn lands exactly once, not once per failed poll (${turn2Count} === 1)`, turn2Count === 1);
+	}
 } finally {
 	try { fs.chmodSync(tagPath, 0o644); } catch {}
 	for (const pid of cleanupPids) { try { process.kill(pid, "SIGTERM"); } catch {} }
