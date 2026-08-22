@@ -520,7 +520,10 @@ console.log("\nclustering fail-open:");
 // grouping as `dedup: "failed"` and the count reverting to RAW.
 /**
  * The smallest `{"a":` count that makes THIS interpreter's `raw_decode` raise
- * RecursionError, plus a margin (#426).
+ * RecursionError, plus a margin (#426). The search starts its bracket at 1, so
+ * a host whose limit sits below 1000 is bisected too rather than reported as
+ * 1000 — the claim in this sentence is what the code does, not a floor it
+ * happens to start from (pr-review round 1, reasoning lens).
  *
  * Probed, not hardcoded. The threshold is a property of the python build's
  * recursion limit, so a literal that stops raising elsewhere would leave the
@@ -538,8 +541,11 @@ console.log("\nclustering fail-open:");
 const RECURSION_OPENERS: number = (() => {
 	const FALLBACK = 20000;
 	// Doubling alone is too coarse: it answers 16000 for a threshold of 9997, and
-	// the cost is quadratic in the answer. Double to bracket, then bisect — about
-	// fourteen more raw_decode calls, each from position 0 on a short string.
+	// the cost of the hazard case is quadratic in the answer. Double to bracket,
+	// then bisect. Counted on that same scenario: 5 doubling calls to bracket
+	// [8000, 16000] and 13 bisection calls, 18 in all — each a raw_decode from
+	// position 0 on a short string, 0.01s for the lot (an earlier version of this
+	// comment said "about fourteen", undercounting by a third).
 	const probe = spawnSync("python3", ["-c", `
 import json
 dec = json.JSONDecoder()
@@ -553,7 +559,7 @@ def raises(n):
         return False
     return False
 
-lo, hi = 1000, 1000
+lo, hi = 1, 1000
 while hi <= 200000 and not raises(hi):
     lo, hi = hi, hi * 2
 if hi > 200000:
@@ -568,10 +574,24 @@ else:
     print(lo)
 `], { encoding: "utf8" });
 	const found = Number.parseInt((probe.stdout || "").trim(), 10);
-	// A margin over the probed doubling step, so a slightly deeper limit on some
-	// other build still raises. 0 or an unusable probe falls back to the literal
-	// this replaced — slow, but never wrong.
-	return Number.isFinite(found) && found > 0 ? Math.ceil(found * 1.2) : FALLBACK;
+	if (!Number.isFinite(found) || found <= 0) {
+		// Loudly, not silently (pr-review round 1, contract lens). The whole point
+		// of probing is that a stale constant makes this case vacuous without
+		// saying so; a probe that fails quietly recreates that one level up, and
+		// nobody learns the interpreter changed. The fallback still runs — slow,
+		// never wrong — but it announces itself.
+		console.warn(
+			`⚠️  RecursionError probe failed (exit ${probe.status}${
+				probe.error ? `, ${probe.error.message}` : ""
+			}${probe.stderr ? `: ${String(probe.stderr).trim().split("\n")[0]}` : ""}) — ` +
+				`falling back to ${FALLBACK} openers. The hazard case still runs, slowly; ` +
+				`if raw_decode no longer raises at all, it is now proving nothing (#426).`,
+		);
+		return FALLBACK;
+	}
+	// A margin over the probed threshold, so a slightly deeper limit on some
+	// other build still raises.
+	return Math.ceil(found * 1.2);
 })();
 
 const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
