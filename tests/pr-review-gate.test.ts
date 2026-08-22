@@ -507,6 +507,136 @@ console.log("\nclustering fail-open:");
 // prepended to both the lens response and the grouping response, so one case
 // covers both passes: a lost lens shows up as fewer than 3 raw findings, a lost
 // grouping as `dedup: "failed"` and the count reverting to RAW.
+/**
+ * The smallest `{"a":` count that makes THIS interpreter's `raw_decode` raise
+ * RecursionError, plus a margin (#426). The search starts its bracket at 1, so
+ * a host whose limit sits below 1000 is bisected too rather than reported as
+ * 1000 — the claim in this sentence is what the code does, not a floor it
+ * happens to start from (pr-review round 1, reasoning lens).
+ *
+ * Probed, not hardcoded. The threshold is a property of the python build's
+ * recursion limit, so a literal that stops raising elsewhere would leave the
+ * hazard case below silently vacuous — still PASSing, but no longer proving
+ * that a RecursionError (a RuntimeError, NOT a ValueError) is caught rather
+ * than escaping the scanner and killing the collector.
+ *
+ * It is also what the 20000 literal cost: the raise happens at the FIRST
+ * candidate and the remaining attempts prove nothing, while `bin/pr-review`'s
+ * rescan walks all of them at one character per failure. Measured on this host,
+ * 20000 openers cost 8.6s per scan; four scans run per case, so ~34.4s of the
+ * case's measured 35.5s is that walk — for a margin of 2x over a threshold
+ * of 9997. The quadratic walk
+ * itself is #426's other half and belongs in bin/pr-review, not here.
+ *
+ * The doubling search is capped at 200000 and the cap itself is always TESTED
+ * before the probe gives up — a bare doubling loop can jump from a hi below
+ * the cap straight past it (e.g. 128000 -> 256000), skipping every untested
+ * value in between, including ones under the cap where the real threshold
+ * could sit. Reporting SKIP off that untested gap would be a false negative:
+ * "no depth we happened to land on raises" read as "no depth up to 200000
+ * raises" (#426 round 2, pr-review self-review).
+ *
+ * The `spawnSync` call itself carries a 10s timeout. The probe costs ~0.01s
+ * on a healthy interpreter (18 raw_decode calls), so 10s is pure headroom —
+ * its only job is to keep a hung or missing python3 from blocking module load
+ * forever; a timed-out probe falls through the same "probe failed" warning
+ * path as any other unreadable result and the case runs at the FALLBACK
+ * depth instead (#426 round 2).
+ */
+const RECURSION_OPENERS: number | null = (() => {
+	const FALLBACK = 20000;
+	// Doubling alone is too coarse: it answers 16000 for a threshold of 9997, and
+	// the cost of the hazard case is quadratic in the answer. Double to bracket,
+	// then bisect. Counted on that same scenario: 5 doubling calls to bracket
+	// [8000, 16000] and 13 bisection calls, 18 in all — each a raw_decode from
+	// position 0 on a short string, 0.01s for the lot (an earlier version of this
+	// comment guessed "about fourteen": four calls short, and guessed rather
+	// than counted).
+	const probe = spawnSync("python3", ["-c", `
+import json
+dec = json.JSONDecoder()
+
+def raises(n):
+    try:
+        dec.raw_decode('{"a":' * n, 0)
+    except RecursionError:
+        return True
+    except ValueError:
+        return False
+    return False
+
+CAP = 200000
+lo, hi = 1, 1000
+# r holds the last raises() result so the post-loop check below never has to
+# call raises(hi) a second time — an earlier version of this probe rechecked
+# it, which cost one extra raw_decode on every run and undercounted the "18
+# in all" claim above by one (#426 round 3, reasoning lens). The loop exits
+# one of two ways: r becomes True below CAP (the common case, e.g. the
+# threshold=9997 example above — CAP is never reached, let alone tested), or
+# doubling reaches CAP itself, which IS then tested, but only that once
+# (r already holds CAP's own result afterward, never a stale one). Either
+# way, no raises() call is ever repeated — that is the guarantee this
+# restructuring adds, not that CAP itself is always tested (#426 round 4,
+# reasoning lens — the first cut of this comment claimed the latter).
+while True:
+    r = raises(hi)
+    if r:
+        break
+    if hi >= CAP:
+        break
+    lo, hi = hi, min(hi * 2, CAP)
+if not r:
+    print(0)
+else:
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if raises(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    print(lo)
+`], { encoding: "utf8", timeout: 10_000 });
+	// Trust stdout only when the probe actually exited 0. The embedded python
+	// prints on its two success paths alone, but gating on shape rather than
+	// process success meant a future stray print (a debug line added ahead of
+	// a crash, say) could hand a nonzero-exit run's partial stdout to
+	// Number.parseInt and have it silently accepted as the real threshold —
+	// exactly the "proving nothing, quietly" failure mode the warning below
+	// exists to rule out (#426 round 3, contract lens).
+	const found = probe.status === 0 ? Number.parseInt((probe.stdout || "").trim(), 10) : Number.NaN;
+	// A probe that ran and printed 0 has established something: doubling passed
+	// through 20000 on its way past 200000 WITHOUT raising, so the old fallback is
+	// not merely slow here — it is already disproven, and running the case with it
+	// would exercise nothing while reporting PASS (pr-review round 2, contract
+	// lens). That is a skip, declared, not a silent green.
+	if (found === 0) {
+		console.log(
+			`  ##SKIP## no '{"a":' depth up to 200000 raises RecursionError on this python3 — ` +
+				`the hazard case cannot prove the non-ValueError catch here (#426)`,
+		);
+		return null;
+	}
+	if (!Number.isFinite(found) || found < 0) {
+		// Loudly, not silently (pr-review round 1, contract lens). The whole point
+		// of probing is that a stale constant makes this case vacuous without
+		// saying so; a probe that fails quietly recreates that one level up, and
+		// nobody learns the interpreter changed. The fallback still runs — slow,
+		// never wrong — but it announces itself.
+		console.warn(
+			`⚠️  RecursionError probe failed (exit ${probe.status}${
+				probe.signal ? `, signal ${probe.signal}` : ""
+			}${probe.error ? `, ${probe.error.message}` : ""
+			}${probe.stderr ? `: ${String(probe.stderr).trim().split("\n")[0]}` : ""}) — ` +
+				`falling back to ${FALLBACK} openers. The hazard case still runs, slowly; ` +
+				`if raw_decode no longer raises at all, it is now proving nothing (#426).`,
+		);
+		return FALLBACK;
+	}
+	// A margin over the probed threshold, so a slightly deeper limit on some
+	// other build still raises.
+	return Math.ceil(found * 1.2);
+})();
+
 const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	// A brace in the explanation — `find("{")`/`rfind("}")` spanned from the first
 	// brace to the last, which is neither the payload nor valid JSON (#378).
@@ -538,8 +668,15 @@ const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	// RecursionError there, which is a RuntimeError and NOT a ValueError: catching
 	// only ValueError let it escape the scanner, kill the collector before it wrote
 	// its summary, and end pr-review at exit 1 — every lens's findings lost and the
-	// PR opened unreviewed. Measured: 20000 openers raise, 5000 do not.
-	{ name: "nesting deep enough to raise RecursionError", prose: '{"a":'.repeat(20000) + "\n" },
+	// PR opened unreviewed. The count comes from RECURSION_OPENERS above, which
+	// probes this interpreter rather than trusting a literal (#426).
+	// Present only where the probe found a depth that raises — see
+	// RECURSION_OPENERS. Absent, the suite has said ##SKIP## rather than running
+	// a case that cannot fail.
+	...(RECURSION_OPENERS === null
+		? []
+		: [{ name: "nesting deep enough to raise RecursionError",
+			prose: '{"a":'.repeat(RECURSION_OPENERS) + "\n" }]),
 	// The model echoing the prompt's OWN schema AFTER its real answer, not
 	// before. A pure LAST-wins fix (briefly shipped between #378's first and
 	// second commits) beat the leading-echo cases above and then lost to
