@@ -186,7 +186,10 @@ export function getSessionSummary(sessionPath: string): SessionSummary {
 			// id (max cost) before summing. This module deliberately does
 			// not import wtft-daemon-lib's dedupeClassifiedById (see the
 			// CONSTANTS comment above), so the same collapse is reimplemented
-			// locally here rather than summing raw lines.
+			// locally here rather than summing raw lines. Pinned against
+			// dedupeClassifiedById's behavior (PR review round 2, two
+			// independent implementations with nothing keeping them in sync is
+			// how they drift): tests/wtft-270-session-summary-dedup.test.ts.
 			const maxCostById = new Map<string, number>();
 			const idOrder: string[] = [];
 			let noIdCost = 0;
