@@ -14,8 +14,15 @@
  *
  *   Closer: make the tag file un-appendable, let a subagent turn arrive and
  *   fail to write, make the tag file writable again, and append NOTHING new —
- *   the turn that failed to write must still land in the tag file, because the
- *   offset was rolled back and the bytes are re-read on a later poll.
+ *   the turn that failed to write must still land in the tag file, exactly
+ *   once, and the turn that DID get written must not be re-appended.
+ *
+ *   The duplication assertions count RAW tag-file lines. They counted through
+ *   readClassifiedTagFile until #270's round-3 review: that reader collapses
+ *   lines sharing a `message.id`, so it answers 1 whether the daemon wrote the
+ *   turn once or five times, and the assertion could not fail. Measured against
+ *   a deliberately broken daemon (recovery rewinding to offset 0): the raw
+ *   count reports 2, the reader-based count still reports 1.
  */
 
 import * as fs from "node:fs";
@@ -64,6 +71,19 @@ function turnLine(id: string, tsMs: number, inputTokens: number, outputTokens: n
 			content: [{ type: "text", text: `turn ${id}` }],
 		},
 	}) + "\n";
+}
+
+/** Raw tag-file lines carrying this message id — what the DAEMON wrote, before
+ *  any read-side collapse. readClassifiedTagFile collapses lines sharing a
+ *  `message.id` (#270 review), so counting duplicates THROUGH it is vacuous:
+ *  it reports 1 whether the daemon wrote the turn once or five times. Same
+ *  helper as the sibling crosspoll test, for the same reason. */
+function rawTagLinesFor(tagPath: string, messageId: string): number {
+	try {
+		return fs.readFileSync(tagPath, "utf8").split("\n")
+			.filter(l => l.trim() && (() => { try { return JSON.parse(l).id === messageId; } catch { return false; } })())
+			.length;
+	} catch { return 0; }
 }
 
 console.log("wtft daemon subagent write guard (#270 review)");
@@ -137,9 +157,13 @@ try {
 	}
 	assert("the turn whose write failed is re-read and written once the tag file is writable again", sawTurn2);
 
-	// And exactly once — the rollback must not replay bytes that DID get written.
-	const turn1Count = readClassifiedTagFile(tagPath).filter((int: any) => int.messageId === TURN1_ID).length;
-	assert(`the already-written turn is not duplicated by the rollback (${turn1Count} === 1)`, turn1Count === 1);
+	// And exactly once — recovery must not replay lines that DID get written.
+	// RAW lines, not readClassifiedTagFile: the reader collapses by message.id,
+	// so asking it "how many copies?" can only ever answer 1.
+	const turn1Count = rawTagLinesFor(tagPath, TURN1_ID);
+	assert(`the already-written turn is not re-appended during recovery (${turn1Count} === 1)`, turn1Count === 1);
+	const turn2Count = rawTagLinesFor(tagPath, TURN2_ID);
+	assert(`the recovered turn lands exactly once, not once per failed poll (${turn2Count} === 1)`, turn2Count === 1);
 } finally {
 	try { fs.chmodSync(tagPath, 0o644); } catch {}
 	for (const pid of cleanupPids) { try { process.kill(pid, "SIGTERM"); } catch {} }
