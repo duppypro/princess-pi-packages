@@ -8,9 +8,13 @@
  * earlier draft of this comment came from — that was the tail, not the scope.) Disk was not tight — the problem is unbounded
  * growth with no owner, and every suite re-deciding the question.
  *
- * `process.on("exit")` rather than an `afterAll` or a line at the bottom of the
- * file: most suites here are standalone scripts that call `process.exit` on
- * failure, and a sandbox is most worth removing on the run that failed.
+ * `process.on("exit")` AND `afterAll`, because the repo runs suites two ways and
+ * neither hook covers both (#435). Standalone (`bun <file>`) is where suites call
+ * `process.exit` on failure — a sandbox is most worth removing on the run that
+ * failed — and only the exit handler fires there. The runner (`bun test <file>`,
+ * what tests/run.ts spawns) never emits `exit`, and only `afterAll` fires there.
+ * `sweep` splices the list, so whichever fires first leaves the other nothing to
+ * do and running both is harmless.
  *
  * One registry per process, which is one suite — tests/run.ts gives each suite
  * its own process.
@@ -32,6 +36,23 @@ function sweep(): void {
 }
 
 process.on("exit", sweep);
+// ...but ONLY on the standalone path. Bun's test runner never emits `exit`
+// (measured on bun 1.3.14), and tests/run.ts spawns every suite as
+// `bun test <file>` — so from #394 landing until #435, the registry registered
+// 114 call sites and removed nothing on the one path the repo actually uses.
+// /tmp went from 135,065 entries to 207,748 with the "fix" in place.
+//
+// `require` rather than a static import: this module is also loaded by suites
+// run as `bun <file>`, where "bun:test" does not resolve at all. Registering at
+// module load — not lazily from trackSandbox — puts the hook at the importing
+// file's top level, so it runs after that file's whole suite rather than after
+// whichever describe block happened to create the first sandbox.
+try {
+	const runner = require("bun:test") as { afterAll?: (fn: () => void) => void };
+	runner.afterAll?.(sweep);
+} catch {
+	// Not under the test runner. The exit and signal handlers above carry it.
+}
 // `exit` alone does not fire on a signal — Node's default disposition terminates
 // the process without emitting it — so Ctrl-C mid-run left every sandbox built
 // so far behind. The two pr-open suites carried their own copy of this for that
