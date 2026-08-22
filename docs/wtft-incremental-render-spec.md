@@ -30,7 +30,10 @@ Provide a live-updating cost chart in wtft `--watch` mode, backed by a persisten
 ┌─────────────────────────────────────────────────────────┐
 │  wtft --watch (TUI consumer)                             │
 │  Reads initial classified entries from tag file, then   │
-│  watches for changes via fs.watch. Renders full chart   │
+│  watches for changes via fs.watch. Collapses lines      │
+│  sharing a message.id to one interaction at max cost    │
+│  (#270 review) — on the initial read AND on every       │
+│  incremental append. Renders full chart                 │
 │  on every new data event + per-minute timeline refresh. │
 │  Monitors daemon health via PID file + _hb heartbeat.   │
 │  'r' key restarts the daemon (5s fast-poll after).      │
