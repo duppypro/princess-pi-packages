@@ -46,12 +46,6 @@ function git(cwd: string, args: string[]): string {
 
 interface Sandbox { root: string; remote: string; clone: string; binDir: string }
 
-// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM — including
-// the hazard cases, whose stub envelopes carry a 100KB payload each. One root
-// per case was left under /tmp on every run before this. `exit` alone does not
-// fire on a signal — Node's default disposition terminates without emitting
-// it — so the signal handlers close that gap and re-raise the conventional
-// exit code afterward.
 // Sandboxes are removed by tests/lib/sandbox.ts's registry — on normal exit and
 // on SIGINT/SIGTERM, for every suite rather than this one (#394).
 

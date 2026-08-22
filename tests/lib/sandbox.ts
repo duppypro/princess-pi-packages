@@ -35,7 +35,7 @@ process.on("exit", sweep);
 // `exit` alone does not fire on a signal — Node's default disposition terminates
 // the process without emitting it — so Ctrl-C mid-run left every sandbox built
 // so far behind. The two pr-open suites carried their own copy of this for that
-// reason; it belongs here, where all 54 get it. Re-raise the conventional code
+// reason; it belongs here, where all 53 get it. Re-raise the conventional code
 // afterwards so the caller still sees why the run ended.
 process.on("SIGINT", () => { sweep(); process.exit(130); });
 process.on("SIGTERM", () => { sweep(); process.exit(143); });
