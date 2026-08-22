@@ -424,7 +424,19 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   the switch really would succeed, but the hook cannot know that without diffing the target.
   The cost is one extra command — run the `checkout` on its own line, then `commit` on the
   next, which is judged against the branch the repo is actually on (verified: both calls exit
-  0). **Unknown never moves the model (PR #305
+  0). **A `--detach` lifts to no branch at all (#419 review):** `--detach`, and its `-d` short
+  form, on *either* sub-command leaves `HEAD` on a commit rather than a branch, so a commit made
+  after it cannot advance any local branch. Measured (git 2.43.0, repo on `main`):
+  `checkout --detach main`, `checkout -d main`, `switch --detach main`, `switch -d main` and a
+  bare `checkout --detach` all answer *"HEAD is now at …"* with `git branch --show-current`
+  **empty**. The lift therefore records that empty name — recording the *target* blocked the
+  following commit for a command that cannot reach `main` at all. Simply not lifting would not
+  fix it: that leaves the line's earlier on-`main` state standing and the commit stays blocked.
+  Every fail-closed test above still runs — a detaching checkout is refused by the same dirty
+  worktree (measured, `HEAD` unmoved) and by the same missing ref — so detach changes only the
+  value recorded, never whether a lift happens. One over-block is left deliberately:
+  `--detach <sha>` records no lift, because a bare sha is no branch and resolving arbitrary
+  commit-ish would widen the allow set on a guess. **Unknown never moves the model (PR #305
   review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
   too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`
   earlier in the same line, then from the environment; an unresolved branch operand never

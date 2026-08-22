@@ -2029,6 +2029,63 @@
       "c_path_worktree": "clean-tracked",
       "verdict": "allow",
       "why": "#399 fallout, the mirror of the case above: the cwd repo is dirty and the -C repo is clean, so the switch in the -C repo lands and lifts. An implementation that tested the shell's cwd would block this — a false positive of the #400 class"
+    },
+    {
+      "id": "allow-checkout-detach-main-then-commit",
+      "command": "git checkout --detach main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `--detach` leaves HEAD on a COMMIT, not a branch. Measured git 2.43.0: 'HEAD is now at …' and `git branch --show-current` is EMPTY, so the following commit cannot advance main. The lift records the empty branch name — the review's suggested early return would NOT fix this, because it leaves the earlier on-main state standing and the commit stays blocked"
+    },
+    {
+      "id": "allow-checkout-d-short-detach-main-then-commit",
+      "command": "git checkout -d main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `-d` is checkout's short form of `--detach` in git 2.43.0 (measured: 'HEAD is now at …', show-current empty). The review named only `--detach`; the class is wider"
+    },
+    {
+      "id": "allow-switch-detach-main-then-commit",
+      "command": "git switch --detach main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `git switch --detach` detaches identically (measured), so the rule is not checkout-only"
+    },
+    {
+      "id": "allow-switch-d-short-detach-main-then-commit",
+      "command": "git switch -d main && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: `-d` is switch's documented short form of `--detach` (measured)"
+    },
+    {
+      "id": "allow-checkout-detach-no-positional-then-commit",
+      "command": "git checkout --detach && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#419 review: a bare `--detach` detaches at HEAD with no target at all. It lands even on a dirty tree (measured — the tree does not change), so it lifts to the detached state without the fail-closed tests that guard a real switch"
+    },
+    {
+      "id": "allow-checkout-detach-feature-clean-then-commit",
+      "command": "git checkout --detach feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#419 review, no-regression case (NOT evidence of the detach rule): detaching AT another branch on a clean tree. It reads `allow` either way — a plain `checkout feature` lifts off main too — so it pins only that the detach path does not break the ordinary one. The discriminating cases are the `--detach main` four"
+    },
+    {
+      "id": "block-checkout-detach-dirty-tree-then-commit-on-main",
+      "command": "git checkout --detach feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#419 review, the fail-closed bound: a DETACHING checkout is refused by the same dirty worktree as a branch switch (measured: 'error: Your local changes … would be overwritten by checkout', HEAD stays on main) — so the commit would land on main. Detach changes only the value recorded, never whether a lift happens"
     }
   ]
 }

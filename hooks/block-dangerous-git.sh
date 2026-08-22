@@ -344,6 +344,34 @@ apply_lift() {
   local -a rest=("$@")
   local t target="" created=0 i=0 n=${#rest[@]} npos=0
   restore_form "${rest[@]}" && return 0   # no switch happens: nothing to lift
+  # #419 review: `--detach`, and its `-d` short form, for BOTH sub-commands.
+  # Detaching leaves HEAD on a COMMIT rather than a branch, so a commit made
+  # after it cannot advance ANY local branch — least of all main. Measured
+  # (git 2.43.0, repo on main): `checkout --detach main`, `checkout -d main`,
+  # `switch --detach main`, `switch -d main` and a bare `checkout --detach`
+  # all answer "HEAD is now at …" and leave `git branch --show-current` EMPTY.
+  #
+  # So the lift records the EMPTY branch name — exactly what git reports for a
+  # detached worktree — instead of the target, which names the commit we
+  # detached AT, not a branch we are on. Recording the target blocked the
+  # following commit for a command that cannot reach main at all.
+  #
+  # Returning early here would NOT fix that: it leaves the line's earlier state
+  # (on main) standing and the commit stays blocked. The lift has to be TO the
+  # detached state, not absent — which is why the review's suggested `return 0`
+  # is not the remedy applied.
+  #
+  # Every fail-closed test below still runs, because a detaching checkout is
+  # refused by the same dirty worktree (measured: "error: Your local changes …
+  # would be overwritten by checkout", HEAD unmoved) and by the same missing
+  # ref. Detach changes only the VALUE recorded, never whether a lift happens.
+  # Known remaining over-block, deliberate: `--detach <sha>` still records no
+  # lift, because <sha> is no branch and resolving arbitrary commit-ish would
+  # widen the allow set on a guess.
+  local detach=0 t4
+  for t4 in "${rest[@]}"; do
+    case "$t4" in -d|--detach) detach=1; break ;; esac
+  done
   for t in "${rest[@]}"; do case "$t" in -*) ;; *) npos=$((npos + 1)) ;; esac; done
   while [ "$i" -lt "$n" ]; do
     t="${rest[$i]}"
@@ -356,7 +384,13 @@ apply_lift() {
     [ "$npos" -ne 1 ] && return 0   # <tree-ish> <path>… restore: no switch
     target="$t"; break
   done
-  [ -z "$target" ] && return 0
+  if [ -z "$target" ]; then
+    # A bare `git checkout --detach` / `git switch --detach` detaches at HEAD
+    # and lands even on a dirty tree (measured) — the tree does not change.
+    [ "$detach" = 1 ] && [ "$created" = 0 ] &&
+      LIFTS+="$(repo_key "$cpath" "$gitdir")="$'\n'
+    return 0
+  fi
   target=$(expand_word "$target") || return 0   # '$BRANCH' unresolved → no lift (fail-closed)
   if [ "$created" = 1 ]; then
     # -B / -C / --force-create reset-or-create and always land; the plain create
@@ -406,6 +440,8 @@ apply_lift() {
       return 0
     fi
   fi
+  # Detached: the line is on no branch at all — record that, not the target.
+  [ "$detach" = 1 ] && [ "$created" = 0 ] && target=""
   LIFTS+="$(repo_key "$cpath" "$gitdir")=$target"$'\n'
   return 0
 }

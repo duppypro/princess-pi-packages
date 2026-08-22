@@ -879,6 +879,30 @@ function isRestoreForm(rest: string[]): boolean {
  */
 function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
   if (isRestoreForm(rest)) return; // no switch happens: nothing to lift
+  // #419 review: `--detach`, and its `-d` short form, for BOTH sub-commands.
+  // Detaching leaves HEAD on a COMMIT rather than a branch, so a commit made
+  // after it cannot advance ANY local branch — least of all main. Measured
+  // (git 2.43.0, repo on main): `checkout --detach main`, `checkout -d main`,
+  // `switch --detach main`, `switch -d main` and a bare `checkout --detach`
+  // all answer "HEAD is now at …" and leave `git branch --show-current` EMPTY.
+  //
+  // So the lift records the EMPTY branch name — exactly what git reports for a
+  // detached worktree — instead of the target, which names the commit we
+  // detached AT, not a branch we are on. Recording the target blocked the
+  // following commit for a command that cannot reach main at all.
+  //
+  // Returning early here would NOT fix that: it leaves the line's earlier
+  // state (on main) standing and the commit stays blocked. The lift has to be
+  // TO the detached state, not absent — which is why the review's suggested
+  // early return is not the remedy applied.
+  //
+  // Every fail-closed test below still runs, because a detaching checkout is
+  // refused by the same dirty worktree (measured) and by the same missing ref.
+  // Detach changes only the VALUE recorded, never whether a lift happens.
+  // Known remaining over-block, deliberate: `--detach <sha>` still records no
+  // lift, because <sha> is no branch and resolving arbitrary commit-ish would
+  // widen the allow set on a guess.
+  const detach = rest.some((t) => t === "-d" || t === "--detach");
   const createOpts = cmd === "checkout"
     ? new Set(["-b", "-B", "--orphan"])
     : new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);
@@ -893,7 +917,12 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
     target = t;
     break;
   }
-  if (!target) return;
+  if (!target) {
+    // A bare `git checkout --detach` / `git switch --detach` detaches at HEAD
+    // and lands even on a dirty tree (measured) — the tree does not change.
+    if (detach && !created) st.lifts.set(repoKey(cPath, st.cwd, gitDir), "");
+    return;
+  }
   let resolved = expandWord(target, st);
   if (resolved === null) return; // '$BRANCH' unresolved → no lift (fail-closed)
   if (created) {
@@ -938,7 +967,8 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
       return;
     }
   }
-  st.lifts.set(repoKey(cPath, st.cwd, gitDir), resolved);
+  // Detached: the line is on no branch at all — record that, not the target.
+  st.lifts.set(repoKey(cPath, st.cwd, gitDir), detach && !created ? "" : resolved);
 }
 
 /**
