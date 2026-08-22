@@ -311,17 +311,49 @@ function dwimMainBranch(ref: string, cPath: string, st: LineState, gitDir: strin
   return gitRemotes(cPath, st, gitDir).includes(remote) ? branch : null;
 }
 
+/**
+ * The key is the repo's own IDENTITY, not the words used to name it (#421).
+ * `git --git-dir=.git checkout -b x && git commit` spells one repository two
+ * ways; keying on the spelling filed the lift under one key and looked it up
+ * under another, which failed BOTH directions — a false block when the miss
+ * re-read main, and a real bypass when a `--git-dir` switch TO main was
+ * invisible to the bare commit that followed.
+ *
+ * `--absolute-git-dir`, not `--git-common-dir`: a linked worktree gets its own
+ * `.git/worktrees/<name>` and must stay distinct, because a lift in a worktree
+ * is not a lift in the main clone.
+ *
+ * The syntactic fallback is what a non-repo (or an unresolvable cwd) gets, and
+ * it keeps matching the shell twin's `realpath -sm` byte for byte. Two
+ * spellings of a directory git cannot identify stay two keys, which fails closed.
+ */
 function repoKey(cPath: string, cwd: string, gitDir: string): string {
   const dir = cPath ? resolve(cwd || ".", cPath) : cwd;
-  return `${dir}|${gitDir ? resolve(dir || ".", gitDir) : ""}`;
+  const absGitDir = gitDir ? resolve(dir || ".", gitDir) : "";
+  try {
+    const id = execSync("git rev-parse --absolute-git-dir", {
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: absGitDir ? { ...process.env, GIT_DIR: absGitDir } : process.env,
+    }).trim();
+    if (id) return id;
+  } catch {
+    // not a repo, or a git that could not answer — fall through to the spelling
+  }
+  return `${dir}|${absGitDir}`;
 }
 
 /** Branch the sub-command acts on, honouring an earlier switch in the same line. */
 function effectiveBranch(cPath: string, st: LineState, gitDir = ""): string {
   // unknown cwd + a relative (or absent) -C target → the branch is unknowable
   if (st.cwd === UNKNOWN_CWD && (!cPath || !cPath.startsWith("/"))) return UNKNOWN_CWD;
-  const lifted = st.lifts.get(repoKey(cPath, st.cwd, gitDir));
-  if (lifted !== undefined) return lifted;
+  // No lift on this line means no lookup can hit, so skip resolving the key —
+  // it now costs a `git rev-parse` and the answer would be discarded (#421).
+  if (st.lifts.size > 0) {
+    const lifted = st.lifts.get(repoKey(cPath, st.cwd, gitDir));
+    if (lifted !== undefined) return lifted;
+  }
   return branchOf(cPath, st.cwd, gitDir);
 }
 

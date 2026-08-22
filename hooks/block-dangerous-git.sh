@@ -168,17 +168,38 @@ branch_of() {
 # The lift is keyed to the repo that switched (-C/--git-dir/cwd resolved), so
 # `git -C other checkout -b x && git commit` still judges the cwd repo.
 # ---
-# realpath -sm: syntactic normalisation only (no symlink resolution), so the key
-# matches the TS twin's path.resolve() byte for byte — a symlinked worktree must
-# not lift the gate on one harness and not the other.
+# The key is the repo's own IDENTITY, not the words used to name it (#421).
+# `git --git-dir=.git checkout -b x && git commit` spells one repository two
+# ways; keying on the spelling filed the lift under one key and looked it up
+# under another, which failed BOTH directions — a false block when the miss
+# re-read main, and a real bypass when a `--git-dir` switch TO main was invisible
+# to the bare commit that followed.
+#
+# --absolute-git-dir, not --git-common-dir: a linked worktree gets its own
+# `.git/worktrees/<name>` and must stay distinct, because a lift in a worktree
+# is not a lift in the main clone.
+#
+# realpath -sm on the fallback: syntactic normalisation only (no symlink
+# resolution), so the key matches the TS twin's path.resolve() byte for byte —
+# a symlinked worktree must not lift the gate on one harness and not the other.
+# The fallback is what a non-repo (or an unresolvable cwd) gets, and two
+# spellings of a directory git cannot identify stay two keys, which fails closed.
 repo_key() {
-  local dir="$1" gitdir="$2"
+  local dir="$1" gitdir="$2" id
   if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
     dir="$HOOK_CWD/$dir"
   fi
   [ -z "$dir" ] && dir="$HOOK_CWD"
   if [ -n "$gitdir" ] && [ "${gitdir#/}" = "$gitdir" ]; then
     gitdir="$dir/$gitdir"
+  fi
+  if [ -n "$gitdir" ]; then
+    id=$(GIT_DIR="$gitdir" git -C "${dir:-.}" rev-parse --absolute-git-dir 2>/dev/null) || id=""
+  else
+    id=$(git -C "${dir:-.}" rev-parse --absolute-git-dir 2>/dev/null) || id=""
+  fi
+  if [ -n "$id" ]; then
+    printf '%s' "$id"; return
   fi
   printf '%s|%s' "$(realpath -sm "$dir" 2>/dev/null || printf '%s' "$dir")" "${gitdir:+$(realpath -sm "$gitdir" 2>/dev/null || printf '%s' "$gitdir")}"
 }
@@ -190,10 +211,14 @@ effective_branch() {
   if [ "$HOOK_CWD" = "$UNKNOWN_CWD" ] && { [ -z "$1" ] || [ "${1#/}" = "$1" ]; }; then
     printf '%s' "$UNKNOWN_CWD"; return
   fi
-  key=$(repo_key "$1" "$2")
-  rest="${LIFTS##*$'\n'$key=}"        # ## → LAST record for this key
-  if [ "$rest" != "$LIFTS" ]; then
-    printf '%s' "${rest%%$'\n'*}"; return
+  # No lift on this line means no lookup can hit, so skip resolving the key —
+  # it now costs a `git rev-parse` and the answer would be discarded (#421).
+  if [ -n "${LIFTS#$'\n'}" ]; then
+    key=$(repo_key "$1" "$2")
+    rest="${LIFTS##*$'\n'$key=}"        # ## → LAST record for this key
+    if [ "$rest" != "$LIFTS" ]; then
+      printf '%s' "${rest%%$'\n'*}"; return
+    fi
   fi
   branch_of "$1" "$2"
 }
