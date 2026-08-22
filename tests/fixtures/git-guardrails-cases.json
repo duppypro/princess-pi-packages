@@ -2173,6 +2173,38 @@
       "work_tree": "dirty",
       "verdict": "block",
       "why": "#419 review round 4, the other side: fixing the probe must not open the bypass it guards. The --work-tree tree is dirty and the cwd tree is clean, so the switch may be refused (measured with diverged branches: 'error: Your local changes … would be overwritten by checkout') and the commit would land on main"
+    },
+    {
+      "id": "allow-git-dir-lift-then-bare-commit",
+      "command": "git --git-dir=.git checkout -b 421-new && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#421: the lift was keyed on the --git-dir SPELLING, so the bare `git commit` that followed looked up a different key, missed, read main, and the #301 commit-on-main gate fired on a line that had already switched off main. Same repository, one key."
+    },
+    {
+      "id": "allow-bare-lift-then-git-dir-commit",
+      "command": "git checkout -b 421-new && git --git-dir=.git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#421, the other direction: the lift is recorded bare and looked up with --git-dir. The mismatch runs both ways, so the fix has to be an identity, not a canonical spelling."
+    },
+    {
+      "id": "allow-c-dot-lift-then-bare-commit",
+      "command": "git -C . checkout -b 421-new && git commit -m x",
+      "branch": "main",
+      "verdict": "allow",
+      "why": "#421: -C feeds the same key, so `-C .` — the same directory spelled twice — was a different repo to the lift table."
+    },
+    {
+      "id": "block-git-dir-lift-to-main-then-bare-commit",
+      "command": "git --git-dir=.git checkout main && git commit -m x",
+      "branch": "feat",
+      "extra_branches": [
+        "main"
+      ],
+      "worktree": "clean-tracked",
+      "verdict": "block",
+      "why": "#421 inverse: collapsing the spellings onto one key must not lose a BLOCK. A --git-dir switch to main is still a switch to main for the bare commit that follows it."
     }
   ]
 }

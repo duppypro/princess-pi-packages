@@ -311,17 +311,71 @@ function dwimMainBranch(ref: string, cPath: string, st: LineState, gitDir: strin
   return gitRemotes(cPath, st, gitDir).includes(remote) ? branch : null;
 }
 
-function repoKey(cPath: string, cwd: string, gitDir: string): string {
+/**
+ * The key is the repo's own IDENTITY, not the words used to name it (#421).
+ * `git --git-dir=.git checkout -b x && git commit` spells one repository two
+ * ways; keying on the spelling filed the lift under one key and looked it up
+ * under another, which failed BOTH directions — a false block when the miss
+ * re-read main, and a real bypass when a `--git-dir` switch TO main was
+ * invisible to the bare commit that followed.
+ *
+ * `--absolute-git-dir`, not `--git-common-dir`: a linked worktree gets its own
+ * `.git/worktrees/<name>` and must stay distinct, because a lift in a worktree
+ * is not a lift in the main clone.
+ *
+ * The syntactic fallback is what a non-repo (or an unresolvable cwd) gets, and
+ * it keeps matching the shell twin's `realpath -sm` byte for byte.
+ *
+ * A resolution FAILURE is not silently absorbed (PR #424 review): the caller is
+ * told, and records `?degraded` in the lift table. Without that, a transient
+ * failure — index.lock contention, a resource limit, git briefly unresolvable on
+ * PATH — hitting the store but not the lookup (or the reverse) put the two on
+ * different keys; the lookup missed, `branchOf` answered with the PRE-switch
+ * branch, and `git --git-dir=.git checkout main && git commit` sailed through.
+ * That is fail-OPEN, the one direction the fallback must never take.
+ */
+const DEGRADED_KEY = "?degraded";
+function repoKey(cPath: string, cwd: string, gitDir: string): { key: string; resolved: boolean } {
   const dir = cPath ? resolve(cwd || ".", cPath) : cwd;
-  return `${dir}|${gitDir ? resolve(dir || ".", gitDir) : ""}`;
+  const absGitDir = gitDir ? resolve(dir || ".", gitDir) : "";
+  try {
+    const id = execSync("git rev-parse --absolute-git-dir", {
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: absGitDir ? { ...process.env, GIT_DIR: absGitDir } : process.env,
+    }).trim();
+    if (id) return { key: id, resolved: true };
+  } catch {
+    // not a repo, or a git that could not answer — fall through to the spelling
+  }
+  return { key: `${dir}|${absGitDir}`, resolved: false };
+}
+
+/** Record that identity resolution failed somewhere on this line. */
+function markDegraded(st: LineState): void {
+  st.lifts.set(DEGRADED_KEY, "");
 }
 
 /** Branch the sub-command acts on, honouring an earlier switch in the same line. */
 function effectiveBranch(cPath: string, st: LineState, gitDir = ""): string {
   // unknown cwd + a relative (or absent) -C target → the branch is unknowable
   if (st.cwd === UNKNOWN_CWD && (!cPath || !cPath.startsWith("/"))) return UNKNOWN_CWD;
-  const lifted = st.lifts.get(repoKey(cPath, st.cwd, gitDir));
-  if (lifted !== undefined) return lifted;
+  // No lift on this line means no lookup can hit, so skip resolving the key —
+  // it now costs a `git rev-parse` and the answer would be discarded (#421).
+  if (st.lifts.size > 0) {
+    const { key, resolved } = repoKey(cPath, st.cwd, gitDir);
+    if (resolved) {
+      const lifted = st.lifts.get(key);
+      if (lifted !== undefined) return lifted;
+    } else {
+      markDegraded(st);
+    }
+    // A miss on a degraded line may be a key mismatch rather than a different
+    // repo, and that difference decides whether a lift is honoured — so the
+    // branch is unknowable, not "whatever the repo is on right now".
+    if (st.lifts.has(DEGRADED_KEY)) return UNKNOWN_CWD;
+  }
   return branchOf(cPath, st.cwd, gitDir);
 }
 
@@ -979,7 +1033,11 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
   if (!target) {
     // A bare `git checkout --detach` / `git switch --detach` detaches at HEAD
     // and lands even on a dirty tree (measured) — the tree does not change.
-    if (detach && !created) st.lifts.set(repoKey(cPath, st.cwd, gitDir), "");
+    if (detach && !created) {
+      const { key, resolved } = repoKey(cPath, st.cwd, gitDir);
+      if (!resolved) markDegraded(st);
+      st.lifts.set(key, "");
+    }
     return;
   }
   let resolved = prevResolved ? target : expandWord(target, st);
@@ -1027,7 +1085,9 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
     }
   }
   // Detached: the line is on no branch at all — record that, not the target.
-  st.lifts.set(repoKey(cPath, st.cwd, gitDir), detach && !created ? "" : resolved);
+  const liftKey = repoKey(cPath, st.cwd, gitDir);
+  if (!liftKey.resolved) markDegraded(st);
+  st.lifts.set(liftKey.key, detach && !created ? "" : resolved);
 }
 
 /**
