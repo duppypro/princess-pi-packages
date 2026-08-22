@@ -17,6 +17,7 @@ import { type ServerInstance } from "../extensions/lib/serve/domain.js";
 import { formatServerCard } from "../extensions/lib/serve/tui.js";
 import { readSubdomainMap } from "../extensions/lib/serve/cloudflare.js";
 import { loadConfig } from "../extensions/lib/config.js";
+import { trackSandbox } from "./lib/sandbox";
 
 let passed = 0;
 function ok(name: string, fn: () => void) {
@@ -26,12 +27,12 @@ function ok(name: string, fn: () => void) {
 
 // --- formatServerCard: ACL line ---
 
-const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "serve131u-"));
+const tmpBase = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "serve131u-")));
 
 console.log("formatServerCard — ACL line");
 
 ok("shows ACL line when .serve-acl exists", () => {
-	const dir = fs.mkdtempSync(path.join(tmpBase, "acl-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(tmpBase, "acl-")));
 	fs.writeFileSync(path.join(dir, ".serve-acl"), "# test ACL\nalice@x.com\nbob@x.com\n");
 	const server: ServerInstance = {
 		port: 9090, dir, url: "https://test.princess-pi.dev/",
@@ -43,7 +44,7 @@ ok("shows ACL line when .serve-acl exists", () => {
 });
 
 ok("shows singular 'email' for 1-entry ACL", () => {
-	const dir = fs.mkdtempSync(path.join(tmpBase, "acl1-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(tmpBase, "acl1-")));
 	fs.writeFileSync(path.join(dir, ".serve-acl"), "alice@x.com\n");
 	const server: ServerInstance = {
 		port: 9091, dir, url: "https://test.princess-pi.dev/",
@@ -54,7 +55,7 @@ ok("shows singular 'email' for 1-entry ACL", () => {
 });
 
 ok("omits ACL line when .serve-acl does not exist", () => {
-	const dir = fs.mkdtempSync(path.join(tmpBase, "noacl-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(tmpBase, "noacl-")));
 	const server: ServerInstance = {
 		port: 9092, dir, url: "https://test.princess-pi.dev/",
 		title: "T", isLive: true, localUrl: "http://127.0.0.1:9092",
@@ -66,7 +67,7 @@ ok("omits ACL line when .serve-acl does not exist", () => {
 
 ok("does not crash when .serve-acl is unreadable", () => {
 	// Use a path that exists but can't be read as a file (a directory)
-	const dir = fs.mkdtempSync(path.join(tmpBase, "badacl-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(tmpBase, "badacl-")));
 	const aclPath = path.join(dir, ".serve-acl");
 	fs.mkdirSync(aclPath); // dir instead of file — readFileSync will throw
 	const server: ServerInstance = {
@@ -81,7 +82,7 @@ ok("does not crash when .serve-acl is unreadable", () => {
 console.log("formatServerCard — storage paths");
 
 ok("log path uses new ~/.config/princess-pi-packages/serve/ location", () => {
-	const dir = fs.mkdtempSync(path.join(tmpBase, "logpath-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(tmpBase, "logpath-")));
 	const server: ServerInstance = {
 		port: 9094, dir, url: "https://test.princess-pi.dev/",
 		title: "T", isLive: true, localUrl: "http://127.0.0.1:9094",
@@ -94,7 +95,7 @@ ok("log path uses new ~/.config/princess-pi-packages/serve/ location", () => {
 console.log("formatServerCard — card structure");
 
 ok("card shows URL in blue underline", () => {
-	const dir = fs.mkdtempSync(path.join(tmpBase, "cardurl-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(tmpBase, "cardurl-")));
 	const server: ServerInstance = {
 		port: 9095, dir, url: "https://test.princess-pi.dev/",
 		title: "T", isLive: true, localUrl: "http://127.0.0.1:9095",
@@ -105,7 +106,7 @@ ok("card shows URL in blue underline", () => {
 });
 
 ok("card shows Live/Static type indicator", () => {
-	const dir = fs.mkdtempSync(path.join(tmpBase, "cardtype-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(tmpBase, "cardtype-")));
 	const liveServer: ServerInstance = {
 		port: 9096, dir, url: "https://test.princess-pi.dev/",
 		title: "T", isLive: true, localUrl: "http://127.0.0.1:9096",

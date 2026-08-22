@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_THREADS = path.join(REPO_ROOT, "bin", "pr-threads");
@@ -124,7 +125,7 @@ function runPrThreads(
 	args: string[] = ["1"],
 	shell = "bash",
 ): { code: number; out: string } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-threads-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-threads-")));
 	const binDir = stubGh(dir, pages);
 	try {
 		const out = execFileSync(shell, [PR_THREADS, ...args], {

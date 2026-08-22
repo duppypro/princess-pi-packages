@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_CLEANUP = path.join(REPO_ROOT, "bin", "pr-cleanup");
@@ -92,7 +93,7 @@ interface SandboxOpts {
 }
 
 function makeSandbox(branch: string, opts: SandboxOpts = {}): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-cleanup-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-cleanup-")));
 	const primary = opts.primary ?? "main";
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);

@@ -34,6 +34,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
@@ -61,7 +62,7 @@ function check(label: string, fn: () => void) {
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const CLI_BIN = path.join(REPO_ROOT, "bin", "wtft.mjs");
 
-const xdgRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-config-persistence-"));
+const xdgRoot = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wtft-config-persistence-")));
 const configDir = path.join(xdgRoot, "princess-pi-packages");
 const configPath = path.join(configDir, "wtft.json");
 const prevXdg = process.env.XDG_CONFIG_HOME;

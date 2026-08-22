@@ -16,6 +16,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_REVIEW = path.join(REPO_ROOT, "bin", "pr-review");
@@ -45,23 +46,11 @@ function git(cwd: string, args: string[]): string {
 
 interface Sandbox { root: string; remote: string; clone: string; binDir: string }
 
-// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM — including
-// the hazard cases, whose stub envelopes carry a 100KB payload each. One root
-// per case was left under /tmp on every run before this. `exit` alone does not
-// fire on a signal — Node's default disposition terminates without emitting
-// it — so the signal handlers close that gap and re-raise the conventional
-// exit code afterward.
-const SANDBOXES: string[] = [];
-function cleanupSandboxes(): void {
-	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-}
-process.on("exit", cleanupSandboxes);
-process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
-process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
+// Sandboxes are removed by tests/lib/sandbox.ts's registry — on normal exit and
+// on SIGINT/SIGTERM, for every suite rather than this one (#394).
 
 function makeSandbox(): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-gate-"));
-	SANDBOXES.push(root);
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-gate-")));
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", "main"]);
@@ -811,7 +800,7 @@ console.log("\nround-3 High regressions:");
 	// contradiction the exit-7 row was added to resolve.
 	const sb = makeSandbox();
 	const env = stubs(sb, "clean");
-	const plain = fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-norepo-"));
+	const plain = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-review-norepo-")));
 	const { code } = run(PR_REVIEW, plain, env);
 	check(code === 2, "not a git repo → exit 2 (matches the #224 table)", `got ${code}`);
 	fs.rmSync(plain, { recursive: true, force: true });
