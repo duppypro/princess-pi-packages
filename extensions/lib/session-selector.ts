@@ -178,17 +178,38 @@ export function getSessionSummary(sessionPath: string): SessionSummary {
 		try {
 			const content = fs.readFileSync(tagPath, "utf8");
 			const lines = content.split("\n");
-			let cost = 0;
-			let turns = 0;
+			// A subagent's growing-usage message legitimately appears as
+			// multiple tag-file lines sharing one message.id (`obj.id`), at
+			// different costs, written across different polls — see
+			// docs/wtft-incremental-render-spec.md, "The append filter, and
+			// what the tag file may contain." Every reader must collapse by
+			// id (max cost) before summing. This module deliberately does
+			// not import wtft-daemon-lib's dedupeClassifiedById (see the
+			// CONSTANTS comment above), so the same collapse is reimplemented
+			// locally here rather than summing raw lines.
+			const maxCostById = new Map<string, number>();
+			const idOrder: string[] = [];
+			let noIdCost = 0;
+			let noIdCount = 0;
 			for (const line of lines) {
 				if (!line.trim()) continue;
 				try {
 					const obj = JSON.parse(line);
 					if (obj._hb) continue;
-					if (typeof obj.c === "number") cost += obj.c;
-					turns++;
+					const lineCost = typeof obj.c === "number" ? obj.c : 0;
+					if (typeof obj.id === "string" && obj.id) {
+						const prev = maxCostById.get(obj.id);
+						if (prev === undefined) idOrder.push(obj.id);
+						maxCostById.set(obj.id, prev === undefined ? lineCost : Math.max(prev, lineCost));
+					} else {
+						noIdCost += lineCost;
+						noIdCount++;
+					}
 				} catch { /* skip unparseable lines */ }
 			}
+			let cost = noIdCost;
+			for (const id of idOrder) cost += maxCostById.get(id)!;
+			const turns = idOrder.length + noIdCount;
 			return { turns, cost, tagVersion, rawLines: null };
 		} catch { /* tag file unreadable */ }
 	}

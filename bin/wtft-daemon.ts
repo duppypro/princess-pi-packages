@@ -93,6 +93,7 @@ let warnedClaudeSubAgentOneShot = false;
 // Same one-shot shape for the Task/agent path's two I/O failure modes. Both are
 // silent-forever undercounts if they persist, so both warn in default mode.
 let warnedSubagentStatFailure = false;
+let warnedSubagentParseFailure = false;
 let warnedSubagentWriteFailure = false;
 
 /** What the daemon remembers about one subagent transcript (#270).
@@ -446,8 +447,16 @@ function scanForSubAgents() {
     // mtime. Narrow, and not worth a content hash of every file every poll:
     // that is the whole cost this size/mtime gate exists to avoid. The other
     // edge cases on this path (truncation-shrink below, write failure further
-    // down) are called out explicitly, so this one is too.
-    if (size === fileState.size && mtimeMs === fileState.mtimeMs) continue;
+    // down) are called out explicitly with a runtime diagnostic, so this one
+    // now is too (PR review round 2) — debug-gated, since it fires on every
+    // untouched subagent file every poll and an unconditional print here
+    // would bury the signal, not surface it.
+    if (size === fileState.size && mtimeMs === fileState.mtimeMs) {
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent transcript same size/mtime, skipping — a same-tick rewrite would be missed until a later poll changes size or mtime: ${path.basename(file)}\n`);
+      }
+      continue;
+    }
 
     if (size < fileState.size) {
       // Truncated or rotated: the lines we recorded describe content that is no
@@ -460,11 +469,36 @@ function scanForSubAgents() {
       }
     }
 
+    // Parse and write are two separate try/catches (PR review round 2): they
+    // were one block, so a read/parse error (e.g. the file vanishing between
+    // stat and read) was caught by the same handler as an append failure and
+    // unconditionally reported as "could not be written to the tag file" —
+    // misdiagnosing the actual failure for anyone debugging a persistent
+    // warning. fileState.size/mtimeMs are only advanced after a SUCCESSFUL
+    // write below, so a parse failure here still leaves the file marked
+    // changed and gets retried next poll, same as before this split.
+    let deduped: ReturnType<typeof deduplicateInteractions>;
     try {
       // Whole file, exactly as the pre-#270 discovery-time parse did.
       // parseSessionFile runs attributeClaudeSubAgentCosts internally over the
       // whole result — do NOT add a second call here, that is the round-3 High.
-      const deduped = deduplicateInteractions(parseSessionFile(file));
+      deduped = deduplicateInteractions(parseSessionFile(file));
+    } catch (err) {
+      // Keep polling — one bad parse must not stop this subagent, the other
+      // subagents in this loop, or the parent session's own tag writes.
+      if (!warnedSubagentParseFailure) {
+        warnedSubagentParseFailure = true;
+        process.stderr.write(
+          `[wtft-log-parser] WARNING: a subagent transcript could not be parsed, so its cost may be missing from this session's total until it succeeds (${sessionId}): ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent parse error (${sessionId}), will retry next poll: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      continue;
+    }
+
+    try {
       let batch = '';
       const freshHashes: string[] = [];
       const seenThisParse = new Map<string, number>();
@@ -478,7 +512,24 @@ function scanForSubAgents() {
         freshHashes.push(hash);
       }
       if (batch) {
-        fs.appendFileSync(tagPath, batch);
+        // Track the pre-write size so a throw mid-append (e.g. ENOSPC after
+        // some bytes already landed) can be cut back to it below — otherwise
+        // a partial/corrupt trailing JSONL line survives on disk forever,
+        // silently skipped by every reader's per-line `catch {}` (PR review
+        // round 2).
+        let sizeBeforeWrite: number | null = null;
+        try { sizeBeforeWrite = fs.statSync(tagPath).size; } catch { /* tag file doesn't exist yet — nothing to cut back to */ }
+        try {
+          fs.appendFileSync(tagPath, batch);
+        } catch (writeErr) {
+          if (sizeBeforeWrite !== null) {
+            try {
+              const sizeAfter = fs.statSync(tagPath).size;
+              if (sizeAfter > sizeBeforeWrite) fs.truncateSync(tagPath, sizeBeforeWrite);
+            } catch { /* best effort — never mask the original write error below */ }
+          }
+          throw writeErr;
+        }
         wroteAny = true;
       }
       // Reached only when the append SUCCEEDED. Recording the hashes and the

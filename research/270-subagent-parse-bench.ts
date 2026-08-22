@@ -59,12 +59,18 @@ interface Row {
 const sessionFiles = allTranscripts(PROJECTS).filter((f) => !f.includes(".wtft-tag."));
 const files = [...new Set(sessionFiles.flatMap((f) => discoverSubagentSessionFiles(f)))];
 const rows: Row[] = [];
+// Files that fail stat or parse are excluded from `rows` — surface that count
+// (PR review) instead of letting `rows.length` present the surviving
+// population as if it were the full one, which would undercut the "MEASURED,
+// not assumed" claim this script exists to back.
+let skipped = 0;
 
 for (const file of files) {
 	let bytes: number;
 	try {
 		bytes = fs.statSync(file).size;
 	} catch {
+		skipped++;
 		continue;
 	}
 	const t0 = performance.now();
@@ -72,6 +78,7 @@ for (const file of files) {
 	try {
 		deduped = deduplicateInteractions(parseSessionFile(file));
 	} catch {
+		skipped++;
 		continue;
 	}
 	let lineBytes = 0;
@@ -116,6 +123,7 @@ if (process.argv.includes("--json")) {
 			{
 				schema: "wtft-subagent-parse-bench/run@1",
 				files: rows.length,
+				filesSkipped: skipped,
 				medianBytes: pct(sizes, 0.5),
 				maxBytes: largest?.bytes ?? 0,
 				medianMs: pct(times, 0.5),
@@ -134,7 +142,7 @@ if (process.argv.includes("--json")) {
 	);
 } else {
 	console.log("--- SUMMARY (paste into bin/wtft-daemon.ts) ---");
-	console.log(`files:        ${rows.length} (median ${kb(pct(sizes, 0.5))} / max ${mb(largest?.bytes ?? 0)})`);
+	console.log(`files:        ${rows.length} (median ${kb(pct(sizes, 0.5))} / max ${mb(largest?.bytes ?? 0)})${skipped > 0 ? ` — ${skipped} skipped (stat/parse failure)` : ""}`);
 	console.log(`per file:     ${pct(times, 0.5).toFixed(2)}ms median, ${pct(times, 0.9).toFixed(2)}ms p90, ${(slowest?.ms ?? 0).toFixed(2)}ms max`);
 	console.log(`all at once:  ${total.toFixed(1)}ms across ${interactions} interactions`);
 	console.log(`hash vs line: ${kb(hashBytes)} vs ${mb(lineBytes)}`);

@@ -2229,6 +2229,7 @@ var pendingClaudeCommands = [];
 var discoveredClaudeSessions = new Set;
 var warnedClaudeSubAgentOneShot = false;
 var warnedSubagentStatFailure = false;
+var warnedSubagentParseFailure = false;
 var warnedSubagentWriteFailure = false;
 var discoveredSubagentFiles = new Map;
 function shutdown(reason) {
@@ -2423,8 +2424,13 @@ function scanForSubAgents() {
       }
       continue;
     }
-    if (size === fileState.size && mtimeMs === fileState.mtimeMs)
+    if (size === fileState.size && mtimeMs === fileState.mtimeMs) {
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent transcript same size/mtime, skipping — a same-tick rewrite would be missed until a later poll changes size or mtime: ${path9.basename(file)}
+`);
+      }
       continue;
+    }
     if (size < fileState.size) {
       fileState.writtenLines.clear();
       if (process.env.WTFT_DAEMON_DEBUG) {
@@ -2432,8 +2438,22 @@ function scanForSubAgents() {
 `);
       }
     }
+    let deduped;
     try {
-      const deduped = deduplicateInteractions(parseSessionFile(file));
+      deduped = deduplicateInteractions(parseSessionFile(file));
+    } catch (err) {
+      if (!warnedSubagentParseFailure) {
+        warnedSubagentParseFailure = true;
+        process.stderr.write(`[wtft-log-parser] WARNING: a subagent transcript could not be parsed, so its cost may be missing from this session's total until it succeeds (${sessionId}): ${err instanceof Error ? err.message : String(err)}
+`);
+      }
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent parse error (${sessionId}), will retry next poll: ${err instanceof Error ? err.message : String(err)}
+`);
+      }
+      continue;
+    }
+    try {
       let batch = "";
       const freshHashes = [];
       const seenThisParse = new Map;
@@ -2448,7 +2468,22 @@ function scanForSubAgents() {
         freshHashes.push(hash);
       }
       if (batch) {
-        fs9.appendFileSync(tagPath, batch);
+        let sizeBeforeWrite = null;
+        try {
+          sizeBeforeWrite = fs9.statSync(tagPath).size;
+        } catch {}
+        try {
+          fs9.appendFileSync(tagPath, batch);
+        } catch (writeErr) {
+          if (sizeBeforeWrite !== null) {
+            try {
+              const sizeAfter = fs9.statSync(tagPath).size;
+              if (sizeAfter > sizeBeforeWrite)
+                fs9.truncateSync(tagPath, sizeBeforeWrite);
+            } catch {}
+          }
+          throw writeErr;
+        }
         wroteAny = true;
       }
       for (const h of freshHashes) {

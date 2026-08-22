@@ -4488,8 +4488,10 @@ function getSessionSummary(sessionPath) {
       const content = fs9.readFileSync(tagPath, "utf8");
       const lines = content.split(`
 `);
-      let cost = 0;
-      let turns = 0;
+      const maxCostById = new Map;
+      const idOrder = [];
+      let noIdCost = 0;
+      let noIdCount = 0;
       for (const line of lines) {
         if (!line.trim())
           continue;
@@ -4497,11 +4499,22 @@ function getSessionSummary(sessionPath) {
           const obj = JSON.parse(line);
           if (obj._hb)
             continue;
-          if (typeof obj.c === "number")
-            cost += obj.c;
-          turns++;
+          const lineCost = typeof obj.c === "number" ? obj.c : 0;
+          if (typeof obj.id === "string" && obj.id) {
+            const prev = maxCostById.get(obj.id);
+            if (prev === undefined)
+              idOrder.push(obj.id);
+            maxCostById.set(obj.id, prev === undefined ? lineCost : Math.max(prev, lineCost));
+          } else {
+            noIdCost += lineCost;
+            noIdCount++;
+          }
         } catch {}
       }
+      let cost = noIdCost;
+      for (const id of idOrder)
+        cost += maxCostById.get(id);
+      const turns = idOrder.length + noIdCount;
       return { turns, cost, tagVersion, rawLines: null };
     } catch {}
   }
