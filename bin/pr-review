@@ -1447,6 +1447,7 @@ if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
   # the failure skips the clustering call and takes the same fail-open-to-RAW
   # path a crashed clustering pass takes.
   CLUSTER_PROMPT_OK=1
+CLUSTER_CALL_FAILED=0
   # Two guarded writes, not one guarded group (pr-review round 3, reasoning
   # lens): `{ cat; python3; }` reports only the LAST command's status, so a
   # failed `cat` of the rules preamble was masked by a python3 that then
@@ -1487,7 +1488,16 @@ PYIDS
        < "$WORK/cluster.prompt" > "$WORK/cluster.out" 2>"$WORK/cluster.err"; then
     :
   else
-    : > "$WORK/cluster.fail"
+    # Two signals for one fact, because the FILE can fail to appear (PR #427
+    # review, macroscopeapp). This is an `else` branch, not a condition, so an
+    # unguarded `: > "$WORK/cluster.fail"` that hits ENOSPC — a full $TMPDIR is
+    # the everyday way that happens — exited the whole script with 1 under
+    # `set -euo pipefail`, and pr-open reads 1 as "reviewer unavailable,
+    # proceed": a PR opened with findings already sitting in $LOG. The shell
+    # variable is the one that cannot fail to be written; the marker file stays
+    # because PYCLUSTER may also be reached on a path that does not inherit it.
+    CLUSTER_CALL_FAILED=1
+    : > "$WORK/cluster.fail" 2>/dev/null || :
   fi
 
   # `if`, not a bare command: python3 itself can fail to reach the try below
@@ -1501,7 +1511,7 @@ PYIDS
   # exited 0, whether via finish() or the inner except:pass) — an inverted
   # `if !` here once ran the crash handler on every successful run and skipped
   # it on every actual crash, the exact opposite of what the branches say.
-  if python3 - "$WORK" "$LOG" <<'PYCLUSTER'
+  if CLUSTER_CALL_FAILED="$CLUSTER_CALL_FAILED" python3 - "$WORK" "$LOG" <<'PYCLUSTER'
 import json, os, sys
 
 def _open_private(path):
@@ -1540,7 +1550,7 @@ try:
         with open(os.path.join(work, "distinct"), "w") as fh:
             fh.write(f"{len(distinct)}\n")
 
-    if os.path.exists(os.path.join(work, "cluster.fail")):
+    if os.environ.get("CLUSTER_CALL_FAILED") == "1" or os.path.exists(os.path.join(work, "cluster.fail")):
         # The cause used to be captured to cluster.err and then deleted unread
         # by the EXIT trap — the same defect fail() already fixed for lenses
         # (below: "Keep the CAUSE"). A rate limit, expired auth, and E2BIG on
@@ -1721,7 +1731,39 @@ if [ "$JSON_OUT" -eq 1 ]; then
   # documents, the exact shape this file moved the collector's summary off stdout
   # to avoid. A command substitution either captures the whole file or fails
   # having written nothing.
-  if log_json=$(cat "$LOG"); then
+  # PARSED, not merely readable (PR #427 review, macroscopeapp — two findings,
+  # one change). `cat` succeeds on a TRUNCATED log, and the annotation paths
+  # above can leave one: PYNOCLUSTER reopens $LOG with O_TRUNC and rewrites it,
+  # so a python3 OOM-killed mid-dump leaves a readable fragment. The machine
+  # caller then got that fragment with exit 0 — a partial document reported as a
+  # complete run. json.load parses the WHOLE file before a byte reaches stdout,
+  # so an unparsable log yields no output at all and falls to exit 8.
+  #
+  # It is also the answer to the second finding, that a command substitution
+  # holds the entire log in a shell variable and can be OOM-killed before
+  # emit_status is ever reached: parse and write are one streaming pass here,
+  # and nothing is buffered in the shell. The variable-first read is KEPT for
+  # the no-python3 case only, because it is what stops a `cat` failing
+  # MID-STREAM from emitting a fragment and then the fallback object after it
+  # (pr-review round 2, contract lens) — a real defect this branch fixed, and
+  # the reviewer's own suggested streaming remedy would have reintroduced it.
+  #
+  # indent=2 matches how the log itself is written, so this re-serialisation is
+  # byte-identical to the old `cat` on every valid document: a validation, not a
+  # format change.
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 - "$LOG" <<'PYEMIT'
+import json, sys
+json.dump(json.load(open(sys.argv[1])), sys.stdout, indent=2)
+sys.stdout.write("\n")
+PYEMIT
+    then
+      :
+    else
+      emit_status "reviewed-none" \
+        "⚠️  pr-review: the run log at $LOG could not be read back as a JSON document." 8
+    fi
+  elif log_json=$(cat "$LOG"); then
     printf '%s\n' "$log_json"
   else
     emit_status "reviewed-none" \
