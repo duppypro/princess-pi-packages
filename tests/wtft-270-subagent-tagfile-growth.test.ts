@@ -33,6 +33,7 @@ import {
 	readClassifiedTagFile,
 	WTFT_TAGGER_VERSION,
 } from "../bin/wtft.mjs";
+import { trackSandbox } from "./lib/sandbox";
 
 const DAEMON_BIN = path.resolve(import.meta.dirname, "..", "bin", "wtft-daemon.mjs");
 const BEAT_MS = 667;
@@ -88,7 +89,7 @@ function rawClassifiedLineCount(tagPath: string): number {
 
 console.log("wtft daemon subagent tag-file growth is bounded (#270)");
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-growth-"));
+const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-growth-")));
 fixtureDirs.push(dir);
 
 const sessionPath = path.join(dir, "session.jsonl");

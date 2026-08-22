@@ -25,6 +25,7 @@ import {
 	deduplicateInteractions,
 	WTFT_TAGGER_VERSION,
 } from "../bin/wtft.mjs";
+import { trackSandbox } from "./lib/sandbox";
 
 const DAEMON_BIN = path.resolve(import.meta.dirname, "..", "bin", "wtft-daemon.mjs");
 const BEAT_MS = 667;
@@ -81,7 +82,7 @@ function turnLine(id: string, tsMs: number, inputTokens: number, outputTokens: n
 
 console.log("wtft daemon subagent re-parse (#270)");
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-"));
+const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-")));
 fixtureDirs.push(dir);
 
 const sessionPath = path.join(dir, "session.jsonl");

@@ -29,6 +29,7 @@ import {
 	readClassifiedTagFile,
 	WTFT_TAGGER_VERSION,
 } from "../bin/wtft.mjs";
+import { trackSandbox } from "./lib/sandbox";
 
 const DAEMON_BIN = path.resolve(import.meta.dirname, "..", "bin", "wtft-daemon.mjs");
 
@@ -70,7 +71,7 @@ function turnLine(id: string, tsMs: number, outputTokens: number, padding = ""):
 
 console.log("wtft daemon subagent truncation diagnostic (#270 review)");
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-trunc-"));
+const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-trunc-")));
 fixtureDirs.push(dir);
 
 const sessionPath = path.join(dir, "session.jsonl");

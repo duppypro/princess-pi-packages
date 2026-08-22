@@ -39,6 +39,7 @@ import {
 	deduplicateInteractions,
 	WTFT_TAGGER_VERSION,
 } from "../bin/wtft.mjs";
+import { trackSandbox } from "./lib/sandbox";
 
 const DAEMON_BIN = path.resolve(import.meta.dirname, "..", "bin", "wtft-daemon.mjs");
 
@@ -92,7 +93,7 @@ function rawTagLinesFor(tagPath: string, messageId: string): number {
 
 console.log("wtft daemon subagent cross-poll dedup (#270 review)");
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-dedup-"));
+const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-dedup-")));
 fixtureDirs.push(dir);
 
 const sessionPath = path.join(dir, "session.jsonl");

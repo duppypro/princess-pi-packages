@@ -37,6 +37,7 @@ import {
 	readClassifiedTagFile,
 	WTFT_TAGGER_VERSION,
 } from "../bin/wtft.mjs";
+import { trackSandbox } from "./lib/sandbox";
 
 const DAEMON_BIN = path.resolve(import.meta.dirname, "..", "bin", "wtft-daemon.mjs");
 const WTFT_LIB = path.resolve(import.meta.dirname, "..", "bin", "wtft.mjs");
@@ -109,7 +110,7 @@ function claudeBashTurnLine(id: string, tsMs: number, inputTokens: number, outpu
 
 console.log("wtft daemon nested claude-bash attribution across poll windows (#270 review r3)");
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-nested-"));
+const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-nested-")));
 cleanupDirs.push(dir);
 
 // A scratch home directory, isolated from the real ~/.claude/projects. The
@@ -118,7 +119,7 @@ cleanupDirs.push(dir);
 // ~/.claude/projects (the daemon spawned below, and the reference-parse child
 // process further down) at this directory keeps every session-discovery
 // lookup inside the fixture instead of the host's live transcript store.
-const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-home-"));
+const tempHome = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-home-")));
 cleanupDirs.push(tempHome);
 
 // The cwd the subagent's bash turns cd into. Its Claude Code project slug is
