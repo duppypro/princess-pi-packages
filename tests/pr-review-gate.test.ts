@@ -582,10 +582,13 @@ lo, hi = 1, 1000
 # call raises(hi) a second time — an earlier version of this probe rechecked
 # it, which cost one extra raw_decode on every run and undercounted the "18
 # in all" claim above by one (#426 round 3, reasoning lens). The loop exits
-# either on r becoming True (found it, below CAP) or on hi reaching CAP
-# (r already holds CAP's own tested result, never a stale one) — CAP is
-# tested EXACTLY ONCE either way, closing the overshoot gap without a
-# redundant call.
+# one of two ways: r becomes True below CAP (the common case, e.g. the
+# threshold=9997 example above — CAP is never reached, let alone tested), or
+# doubling reaches CAP itself, which IS then tested, but only that once
+# (r already holds CAP's own result afterward, never a stale one). Either
+# way, no raises() call is ever repeated — that is the guarantee this
+# restructuring adds, not that CAP itself is always tested (#426 round 4,
+# reasoning lens — the first cut of this comment claimed the latter).
 while True:
     r = raises(hi)
     if r:
