@@ -4173,7 +4173,7 @@ async function watchTagFile(sessionPath, tagPathHint, settings) {
       mode: "cumulative",
       timezone: undefined
     };
-    const deduped = deduplicateInteractions(allInteractions);
+    const deduped = dedupeClassifiedById(allInteractions);
     interactionCount = deduped.length;
     const lines = buildWtftLines(deduped, defaultSettings, {
       interval: finalInterval,

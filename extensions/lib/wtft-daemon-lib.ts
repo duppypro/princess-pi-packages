@@ -1117,17 +1117,24 @@ export async function watchTagFile(
 			timezone: undefined
 		};
 
-		// Deduplicate by message.id. `allInteractions` here always came from
-		// readClassifiedTagFile (line 1054/1273/1341) or the fs.watch branch's own
-		// dedupeClassifiedById call (line 1253) — both already collapse tag-file
-		// lines sharing one message.id, taking max cost — so this is a no-op in
-		// normal operation (#420 review; a prior version of this comment credited
-		// the DAEMON with deduping at write time, which is no longer true: since
-		// #270 the daemon legitimately writes multiple raw lines for one growing
-		// message.id, one per poll it changed in, and the READER collapses them).
-		// Present as cheap insurance against a caller reaching this point some
-		// other way.
-		const deduped = deduplicateInteractions(allInteractions);
+		// Deduplicate by message.id — dedupeClassifiedById, NOT deduplicateInteractions.
+		// `allInteractions` here always came from readClassifiedTagFile
+		// (line 1054/1273/1341) or the fs.watch branch's own dedupeClassifiedById
+		// call (line 1253) — both already collapse tag-file lines sharing one
+		// message.id, taking max cost — so calling dedupeClassifiedById again is a
+		// true no-op here (it returns the input unchanged when nothing repeats,
+		// docs/wtft-incremental-render-spec.md#dedupeClassifiedById). Present as
+		// cheap insurance against a caller reaching this point some other way.
+		//
+		// deduplicateInteractions is NOT safe as that insurance, even against
+		// already-deduped input: it returns `[...withoutId, ...idGroups]`, so any
+		// interaction lacking a message.id is moved ahead of every id-bearing one
+		// regardless of true chronological order — the exact non-chronological
+		// hazard this spec section's "Return Order Is Not Chronological" section
+		// describes (docs/wtft-incremental-render-spec.md). dedupeClassifiedById
+		// preserves first-appearance order (`slots`/`slotIds`), so it is the only
+		// one of the two safe to call on data that's about to be rendered in order.
+		const deduped = dedupeClassifiedById(allInteractions);
 		interactionCount = deduped.length;
 
 		const lines = buildWtftLines(deduped, defaultSettings, {
