@@ -233,13 +233,28 @@ describe("git-guardrails input-parse dependency (#390)", () => {
     expect(res.stderr).toContain("jq");
   });
 
-  test("a jq that is not executable blocks and names the dependency", () => {
+  // pr-review round 3: this test used to assert only status 2 + "jq" in stderr,
+  // which BOTH branches satisfy — so it passed while `command -v` was catching
+  // only the missing case and the non-executable one fell through to the
+  // JQ_STATUS check. It could not tell the two apart, which is the whole claim.
+  // `command -v` reports a PATH match without testing the execute bit (bash 5,
+  // mode-644 jq as the only jq on PATH: exits 0 and prints the path; invoking it
+  // exits 126). Assert the MESSAGE, since that is what the fix changes — the
+  // dependency guard now says what it means where it says it.
+  test("a jq that is not executable is caught by the dependency guard, not the exit-status fallback", () => {
     const dir = stubPath((d) => {
       writeFileSync(join(d, "jq"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
     });
     const res = runHook(DANGEROUS, cwd, { PATH: dir });
-    expect(res.status).toBe(2);
-    expect(res.stderr).toContain("jq");
+    expect(res.status, "a parser that cannot run must not read as 'nothing to check'").toBe(2);
+    expect(
+      res.stderr,
+      "the non-executable case must arrive under the message written for it",
+    ).toContain("not executable");
+    expect(
+      res.stderr,
+      "it must NOT fall through to the 'jq exited N' fallback, which is a different claim",
+    ).not.toContain("exited");
   });
 
   test("a genuinely empty command on a SUCCESSFUL parse still exits 0", () => {

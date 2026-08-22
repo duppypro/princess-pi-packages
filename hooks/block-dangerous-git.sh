@@ -49,7 +49,15 @@ INPUT=$(cat)
 # protected state, the same rule applied to an unresolvable cd below. A genuinely
 # empty .tool_input.command on a SUCCESSFUL parse still exits 0.
 # ---
-if ! command -v jq >/dev/null 2>&1; then
+# `command -v` alone would NOT make the "not executable" half of this message
+# true: it reports a PATH match without testing the execute bit. Measured on
+# bash 5 with a mode-644 jq as the only jq on PATH — `command -v jq` exits 0 and
+# prints the path, while invoking it exits 126. That case still failed closed at
+# the JQ_STATUS check below, so nothing was ever bypassed, but it arrived under
+# a different, vaguer message than the one written for it. `-x` is what makes
+# the sentence true where it is printed.
+JQ_BIN=$(command -v jq 2>/dev/null || true)
+if [ -z "$JQ_BIN" ] || [ ! -x "$JQ_BIN" ]; then
   echo "BLOCKED: git guardrails cannot read the tool call — required dependency 'jq' is missing or not executable on PATH. Install jq (apt install jq / brew install jq); until then every git guardrail is unenforceable and this hook fails closed." >&2
   exit 2
 fi
