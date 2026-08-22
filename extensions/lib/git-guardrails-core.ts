@@ -154,6 +154,59 @@ function refExists(cPath: string, st: LineState, gitDir: string, ref: string): b
   }
 }
 
+/** Configured remotes of the repo the sub-command acts on. Same -C/--git-dir
+ *  resolution as refExists. */
+function gitRemotes(cPath: string, st: LineState, gitDir: string): string[] {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  try {
+    return execSync("git remote", {
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+    })
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #389: a target that names a REMOTE ref does not create a branch by that name.
+ * `git switch -t origin/main`, `--track origin/main`, `--track=direct
+ * origin/main`, `--no-track origin/main` and `git checkout --track origin/main`
+ * all answer "Switched to a new branch 'main'" (measured, git 2.43.0): the
+ * branch git creates and lands you on is the LOCAL `main`. `refs/heads/origin/main`
+ * never exists, so the pre-#389 test found no branch, recorded no lift, and the
+ * #301 on-main gate judged the following `git commit` against the feature
+ * branch — bypassed by the most idiomatic form there is.
+ *
+ * Returns the local branch name when <ref> is `<remote>/main` (or `/master`)
+ * AND <remote> is a CONFIGURED remote of the affected repo, else null. Both
+ * halves carry weight:
+ *   - only a first segment that is a real remote is stripped, so a local branch
+ *     literally named `feature/main` keeps its name — `feature` is no remote;
+ *   - answering only for main/master keeps this TIGHTENING-ONLY: a
+ *     `<remote>/<feature>` target can never turn a standing block into an
+ *     allow, and main/master is the only question the gate asks.
+ * The neighbouring forms that do NOT create a local branch (`git checkout
+ * origin/main` → detached HEAD, `git switch origin/main` → fatal) lift too,
+ * which is the same fail-closed direction this function already takes for a
+ * `checkout main` that fails: the line did not move onto a branch, so treating
+ * the rest of it as protected is the safe answer.
+ */
+function dwimMainBranch(ref: string, cPath: string, st: LineState, gitDir: string): string | null {
+  const slash = ref.indexOf("/");
+  if (slash <= 0) return null;
+  const remote = ref.slice(0, slash);
+  const branch = ref.slice(slash + 1);
+  // Cheap test first — no subprocess for the overwhelmingly common target.
+  if (!isMainRef(branch)) return null;
+  return gitRemotes(cPath, st, gitDir).includes(remote) ? branch : null;
+}
+
 function repoKey(cPath: string, cwd: string, gitDir: string): string {
   const dir = cPath ? resolve(cwd || ".", cPath) : cwd;
   return `${dir}|${gitDir ? resolve(dir || ".", gitDir) : ""}`;
@@ -751,15 +804,23 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
     break;
   }
   if (!target) return;
-  const resolved = expandWord(target, st);
+  let resolved = expandWord(target, st);
   if (resolved === null) return; // '$BRANCH' unresolved → no lift (fail-closed)
   if (created) {
     // -B / -C / --force-create reset-or-create and always land; the plain
     // create forms fail on an existing name and leave the repo where it was.
+    // (The create forms name the local branch outright, so no `<remote>/…`
+    // DWIM applies here — `switch -c foo origin/main` creates `foo`.)
     const force = rest.some((t) => t === "-B" || t === "-C" || t === "--force-create");
     if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
-  } else if (!isMainRef(resolved) && !refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) {
-    return; // not a branch: pathspec or detached checkout — no line-state change
+  } else {
+    // #389: `<remote>/main` lands on a NEW LOCAL `main` — lift the LOCAL name.
+    const dwim = dwimMainBranch(resolved, cPath, st, gitDir);
+    if (dwim !== null) {
+      resolved = dwim;
+    } else if (!isMainRef(resolved) && !refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) {
+      return; // not a branch: pathspec or detached checkout — no line-state change
+    }
   }
   st.lifts.set(repoKey(cPath, st.cwd, gitDir), resolved);
 }

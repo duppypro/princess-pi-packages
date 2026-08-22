@@ -381,9 +381,17 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   `switch <name>` lifts too, whenever `<name>` is main/master or an **existing** branch and
   it is the sub-command's only positional — that is what a real branch switch looks like,
   and until #399 it registered nothing at all, so `git checkout main && git commit` was a
-  two-token bypass of the gate. Still no lift where the answer would be a guess: a `--`
-  (pathspecs follow), a second positional (`git checkout <tree-ish> <path>` restores files
-  without switching), or a name that is neither main/master nor an existing branch (a
+  two-token bypass of the gate. Since #389 a **`<remote>/main`** name lifts as `main`:
+  `git switch -t origin/main` — and `--track`, `--track=direct`, `--no-track`, and
+  `git checkout --track origin/main` — all answer *"Switched to a new branch 'main'"*
+  (measured, git 2.43.0), so the branch the gate must judge is the LOCAL one git creates;
+  `refs/heads/origin/main` never exists, so before #389 no lift was recorded at all and the
+  idiomatic tracking form walked straight through the gate. Only a first segment that is a
+  **configured remote of that repo** is stripped, so a local branch named `feature/main`
+  stays `feature/main` and is not main. Still no lift where the answer would be a guess: a
+  `--` (pathspecs follow), a second positional (`git checkout <tree-ish> <path>` restores
+  files without switching, and `git switch --track direct origin/main` is two positionals
+  that git itself refuses), or a name that is neither main/master nor an existing branch (a
   pathspec, or a detached checkout). **Unknown never moves the model (PR #305
   review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
   too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`

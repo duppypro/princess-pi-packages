@@ -35,6 +35,13 @@ interface Case {
   /** Branches that must EXIST in the cwd repo (needs a root commit) — for the
    *  `checkout -b <existing>` fail-closed cases (PR #305 review). */
   extra_branches?: string[];
+  /** Remotes to configure in the cwd repo. `<remote>/<branch>` only DWIMs to a
+   *  NEW LOCAL branch `<branch>` when `<remote>` is a real configured remote —
+   *  a local branch named `feature/main` must not be read as main (#389). */
+  remotes?: string[];
+  /** Remote-tracking refs to create (`origin/main`), so the DWIM cases are run
+   *  against the state git actually needs to perform them (#389). */
+  remote_branches?: string[];
   why: string;
   /** What the frozen pre-#74 ancestor returned. Absent = no historical claim. */
   pre74?: "allow" | "block";
@@ -59,9 +66,16 @@ function materialize(c: Case): { command: string; cwd: string } {
   let command = c.command;
   const cwdBranch = c.cwd_branch !== undefined ? c.cwd_branch : c.branch;
   const cwd = cwdBranch ? repoOnBranch(cwdBranch) : nonRepoDir();
-  if (c.extra_branches?.length) {
+  // A branch (local or remote-tracking) needs something to point at.
+  if (c.extra_branches?.length || c.remote_branches?.length) {
     execSync(`git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init`, { cwd });
-    for (const b of c.extra_branches) execSync(`git branch "${b}"`, { cwd });
+  }
+  for (const b of c.extra_branches ?? []) execSync(`git branch "${b}"`, { cwd });
+  for (const r of c.remotes ?? []) {
+    execSync(`git remote add "${r}" "https://example.invalid/${r}.git"`, { cwd });
+  }
+  for (const rb of c.remote_branches ?? []) {
+    execSync(`git update-ref "refs/remotes/${rb}" HEAD`, { cwd });
   }
   if (c.c_path_branch !== undefined) {
     if (c.c_path_rel !== undefined) {

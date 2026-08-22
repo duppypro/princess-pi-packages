@@ -1663,6 +1663,110 @@
       "branch": "389-feat",
       "verdict": "allow",
       "why": "#389 finding A: any quoted piece makes the WHOLE delimiter quoted, so the body is inert text and must not be read as a command"
+    },
+    {
+      "id": "block-switch-track-short-remote-main-then-commit",
+      "command": "git switch -t origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: `-t origin/main` creates and switches to a NEW LOCAL branch 'main' (measured, git 2.43.0) — the lift must be recorded against the local name, not the remote-tracking one",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-track-long-remote-main-then-commit",
+      "command": "git switch --track origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: --track is a boolean flag, so origin/main is still the lone positional and still lands on a new local main",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-track-equals-direct-remote-main-then-commit",
+      "command": "git switch --track=direct origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: --track=<mode> is the value form of the same boolean flag — 'Switched to a new branch main'",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-no-track-remote-main-then-commit",
+      "command": "git switch --no-track origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: --no-track ALSO lands on a new local main (measured) — the DWIM is about the remote-named target, not about tracking",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-checkout-track-remote-main-then-commit",
+      "command": "git checkout --track origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "block",
+      "why": "#389 finding B: checkout --track origin/main is the same DWIM — 'Switched to a new branch main'",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "allow-switch-local-branch-named-feature-main-then-commit",
+      "command": "git switch feature/main && git commit -m x",
+      "branch": "389-feat",
+      "extra_branches": [
+        "feature/main"
+      ],
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 finding B false-positive guard: only a FIRST SEGMENT that is a configured remote is stripped — 'feature' is not a remote, so feature/main stays feature/main and is not main"
+    },
+    {
+      "id": "allow-switch-track-two-positionals-git-refuses",
+      "command": "git switch --track direct origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 finding B: measured, not claimed — git 2.43.0 answers 'fatal: missing branch name; try -c' and never switches, so the line stays on the feature branch (two positionals already mean no lift)",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "block-switch-main-dwim-no-local-main-then-commit",
+      "command": "git switch main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "remote_branches": [
+        "origin/main"
+      ],
+      "verdict": "block",
+      "why": "#399 + #389: with no LOCAL main, `git switch main` DWIMs to creating one from origin/main — the positional IS main, so #399's lift already covers it; the sibling `git checkout main` case pinned this for checkout only"
     }
   ]
 }

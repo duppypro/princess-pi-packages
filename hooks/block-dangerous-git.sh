@@ -330,6 +330,8 @@ apply_lift() {
   if [ "$created" = 1 ]; then
     # -B / -C / --force-create reset-or-create and always land; the plain create
     # forms fail on an existing name and leave the repo where it was.
+    # (The create forms name the local branch outright, so no <remote>/... DWIM
+    # applies here — `switch -c foo origin/main` creates `foo`.)
     local force=0 t2
     for t2 in "${rest[@]}"; do
       case "$t2" in -B|-C|--force-create) force=1 ;; esac
@@ -337,11 +339,69 @@ apply_lift() {
     if [ "$force" = 0 ] && ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
       return 0
     fi
-  elif ! is_main_ref "$target" && ! ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
-    return 0   # not a branch: pathspec or detached checkout — no line-state change
+  else
+    # #389: `<remote>/main` lands on a NEW LOCAL main — lift the LOCAL name.
+    local dwim
+    if dwim=$(dwim_main_branch "$cpath" "$gitdir" "$target"); then
+      target="$dwim"
+    elif ! is_main_ref "$target" && ! ref_exists "$cpath" "$gitdir" "refs/heads/$target"; then
+      return 0   # not a branch: pathspec or detached checkout — no line-state change
+    fi
   fi
   LIFTS+="$(repo_key "$cpath" "$gitdir")=$target"$'\n'
   return 0
+}
+
+# Configured remotes of the repo the sub-command acts on. Same -C/--git-dir
+# resolution as ref_exists.
+git_remotes() {
+  local dir="$1" gitdir="$2"
+  if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
+    dir="$HOOK_CWD/$dir"
+  fi
+  [ -z "$dir" ] && dir="$HOOK_CWD"
+  if [ -n "$gitdir" ]; then
+    [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
+    GIT_DIR="$gitdir" git remote 2>/dev/null || true
+  else
+    git -C "${dir:-.}" remote 2>/dev/null || true
+  fi
+}
+
+# #389: a target that names a REMOTE ref does not create a branch by that name.
+# `git switch -t origin/main`, `--track origin/main`, `--track=direct
+# origin/main`, `--no-track origin/main` and `git checkout --track origin/main`
+# all answer "Switched to a new branch 'main'" (measured, git 2.43.0): the branch
+# git creates and lands you on is the LOCAL main. refs/heads/origin/main never
+# exists, so the pre-#389 test found no branch, recorded no lift, and the #301
+# on-main gate judged the following `git commit` against the feature branch -
+# bypassed by the most idiomatic form there is.
+#
+# Prints the local branch name and returns 0 when <ref> is <remote>/main (or
+# /master) AND <remote> is a CONFIGURED remote of the affected repo. Both halves
+# carry weight:
+#   - only a first segment that is a real remote is stripped, so a local branch
+#     literally named `feature/main` keeps its name - `feature` is no remote;
+#   - answering only for main/master keeps this TIGHTENING-ONLY: a
+#     <remote>/<feature> target can never turn a standing block into an allow,
+#     and main/master is the only question the gate asks.
+# The neighbouring forms that do NOT create a local branch (`git checkout
+# origin/main` -> detached HEAD, `git switch origin/main` -> fatal) lift too,
+# which is the same fail-closed direction apply_lift already takes for a
+# `checkout main` that fails: the line did not move onto a branch, so treating
+# the rest of it as protected is the safe answer.
+dwim_main_branch() {
+  local cpath="$1" gitdir="$2" ref="$3"
+  local remote="${ref%%/*}" branch="${ref#*/}" remotes
+  [ "$remote" = "$ref" ] && return 1   # no slash: not a <remote>/<branch> target
+  [ -z "$remote" ] && return 1
+  # Cheap test first - no subprocess for the overwhelmingly common target.
+  is_main_ref "$branch" || return 1
+  remotes=$(git_remotes "$cpath" "$gitdir")
+  case $'\n'"$remotes"$'\n' in
+    *$'\n'"$remote"$'\n'*) printf '%s' "$branch"; return 0 ;;
+  esac
+  return 1
 }
 
 # Does <ref> exist in the repo the sub-command acts on? Same -C/--git-dir
