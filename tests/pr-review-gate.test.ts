@@ -244,14 +244,14 @@ console.log("\npr-review exit codes:");
 		// A lens that could not run must never be counted as a clean lens.
 		const env = stubs(sb, "broken");
 		const { code, out } = run(PR_REVIEW, sb.clone, env);
-		check(code === 0, "claude broken → exit 0 (fails open)", `got ${code}: ${out}`);
+		check(code === 8, "claude broken, zero lenses ran → exit 8 (#401)", `got ${code}: ${out}`);
 		check(/lenses failed/.test(out), "claude broken → reports incomplete coverage, not 'clean'", out);
 	}
 	{
 		const env = stubs(sb, "iserror");
 		const { code, out } = run(PR_REVIEW, sb.clone, env);
 		check(/lenses failed/.test(out), "is_error envelope → counted as failed, not clean", out);
-		check(code === 0, "is_error envelope → still fails open", `got ${code}: ${out}`);
+		check(code === 8, "is_error envelope, zero lenses ran → exit 8 (#401)", `got ${code}: ${out}`);
 	}
 	{
 		// On the primary branch there is no feature diff to review.
@@ -283,6 +283,56 @@ console.log("\nthe log is written every run:");
 		check(Array.isArray(d.lenses) && d.lenses.length === 3, "log records all three lenses", JSON.stringify(d.lenses));
 		check(typeof d.base === "string" && d.base.length > 0, "log records the base it diffed against", JSON.stringify(d.base));
 	}
+}
+
+// --- #406: the log directory groups by REPOSITORY, not worktree basename ----
+// `basename "$(git rev-parse --show-toplevel)"` resolves to the WORKTREE path
+// inside a worktree, so a branch checked out at `<repo>/.claude/worktrees/<br
+// anch>/` — pr-open's own documented layout — logged to a directory named
+// after the branch instead of the repo, scattering one directory per branch
+// that `pr-cleanup` then orphans. `--path-format=absolute --git-common-dir`
+// resolves to the MAIN clone's `.git` in both a worktree and the main clone
+// itself, so its parent's basename is the repo, stable across both.
+console.log("\n#406: the log directory groups by repo, not worktree basename:");
+{
+	const sb = makeSandbox();
+	// A worktree whose directory basename is NOT the repo name — the exact shape
+	// of pr-open's own documented layout (`<repo>/.claude/worktrees/<branch>/`).
+	const wtDir = path.join(sb.root, "406-feature-worktree");
+	git(sb.clone, ["worktree", "add", "-q", "-b", "406-feature", wtDir]);
+	fs.writeFileSync(path.join(wtDir, "wtfile.txt"), "hi\n");
+	git(wtDir, ["add", "-A"]);
+	git(wtDir, ["commit", "-q", "-m", "feat: worktree change"]);
+
+	const xdg = path.join(sb.root, "xdg-state");
+	// PR_REVIEW_LOG_DIR is dropped so the script computes the DEFAULT path from
+	// XDG_STATE_HOME/REPO_NAME — the thing under test — rather than the
+	// sandbox override every other case here uses. `-u` on the invocation
+	// guards against a PR_REVIEW_LOG_DIR the host itself happens to export,
+	// same pattern as the "no HOME" case above.
+	const { PR_REVIEW_LOG_DIR: _dropped, ...env } = stubs(sb, "clean");
+	env.XDG_STATE_HOME = xdg;
+	const runDefault = (cwd: string) =>
+		run("/usr/bin/env", cwd, env, ["-u", "PR_REVIEW_LOG_DIR", PR_REVIEW]);
+
+	const { code: c1, out: o1 } = runDefault(wtDir);
+	const { code: c2, out: o2 } = runDefault(sb.clone);
+	check(c1 === 0, "run from the worktree still reviews and exits 0", `got ${c1}: ${o1}`);
+	check(c2 === 0, "run from the main clone still reviews and exits 0", `got ${c2}: ${o2}`);
+
+	const repoName = path.basename(sb.clone); // "clone" — the main clone's own dirname
+	const repoDir = path.join(xdg, "pr-review", repoName);
+	const worktreeDir = path.join(xdg, "pr-review", path.basename(wtDir));
+
+	check(fs.existsSync(repoDir), "the repo-named log directory exists", repoDir);
+	check(!fs.existsSync(worktreeDir),
+		"no directory named after the worktree basename is created", worktreeDir);
+	const logs = fs.existsSync(repoDir) ? fs.readdirSync(repoDir).filter((f) => f.endsWith(".json")) : [];
+	check(logs.length === 2,
+		"both runs — worktree AND main clone — logged into the SAME repo directory",
+		JSON.stringify(logs));
+
+	git(sb.clone, ["worktree", "remove", "-f", wtDir]);
 }
 
 console.log("\npr-open gate behaviour:");
@@ -317,6 +367,28 @@ console.log("\npr-open gate behaviour:");
 		check(code === 0, "claude absent → exit 0", `got ${code}`);
 		check(fs.existsSync(rec), "claude absent → PR still created (fails open)", "gh pr create was not reached");
 	}
+	fs.rmSync(rec, { force: true });
+	{
+		// #401 (PR #393): the reviewer WAS on PATH and every lens still failed —
+		// "could not review" must not read as "clean". pr-review exits 8, distinct
+		// from both 0 (clean/absent) and 7 (findings), and pr-open refuses rather
+		// than opening a PR that believes itself reviewed.
+		const env = stubs(sb, "broken", rec);
+		const { code, out } = run(PR_OPEN, sb.clone, env);
+		check(code === 8, "zero lenses ran → pr-open refuses, exit 8 (#401)", `got ${code}: ${out}`);
+		check(!fs.existsSync(rec), "zero lenses ran → NO PR created",
+			fs.existsSync(rec) ? fs.readFileSync(rec, "utf8") : "");
+		check(/--reviewed/.test(out), "zero lenses ran → names the override", out);
+	}
+	{
+		// The same escape hatch that already covers findings (exit 7) also covers
+		// this: --reviewed skips pr-review outright, so it never even runs.
+		const env = stubs(sb, "broken", rec);
+		const { code } = run(PR_OPEN, sb.clone, env, ["--reviewed"]);
+		check(code === 0, "--reviewed → exit 0 despite zero coverage", `got ${code}`);
+		check(fs.existsSync(rec), "--reviewed → PR created", "gh pr create was not reached");
+	}
+	fs.rmSync(rec, { force: true });
 }
 
 // --- the findings pr-review's own first run raised against itself (#377) ---
@@ -586,7 +658,7 @@ console.log("\nround-3 High regressions:");
 	const sb = makeSandbox();
 	const env = stubs(sb, "arrayenv");
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
-	check(code === 0, "array envelope → exit 0, collector survived", `got ${code}: ${out}`);
+	check(code === 8, "array envelope → exit 8, collector survived but zero lenses ran (#401)", `got ${code}: ${out}`);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	check(files.length === 1, "array envelope → a log was still written", JSON.stringify(files));
 	if (files.length) {
@@ -661,7 +733,7 @@ console.log("\nthe review payload is identified, not taken by position:");
 	const env = stubs(sb, "errorobject");
 	const { code, out } = run(PR_REVIEW, sb.clone, env);
 	check(/lenses failed/.test(out), "{\"error\":…} → counted as failed, not as a clean review", out);
-	check(code === 0, "{\"error\":…} → still fails open", `got ${code}: ${out}`);
+	check(code === 8, "{\"error\":…} → exit 8, zero lenses ran (#401)", `got ${code}: ${out}`);
 	const files = fs.readdirSync(env.PR_REVIEW_LOG_DIR);
 	const d = JSON.parse(fs.readFileSync(path.join(env.PR_REVIEW_LOG_DIR, files[0]), "utf8"));
 	check(d.lensesRan === 0, "{\"error\":…} → lensesRan 0, not 3", String(d.lensesRan));

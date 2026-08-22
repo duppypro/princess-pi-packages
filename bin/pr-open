@@ -58,6 +58,13 @@
 #      re-run, or accept them with `pr-open --reviewed`. Distinct from 6: 6 is a
 #      git-state refusal that a force-push resolves, 7 is a review refusal that
 #      only a code change or an explicit override resolves.
+#   8  pr-review could not review this branch — zero lenses ran (#401): the
+#      reviewer was available but every lens failed or timed out, so "found
+#      nothing" and "looked at nothing" are different facts and the PR was NOT
+#      created. Same escape hatch as 7 (`pr-open --reviewed`, which skips
+#      pr-review entirely and so never even reaches this check). Distinct from
+#      7 the same way 5 is distinct from 6: 7 means the review ran and found a
+#      problem, 8 means the review never actually ran.
 # 5 vs 6 is the load-bearing distinction: "I could not check" (5) vs "I
 # checked and it says no" (6). pr-open never leaks git's raw exit status —
 # every push failure is mapped to one of these two.
@@ -107,6 +114,7 @@ not ignored (#367). To open another branch's PR, run this from its worktree.
 
 exit codes: 0 ok · 2 usage · 3 precondition · 4 not found · 5 remote · 6 refused
             7 review found issues, PR not created
+            8 review could not run (zero lenses), PR not created (#401)
 EOF
     exit 0 ;;
   # #178: resolved absolute path of the running copy — install-workflow-tools
@@ -349,8 +357,18 @@ fi
 # findings get acted on, not whether they get displayed. `--reviewed` is the
 # escape hatch and is deliberately an explicit word.
 #
-# FAILS OPEN on anything else. pr-review returns 0 when `claude` is absent or the
-# reviewer breaks, so a broken reviewer can never become a broken release path.
+# ALSO BLOCKS on exit 8 (#401, PR #393): zero lenses completing is "could not
+# review", not "reviewed, clean" — collapsing the two into one exit-0 path let
+# a PR open with no review coverage and no message. `--reviewed` covers this
+# too, since it skips pr-review outright before this check ever runs.
+#
+# FAILS OPEN on anything else. Exit 0 has three causes and none of them is a
+# silent loss of coverage: the reviewer was unavailable (`claude`/`python3` not
+# on PATH), the branch diff was empty (`no-changes`), or at least one lens
+# completed and reported nothing — a clean or partial-clean review. A broken
+# reviewer can therefore never become a broken release path, and a reviewer that
+# WAS available and still produced no coverage at all (exit 8) is no longer
+# "anything else".
 if [ "$SKIP_REVIEW" -eq 0 ] && command -v pr-review >/dev/null 2>&1; then
   echo "🔍 Reviewing before opening (pr-review, 3 lenses)..."
   review_status=0
@@ -360,6 +378,13 @@ if [ "$SKIP_REVIEW" -eq 0 ] && command -v pr-review >/dev/null 2>&1; then
     echo "pr-open: review found issues — the PR was NOT created (#377)." >&2
     echo "  Fix them and re-run 'pr-open', or accept them with 'pr-open --reviewed'." >&2
     exit 7
+  elif [ "$review_status" -eq 8 ]; then
+    echo "" >&2
+    echo "pr-open: pr-review could not review this branch — zero lenses ran (#401)." >&2
+    echo "  The reviewer is broken, or every lens timed out; a real finding could be" >&2
+    echo "  hiding in the coverage that never ran. Fix the reviewer and re-run" >&2
+    echo "  'pr-open', or accept the gap with 'pr-open --reviewed'." >&2
+    exit 8
   elif [ "$review_status" -ne 0 ]; then
     echo "pr-open: pr-review exited $review_status — proceeding unreviewed." >&2
   fi
