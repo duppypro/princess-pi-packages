@@ -2149,6 +2149,30 @@
       "verdict": "allow",
       "why": "#419 review, the over-block bound for the same rule: a CLEAN --work-tree must still lift, or capturing the option would have traded a bypass for a false block",
       "worktree": "clean-tracked"
+    },
+    {
+      "id": "allow-git-dir-and-work-tree-clean-then-commit-on-main",
+      "command": "git --git-dir=.git --work-tree=/worktree checkout feature && git --git-dir=.git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "work_tree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#419 review round 4: with BOTH --git-dir and --work-tree, worktree_dirty built its environment as `${worktree:+GIT_WORK_TREE=…}`. Bash decides what is an assignment prefix at PARSE time, so that expanded word became the COMMAND NAME, the status probe failed, and the fail-closed path reported every tree — clean ones included — as dirty. Measured: real git answers 'Switched to branch feature'. Both prefixes are literal now. `--git-dir` is repeated on the commit deliberately: a lift recorded under one --git-dir spelling is keyed separately from a plain `git commit`, which is a DIFFERENT and pre-existing defect (reproducible on main's own hook) and must not confound this case"
+    },
+    {
+      "id": "block-git-dir-and-work-tree-dirty-then-commit-on-main",
+      "command": "git --git-dir=.git --work-tree=/worktree checkout feature && git --git-dir=.git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "work_tree": "dirty",
+      "verdict": "block",
+      "why": "#419 review round 4, the other side: fixing the probe must not open the bypass it guards. The --work-tree tree is dirty and the cwd tree is clean, so the switch may be refused (measured with diverged branches: 'error: Your local changes … would be overwritten by checkout') and the commit would land on main"
     }
   ]
 }

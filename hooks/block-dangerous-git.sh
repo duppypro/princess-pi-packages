@@ -586,8 +586,20 @@ worktree_dirty() {
   fi
   if [ -n "$gitdir" ]; then
     [ "${gitdir#/}" = "$gitdir" ] && gitdir="$dir/$gitdir"
-    out=$(GIT_DIR="$gitdir" ${worktree:+GIT_WORK_TREE="$worktree"} \
-      git -C "${worktree:-${dir:-.}}" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+    # Both assignment prefixes are LITERAL on purpose (#419 review round 4). An
+    # expanded `${worktree:+GIT_WORK_TREE=...}` is not an assignment: bash
+    # decides what is an assignment prefix at PARSE time, so the expanded word
+    # became the command NAME, the probe failed, and the fail-closed path below
+    # reported every tree — clean ones included — as dirty. Measured on a CLEAN
+    # alternate tree: `git --git-dir=… --work-tree=… checkout feature && git
+    # commit` was blocked while real git answered "Switched to branch
+    # 'feature'". An over-block, not a bypass, but a false one.
+    if [ -n "$worktree" ]; then
+      out=$(GIT_DIR="$gitdir" GIT_WORK_TREE="$worktree" \
+        git -C "$worktree" status --porcelain --untracked-files=no 2>/dev/null) || return 0
+    else
+      out=$(GIT_DIR="$gitdir" git status --porcelain --untracked-files=no 2>/dev/null) || return 0
+    fi
   elif [ -n "$worktree" ]; then
     out=$(GIT_WORK_TREE="$worktree" git -C "${dir:-.}" status --porcelain --untracked-files=no 2>/dev/null) || return 0
   else
