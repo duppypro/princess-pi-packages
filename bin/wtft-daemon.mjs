@@ -2228,6 +2228,8 @@ var sessionExisted = false;
 var pendingClaudeCommands = [];
 var discoveredClaudeSessions = new Set;
 var warnedClaudeSubAgentOneShot = false;
+var warnedSubagentStatFailure = false;
+var warnedSubagentWriteFailure = false;
 var discoveredSubagentFiles = new Map;
 function shutdown(reason) {
   if (!running)
@@ -2410,6 +2412,11 @@ function scanForSubAgents() {
       size = stat.size;
       mtimeMs = stat.mtimeMs;
     } catch (err) {
+      if (!warnedSubagentStatFailure) {
+        warnedSubagentStatFailure = true;
+        process.stderr.write(`[wtft-log-parser] WARNING: a subagent transcript could not be stat'd, so its cost may be missing from this session's total (${sessionId}): ${err instanceof Error ? err.message : String(err)}
+`);
+      }
       if (process.env.WTFT_DAEMON_DEBUG) {
         process.stderr.write(`[wtft-log-parser] subagent stat failed, will retry next poll (${sessionId}): ${err instanceof Error ? err.message : String(err)}
 `);
@@ -2450,6 +2457,11 @@ function scanForSubAgents() {
       fileState.size = size;
       fileState.mtimeMs = mtimeMs;
     } catch (err) {
+      if (!warnedSubagentWriteFailure) {
+        warnedSubagentWriteFailure = true;
+        process.stderr.write(`[wtft-log-parser] WARNING: a subagent's lines could not be written to the tag file, so this session's reported cost is behind until it succeeds (${sessionId}): ${err instanceof Error ? err.message : String(err)}
+`);
+      }
       if (process.env.WTFT_DAEMON_DEBUG) {
         process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), will re-parse next poll: ${err instanceof Error ? err.message : String(err)}
 `);

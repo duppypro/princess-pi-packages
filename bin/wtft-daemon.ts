@@ -90,6 +90,10 @@ const discoveredClaudeSessions = new Set<string>();
 // property of the path, so it is reported once per daemon process, not per
 // transcript.
 let warnedClaudeSubAgentOneShot = false;
+// Same one-shot shape for the Task/agent path's two I/O failure modes. Both are
+// silent-forever undercounts if they persist, so both warn in default mode.
+let warnedSubagentStatFailure = false;
+let warnedSubagentWriteFailure = false;
 
 /** What the daemon remembers about one subagent transcript (#270).
  *  `size`/`mtimeMs` are the CHANGE DETECTOR — the file is re-read only when one
@@ -416,6 +420,20 @@ function scanForSubAgents() {
       // like the truncation and write-error branches below (review round 5):
       // a transcript that stays unreadable (e.g. a permissions change) would
       // otherwise silently drop out of coverage with no debug signal at all.
+      //
+      // Ungated once, then debug-gated per occurrence (PR review). Ungating the
+      // sibling claude -p warning in this same change and leaving this one
+      // behind the flag was inconsistent: the reasoning there — "a signal only
+      // a maintainer who already suspected it would set WTFT_DAEMON_DEBUG to
+      // see is no signal at all" — applies identically here, and a persistent
+      // stat failure is a silent, indefinite undercount. Once per process, so a
+      // failure that repeats every poll does not become its own noise floor.
+      if (!warnedSubagentStatFailure) {
+        warnedSubagentStatFailure = true;
+        process.stderr.write(
+          `[wtft-log-parser] WARNING: a subagent transcript could not be stat'd, so its cost may be missing from this session's total (${sessionId}): ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
       if (process.env.WTFT_DAEMON_DEBUG) {
         process.stderr.write(`[wtft-log-parser] subagent stat failed, will retry next poll (${sessionId}): ${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -479,6 +497,20 @@ function scanForSubAgents() {
     } catch (err) {
       // Keep polling — one bad write must not stop this subagent, the other
       // subagents in this loop, or the parent session's own tag writes.
+      //
+      // But say so in default mode (PR review), for the same reason the claude
+      // -p warning above is ungated. Retry is only self-healing while the cause
+      // is transient; an ENOSPC or a removed tag directory persists, and every
+      // poll then re-parses and re-fails while the daemon looks healthy and the
+      // reported cost drifts further from the transcripts. Once per process:
+      // this fires on every poll by construction, and a per-poll warning would
+      // bury the one that matters.
+      if (!warnedSubagentWriteFailure) {
+        warnedSubagentWriteFailure = true;
+        process.stderr.write(
+          `[wtft-log-parser] WARNING: a subagent's lines could not be written to the tag file, so this session's reported cost is behind until it succeeds (${sessionId}): ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
       if (process.env.WTFT_DAEMON_DEBUG) {
         process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), will re-parse next poll: ${err instanceof Error ? err.message : String(err)}\n`);
       }
