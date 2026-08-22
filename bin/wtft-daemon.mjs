@@ -2379,6 +2379,10 @@ function scanForSubAgents() {
           continue;
         discoveredClaudeSessions.add(sessionId);
         wroteAny = writeSessionToTagFile(file) || wroteAny;
+        if (process.env.WTFT_DAEMON_DEBUG) {
+          process.stderr.write(`[wtft-log-parser] claude -p subagent parsed ONCE, will not re-read growth (${sessionId})
+`);
+        }
       }
     }
     pendingClaudeCommands.length = 0;
@@ -2399,7 +2403,11 @@ function scanForSubAgents() {
       const stat = fs9.statSync(file);
       size = stat.size;
       mtimeMs = stat.mtimeMs;
-    } catch (_) {
+    } catch (err) {
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent stat failed, will retry next poll (${sessionId}): ${err instanceof Error ? err.message : String(err)}
+`);
+      }
       continue;
     }
     if (size === fileState.size && mtimeMs === fileState.mtimeMs)

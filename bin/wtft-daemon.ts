@@ -343,6 +343,15 @@ function scanForSubAgents() {
         if (discoveredClaudeSessions.has(sessionId)) continue;
         discoveredClaudeSessions.add(sessionId);
         wroteAny = writeSessionToTagFile(file) || wroteAny;
+        // Unlike the Task/agent path below, this one has no size/mtime tracking
+        // (#420 review) — it parses once, here, and never again. Anything this
+        // transcript writes after this instant is silently dropped forever,
+        // the exact #270 failure the Task/agent path was fixed for. Debug-only
+        // signal so a maintainer chasing a cost gap on this path has something
+        // to grep for; the read path itself is unchanged, still one-shot.
+        if (process.env.WTFT_DAEMON_DEBUG) {
+          process.stderr.write(`[wtft-log-parser] claude -p subagent parsed ONCE, will not re-read growth (${sessionId})\n`);
+        }
       }
     }
     pendingClaudeCommands.length = 0;
@@ -370,8 +379,15 @@ function scanForSubAgents() {
       const stat = fs.statSync(file);
       size = stat.size;
       mtimeMs = stat.mtimeMs;
-    } catch (_) {
-      continue; // gone or unreadable this poll — discovery re-lists it next time
+    } catch (err) {
+      // gone or unreadable this poll — discovery re-lists it next time. Logged
+      // like the truncation and write-error branches below (review round 5):
+      // a transcript that stays unreadable (e.g. a permissions change) would
+      // otherwise silently drop out of coverage with no debug signal at all.
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent stat failed, will retry next poll (${sessionId}): ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      continue;
     }
     if (size === fileState.size && mtimeMs === fileState.mtimeMs) continue;
 
