@@ -79,10 +79,19 @@ describe("#412 every python3 invocation in bin/pr-review is guarded", () => {
 	});
 
 	test("the scan finds every invocation, so an empty result cannot mean 'nothing looked'", () => {
-		// Nine today (#412 H1-H8 plus PYSAFE and the two `python3 -c` sites). A
-		// floor, not an equality: adding a guarded invocation must not fail here,
-		// but a scan that silently matched nothing must.
-		expect(scan(source).length).toBeGreaterThanOrEqual(9);
+		// Eleven today, and the derivation is the file itself, not a remembered
+		// list: `emit_status`'s and `DEDUP`'s `python3 -c` sites, PYSAFE, the
+		// collector (H2), PYIDS (H1), PYCLUSTER, PYCLUSTERCRASH, PYNOCLUSTER (H4),
+		// PYNOCLUSTERCRASH, PYFAIL (H3) and PYSHOW. An earlier version of this
+		// comment said "nine" and enumerated "H1-H8 plus PYSAFE and the two
+		// python3 -c sites", which double-counted H8 as one of those two and
+		// omitted PYCLUSTER, PYCLUSTERCRASH and PYSHOW entirely — while H5-H7 are
+		// not python3 at all and this scan cannot see them (pr-review round 2,
+		// reasoning lens, Medium). A ledger that miscounts is not a ledger.
+		//
+		// A floor, not an equality: adding a guarded invocation must not fail
+		// here, but a scan that silently matched nothing must.
+		expect(scan(source).length).toBeGreaterThanOrEqual(11);
 	});
 
 	test("the scanner reports a bare invocation — proof it can fail", () => {
@@ -110,9 +119,13 @@ describe("#412 every python3 invocation in bin/pr-review is guarded", () => {
 		expect(source).not.toMatch(/^read -r RAWCOUNT/m);
 	});
 
-	test("H7 — the --json path cannot exit 1 with empty stdout", () => {
-		expect(source).toMatch(/if ! cat "\$LOG"; then/);
+	test("H7 — the --json path cannot exit 1 with empty stdout, or emit two documents", () => {
+		// Captured to a variable and printed only on success: a `cat` that fails
+		// mid-stream has already flushed part of the log, and the fallback object
+		// would follow it (pr-review round 2, contract lens, Medium).
+		expect(source).toMatch(/if log_json=\$\(cat "\$LOG"\); then/);
 		expect(source).not.toMatch(/^ {2}cat "\$LOG"$/m);
+		expect(source).not.toMatch(/if ! cat "\$LOG"; then/);
 	});
 
 	test("an assignment with no || fallback is NOT guarded", () => {
