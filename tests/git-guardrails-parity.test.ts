@@ -42,6 +42,19 @@ interface Case {
   /** Remote-tracking refs to create (`origin/main`), so the DWIM cases are run
    *  against the state git actually needs to perform them (#389). */
   remote_branches?: string[];
+  /** Worktree contents of the cwd repo, beyond its branches (#399 finding 2).
+   *  A switch to another branch only lands when the tree is clean, so the
+   *  lift has to be decided against real dirtiness, not a mock:
+   *    "clean-tracked" — one committed tracked file, unmodified
+   *    "dirty"         — that file modified and not committed
+   *    "untracked"     — that file clean, plus an untracked file beside it
+   *                      (untracked files never block a checkout) */
+  worktree?: "clean-tracked" | "dirty" | "untracked";
+  /** Same three states for the `-C <path>` repo — the dirtiness test must read
+   *  the repo the sub-command ACTS on, not the shell's cwd (#399 finding 2). */
+  c_path_worktree?: "clean-tracked" | "dirty" | "untracked";
+  /** Branches that must EXIST in the `-C <path>` repo. */
+  c_path_extra_branches?: string[];
   why: string;
   /** What the frozen pre-#74 ancestor returned. Absent = no historical claim. */
   pre74?: "allow" | "block";
@@ -61,14 +74,27 @@ function nonRepoDir(): string {
   return mkdtempSync(join(tmpdir(), "guardrail-nonrepo-"));
 }
 
+/** Give <dir> a committed tracked file, then leave the worktree in <state>. */
+function materializeWorktree(dir: string, state: Case["worktree"]): void {
+  if (state === undefined) return;
+  writeFileSync(join(dir, "tracked.txt"), "committed\n");
+  execSync("git add tracked.txt", { cwd: dir });
+  if (state === "dirty") writeFileSync(join(dir, "tracked.txt"), "modified\n");
+  if (state === "untracked") writeFileSync(join(dir, "untracked.txt"), "new\n");
+}
+
 /** Materialize a case's declared branch state into (command, cwd). */
 function materialize(c: Case): { command: string; cwd: string } {
   let command = c.command;
   const cwdBranch = c.cwd_branch !== undefined ? c.cwd_branch : c.branch;
   const cwd = cwdBranch ? repoOnBranch(cwdBranch) : nonRepoDir();
-  // A branch (local or remote-tracking) needs something to point at.
-  if (c.extra_branches?.length || c.remote_branches?.length) {
+  // A branch (local or remote-tracking) needs something to point at. The
+  // tracked file is staged BEFORE that commit so a "dirty" worktree is a
+  // modification to a committed file — the only kind that blocks a checkout.
+  if (c.extra_branches?.length || c.remote_branches?.length || c.worktree) {
+    materializeWorktree(cwd, c.worktree === "dirty" ? "clean-tracked" : c.worktree);
     execSync(`git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init`, { cwd });
+    if (c.worktree === "dirty") writeFileSync(join(cwd, "tracked.txt"), "modified\n");
   }
   for (const b of c.extra_branches ?? []) execSync(`git branch "${b}"`, { cwd });
   for (const r of c.remotes ?? []) {
@@ -84,6 +110,12 @@ function materialize(c: Case): { command: string; cwd: string } {
       execSync(`git init -q -b "${c.c_path_branch}" "${c.c_path_rel}"`, { cwd });
     } else {
       const cRepo = repoOnBranch(c.c_path_branch);
+      if (c.c_path_extra_branches?.length || c.c_path_worktree) {
+        materializeWorktree(cRepo, c.c_path_worktree === "dirty" ? "clean-tracked" : c.c_path_worktree);
+        execSync(`git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init`, { cwd: cRepo });
+        if (c.c_path_worktree === "dirty") writeFileSync(join(cRepo, "tracked.txt"), "modified\n");
+        for (const b of c.c_path_extra_branches ?? []) execSync(`git branch "${b}"`, { cwd: cRepo });
+      }
       command = command.replaceAll("/repo", cRepo);
     }
   }

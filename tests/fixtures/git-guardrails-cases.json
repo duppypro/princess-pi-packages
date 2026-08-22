@@ -1793,6 +1793,107 @@
       ],
       "verdict": "block",
       "why": "#399 + #389: with no LOCAL main, `git switch main` DWIMs to creating one from origin/main — the positional IS main, so #399's lift already covers it; the sibling `git checkout main` case pinned this for checkout only"
+    },
+    {
+      "id": "block-checkout-pathspec-from-file-equals-does-not-lift",
+      "command": "git checkout feature --pathspec-from-file=paths.txt && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `--pathspec-from-file` is the RESTORE form — measured git 2.43.0 answers 'Updated 1 path from …' and HEAD stays on main. It starts with '-' so it was excluded from the positional count, leaving `feature` as a lone positional that lifted; the commit then landed on main"
+    },
+    {
+      "id": "block-checkout-pathspec-from-file-separate-does-not-lift",
+      "command": "git checkout feature --pathspec-from-file paths.txt && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: the separate-argument spelling restores exactly the same way (measured, HEAD stays on main) — a fix that matched only `--pathspec-from-file=` would leave this half open"
+    },
+    {
+      "id": "block-checkout-pathspec-file-nul-does-not-lift",
+      "command": "git checkout feature --pathspec-file-nul --pathspec-from-file=paths.txt && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `--pathspec-file-nul` is the sibling of `--pathspec-from-file` (git refuses it alone: 'requires --pathspec-from-file'); either option present means paths, not a switch"
+    },
+    {
+      "id": "block-checkout-patch-short-does-not-lift",
+      "command": "git checkout -p feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `checkout -p <branch>` restores hunks interactively — measured git 2.43.0 prints 'No changes.' and HEAD stays on main, so the following commit is a commit on main"
+    },
+    {
+      "id": "block-checkout-patch-long-does-not-lift",
+      "command": "git checkout --patch feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: `--patch` is the long spelling of `-p` and restores the same way (measured) — both spellings must terminate"
+    },
+    {
+      "id": "block-checkout-ours-does-not-lift",
+      "command": "git checkout --ours feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: measured git 2.43.0 answers \"fatal: '--ours/--theirs' cannot be used with switching branches\" — the checkout never runs, so HEAD stays on main"
+    },
+    {
+      "id": "block-checkout-theirs-does-not-lift",
+      "command": "git checkout --theirs feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: the `--theirs` half of the same measured refusal — HEAD stays on main"
+    },
+    {
+      "id": "block-checkout-overlay-does-not-lift",
+      "command": "git checkout --no-overlay feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "block",
+      "why": "#399 fallout: measured git 2.43.0 answers \"fatal: '--[no]-overlay' cannot be used with switching branches\" — an overlay-mode option means paths, and HEAD stays on main"
+    },
+    {
+      "id": "allow-checkout-conflict-style-still-lifts",
+      "command": "git checkout --conflict=merge feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "verdict": "allow",
+      "why": "#399 fallout, the other direction: `--conflict=<style>` is NOT a restore form — measured git 2.43.0 answers 'Switched to branch feature'. Terminating on every unrecognized option would turn this into a false block of the #400 class"
+    },
+    {
+      "id": "allow-switch-patch-is-not-a-switch-option-then-commit",
+      "command": "git switch -p feature && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main",
+        "feature"
+      ],
+      "verdict": "allow",
+      "why": "#399 fallout: `git switch` has no -p — measured git 2.43.0 exits 129 'unknown switch p' and never moves HEAD, so the line stays on the feature branch and the commit is fine there"
     }
   ]
 }

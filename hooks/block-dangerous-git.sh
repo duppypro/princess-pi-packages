@@ -301,18 +301,47 @@ apply_cd() {
 # leaves the repo where it was, PR #305 review). For a plain switch, an existing
 # ref is precisely the evidence that it IS a branch switch rather than a pathspec.
 #
-# Still fail-closed where the answer is a guess: `--` means pathspecs follow
-# (file restore, no switch), more than one positional is the
+# Still fail-closed where the answer is a guess: a RESTORE-FORM option means
+# no switch (see restore_form below), more than one positional is the
 # `git checkout <tree-ish> <path>…` restore form (which does not switch either),
 # a name that is neither main/master nor an existing branch is a pathspec or a
 # detached checkout, and an unresolved $BRANCH is nothing at all. main/master
 # lifts whether or not the ref exists — if the switch fails, the line stays where
 # it was, and treating the rest of it as protected is the safe direction.
+# Does this `checkout`/`switch` carry an option that makes it a RESTORE or
+# otherwise NO-SWITCH form? Every one of these leaves HEAD where it was, so the
+# lone positional beside it is a tree-ish or a pathspec, never a branch to lift.
+#
+# #399 fallout: `--` was the only terminator, and `--pathspec-from-file` starts
+# with `-`, so it was skipped by the positional count — `git checkout feature
+# --pathspec-from-file=paths` left `feature` as the lone positional, lifted, and
+# the `git commit` after it ran unguarded on main. Measured against git 2.43.0,
+# each entry below with `feature` as its positional and HEAD on main:
+#   --pathspec-from-file=<f> / --pathspec-from-file <f> → "Updated 1 path from
+#     …", HEAD=main;  --pathspec-file-nul → "requires --pathspec-from-file"
+#   -p / --patch → "No changes.", HEAD=main (restores hunks, never switches)
+#   --ours / --theirs → "fatal: '--ours/--theirs' cannot be used with switching
+#     branches";  --overlay / --no-overlay → the same fatal for '--[no]-overlay'
+# The list is measured, not guessed, and stays that way: `--conflict=<style>`
+# looks equally path-ish and DOES switch ("Switched to branch 'feature'"), so it
+# is deliberately absent. Terminating on every unknown option would make that a
+# false block — the #400 class of defect.
+restore_form() {
+  local t
+  for t in "$@"; do
+    case "$t" in
+      --|-p|--patch|--pathspec-from-file|--pathspec-from-file=*|--pathspec-file-nul|--ours|--theirs|--overlay|--no-overlay)
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
 apply_lift() {
   local cmd="$1" cpath="$2" gitdir="$3"; shift 3
   local -a rest=("$@")
   local t target="" created=0 i=0 n=${#rest[@]} npos=0
-  for t in "${rest[@]}"; do [ "$t" = "--" ] && return 0; done
+  restore_form "${rest[@]}" && return 0   # no switch happens: nothing to lift
   for t in "${rest[@]}"; do case "$t" in -*) ;; *) npos=$((npos + 1)) ;; esac; done
   while [ "$i" -lt "$n" ]; do
     t="${rest[$i]}"

@@ -777,6 +777,37 @@ const ARG_OPTIONS = new Set([
 ]);
 
 /**
+ * Options that make a `checkout`/`switch` a RESTORE or otherwise NO-SWITCH
+ * form. Every one of these leaves HEAD where it was, so the lone positional
+ * beside it is a tree-ish or a pathspec, never a branch to lift.
+ *
+ * #399 fallout: `--` was the only terminator, and `--pathspec-from-file` starts
+ * with `-`, so it was skipped by the positional count — `git checkout feature
+ * --pathspec-from-file=paths` left `feature` as the lone positional, lifted,
+ * and the `git commit` after it ran unguarded on main. Measured against git
+ * 2.43.0, each entry below with `feature` as its positional and HEAD on main:
+ *   `--pathspec-from-file=<f>` / `--pathspec-from-file <f>` → "Updated 1 path
+ *     from …", HEAD=main; `--pathspec-file-nul` → "requires
+ *     --pathspec-from-file"
+ *   `-p` / `--patch` → "No changes.", HEAD=main (restores hunks, never switches)
+ *   `--ours` / `--theirs` → "fatal: '--ours/--theirs' cannot be used with
+ *     switching branches"; `--overlay` / `--no-overlay` → the same fatal for
+ *     '--[no]-overlay'
+ * The list is measured, not guessed, and stays that way: `--conflict=<style>`
+ * looks equally path-ish and DOES switch ("Switched to branch 'feature'"), so
+ * it is deliberately absent. Terminating on every unknown option would make
+ * that a false block — the #400 class of defect.
+ */
+const RESTORE_FORM_OPTS = new Set([
+  "--", "-p", "--patch", "--pathspec-from-file", "--pathspec-file-nul",
+  "--ours", "--theirs", "--overlay", "--no-overlay",
+]);
+
+function isRestoreForm(rest: string[]): boolean {
+  return rest.some((t) => RESTORE_FORM_OPTS.has(t) || t.startsWith("--pathspec-from-file="));
+}
+
+/**
  * Record a branch switch for the rest of the line (#301 line-state).
  *
  * Two ways a sub-command moves the line onto another branch:
@@ -792,8 +823,8 @@ const ARG_OPTIONS = new Set([
  * plain switch, an existing ref is precisely the evidence that it IS a branch
  * switch rather than a pathspec.
  *
- * Still fail-closed where the answer is a guess: a `--` means pathspecs follow
- * (file restore, no switch), more than one positional is the
+ * Still fail-closed where the answer is a guess: a RESTORE-FORM option means no
+ * switch (see RESTORE_FORM_OPTS), more than one positional is the
  * `git checkout <tree-ish> <path>…` restore form (which does not switch either),
  * a name that is neither main/master nor an existing branch is a pathspec or a
  * detached checkout, and an unresolved `$BRANCH` is nothing at all. main/master
@@ -801,7 +832,7 @@ const ARG_OPTIONS = new Set([
  * where it was, and treating the rest of it as protected is the safe direction.
  */
 function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
-  if (rest.includes("--")) return;
+  if (isRestoreForm(rest)) return; // no switch happens: nothing to lift
   const createOpts = cmd === "checkout"
     ? new Set(["-b", "-B", "--orphan"])
     : new Set(["-c", "-C", "--create", "--force-create", "--orphan"]);

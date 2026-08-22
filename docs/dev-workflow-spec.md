@@ -393,11 +393,20 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   present, because that is exactly what makes git create a local branch. Without one,
   `git checkout origin/main` **detaches** — a commit there does not advance `main` — and
   `git switch origin/main` is fatal, so neither lifts; blocking them was a false positive
-  of the #400 class. Still no lift where the answer would be a guess: a
-  `--` (pathspecs follow), a second positional (`git checkout <tree-ish> <path>` restores
-  files without switching, and `git switch --track direct origin/main` is two positionals
-  that git itself refuses), or a name that is neither main/master nor an existing branch (a
-  pathspec, or a detached checkout). **Unknown never moves the model (PR #305
+  of the #400 class. Still no lift where the answer would be a guess: a **restore-form
+  option** — `--`, `-p`/`--patch`, `--pathspec-from-file[=<file>]`, `--pathspec-file-nul`,
+  `--ours`/`--theirs`, `--overlay`/`--no-overlay` — a second positional (`git checkout
+  <tree-ish> <path>` restores files without switching, and `git switch --track direct
+  origin/main` is two positionals that git itself refuses), or a name that is neither
+  main/master nor an existing branch (a pathspec, or a detached checkout). The restore-form
+  list is **measured, not guessed** (git 2.43.0, each beside an existing `feature` with HEAD
+  on `main`): `--pathspec-from-file` answers *"Updated 1 path from …"*, `-p` answers *"No
+  changes."*, and `--ours`/`--theirs`/`--overlay` are fatal *"cannot be used with switching
+  branches"* — HEAD stays on `main` in all of them, and until #399's fallout was fixed
+  `git checkout feature --pathspec-from-file=paths && git commit` was allowed on `main`
+  because the option starts with `-` and so never counted as a positional. `--conflict=<style>`
+  looks equally path-ish and **does** switch, so it is deliberately absent and still lifts —
+  terminating on every unknown option would be a false block of the #400 class. **Unknown never moves the model (PR #305
   review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
   too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`
   earlier in the same line, then from the environment; an unresolved branch operand never
