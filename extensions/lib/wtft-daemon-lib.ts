@@ -1117,9 +1117,16 @@ export async function watchTagFile(
 			timezone: undefined
 		};
 
-		// Deduplicate by message.id — classified entries from the daemon are already
-		// deduped (the daemon uses the same message-ID dedup logic), so this is a no-op
-		// in normal operation. Present as cheap insurance against edge cases.
+		// Deduplicate by message.id. `allInteractions` here always came from
+		// readClassifiedTagFile (line 1054/1273/1341) or the fs.watch branch's own
+		// dedupeClassifiedById call (line 1253) — both already collapse tag-file
+		// lines sharing one message.id, taking max cost — so this is a no-op in
+		// normal operation (#420 review; a prior version of this comment credited
+		// the DAEMON with deduping at write time, which is no longer true: since
+		// #270 the daemon legitimately writes multiple raw lines for one growing
+		// message.id, one per poll it changed in, and the READER collapses them).
+		// Present as cheap insurance against a caller reaching this point some
+		// other way.
 		const deduped = deduplicateInteractions(allInteractions);
 		interactionCount = deduped.length;
 

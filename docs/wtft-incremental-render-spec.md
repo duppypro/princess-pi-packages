@@ -86,7 +86,7 @@ So: **a subagent's growing-usage message legitimately appears as multiple tag-fi
 
 ## `attributeClaudeSubAgentCosts`: Per-Call, Not Global
 
-The docstring at `extensions/lib/wtft-parser.ts:975-976` reads: *"Sub-agent session IDs are tracked globally to prevent double-counting across multiple interactions that reference the same session."* This is true only for a single call. `seenSessionIds` (line 980) is a local `Set` created fresh every time the function runs; it has no lifetime beyond that one call.
+The docstring used to read: *"Sub-agent session IDs are tracked globally to prevent double-counting across multiple interactions that reference the same session."* — true only for a single call, since `seenSessionIds` (`extensions/lib/wtft-parser.ts:980`) is a local `Set` created fresh every time the function runs, with no lifetime beyond that one call. #420 review corrected the docstring itself (`extensions/lib/wtft-parser.ts:975-983`) to say this plainly rather than leaving the false "global" claim standing next to the code it describes; the paragraphs below are the fuller version of that correction.
 
 The invariant the function actually provides: within the array of interactions handed to it in one call, no nested `claude -p` session's cost is attributed twice. It provides no protection across two separate calls — whether those calls are seconds apart in the same poll, or a beat apart across two polls.
 
