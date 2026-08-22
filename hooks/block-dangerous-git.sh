@@ -183,7 +183,15 @@ branch_of() {
 # resolution), so the key matches the TS twin's path.resolve() byte for byte —
 # a symlinked worktree must not lift the gate on one harness and not the other.
 # The fallback is what a non-repo (or an unresolvable cwd) gets, and two
-# spellings of a directory git cannot identify stay two keys, which fails closed.
+# spellings of a directory git cannot identify stay two keys.
+#
+# A resolution FAILURE is not silently absorbed (PR #424 review): repo_key
+# returns 1 and its callers record `?degraded=` in the lift table. Without that,
+# a transient failure — index.lock contention, a resource limit, git briefly
+# unresolvable on PATH — hitting the store but not the lookup (or the reverse)
+# put the two on different keys; the lookup missed, `branch_of` answered with the
+# PRE-switch branch, and `git --git-dir=.git checkout main && git commit` sailed
+# through. That is fail-OPEN, the one direction the fallback must never take.
 repo_key() {
   local dir="$1" gitdir="$2" id
   if [ -n "$dir" ] && [ "${dir#/}" = "$dir" ] && [ -n "$HOOK_CWD" ]; then
@@ -199,10 +207,18 @@ repo_key() {
     id=$(git -C "${dir:-.}" rev-parse --absolute-git-dir 2>/dev/null) || id=""
   fi
   if [ -n "$id" ]; then
-    printf '%s' "$id"; return
+    printf '%s' "$id"; return 0
   fi
   printf '%s|%s' "$(realpath -sm "$dir" 2>/dev/null || printf '%s' "$dir")" "${gitdir:+$(realpath -sm "$gitdir" 2>/dev/null || printf '%s' "$gitdir")}"
+  return 1
 }
+
+# A line on which any identity resolution failed judges every later MISS as
+# unknown — and unknown is protected. Recorded inside LIFTS itself so the
+# existing save/restore of line-state carries it for free.
+DEGRADED_KEY='?degraded'
+mark_degraded() { case "$LIFTS" in *$'\n'"$DEGRADED_KEY="*) ;; *) LIFTS+="$DEGRADED_KEY="$'\n' ;; esac; }
+lifts_degraded() { case "$LIFTS" in *$'\n'"$DEGRADED_KEY="*) return 0 ;; *) return 1 ;; esac; }
 
 # Branch the sub-command acts on, honouring an earlier switch in the same line.
 effective_branch() {
@@ -214,11 +230,18 @@ effective_branch() {
   # No lift on this line means no lookup can hit, so skip resolving the key —
   # it now costs a `git rev-parse` and the answer would be discarded (#421).
   if [ -n "${LIFTS#$'\n'}" ]; then
-    key=$(repo_key "$1" "$2")
-    rest="${LIFTS##*$'\n'$key=}"        # ## → LAST record for this key
-    if [ "$rest" != "$LIFTS" ]; then
-      printf '%s' "${rest%%$'\n'*}"; return
+    if key=$(repo_key "$1" "$2"); then
+      rest="${LIFTS##*$'\n'$key=}"      # ## → LAST record for this key
+      if [ "$rest" != "$LIFTS" ]; then
+        printf '%s' "${rest%%$'\n'*}"; return
+      fi
+    else
+      mark_degraded
     fi
+    # A miss on a degraded line may be a key mismatch rather than a different
+    # repo, and that difference decides whether a lift is honoured — so the
+    # branch is unknowable, not "whatever the repo is on right now".
+    if lifts_degraded; then printf '%s' "$UNKNOWN_CWD"; return; fi
   fi
   branch_of "$1" "$2"
 }
@@ -365,7 +388,7 @@ restore_form() {
 }
 
 apply_lift() {
-  local cmd="$1" cpath="$2" gitdir="$3" worktree="$4"; shift 4
+  local cmd="$1" cpath="$2" gitdir="$3" worktree="$4" lift_key; shift 4
   local -a rest=("$@")
   local t target="" created=0 i=0 n=${#rest[@]} npos=0 prev_resolved=0
   restore_form "${rest[@]}" && return 0   # no switch happens: nothing to lift
@@ -420,8 +443,10 @@ apply_lift() {
   if [ -z "$target" ]; then
     # A bare `git checkout --detach` / `git switch --detach` detaches at HEAD
     # and lands even on a dirty tree (measured) — the tree does not change.
-    [ "$detach" = 1 ] && [ "$created" = 0 ] &&
-      LIFTS+="$(repo_key "$cpath" "$gitdir")="$'\n'
+    if [ "$detach" = 1 ] && [ "$created" = 0 ]; then
+      lift_key=$(repo_key "$cpath" "$gitdir") || mark_degraded
+      LIFTS+="$lift_key="$'\n'
+    fi
     return 0
   fi
   if [ "$prev_resolved" = 0 ]; then
@@ -477,7 +502,8 @@ apply_lift() {
   fi
   # Detached: the line is on no branch at all — record that, not the target.
   [ "$detach" = 1 ] && [ "$created" = 0 ] && target=""
-  LIFTS+="$(repo_key "$cpath" "$gitdir")=$target"$'\n'
+  lift_key=$(repo_key "$cpath" "$gitdir") || mark_degraded
+  LIFTS+="$lift_key=$target"$'\n'
   return 0
 }
 
