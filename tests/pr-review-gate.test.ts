@@ -534,18 +534,20 @@ console.log("\nclustering fail-open:");
  * It is also what the 20000 literal cost: the raise happens at the FIRST
  * candidate and the remaining attempts prove nothing, while `bin/pr-review`'s
  * rescan walks all of them at one character per failure. Measured on this host,
- * 20000 openers cost 8.6s per scan and four scans run per case — 35.5s of the
- * suite's 66s, for a margin of 2x over a threshold of 9997. The quadratic walk
+ * 20000 openers cost 8.6s per scan; four scans run per case, so ~34.4s of the
+ * case's measured 35.5s is that walk — for a margin of 2x over a threshold
+ * of 9997. The quadratic walk
  * itself is #426's other half and belongs in bin/pr-review, not here.
  */
-const RECURSION_OPENERS: number = (() => {
+const RECURSION_OPENERS: number | null = (() => {
 	const FALLBACK = 20000;
 	// Doubling alone is too coarse: it answers 16000 for a threshold of 9997, and
 	// the cost of the hazard case is quadratic in the answer. Double to bracket,
 	// then bisect. Counted on that same scenario: 5 doubling calls to bracket
 	// [8000, 16000] and 13 bisection calls, 18 in all — each a raw_decode from
 	// position 0 on a short string, 0.01s for the lot (an earlier version of this
-	// comment said "about fourteen", undercounting by a third).
+	// comment guessed "about fourteen": four calls short, and guessed rather
+	// than counted).
 	const probe = spawnSync("python3", ["-c", `
 import json
 dec = json.JSONDecoder()
@@ -574,7 +576,19 @@ else:
     print(lo)
 `], { encoding: "utf8" });
 	const found = Number.parseInt((probe.stdout || "").trim(), 10);
-	if (!Number.isFinite(found) || found <= 0) {
+	// A probe that ran and printed 0 has established something: doubling passed
+	// through 20000 on its way past 200000 WITHOUT raising, so the old fallback is
+	// not merely slow here — it is already disproven, and running the case with it
+	// would exercise nothing while reporting PASS (pr-review round 2, contract
+	// lens). That is a skip, declared, not a silent green.
+	if (found === 0) {
+		console.log(
+			`  ##SKIP## no '{"a":' depth up to 200000 raises RecursionError on this python3 — ` +
+				`the hazard case cannot prove the non-ValueError catch here (#426)`,
+		);
+		return null;
+	}
+	if (!Number.isFinite(found) || found < 0) {
 		// Loudly, not silently (pr-review round 1, contract lens). The whole point
 		// of probing is that a stale constant makes this case vacuous without
 		// saying so; a probe that fails quietly recreates that one level up, and
@@ -627,8 +641,13 @@ const PROSE_HAZARDS: Array<{ name: string; prose?: string; post?: string }> = [
 	// its summary, and end pr-review at exit 1 — every lens's findings lost and the
 	// PR opened unreviewed. The count comes from RECURSION_OPENERS above, which
 	// probes this interpreter rather than trusting a literal (#426).
-	{ name: "nesting deep enough to raise RecursionError",
-		prose: '{"a":'.repeat(RECURSION_OPENERS) + "\n" },
+	// Present only where the probe found a depth that raises — see
+	// RECURSION_OPENERS. Absent, the suite has said ##SKIP## rather than running
+	// a case that cannot fail.
+	...(RECURSION_OPENERS === null
+		? []
+		: [{ name: "nesting deep enough to raise RecursionError",
+			prose: '{"a":'.repeat(RECURSION_OPENERS) + "\n" }]),
 	// The model echoing the prompt's OWN schema AFTER its real answer, not
 	// before. A pure LAST-wins fix (briefly shipped between #378's first and
 	// second commits) beat the leading-echo cases above and then lost to
