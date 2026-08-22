@@ -31,16 +31,15 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import {
 	getDaemonPidPath,
 	readClassifiedTagFile,
-	parseSessionFile,
-	deduplicateInteractions,
 	WTFT_TAGGER_VERSION,
 } from "../bin/wtft.mjs";
 
 const DAEMON_BIN = path.resolve(import.meta.dirname, "..", "bin", "wtft-daemon.mjs");
+const WTFT_LIB = path.resolve(import.meta.dirname, "..", "bin", "wtft.mjs");
 
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
@@ -113,15 +112,23 @@ console.log("wtft daemon nested claude-bash attribution across poll windows (#27
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-nested-"));
 cleanupDirs.push(dir);
 
+// A scratch home directory, isolated from the real ~/.claude/projects. The
+// Node/Bun home-directory resolver honours the process's HOME environment
+// variable on POSIX systems, so pointing every process that resolves
+// ~/.claude/projects (the daemon spawned below, and the reference-parse child
+// process further down) at this directory keeps every session-discovery
+// lookup inside the fixture instead of the host's live transcript store.
+const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "wtft-270-home-"));
+cleanupDirs.push(tempHome);
+
 // The cwd the subagent's bash turns cd into. Its Claude Code project slug is
 // derived from this path, so a unique fixture dir gives us a project directory
 // no other session can be writing to.
 const nestedCwd = path.join(dir, "nested-project");
 fs.mkdirSync(nestedCwd, { recursive: true });
 const slug = nestedCwd.replace(/\//g, "-");
-const projectDir = path.join(os.homedir(), ".claude", "projects", slug);
+const projectDir = path.join(tempHome, ".claude", "projects", slug);
 fs.mkdirSync(projectDir, { recursive: true });
-cleanupDirs.push(projectDir);
 
 const sessionPath = path.join(dir, "session.jsonl");
 fs.writeFileSync(sessionPath, JSON.stringify({
@@ -160,6 +167,11 @@ const tagPath = path.join(tagsDir, path.basename(sessionPath) + `.wtft-tag.v${WT
 try {
 	const child = spawn(process.execPath, [DAEMON_BIN, "--session", sessionPath], {
 		detached: true, stdio: "ignore",
+		// The daemon runs discoverClaudeSubAgentSessionFiles in its own process,
+		// which resolves ~/.claude/projects off the process's home directory.
+		// Point it at the fixture home so it finds the fixture's project dir,
+		// not the host's real one.
+		env: { ...process.env, HOME: tempHome },
 	});
 	child.unref();
 	if (child.pid) cleanupPids.push(child.pid);
@@ -197,8 +209,28 @@ try {
 	);
 	const seenCost = seen.reduce((s: number, i: any) => s + i.cost, 0);
 
-	const reference = deduplicateInteractions(parseSessionFile(subagentPath));
-	const referenceCost = reference.reduce((s: number, i: any) => s + i.cost, 0);
+	// parseSessionFile runs attributeClaudeSubAgentCosts internally, which calls
+	// discoverClaudeSubAgentSessionFiles, and that resolves the process's home
+	// directory IN THIS PROCESS. Bun captures that value once at process start
+	// and never re-reads the environment afterward — probing a fresh Bun
+	// process shows reassigning its home-directory environment variable
+	// mid-run does not change what the resolver reports — so mutating this
+	// process's environment here would be a no-op and silently fall back to
+	// the host's real ~/.claude/projects. Instead, compute the reference in a
+	// short-lived CHILD process spawned with its own scratch home directory,
+	// the same way the daemon itself is spawned above.
+	const referenceScript = path.join(dir, "reference-parse.mjs");
+	fs.writeFileSync(referenceScript, `
+		import { parseSessionFile, deduplicateInteractions } from ${JSON.stringify(WTFT_LIB)};
+		const interactions = deduplicateInteractions(parseSessionFile(process.argv[2]));
+		const cost = interactions.reduce((s, i) => s + i.cost, 0);
+		process.stdout.write(JSON.stringify({ cost }));
+	`);
+	const referenceOut = execFileSync(process.execPath, [referenceScript, subagentPath], {
+		env: { ...process.env, HOME: tempHome },
+		encoding: "utf8",
+	});
+	const referenceCost = JSON.parse(referenceOut).cost as number;
 
 	assert(
 		`whole-file reference attributes the nested session ONCE (ref=$${referenceCost.toFixed(6)} expected=$${EXPECTED_TOTAL.toFixed(6)})`,
