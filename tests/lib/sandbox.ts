@@ -39,8 +39,3 @@ export function trackSandbox(dir: string): string {
 export function mkSandbox(prefix: string): string {
 	return trackSandbox(mkdtempSync(prefix));
 }
-
-/** How many sandboxes are still registered. For the contract test only. */
-export function trackedSandboxCount(): number {
-	return SANDBOXES.length;
-}

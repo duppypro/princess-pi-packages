@@ -30,6 +30,7 @@ import {
 	type DaemonHealthReason,
 } from "../extensions/lib/wtft-daemon-lib.ts";
 import { ensureDaemonRunning, getDaemonStatus } from "../extensions/lib/wtft-cli-shared.ts";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -103,8 +104,6 @@ console.log("V2. A typo'd health-code comparison fails `tsc --noEmit`");
 	const PROBE_SOURCE = `// Temporary negative control written by tests/wtft-179-daemon-health-reason.test.ts (#179).
 // Deliberately compares a DaemonHealthReason against a value outside the union.
 import type { DaemonStatus } from "../extensions/lib/wtft-daemon-lib.ts";
-import { trackSandbox } from "./lib/sandbox";
-
 export function probe(status: DaemonStatus): boolean {
 	return status.reason === "daemon not fuond";
 }

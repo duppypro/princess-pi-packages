@@ -21,9 +21,13 @@ const TESTS_DIR = import.meta.dir;
 
 /** Call sites of `mkdtempSync` that are NOT registered for removal. */
 function unregisteredCallSites(source: string): number {
-	// A file with its own `process.on("exit")` sweep owns its cleanup — the
-	// pattern tests/lib/sandbox.ts generalises, and predating it is not a defect.
-	if (/process\.on\(\s*["']exit["']/.test(source)) return 0;
+	// No `process.on("exit")` exemption. It was a whole-FILE text match, so any
+	// exit handler — including one that restores an env var and never touches a
+	// directory — exempted every mkdtempSync call in the file (pr-review round 1,
+	// reasoning lens, Medium). tests/serve-181-registry.test.ts is exactly that
+	// shape: its handler restores REGISTRY_PATH and swept nothing. Every suite
+	// that had its own sweep also wraps its calls now, so the strict rule costs
+	// nothing and the false-negative class is gone.
 	// `mkSandbox` is not counted at all: it contains no `mkdtempSync` call of its
 	// own to find, so a file using it has nothing left to register.
 	const calls = source.match(/(?<![.\w])(?:[A-Za-z_$][\w$]*\.)?mkdtempSync\(/g) ?? [];
@@ -41,6 +45,11 @@ describe("#394 test sandboxes are removed", () => {
 	test("no suite creates a sandbox it never registers for removal", () => {
 		const offenders: string[] = [];
 		for (const name of suites) {
+			// This file's own "mkdtempSync" occurrences are string literals inside
+			// the scanner's samples below, not calls. Skipping it by name keeps the
+			// samples honest — rewriting them to dodge the scan would make the
+			// non-vacuity proof test something other than the real spelling.
+			if (name === "sandbox-cleanup-contract.test.ts") continue;
 			const source = readFileSync(join(TESTS_DIR, name), "utf8");
 			const n = unregisteredCallSites(source);
 			if (n > 0) offenders.push(`${name} (${n} unregistered mkdtempSync call(s))`);
@@ -56,10 +65,12 @@ describe("#394 test sandboxes are removed", () => {
 			unregisteredCallSites(`const d = trackSandbox(fs.mkdtempSync(join(tmpdir(), "x-")));`),
 		).toBe(0);
 		expect(unregisteredCallSites(`const d = mkSandbox(join(tmpdir(), "x-"));`)).toBe(0);
+		// An unrelated exit handler no longer exempts anything: this sample's
+		// handler removes `root`, which is not what mkdtempSync returned.
 		expect(
 			unregisteredCallSites(
 				`process.on("exit", () => rmSync(root));\nconst d = mkdtempSync("x-");`,
 			),
-		).toBe(0);
+		).toBe(1);
 	});
 });
