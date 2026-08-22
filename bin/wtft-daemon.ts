@@ -95,8 +95,13 @@ const discoveredClaudeSessions = new Set<string>();
 // forever, and the undercount gets persisted into the tag file. Presence in
 // this map means "discovered"; each entry carries its OWN byte offset and
 // stream state so the file is re-read exactly like the parent session is
-// (parseNewLinesFrom below) — cheap when unchanged (one stat, no read), and
-// it naturally stops growing once the subagent stops writing.
+// (readNewSubagentLines below) — cheap when unchanged (one stat, no read).
+// Bounded by the transcripts that currently exist for this session, not by
+// every one ever discovered: scanForSubAgents evicts entries whose file is
+// gone. It cannot be bounded tighter — an offset per LIVE file is exactly the
+// state an incremental read needs, and forgetting a live one re-reads it from
+// zero, which is the overcount. See the eviction comment in scanForSubAgents
+// for why "the subagent finished" is not a safe rule.
 interface SubagentFileState {
   /** Byte offset already read from this transcript. */
   lastSize: number;
@@ -319,6 +324,30 @@ function scanForSubAgents() {
   // discovery is still counted, and a finished subagent naturally stops being
   // re-parsed once readNewSubagentLines finds no new bytes.
   const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
+
+  // Eviction (#270 review): drop state for transcripts that are GONE, and only
+  // those. "The subagent finished" is NOT a safe rule — discoverSubagentSessionFiles
+  // re-lists every transcript on disk every poll, so a finished subagent is
+  // re-discovered on the very next one; evicting it would re-read it from offset 0
+  // forever and re-append the whole transcript each time. A file that is no longer
+  // listed cannot be re-discovered, and if one reappears under the same name it is
+  // a new file that must be read from zero anyway — so its stale offset is not
+  // merely droppable, it is wrong to keep (the truncate branch only self-heals when
+  // the replacement is SMALLER).
+  //
+  // This bounds the map by the transcripts that currently exist for this session,
+  // not by every one ever seen. It cannot do better: an offset per live file is
+  // exactly the state the incremental read needs, and forgetting a live one is the
+  // overcount. Guarded on a non-empty scan because discoverSubagentSessionFiles
+  // swallows directory-read errors and returns [] — a transient unreadable dir must
+  // not look like "every subagent vanished".
+  if (taskAgentFiles.length > 0 && discoveredSubagentFiles.size > taskAgentFiles.length) {
+    const live = new Set(taskAgentFiles.map(f => path.basename(f, '.jsonl')));
+    for (const knownId of [...discoveredSubagentFiles.keys()]) {
+      if (!live.has(knownId)) discoveredSubagentFiles.delete(knownId);
+    }
+  }
+
   for (const file of taskAgentFiles) {
     const sessionId = path.basename(file, '.jsonl');
     let fileState = discoveredSubagentFiles.get(sessionId);
