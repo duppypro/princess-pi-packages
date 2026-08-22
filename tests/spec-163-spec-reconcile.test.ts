@@ -36,6 +36,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import * as os from "node:os";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const CORPUS_SHA = "9b2a16e";
@@ -180,7 +181,7 @@ check(`F5 corpus SHA ${F5_SHA} is reachable from this clone`, f5Reachable);
 let f5ProbeError = "";
 function hookVerdictAtF5(command: string, branch: string): "allow" | "block" | "error" {
 	f5ProbeError = ""; // never carry a previous probe's cause into this one's detail
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-probe-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "f5-probe-")));
 	try {
 		const hook = path.join(dir, "hook.sh");
 		fs.writeFileSync(hook, atSha(F5_SHA, "hooks/block-dangerous-git.sh"));

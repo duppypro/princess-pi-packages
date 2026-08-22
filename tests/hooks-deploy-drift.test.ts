@@ -20,6 +20,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { skip } from "./lib/skips.ts";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
@@ -53,7 +54,7 @@ function check(cond: boolean, label: string, detail = ""): void {
 }
 
 function freshHome(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "hooks-deploy-home-"));
+	return trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-deploy-home-")));
 }
 
 function run(home: string, args: string[] = []): { code: number; out: string } {
@@ -165,7 +166,7 @@ console.log("hooks deploy + drift gate (#249)");
 //     review). Driven against a synthetic repo whose hooks/ is empty.
 {
 	const home = freshHome();
-	const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-deploy-repo-"));
+	const fakeRepo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-deploy-repo-")));
 	fs.mkdirSync(path.join(fakeRepo, "bin"), { recursive: true });
 	fs.mkdirSync(path.join(fakeRepo, "hooks"), { recursive: true }); // present but EMPTY
 	// resolve_repo_dir's identity check (#267 finding) requires package.json's
@@ -216,11 +217,11 @@ console.log("hooks deploy + drift gate (#249)");
 // (full matrix is in #237's issue body); a deploy-drift suite's job is
 // "does the tracked copy still gate", not re-proving every #237 edge case.
 {
-	const mainRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-main-"));
+	const mainRepo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-main-")));
 	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: mainRepo });
-	const featRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-feat-"));
+	const featRepo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-feat-")));
 	execFileSync("git", ["init", "-q", "-b", "42-slug"], { cwd: featRepo });
-	const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-nonrepo-"));
+	const nonRepo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-nonrepo-")));
 
 	const verdict = (filePath: string, cwd: string): number => {
 		const payload = JSON.stringify({ tool_input: { file_path: filePath }, cwd });
@@ -263,7 +264,7 @@ console.log("hooks deploy + drift gate (#249)");
 
 	/** A repo whose feature branch conflicts with main, left mid-rebase (detached, conflicted). */
 	const conflictedRebase = (label: string): { repo: string; file: string } => {
-		const repo = fs.mkdtempSync(path.join(os.tmpdir(), `hooks-mainguard-${label}-`));
+		const repo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), `hooks-mainguard-${label}-`)));
 		git(repo, "init", "-q", "-b", "main");
 		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
 		git(repo, "add", "-A");
@@ -304,7 +305,7 @@ console.log("hooks deploy + drift gate (#249)");
 	{
 		// The case the guard was actually written for: detached with no
 		// operation in progress. Must still block.
-		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-detached-"));
+		const repo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-detached-")));
 		git(repo, "init", "-q", "-b", "main");
 		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
 		git(repo, "add", "-A");
@@ -367,7 +368,7 @@ console.log("hooks deploy + drift gate (#249)");
 		// HARD GATE applies, and "never merge locally" makes this a state the
 		// workflow does not produce. Widening the exemption to any in-progress
 		// operation would punch a hole straight through the main gate.
-		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-mergemain-"));
+		const repo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-mergemain-")));
 		git(repo, "init", "-q", "-b", "main");
 		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
 		git(repo, "add", "-A");
@@ -415,7 +416,7 @@ console.log("hooks deploy + drift gate (#249)");
 	//     `|| exit 0` guard never fires there and every .git/ path falls through
 	//     to the branch check — which is exactly how this stayed broken.
 	{
-		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-gitdir-"));
+		const repo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-gitdir-")));
 		git(repo, "init", "-q", "-b", "main");
 		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
 		git(repo, "add", "-A");
@@ -447,7 +448,7 @@ console.log("hooks deploy + drift gate (#249)");
 
 		// Outside any repo must stay allowed — the same output-vs-exit-status
 		// change that fixes .git/ could break this if it read the wrong signal.
-		const nonRepo2 = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-nonrepo2-"));
+		const nonRepo2 = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-nonrepo2-")));
 		check(
 			verdict(path.join(nonRepo2, "f.txt"), nonRepo2) === 0,
 			"block-edit-on-main.sh still allows an edit outside any git work tree (exit 0)",
@@ -458,7 +459,7 @@ console.log("hooks deploy + drift gate (#249)");
 		// The per-worktree git dir: `<main>/.git/worktrees/<name>/`. The #257
 		// layout again — a linked worktree's own `.git` is a file, and its real
 		// git dir hangs off the main clone.
-		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-wtgitdir-"));
+		const repo = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-mainguard-wtgitdir-")));
 		git(repo, "init", "-q", "-b", "main");
 		fs.writeFileSync(path.join(repo, "f.txt"), "base\n");
 		git(repo, "add", "-A");
@@ -486,10 +487,10 @@ console.log("hooks deploy + drift gate (#249)");
 // evidence ax reads later. Every other sandbox in this file already sets
 // HOME; this was the one leak (post-#258 finding).
 {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-preedit-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-preedit-")));
 	const target = path.join(dir, "file.txt");
 	fs.writeFileSync(target, "unique line one\nunique line two\n");
-	const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "hooks-preedit-home-"));
+	const tmpHome = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "hooks-preedit-home-")));
 
 	const verdict = (oldString: string): number => {
 		const payload = JSON.stringify({ tool_input: { file_path: target, old_string: oldString, new_string: "x" } });

@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_MERGE = path.join(REPO_ROOT, "bin", "pr-merge");
@@ -80,7 +81,7 @@ function sandbox(branch: string, rows: PrRow[], opts: SandboxOpts = {}) {
 		threadsOutput = "✅ 0 unresolved conversations (0 total)",
 		headOids = ["a".repeat(40)],
 	} = opts;
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-args-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-args-")));
 	execFileSync("git", ["init", "-q", "-b", branch], { cwd: dir });
 	execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "init"], {
 		cwd: dir,
@@ -632,7 +633,7 @@ console.log("\npr-reject:");
 //     by name ("not run inside a git repository at all"). Before the fix
 //     this leaked git's raw status (128) straight out of `set -e`.
 {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-reject-nogit-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-reject-nogit-")));
 	let code = 0;
 	let out = "";
 	try {

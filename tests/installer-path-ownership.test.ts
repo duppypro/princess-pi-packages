@@ -32,6 +32,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { skip } from "./lib/skips.ts";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
@@ -126,7 +127,7 @@ for (const forbidden of NEVER_WRITE) {
 //     directory sync, or a `mkdir -p` could become a `cp -r`, without any
 //     manifest changing.
 {
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), "iwt-ownership-home-"));
+	const home = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iwt-ownership-home-")));
 	fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
 	fs.mkdirSync(path.join(home, "git-projects"), { recursive: true });
 

@@ -43,6 +43,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
@@ -80,7 +81,7 @@ console.log();
 
 const tempDirs: string[] = [];
 function mkTemp(prefix: string): string {
-	const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	const d = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 	tempDirs.push(d);
 	return d;
 }

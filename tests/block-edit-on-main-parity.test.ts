@@ -23,12 +23,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { checkEditOnMain } from "../extensions/lib/edit-on-main-core";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.join(import.meta.dir, "..");
 const SH_HOOK = path.join(REPO_ROOT, "hooks", "block-edit-on-main.sh");
 
 function tmpRepo(prefix: string): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 function git(cwd: string, ...args: string[]): void {

@@ -26,6 +26,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { skip } from "./lib/skips.ts";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
@@ -54,7 +55,7 @@ function check(cond: boolean, label: string, detail = ""): void {
 }
 
 function freshHome(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "statusline-deploy-home-"));
+	return trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "statusline-deploy-home-")));
 }
 
 /**
@@ -80,7 +81,7 @@ function pathWithout(name: string): string {
 	};
 	const dirs = parts.filter(provides);
 	if (dirs.length === 0) return process.env.PATH ?? "";
-	const shadow = fs.mkdtempSync(path.join(os.tmpdir(), `statusline-no-${name}-`));
+	const shadow = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), `statusline-no-${name}-`)));
 	for (const dir of dirs) {
 		for (const entry of fs.readdirSync(dir)) {
 			if (entry === name) continue;
@@ -211,7 +212,7 @@ check(TRACKED.length > 0, "statusline/ is non-empty", `read ${STATUSLINE_SRC}`);
 //    reconciliation evidence against wtft, #149). Without the override this
 //    suite would write into THIS host's live log every run.
 {
-	const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-behaviour-home-"));
+	const tmpHome = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "statusline-behaviour-home-")));
 
 	const render = (script: string, payload: unknown, env: Record<string, string> = {}): { code: number; out: string } => {
 		const r = spawnSync("bash", [path.join(STATUSLINE_SRC, script)], {
