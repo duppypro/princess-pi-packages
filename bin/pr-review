@@ -331,9 +331,20 @@ emit_status() {  # emit_status <status> <human message> <exit code>
     # Low): "python3 is not on PATH" and "python3 ran and the status emitter
     # itself broke" are different diagnoses, and collapsing the second into the
     # first tells a reader to go looking for a missing binary that is present.
+    #
+    # Captured to a variable, not piped straight to stdout (PR #427 review):
+    # python3 can print a whole document and THEN exit nonzero — a broken pipe,
+    # a flush failure on a full disk, a signal after the write — and the `||`
+    # fallback then lands on top of it, giving a machine reader two documents.
+    # That is the same "exactly one parseable document" break this function was
+    # written to fix, reintroduced by its own guard. A command substitution
+    # either yields the whole thing or yields nothing worth printing.
     if command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":sys.argv[2]}))' "$1" "$2" ||
+      if _status_json=$(python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":sys.argv[2]}))' "$1" "$2"); then
+        printf '%s\n' "$_status_json"
+      else
         printf '{"status":"%s","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"pr-review could not encode its own status"}\n' "$1"
+      fi
     else
       printf '{"status":"%s","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"reviewer unavailable"}\n' "$1"
     fi
