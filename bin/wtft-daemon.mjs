@@ -2395,6 +2395,16 @@ function scanForSubAgents() {
     }
     const offsetBefore = fileState.lastSize;
     const rawInteractions = readNewSubagentLines(file, fileState);
+    let replayedTail = null;
+    if (fileState.stampInterruptOnLastWritten) {
+      const tail = fileState.lastWritten;
+      if (tail && !tail.interrupted) {
+        tail.interrupted = true;
+        replayedTail = tail;
+        rawInteractions.unshift(tail);
+      }
+      fileState.stampInterruptOnLastWritten = false;
+    }
     if (rawInteractions.length === 0)
       continue;
     try {
@@ -2408,8 +2418,14 @@ function scanForSubAgents() {
         fs9.appendFileSync(tagPath, batch);
         wroteAny = true;
       }
+      if (deduped.length > 0)
+        fileState.lastWritten = deduped[deduped.length - 1];
     } catch (err) {
       fileState.lastSize = offsetBefore;
+      if (replayedTail) {
+        replayedTail.interrupted = undefined;
+        fileState.stampInterruptOnLastWritten = true;
+      }
       if (process.env.WTFT_DAEMON_DEBUG) {
         process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), offset rewound to ${offsetBefore}: ${err instanceof Error ? err.message : String(err)}
 `);
@@ -2506,6 +2522,8 @@ function readNewSubagentLines(filePath, fileState) {
     return parseLinesIntoInteractions(newContent, fileState.streamState, (interactions) => {
       if (interactions.length > 0)
         interactions[interactions.length - 1].interrupted = true;
+      else
+        fileState.stampInterruptOnLastWritten = true;
     });
   } catch (_) {
     return [];

@@ -97,7 +97,24 @@ const discoveredClaudeSessions = new Set<string>();
 // stream state so the file is re-read exactly like the parent session is
 // (parseNewLinesFrom below) — cheap when unchanged (one stat, no read), and
 // it naturally stops growing once the subagent stops writing.
-const discoveredSubagentFiles = new Map<string, { lastSize: number; streamState: ParseStreamState }>();
+interface SubagentFileState {
+  /** Byte offset already read from this transcript. */
+  lastSize: number;
+  /** Control-entry state threaded across polls (thinking level, model, compaction). */
+  streamState: ParseStreamState;
+  /**
+   * Last interaction appended to the tag file for this subagent (#270 review).
+   * An interrupt marker can arrive in a LATER poll than the turn it killed, and
+   * a subagent has no pendingItems queue to re-stamp — so the turn is re-emitted
+   * with `ir` set instead. Held by reference so a late attribution or stamp
+   * lands on the same object the tag file was written from.
+   */
+  lastWritten?: NonNullable<ReturnType<typeof parseEntryToInteraction>>;
+  /** An interrupt marker arrived in a batch with no interaction of its own. */
+  stampInterruptOnLastWritten?: boolean;
+}
+
+const discoveredSubagentFiles = new Map<string, SubagentFileState>();
 
 // ---
 // SIGNAL HANDLING
@@ -318,6 +335,21 @@ function scanForSubAgents() {
     // and adds the rollback the old whole-file re-parse never needed.
     const offsetBefore = fileState.lastSize;
     const rawInteractions = readNewSubagentLines(file, fileState);
+    // Late interrupt marker (#270 review): the killed turn was appended in an
+    // earlier poll and the tag file is append-only, so re-emit that turn with
+    // `ir` set. The tag file's read-side collapse (dedupeClassifiedById) merges
+    // copies sharing a message.id and propagates `interrupted` from any of them
+    // at unchanged cost, so this corrects the record without duplicating it.
+    let replayedTail: NonNullable<ReturnType<typeof parseEntryToInteraction>> | null = null;
+    if (fileState.stampInterruptOnLastWritten) {
+      const tail = fileState.lastWritten;
+      if (tail && !tail.interrupted) {
+        tail.interrupted = true;
+        replayedTail = tail;
+        rawInteractions.unshift(tail);
+      }
+      fileState.stampInterruptOnLastWritten = false;
+    }
     if (rawInteractions.length === 0) continue; // unchanged since last poll
     try {
       const deduped = deduplicateInteractions(rawInteractions);
@@ -333,6 +365,7 @@ function scanForSubAgents() {
         fs.appendFileSync(tagPath, batch);
         wroteAny = true;
       }
+      if (deduped.length > 0) fileState.lastWritten = deduped[deduped.length - 1];
     } catch (err) {
       // Rewind so the un-written bytes are re-read on a later poll. Replaying
       // the same control entries through streamState is idempotent (thinking
@@ -341,6 +374,12 @@ function scanForSubAgents() {
       // parse. Keep polling — one bad write must not stop this subagent, the
       // other subagents in this loop, or the parent session's own tag writes.
       fileState.lastSize = offsetBefore;
+      // Un-do the interrupt replay too, so the rewound bytes redo it cleanly
+      // rather than silently swallowing the stamp.
+      if (replayedTail) {
+        replayedTail.interrupted = undefined;
+        fileState.stampInterruptOnLastWritten = true;
+      }
       if (process.env.WTFT_DAEMON_DEBUG) {
         process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), offset rewound to ${offsetBefore}: ${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -442,7 +481,7 @@ function parseNewLines(filePath: string) {
  *  is read — a byte offset plus threaded stream state — so tokens written
  *  AFTER first discovery are still counted (#270). Mutates fileState.lastSize
  *  in place. Cheap when unchanged: one stat, no read. */
-function readNewSubagentLines(filePath: string, fileState: { lastSize: number; streamState: ReturnType<typeof newParseStreamState> }) {
+function readNewSubagentLines(filePath: string, fileState: SubagentFileState) {
   try {
     const stat = fs.statSync(filePath);
     const currentSize = stat.size;
@@ -458,11 +497,16 @@ function readNewSubagentLines(filePath: string, fileState: { lastSize: number; s
     fs.closeSync(fd);
     fileState.lastSize = currentSize;
     const newContent = buf.toString("utf8");
-    // A subagent transcript has no cross-poll pendingItems queue — an
-    // interrupt mid-batch just stamps the last interaction already parsed
-    // in this batch.
+    // A subagent transcript has no cross-poll pendingItems queue, so the two
+    // cases split (#270 review): a marker mid-batch stamps the last interaction
+    // parsed in this batch, and a marker that arrives with no interaction of its
+    // own belongs to a turn already appended in an earlier poll — the caller
+    // re-emits that turn stamped. Without the second case the `ir` flag was
+    // dropped for good, and an interrupted turn's whole cost is discarded work
+    // (#52 Phase 3), so reporting it as productive is a real error.
     return parseLinesIntoInteractions(newContent, fileState.streamState, (interactions) => {
       if (interactions.length > 0) interactions[interactions.length - 1].interrupted = true;
+      else fileState.stampInterruptOnLastWritten = true;
     });
   } catch (_) {
     return [];
