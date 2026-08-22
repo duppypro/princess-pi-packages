@@ -362,10 +362,13 @@ fi
 # a PR open with no review coverage and no message. `--reviewed` covers this
 # too, since it skips pr-review outright before this check ever runs.
 #
-# FAILS OPEN on anything else. pr-review returns 0 only when `claude`/`python3`
-# were never on PATH to begin with, so a broken reviewer can never become a
-# broken release path — but a reviewer that WAS available and still produced
-# nothing (exit 8) is no longer "anything else".
+# FAILS OPEN on anything else. Exit 0 has three causes and none of them is a
+# silent loss of coverage: the reviewer was unavailable (`claude`/`python3` not
+# on PATH), the branch diff was empty (`no-changes`), or at least one lens
+# completed and reported nothing — a clean or partial-clean review. A broken
+# reviewer can therefore never become a broken release path, and a reviewer that
+# WAS available and still produced no coverage at all (exit 8) is no longer
+# "anything else".
 if [ "$SKIP_REVIEW" -eq 0 ] && command -v pr-review >/dev/null 2>&1; then
   echo "🔍 Reviewing before opening (pr-review, 3 lenses)..."
   review_status=0
