@@ -48,9 +48,11 @@ function assert(label: string, ok: boolean, detail = ""): void {
 }
 
 // Every tracked .ts source file under extensions/ and bin/, skipping node_modules,
-// dist/build output, and this repo's own worktree/scratch directories. Test files
-// are walked separately below so a test that legitimately exercises the function
-// directly (none does today) does not trip this guard.
+// dist/build output, and this repo's own worktree/scratch directories. tests/ is
+// NOT walked at all — that is the whole reason a test exercising the function
+// directly (none does today) cannot trip this guard. An earlier version of this
+// comment claimed tests were "walked separately below", which sent a reader
+// looking for handling that was never written (PR review, #420).
 function walkTsFiles(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir)) {
 		if (entry === "node_modules" || entry === ".git" || entry.startsWith(".claude")) continue;

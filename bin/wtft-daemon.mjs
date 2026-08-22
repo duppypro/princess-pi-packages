@@ -2227,6 +2227,7 @@ var running = true;
 var sessionExisted = false;
 var pendingClaudeCommands = [];
 var discoveredClaudeSessions = new Set;
+var warnedClaudeSubAgentOneShot = false;
 var discoveredSubagentFiles = new Map;
 function shutdown(reason) {
   if (!running)
@@ -2379,6 +2380,11 @@ function scanForSubAgents() {
           continue;
         discoveredClaudeSessions.add(sessionId);
         wroteAny = writeSessionToTagFile(file) || wroteAny;
+        if (!warnedClaudeSubAgentOneShot) {
+          warnedClaudeSubAgentOneShot = true;
+          process.stderr.write(`[wtft-log-parser] WARNING: claude -p subagent transcripts are parsed once at discovery and never re-read, ` + `so any cost they record afterwards is missing from this session's total (see #270 / #420).
+`);
+        }
         if (process.env.WTFT_DAEMON_DEBUG) {
           process.stderr.write(`[wtft-log-parser] claude -p subagent parsed ONCE, will not re-read growth (${sessionId})
 `);

@@ -86,6 +86,10 @@ let sessionExisted = false; // becomes true first time we observe the session fi
 // and write their classified interactions to the tag file.
 const pendingClaudeCommands: { interaction: NonNullable<ReturnType<typeof parseEntryToInteraction>>; prevCtx: number }[] = [];
 const discoveredClaudeSessions = new Set<string>();
+// One-shot latch for the claude -p read-path warning below: the gap is a
+// property of the path, so it is reported once per daemon process, not per
+// transcript.
+let warnedClaudeSubAgentOneShot = false;
 
 /** What the daemon remembers about one subagent transcript (#270).
  *  `size`/`mtimeMs` are the CHANGE DETECTOR — the file is re-read only when one
@@ -346,9 +350,23 @@ function scanForSubAgents() {
         // Unlike the Task/agent path below, this one has no size/mtime tracking
         // (#420 review) — it parses once, here, and never again. Anything this
         // transcript writes after this instant is silently dropped forever,
-        // the exact #270 failure the Task/agent path was fixed for. Debug-only
-        // signal so a maintainer chasing a cost gap on this path has something
-        // to grep for; the read path itself is unchanged, still one-shot.
+        // the exact #270 failure the Task/agent path was fixed for.
+        //
+        // The WARNING is not debug-gated (PR review): in default operation the
+        // parent session's reported cost silently understates reality, and a
+        // signal only a maintainer who already suspected it would set
+        // WTFT_DAEMON_DEBUG to see is no signal at all. Emitted ONCE per daemon
+        // process rather than per session, because the fact being reported is a
+        // property of this read path, not of any one transcript — repeating it
+        // per subagent would train the reader to filter it out. The per-session
+        // detail stays behind the debug flag, where grep-for-one-session belongs.
+        if (!warnedClaudeSubAgentOneShot) {
+          warnedClaudeSubAgentOneShot = true;
+          process.stderr.write(
+            `[wtft-log-parser] WARNING: claude -p subagent transcripts are parsed once at discovery and never re-read, ` +
+              `so any cost they record afterwards is missing from this session's total (see #270 / #420).\n`,
+          );
+        }
         if (process.env.WTFT_DAEMON_DEBUG) {
           process.stderr.write(`[wtft-log-parser] claude -p subagent parsed ONCE, will not re-read growth (${sessionId})\n`);
         }
