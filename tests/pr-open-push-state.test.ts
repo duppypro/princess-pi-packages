@@ -26,6 +26,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
+import { assertStubbedInSandbox } from "./lib/stub-path";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_OPEN = path.join(REPO_ROOT, "bin", "pr-open");
@@ -42,19 +44,8 @@ const REPO_BIN = path.join(REPO_ROOT, "bin");
 const HAS_REVIEW_DEPS = ["timeout", "python3"].every(
 	(bin) => spawnSync("command", ["-v", bin], { shell: true }).status === 0);
 
-// Every sandbox root, removed on normal exit AND on SIGINT/SIGTERM. `exit`
-// alone does not fire on a signal — Node's default disposition terminates
-// without emitting it — so Ctrl-C mid-run (each case now spawns pr-review
-// with three stubbed lens calls) left a bare remote plus a clone per case
-// under /tmp forever; the signal handlers close that gap and re-raise the
-// conventional exit code afterward.
-const SANDBOXES: string[] = [];
-function cleanupSandboxes(): void {
-	for (const root of SANDBOXES.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-}
-process.on("exit", cleanupSandboxes);
-process.on("SIGINT", () => { cleanupSandboxes(); process.exit(130); });
-process.on("SIGTERM", () => { cleanupSandboxes(); process.exit(143); });
+// Sandboxes are removed by tests/lib/sandbox.ts's registry — on normal exit and
+// on SIGINT/SIGTERM, for every suite rather than this one (#394).
 
 let failures = 0;
 let checks = 0;
@@ -107,8 +98,7 @@ interface Sandbox {
  * touches the network.
  */
 function makeSandbox(branch: string): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-push-"));
-	SANDBOXES.push(root);
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-open-push-")));
 	const remote = path.join(root, "remote.git");
 	fs.mkdirSync(remote);
 	git(remote, ["init", "-q", "--bare", "-b", "main"]);
@@ -159,6 +149,15 @@ echo "https://github.com/duppypro/princess-pi-packages/pull/999"
  * assertion here needs both the exit code AND the output on the same path.
  */
 function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean; pushArgs: string[] } {
+	// Every run asserts the invariant, not just the first: a sandbox whose PATH
+	// resolves a REAL `claude` bills a live reviewer call, which is exactly how
+	// 507 of them went unnoticed in one day (#395).
+	const env = {
+		...process.env, ...GIT_ENV,
+		PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
+		PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
+	};
+	assertStubbedInSandbox(env, sb.root);
 	const r = spawnSync("bash", [PR_OPEN], {
 		cwd: sb.clone,
 		encoding: "utf8",
@@ -178,13 +177,7 @@ function runPrOpen(sb: Sandbox): { code: number; out: string; createdPr: boolean
 		// `python3` and `timeout` resolvable, and a fixed "/usr/bin:/bin"
 		// allowlist broke that on any host that installs them elsewhere
 		// (homebrew, nix, asdf).
-		env: {
-			...process.env, ...GIT_ENV,
-			PATH: [sb.binDir, REPO_BIN, process.env.PATH || ""].join(path.delimiter),
-			// …and the review log stays in the sandbox rather than in the
-			// developer's state dir, where 196 of them accumulated unnoticed.
-			PR_REVIEW_LOG_DIR: path.join(sb.root, "review-logs"),
-		},
+		env,
 	});
 	const out = `${r.stdout || ""}${r.stderr || ""}`;
 	const argv = fs.readFileSync(sb.argvLog, "utf8");

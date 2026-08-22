@@ -21,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const IARTS_MIRROR = path.join(REPO_ROOT, "bin", "iarts-mirror");
@@ -70,7 +71,7 @@ interface Sandbox { root: string; mirrorRoot: string; cloneRoot: string; clone: 
 
 /** A clone holding `iarts/local`, and an empty mirror root for it to be copied into. */
 function makeSandbox(): Sandbox {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "iarts-mirror-"));
+	const root = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "iarts-mirror-")));
 	const mirrorRoot = path.join(root, "git-remotes");
 	const cloneRoot = path.join(root, "git-projects");
 	fs.mkdirSync(mirrorRoot);

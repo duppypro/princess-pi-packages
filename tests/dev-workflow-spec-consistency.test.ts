@@ -19,6 +19,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
@@ -130,7 +131,7 @@ check(scripts.length > 0, "SCRIPTS array is non-empty", scripts.join(","));
 // 3. A fresh worktree still has CLAUDE.md present
 // ---
 {
-	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "dev-workflow-spec-wt-"));
+	const wt = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "dev-workflow-spec-wt-")));
 	fs.rmdirSync(wt); // git worktree add requires the target not exist
 	try {
 		execFileSync("git", ["worktree", "add", "--detach", wt, "HEAD"], { cwd: REPO_ROOT, stdio: "pipe" });

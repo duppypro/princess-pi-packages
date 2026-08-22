@@ -25,6 +25,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PR_THREADS = path.join(REPO_ROOT, "bin", "pr-threads");
@@ -91,7 +92,7 @@ echo "duppypro/princess-pi-packages"
 }
 
 function run(calls: GhCall[], args: string[]): { code: number; out: string; err: string; calls: any[][] } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-threads-resolve-"));
+	const dir = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "pr-threads-resolve-")));
 	const { binDir, log } = stubGh(dir, calls);
 	let code: number;
 	let out = "";

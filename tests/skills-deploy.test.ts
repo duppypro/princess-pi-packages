@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const INSTALLER = path.join(REPO_ROOT, "bin", "install-workflow-tools");
@@ -63,7 +64,7 @@ function bashArray(name: string): string[] {
 const SKILLS = bashArray("SKILLS");
 
 function freshHome(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "skills-deploy-home-"));
+	return trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "skills-deploy-home-")));
 }
 
 function run(home: string, args: string[] = []): { code: number; out: string } {

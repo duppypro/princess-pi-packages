@@ -25,6 +25,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { trackSandbox } from "./lib/sandbox";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const BIN_DIR = path.join(REPO_ROOT, "bin");
@@ -124,7 +125,7 @@ for (const name of SCRIPTS) {
 // argv[0]. ---
 console.log("\n--version — resolves a symlink to its real target (the ~/bin shape):");
 {
-	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shell-version-symlink-"));
+	const tmp = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "shell-version-symlink-")));
 	try {
 		for (const name of SCRIPTS) {
 			const real = path.join(BIN_DIR, name);
@@ -153,7 +154,7 @@ console.log("\n--version — resolves a symlink to its real target (the ~/bin sh
 // run in. ---
 console.log("\n--version — works with zero preconditions (no git repo, no other args):");
 {
-	const bareTmp = fs.mkdtempSync(path.join(os.tmpdir(), "shell-version-bare-"));
+	const bareTmp = trackSandbox(fs.mkdtempSync(path.join(os.tmpdir(), "shell-version-bare-")));
 	try {
 		for (const name of SCRIPTS) {
 			const scriptPath = path.join(BIN_DIR, name);
