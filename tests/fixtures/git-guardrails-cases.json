@@ -1894,6 +1894,141 @@
       ],
       "verdict": "allow",
       "why": "#399 fallout: `git switch` has no -p — measured git 2.43.0 exits 129 'unknown switch p' and never moves HEAD, so the line stays on the feature branch and the commit is fine there"
+    },
+    {
+      "id": "block-checkout-dirty-tree-then-commit-on-main",
+      "command": "git checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the lift is recorded BEFORE the command runs. With uncommitted changes to a tracked file git may refuse the switch ('error: Your local changes to the following files would be overwritten by checkout', measured git 2.43.0, HEAD stays on main) — and then the commit lands on main. The hook cannot know which way it goes, so a dirty tree does not lift"
+    },
+    {
+      "id": "block-switch-dirty-tree-then-commit-on-main",
+      "command": "git switch feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: `git switch` gives the identical refusal on a dirty tree (measured), so it fails closed the same way"
+    },
+    {
+      "id": "allow-checkout-clean-tree-then-commit-on-main",
+      "command": "git checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#399 fallout, the over-block bound: a CLEAN worktree must be untouched by the dirty-tree rule — the switch lands, and the commit belongs to the feature branch"
+    },
+    {
+      "id": "allow-checkout-untracked-only-then-commit-on-main",
+      "command": "git checkout feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "untracked",
+      "verdict": "allow",
+      "why": "#399 fallout: untracked files never block a checkout (measured: 'Switched to branch feature' with an untracked file present), so the dirtiness test is tracked-only — `git status --porcelain --untracked-files=no`"
+    },
+    {
+      "id": "allow-checkout-force-dirty-tree-then-commit-on-main",
+      "command": "git checkout -f feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `-f` throws the local modifications away and the switch DOES land (measured, 'Switched to branch feature'), so it lifts even on a dirty tree"
+    },
+    {
+      "id": "allow-checkout-force-long-dirty-tree-then-commit-on-main",
+      "command": "git checkout --force feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `--force` is the long spelling of `-f` and lands the same way (measured)"
+    },
+    {
+      "id": "allow-switch-force-dirty-tree-then-commit-on-main",
+      "command": "git switch -f feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `git switch -f` lands on a dirty tree too (measured), so the force set is not checkout-only"
+    },
+    {
+      "id": "allow-switch-discard-changes-dirty-tree-then-commit-on-main",
+      "command": "git switch --discard-changes feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "allow",
+      "why": "#399 fallout: `--discard-changes` is switch's own spelling of the override and lands (measured, 'Switched to branch feature')"
+    },
+    {
+      "id": "block-checkout-discard-changes-is-not-a-checkout-option",
+      "command": "git checkout --discard-changes feature && git commit -m x",
+      "branch": "main",
+      "extra_branches": [
+        "feature"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the force set is per-sub-command, not shared — measured git 2.43.0 answers 'error: unknown option `discard-changes`' for checkout and HEAD stays on main, so treating it as an override there would reopen the hole"
+    },
+    {
+      "id": "block-checkout-main-dirty-tree-still-lifts-then-commit",
+      "command": "git checkout main && git commit -m x",
+      "branch": "399-feat",
+      "extra_branches": [
+        "main"
+      ],
+      "worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the main/master case is deliberately unchanged — main lifts whether or not the switch lands, because if it fails the line stays put and treating the rest as protected is the safe direction either way"
+    },
+    {
+      "id": "block-checkout-c-repo-dirty-then-commit-in-c-repo",
+      "command": "git -C /repo checkout feature && git -C /repo commit -m x",
+      "cwd_branch": "399-feat",
+      "c_path_branch": "main",
+      "c_path_extra_branches": [
+        "feature"
+      ],
+      "c_path_worktree": "dirty",
+      "verdict": "block",
+      "why": "#399 fallout: the dirtiness test reads the repo the sub-command ACTS on. The -C repo is on main with a dirty tree, the shell's cwd repo is clean and on a feature branch — reading the wrong one would let the commit through on main"
+    },
+    {
+      "id": "allow-checkout-c-repo-clean-while-cwd-dirty",
+      "command": "git -C /repo checkout feature && git -C /repo commit -m x",
+      "cwd_branch": "399-feat",
+      "worktree": "dirty",
+      "c_path_branch": "main",
+      "c_path_extra_branches": [
+        "feature"
+      ],
+      "c_path_worktree": "clean-tracked",
+      "verdict": "allow",
+      "why": "#399 fallout, the mirror of the case above: the cwd repo is dirty and the -C repo is clean, so the switch in the -C repo lands and lifts. An implementation that tested the shell's cwd would block this — a false positive of the #400 class"
     }
   ]
 }

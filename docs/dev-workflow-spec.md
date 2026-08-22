@@ -406,7 +406,25 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   `git checkout feature --pathspec-from-file=paths && git commit` was allowed on `main`
   because the option starts with `-` and so never counted as a positional. `--conflict=<style>`
   looks equally path-ish and **does** switch, so it is deliberately absent and still lifts —
-  terminating on every unknown option would be a false block of the #400 class. **Unknown never moves the model (PR #305
+  terminating on every unknown option would be a false block of the #400 class.
+  And since the lift is recorded *optimistically* — the hook runs **before** the command —
+  a switch git **refuses** would leave the gate believing the line moved off `main`. Measured
+  (git 2.43.0, repo on `main`, `feature` exists, `f.txt` locally modified):
+  `git checkout feature && git commit -m x` errors *"Your local changes … would be
+  overwritten by checkout"*, HEAD stays on `main`, and the commit lands there. So a lift to a
+  **non-main** target needs the switch to be reasonably certain to land: **a dirty worktree
+  does not lift** unless a force flag overrides the refusal — `-f`/`--force` for both, plus
+  `--discard-changes` for `switch` only (measured: `git checkout --discard-changes feature`
+  answers *"unknown option"* and never switches). Dirtiness is **tracked files only**
+  (`git status --porcelain --untracked-files=no`, read from the repo the sub-command acts on,
+  honouring `-C`/`--git-dir`): untracked files never block a checkout, staged changes do.
+  `main`/`master` is exempt on purpose — it lifts either way, because if that switch fails the
+  line stays put and the rest is protected regardless. The rule is deliberately coarse and it
+  **over-blocks**: a dirty file that does not differ between the two branches carries over and
+  the switch really would succeed, but the hook cannot know that without diffing the target.
+  The cost is one extra command — run the `checkout` on its own line, then `commit` on the
+  next, which is judged against the branch the repo is actually on (verified: both calls exit
+  0). **Unknown never moves the model (PR #305
   review):** a `cd` to a directory that does not exist stays put (the real `cd` would fail
   too); `cd "$WT"` / `checkout -b "$BRANCH"` resolve `$NAME` from a literal `NAME=value`
   earlier in the same line, then from the environment; an unresolved branch operand never

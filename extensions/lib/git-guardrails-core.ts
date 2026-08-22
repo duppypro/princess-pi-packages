@@ -154,6 +154,50 @@ function refExists(cPath: string, st: LineState, gitDir: string, ref: string): b
   }
 }
 
+/**
+ * Does the repo the sub-command acts on have uncommitted changes to TRACKED
+ * files? Same -C/--git-dir resolution as refExists.
+ *
+ * Tracked-only (`--untracked-files=no`) because untracked files never block a
+ * checkout — measured git 2.43.0: a switch with only an untracked file present
+ * answers "Switched to branch 'feature'". Staged changes DO block it (the same
+ * "would be overwritten" refusal), which is why this is `status --porcelain`
+ * rather than `diff --quiet`. A git that fails to answer at all reads as dirty:
+ * unknown state is protected state.
+ */
+function worktreeDirty(cPath: string, st: LineState, gitDir: string): boolean {
+  const dir = cPath ? resolve(st.cwd || ".", cPath) : st.cwd;
+  try {
+    const out = execSync("git status --porcelain --untracked-files=no", {
+      cwd: dir || ".",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitDir ? { ...process.env, GIT_DIR: resolve(dir || ".", gitDir) } : process.env,
+    });
+    return out.trim() !== "";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Does this sub-command carry a flag that overrides git's refusal to switch with
+ * local changes? Measured, git 2.43.0, dirty tree: `checkout -f`, `checkout
+ * --force`, `switch -f` and `switch --discard-changes` all answer "Switched to
+ * branch 'feature'". The set is PER-SUB-COMMAND, not shared: `git checkout
+ * --discard-changes feature` answers "error: unknown option `discard-changes`"
+ * and never switches, so accepting it there would reopen the hole it closes.
+ * `-m`/`--merge` is deliberately absent: it landed in every case measured here,
+ * but git documents the operation as failing when the three-way merge is not
+ * possible, so it is not certain to land — and the conservative side of that
+ * uncertainty is a lift not taken.
+ */
+function forceSwitch(cmd: string, rest: string[]): boolean {
+  return rest.some(
+    (t) => t === "-f" || t === "--force" || (t === "--discard-changes" && cmd === "switch"),
+  );
+}
+
 /** Configured remotes of the repo the sub-command acts on. Same -C/--git-dir
  *  resolution as refExists. */
 function gitRemotes(cPath: string, st: LineState, gitDir: string): string[] {
@@ -827,9 +871,11 @@ function isRestoreForm(rest: string[]): boolean {
  * switch (see RESTORE_FORM_OPTS), more than one positional is the
  * `git checkout <tree-ish> <path>…` restore form (which does not switch either),
  * a name that is neither main/master nor an existing branch is a pathspec or a
- * detached checkout, and an unresolved `$BRANCH` is nothing at all. main/master
- * lifts whether or not the ref exists — if the switch fails, the line stays
- * where it was, and treating the rest of it as protected is the safe direction.
+ * detached checkout, an unresolved `$BRANCH` is nothing at all, and a DIRTY
+ * worktree means git may refuse the switch outright (see `worktreeDirty`).
+ * main/master lifts whether or not the ref exists — if the switch fails, the
+ * line stays where it was, and treating the rest of it as protected is the safe
+ * direction.
  */
 function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, st: LineState): void {
   if (isRestoreForm(rest)) return; // no switch happens: nothing to lift
@@ -870,6 +916,26 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
       resolved = dwim;
     } else if (!isMainRef(resolved) && !refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) {
       return; // not a branch: pathspec or detached checkout — no line-state change
+    }
+    // #399 fallout: the lift is recorded OPTIMISTICALLY — the hook runs before
+    // the command, so a switch git REFUSES leaves the gate believing the line
+    // moved off main. Measured (git 2.43.0, repo on main, `feature` exists,
+    // f.txt locally modified): `git checkout feature && git commit -m x` errors
+    // "Your local changes … would be overwritten by checkout", HEAD stays on
+    // main — and the commit lands there. So a lift to a NON-main target is
+    // recorded only when the switch is reasonably certain to land: a clean
+    // tree, or a force flag that overrides the refusal outright.
+    //
+    // Deliberately coarse, and it over-blocks: a dirty file that does not
+    // differ between the two branches carries over and the switch succeeds, but
+    // the hook cannot know that without diffing the target. The cost is one
+    // extra command — run the checkout on its own line, then commit — and the
+    // direction matches this file's rule that unknown state is protected state.
+    //
+    // main/master is untouched on purpose: it lifts either way, because if that
+    // switch fails the line stays put and the rest is protected regardless.
+    if (!isMainRef(resolved) && !forceSwitch(cmd, rest) && worktreeDirty(cPath, st, gitDir)) {
+      return;
     }
   }
   st.lifts.set(repoKey(cPath, st.cwd, gitDir), resolved);
