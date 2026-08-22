@@ -578,15 +578,22 @@ def raises(n):
 
 CAP = 200000
 lo, hi = 1, 1000
-while hi < CAP and not raises(hi):
+# r holds the last raises() result so the post-loop check below never has to
+# call raises(hi) a second time — an earlier version of this probe rechecked
+# it, which cost one extra raw_decode on every run and undercounted the "18
+# in all" claim above by one (#426 round 3, reasoning lens). The loop exits
+# either on r becoming True (found it, below CAP) or on hi reaching CAP
+# (r already holds CAP's own tested result, never a stale one) — CAP is
+# tested EXACTLY ONCE either way, closing the overshoot gap without a
+# redundant call.
+while True:
+    r = raises(hi)
+    if r:
+        break
+    if hi >= CAP:
+        break
     lo, hi = hi, min(hi * 2, CAP)
-# hi is capped at CAP, and the cap itself is always TESTED here before giving
-# up — plain doubling can jump from a hi below CAP straight past it (e.g.
-# 128000 -> 256000), skipping every untested value in between, including ones
-# under CAP where the real threshold could sit. That gap used to read as "no
-# depth up to 200000 raises" when the search had only proven "no depth we
-# happened to land on raises" (#426 round 2).
-if not raises(hi):
+if not r:
     print(0)
 else:
     while lo < hi:
@@ -597,7 +604,14 @@ else:
             lo = mid + 1
     print(lo)
 `], { encoding: "utf8", timeout: 10_000 });
-	const found = Number.parseInt((probe.stdout || "").trim(), 10);
+	// Trust stdout only when the probe actually exited 0. The embedded python
+	// prints on its two success paths alone, but gating on shape rather than
+	// process success meant a future stray print (a debug line added ahead of
+	// a crash, say) could hand a nonzero-exit run's partial stdout to
+	// Number.parseInt and have it silently accepted as the real threshold —
+	// exactly the "proving nothing, quietly" failure mode the warning below
+	// exists to rule out (#426 round 3, contract lens).
+	const found = probe.status === 0 ? Number.parseInt((probe.stdout || "").trim(), 10) : Number.NaN;
 	// A probe that ran and printed 0 has established something: doubling passed
 	// through 20000 on its way past 200000 WITHOUT raising, so the old fallback is
 	// not merely slow here — it is already disproven, and running the case with it
