@@ -309,20 +309,41 @@ function scanForSubAgents() {
       fileState = { lastSize: 0, streamState: newParseStreamState() };
       discoveredSubagentFiles.set(sessionId, fileState);
     }
+    // Offset BEFORE the read, so a failed write can put it back. The reader
+    // advances fileState.lastSize as soon as it has the bytes, which on its own
+    // would mean an ENOSPC/EACCES/removed-tag-dir loses those interactions for
+    // good — #270's own "later writes invisible forever", re-triggered by an
+    // I/O blip. The code this replaced (writeSessionToTagFile) wrapped the whole
+    // parse+dedupe+serialize+append in one try/catch; this keeps that guarantee
+    // and adds the rollback the old whole-file re-parse never needed.
+    const offsetBefore = fileState.lastSize;
     const rawInteractions = readNewSubagentLines(file, fileState);
     if (rawInteractions.length === 0) continue; // unchanged since last poll
-    const deduped = deduplicateInteractions(rawInteractions);
-    // Nested claude-bash sub-agents (#138) spawned FROM this subagent's own
-    // commands — parseSessionFile does this for a whole-file read; do the
-    // same for this batch so incremental reads don't lose the attribution.
-    attributeClaudeSubAgentCosts(deduped);
-    let batch = '';
-    for (const si of deduped) {
-      batch += serializeClassified(si);
-    }
-    if (batch) {
-      fs.appendFileSync(tagPath, batch);
-      wroteAny = true;
+    try {
+      const deduped = deduplicateInteractions(rawInteractions);
+      // Nested claude-bash sub-agents (#138) spawned FROM this subagent's own
+      // commands — parseSessionFile does this for a whole-file read; do the
+      // same for this batch so incremental reads don't lose the attribution.
+      attributeClaudeSubAgentCosts(deduped);
+      let batch = '';
+      for (const si of deduped) {
+        batch += serializeClassified(si);
+      }
+      if (batch) {
+        fs.appendFileSync(tagPath, batch);
+        wroteAny = true;
+      }
+    } catch (err) {
+      // Rewind so the un-written bytes are re-read on a later poll. Replaying
+      // the same control entries through streamState is idempotent (thinking
+      // level and model are plain sets; compaction flags are re-set and
+      // re-consumed by the same interaction), so the only cost is one repeated
+      // parse. Keep polling — one bad write must not stop this subagent, the
+      // other subagents in this loop, or the parent session's own tag writes.
+      fileState.lastSize = offsetBefore;
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), offset rewound to ${offsetBefore}: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
   }
 

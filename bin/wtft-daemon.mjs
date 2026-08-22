@@ -2393,18 +2393,27 @@ function scanForSubAgents() {
       fileState = { lastSize: 0, streamState: newParseStreamState() };
       discoveredSubagentFiles.set(sessionId, fileState);
     }
+    const offsetBefore = fileState.lastSize;
     const rawInteractions = readNewSubagentLines(file, fileState);
     if (rawInteractions.length === 0)
       continue;
-    const deduped = deduplicateInteractions(rawInteractions);
-    attributeClaudeSubAgentCosts(deduped);
-    let batch = "";
-    for (const si of deduped) {
-      batch += serializeClassified(si);
-    }
-    if (batch) {
-      fs9.appendFileSync(tagPath, batch);
-      wroteAny = true;
+    try {
+      const deduped = deduplicateInteractions(rawInteractions);
+      attributeClaudeSubAgentCosts(deduped);
+      let batch = "";
+      for (const si of deduped) {
+        batch += serializeClassified(si);
+      }
+      if (batch) {
+        fs9.appendFileSync(tagPath, batch);
+        wroteAny = true;
+      }
+    } catch (err) {
+      fileState.lastSize = offsetBefore;
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), offset rewound to ${offsetBefore}: ${err instanceof Error ? err.message : String(err)}
+`);
+      }
     }
   }
   if (wroteAny) {
