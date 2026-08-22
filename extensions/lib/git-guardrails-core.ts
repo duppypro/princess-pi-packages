@@ -191,12 +191,25 @@ function gitRemotes(cPath: string, st: LineState, gitDir: string): string[] {
  *   - answering only for main/master keeps this TIGHTENING-ONLY: a
  *     `<remote>/<feature>` target can never turn a standing block into an
  *     allow, and main/master is the only question the gate asks.
- * The neighbouring forms that do NOT create a local branch (`git checkout
- * origin/main` → detached HEAD, `git switch origin/main` → fatal) lift too,
- * which is the same fail-closed direction this function already takes for a
- * `checkout main` that fails: the line did not move onto a branch, so treating
- * the rest of it as protected is the safe answer.
+ * The caller gates this on `hasTrackFlag`, so the neighbouring forms that do
+ * NOT create a local branch are left alone: `git checkout origin/main` gives a
+ * detached HEAD (a commit there does not advance main) and `git switch
+ * origin/main` is fatal (no switch at all). Lifting those was a false block of
+ * the #400 class, and a guardrail that cries wolf is one people route around.
+ * The split is exact, not a guess: a tracking flag is present in every measured
+ * form that creates a local branch and absent from every one that does not.
  */
+/** Does this sub-command carry a tracking flag? That is what turns a
+ *  `<remote>/<branch>` target into a NEW LOCAL branch instead of a detached
+ *  HEAD (checkout) or a fatal error (switch) — verified against git 2.43.0.
+ *  `--no-track` counts: the DWIM keys on the remote-named target, not on
+ *  whether tracking is configured, so this set is flag-VALUE agnostic. */
+function hasTrackFlag(rest: string[]): boolean {
+  return rest.some(
+    (t) => t === "-t" || t === "--track" || t === "--no-track" || t.startsWith("--track="),
+  );
+}
+
 function dwimMainBranch(ref: string, cPath: string, st: LineState, gitDir: string): string | null {
   const slash = ref.indexOf("/");
   if (slash <= 0) return null;
@@ -815,7 +828,13 @@ function applyLift(cmd: string, rest: string[], cPath: string, gitDir: string, s
     if (!force && refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) return;
   } else {
     // #389: `<remote>/main` lands on a NEW LOCAL `main` — lift the LOCAL name.
-    const dwim = dwimMainBranch(resolved, cPath, st, gitDir);
+    // Only when a tracking flag is present. Measured against git 2.43.0: the
+    // DWIM that creates a local branch from a remote-named target requires one
+    // of -t / --track / --track=<mode> / --no-track. WITHOUT one,
+    // `git checkout origin/main` DETACHES — a commit there does not advance
+    // main — and `git switch origin/main` is fatal. Neither lands on a branch,
+    // so lifting them was a false block, the #400 class of defect.
+    const dwim = hasTrackFlag(rest) ? dwimMainBranch(resolved, cPath, st, gitDir) : null;
     if (dwim !== null) {
       resolved = dwim;
     } else if (!isMainRef(resolved) && !refExists(cPath, st, gitDir, `refs/heads/${resolved}`)) {

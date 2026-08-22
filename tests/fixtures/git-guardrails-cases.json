@@ -1730,6 +1730,32 @@
       ]
     },
     {
+      "id": "allow-checkout-remote-main-detached-then-commit",
+      "command": "git checkout origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 narrowing: WITHOUT a tracking flag, `git checkout origin/main` DETACHES (measured, git 2.43.0: \"Note: switching to 'origin/main'\") — a commit on a detached HEAD does not advance main, so lifting it was a false block of the #400 class",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
+      "id": "allow-switch-remote-main-fatal-then-commit",
+      "command": "git switch origin/main && git commit -m x",
+      "branch": "389-feat",
+      "remotes": [
+        "origin"
+      ],
+      "verdict": "allow",
+      "why": "#389 narrowing: `git switch origin/main` is fatal (measured, git 2.43.0: \"a branch is expected, got remote branch\") — no switch happens, so the commit lands on the feature branch and must not be blocked",
+      "remote_branches": [
+        "origin/main"
+      ]
+    },
+    {
       "id": "allow-switch-local-branch-named-feature-main-then-commit",
       "command": "git switch feature/main && git commit -m x",
       "branch": "389-feat",

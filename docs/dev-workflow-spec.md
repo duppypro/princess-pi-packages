@@ -386,9 +386,14 @@ Three tracked `PreToolUse` hooks live in `hooks/` (deploy target `~/.claude/hook
   `git checkout --track origin/main` — all answer *"Switched to a new branch 'main'"*
   (measured, git 2.43.0), so the branch the gate must judge is the LOCAL one git creates;
   `refs/heads/origin/main` never exists, so before #389 no lift was recorded at all and the
-  idiomatic tracking form walked straight through the gate. Only a first segment that is a
-  **configured remote of that repo** is stripped, so a local branch named `feature/main`
-  stays `feature/main` and is not main. Still no lift where the answer would be a guess: a
+  idiomatic tracking form walked straight through the gate. Two conditions, both
+  load-bearing: only a first segment that is a **configured remote of that repo** is
+  stripped, so a local branch named `feature/main` stays `feature/main` and is not main;
+  and only when a **tracking flag** (`-t`, `--track`, `--track=<mode>`, `--no-track`) is
+  present, because that is exactly what makes git create a local branch. Without one,
+  `git checkout origin/main` **detaches** — a commit there does not advance `main` — and
+  `git switch origin/main` is fatal, so neither lifts; blocking them was a false positive
+  of the #400 class. Still no lift where the answer would be a guess: a
   `--` (pathspecs follow), a second positional (`git checkout <tree-ish> <path>` restores
   files without switching, and `git switch --track direct origin/main` is two positionals
   that git itself refuses), or a name that is neither main/master nor an existing branch (a
