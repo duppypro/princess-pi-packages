@@ -135,6 +135,8 @@ const WAIVED: Record<string, string> = {
 		"$HOME appears only in the comment explaining why deployed-copy parity is NOT checked there (#230); the suite reads the repo only",
 	"pr-review-gate.test.ts":
 		"UNSETS the host's HOME rather than reading it — the round-7 case runs pr-review through `env -u HOME` to prove the gate survives cron/systemd/container environments (#379). $HOME appears only in the comment naming the expansion that used to abort. PATH is replaced and every run is sandboxed, so there is no host precondition to skip on",
+	"wtft-270-subagent-nested-claude-attribution.test.ts":
+		"homedir() names the Claude Code project directory the test CREATES for a nested `claude -p` session it also writes, under a slug derived from its own mkdtemp path, and removes in finally — the path is an output, not a precondition, and no other session can be writing there",
 	"git-checkpoint-guard.test.ts":
 		"builds a hermetic git sandbox and pins GIT_CONFIG_GLOBAL=/dev/null; $HOME appears only in a comment explaining why",
 };
