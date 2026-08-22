@@ -538,6 +538,21 @@ console.log("\nclustering fail-open:");
  * case's measured 35.5s is that walk — for a margin of 2x over a threshold
  * of 9997. The quadratic walk
  * itself is #426's other half and belongs in bin/pr-review, not here.
+ *
+ * The doubling search is capped at 200000 and the cap itself is always TESTED
+ * before the probe gives up — a bare doubling loop can jump from a hi below
+ * the cap straight past it (e.g. 128000 -> 256000), skipping every untested
+ * value in between, including ones under the cap where the real threshold
+ * could sit. Reporting SKIP off that untested gap would be a false negative:
+ * "no depth we happened to land on raises" read as "no depth up to 200000
+ * raises" (#426 round 2, pr-review self-review).
+ *
+ * The `spawnSync` call itself carries a 10s timeout. The probe costs ~0.01s
+ * on a healthy interpreter (18 raw_decode calls), so 10s is pure headroom —
+ * its only job is to keep a hung or missing python3 from blocking module load
+ * forever; a timed-out probe falls through the same "probe failed" warning
+ * path as any other unreadable result and the case runs at the FALLBACK
+ * depth instead (#426 round 2).
  */
 const RECURSION_OPENERS: number | null = (() => {
 	const FALLBACK = 20000;
@@ -561,10 +576,17 @@ def raises(n):
         return False
     return False
 
+CAP = 200000
 lo, hi = 1, 1000
-while hi <= 200000 and not raises(hi):
-    lo, hi = hi, hi * 2
-if hi > 200000:
+while hi < CAP and not raises(hi):
+    lo, hi = hi, min(hi * 2, CAP)
+# hi is capped at CAP, and the cap itself is always TESTED here before giving
+# up — plain doubling can jump from a hi below CAP straight past it (e.g.
+# 128000 -> 256000), skipping every untested value in between, including ones
+# under CAP where the real threshold could sit. That gap used to read as "no
+# depth up to 200000 raises" when the search had only proven "no depth we
+# happened to land on raises" (#426 round 2).
+if not raises(hi):
     print(0)
 else:
     while lo < hi:
@@ -574,7 +596,7 @@ else:
         else:
             lo = mid + 1
     print(lo)
-`], { encoding: "utf8" });
+`], { encoding: "utf8", timeout: 10_000 });
 	const found = Number.parseInt((probe.stdout || "").trim(), 10);
 	// A probe that ran and printed 0 has established something: doubling passed
 	// through 20000 on its way past 200000 WITHOUT raising, so the old fallback is
@@ -596,7 +618,8 @@ else:
 		// never wrong — but it announces itself.
 		console.warn(
 			`⚠️  RecursionError probe failed (exit ${probe.status}${
-				probe.error ? `, ${probe.error.message}` : ""
+				probe.signal ? `, signal ${probe.signal}` : ""
+			}${probe.error ? `, ${probe.error.message}` : ""
 			}${probe.stderr ? `: ${String(probe.stderr).trim().split("\n")[0]}` : ""}) — ` +
 				`falling back to ${FALLBACK} openers. The hazard case still runs, slowly; ` +
 				`if raw_decode no longer raises at all, it is now proving nothing (#426).`,
