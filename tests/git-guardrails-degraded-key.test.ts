@@ -18,24 +18,21 @@
 
 import { describe, expect, test } from "bun:test";
 import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { checkGitCommand } from "../extensions/lib/git-guardrails-core";
+import { mkSandbox } from "./lib/sandbox";
 
 const SH_HOOK = join(import.meta.dir, "..", "hooks", "block-dangerous-git.sh");
 
-// Sandboxes are removed even when a suite calls process.exit on failure (#394).
-const SANDBOXES: string[] = [];
-process.on("exit", () => {
-	for (const root of SANDBOXES.splice(0)) rmSync(root, { recursive: true, force: true });
-});
-
+// This file was written on the #421 branch before #394 landed, so it carried
+// its own SANDBOXES array and process.on("exit") sweep. tests/lib/sandbox.ts is
+// now the single owner of sandbox lifetime — it also handles SIGINT/SIGTERM,
+// which the local copy did not — and tests/sandbox-cleanup-contract.test.ts
+// fails any suite that creates a sandbox outside it.
 function sandbox(prefix: string): string {
-	const dir = mkdtempSync(join(tmpdir(), prefix));
-	SANDBOXES.push(dir);
-	return dir;
+	return mkSandbox(join(tmpdir(), prefix));
 }
 
 function repoOn(branch: string): string {
