@@ -2390,28 +2390,54 @@ function scanForSubAgents() {
     const sessionId = path9.basename(file, ".jsonl");
     let fileState = discoveredSubagentFiles.get(sessionId);
     if (!fileState) {
-      fileState = { lastSize: 0, streamState: newParseStreamState() };
+      fileState = { size: -1, mtimeMs: -1, writtenLines: new Map };
       discoveredSubagentFiles.set(sessionId, fileState);
     }
-    const offsetBefore = fileState.lastSize;
-    const rawInteractions = readNewSubagentLines(file, fileState);
-    if (rawInteractions.length === 0)
-      continue;
+    let size;
+    let mtimeMs;
     try {
-      const deduped = deduplicateInteractions(rawInteractions);
-      attributeClaudeSubAgentCosts(deduped);
+      const stat = fs9.statSync(file);
+      size = stat.size;
+      mtimeMs = stat.mtimeMs;
+    } catch (_) {
+      continue;
+    }
+    if (size === fileState.size && mtimeMs === fileState.mtimeMs)
+      continue;
+    if (size < fileState.size) {
+      fileState.writtenLines.clear();
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent transcript truncated, re-parsing from zero: ${path9.basename(file)}
+`);
+      }
+    }
+    try {
+      const deduped = deduplicateInteractions(parseSessionFile(file));
       let batch = "";
+      const freshHashes = [];
+      const seenThisParse = new Map;
       for (const si of deduped) {
-        batch += serializeClassified(si);
+        const line = serializeClassified(si);
+        const hash = createHash("sha1").update(line).digest("hex");
+        const nth = (seenThisParse.get(hash) || 0) + 1;
+        seenThisParse.set(hash, nth);
+        if (nth <= (fileState.writtenLines.get(hash) || 0))
+          continue;
+        batch += line;
+        freshHashes.push(hash);
       }
       if (batch) {
         fs9.appendFileSync(tagPath, batch);
         wroteAny = true;
       }
+      for (const h of freshHashes) {
+        fileState.writtenLines.set(h, (fileState.writtenLines.get(h) || 0) + 1);
+      }
+      fileState.size = size;
+      fileState.mtimeMs = mtimeMs;
     } catch (err) {
-      fileState.lastSize = offsetBefore;
       if (process.env.WTFT_DAEMON_DEBUG) {
-        process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), offset rewound to ${offsetBefore}: ${err instanceof Error ? err.message : String(err)}
+        process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), will re-parse next poll: ${err instanceof Error ? err.message : String(err)}
 `);
       }
     }
@@ -2436,28 +2462,6 @@ function writeSessionToTagFile(file) {
   } catch {}
   return false;
 }
-function parseLinesIntoInteractions(newContent, fileStreamState, onInterrupt) {
-  const interactions = [];
-  const lines = newContent.split(`
-`);
-  for (const line of lines) {
-    if (!line.trim())
-      continue;
-    try {
-      const entry = JSON.parse(line);
-      const isControl = applyControlEntry(entry, fileStreamState, () => onInterrupt(interactions));
-      if (isControl)
-        continue;
-      const interaction = parseEntryToInteraction(entry, fileStreamState.thinkingLevel, fileStreamState.compactionTokensBefore, fileStreamState.afterCompaction, fileStreamState.model);
-      if (interaction) {
-        interactions.push(interaction);
-        fileStreamState.compactionTokensBefore = undefined;
-        fileStreamState.afterCompaction = false;
-      }
-    } catch (_) {}
-  }
-  return interactions;
-}
 function parseNewLines(filePath) {
   try {
     const stat = fs9.statSync(filePath);
@@ -2480,43 +2484,31 @@ function parseNewLines(filePath) {
     }
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
-    return parseLinesIntoInteractions(newContent, streamState, (interactions) => {
-      if (interactions.length > 0) {
-        interactions[interactions.length - 1].interrupted = true;
-      } else {
-        stampInterruptOnPending = true;
-      }
-    });
-  } catch (_) {
-    return [];
-  }
-}
-function readNewSubagentLines(filePath, fileState) {
-  try {
-    const stat = fs9.statSync(filePath);
-    const currentSize = stat.size;
-    if (currentSize < fileState.lastSize) {
-      if (process.env.WTFT_DAEMON_DEBUG) {
-        process.stderr.write(`[wtft-log-parser] subagent transcript truncated, resetting offset: ${path9.basename(filePath)}
-`);
-      }
-      fileState.lastSize = 0;
+    const interactions = [];
+    for (const line of newContent.split(`
+`)) {
+      if (!line.trim())
+        continue;
+      try {
+        const entry = JSON.parse(line);
+        const isControl = applyControlEntry(entry, streamState, () => {
+          if (interactions.length > 0) {
+            interactions[interactions.length - 1].interrupted = true;
+          } else {
+            stampInterruptOnPending = true;
+          }
+        });
+        if (isControl)
+          continue;
+        const interaction = parseEntryToInteraction(entry, streamState.thinkingLevel, streamState.compactionTokensBefore, streamState.afterCompaction, streamState.model);
+        if (interaction) {
+          interactions.push(interaction);
+          streamState.compactionTokensBefore = undefined;
+          streamState.afterCompaction = false;
+        }
+      } catch (_) {}
     }
-    if (currentSize <= fileState.lastSize)
-      return [];
-    const fd = fs9.openSync(filePath, "r");
-    const buf = Buffer.alloc(currentSize - fileState.lastSize);
-    try {
-      fs9.readSync(fd, buf, 0, buf.length, fileState.lastSize);
-    } finally {
-      fs9.closeSync(fd);
-    }
-    fileState.lastSize = currentSize;
-    const newContent = buf.toString("utf8");
-    return parseLinesIntoInteractions(newContent, fileState.streamState, (interactions) => {
-      if (interactions.length > 0)
-        interactions[interactions.length - 1].interrupted = true;
-    });
+    return interactions;
   } catch (_) {
     return [];
   }

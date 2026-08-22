@@ -23,7 +23,6 @@ import {
 	serializeClassifiedWithOverheadSplit,
 	applyControlEntry,
 	newParseStreamState,
-	attributeClaudeSubAgentCosts,
 	extractCwdFromBashCommand,
 	discoverClaudeSubAgentSessionFiles,
 	discoverSubagentSessionFiles,
@@ -35,7 +34,6 @@ import {
 	loadExternalHarnesses,
 	WTFT_TAGGER_VERSION as TAGGER_VERSION
 } from "../extensions/lib/wtft-shared.js";
-import type { ParseStreamState } from "../extensions/lib/wtft-shared.js";
 
 
 
@@ -89,31 +87,72 @@ let sessionExisted = false; // becomes true first time we observe the session fi
 const pendingClaudeCommands: { interaction: NonNullable<ReturnType<typeof parseEntryToInteraction>>; prevCtx: number }[] = [];
 const discoveredClaudeSessions = new Set<string>();
 
-// Task/agent sub-agent discovery (#82), incrementally re-parsed (#270): a
-// subagent transcript is discovered while it is still running, so parsing it
+/** What the daemon remembers about one subagent transcript (#270).
+ *  `size`/`mtimeMs` are the CHANGE DETECTOR — the file is re-read only when one
+ *  of them moves, so a quiet transcript costs one `stat` and nothing else.
+ *  `writtenLines` is a multiset of sha1 hashes of the tag-file lines already
+ *  appended for this transcript; it is the whole append filter.
+ *  `-1` on both counters means "never read", which no real stat can equal. */
+interface SubagentFileState {
+	size: number;
+	mtimeMs: number;
+	writtenLines: Map<string, number>;
+}
+
+// Task/agent sub-agent discovery (#82), re-parsed WHOLE on every change (#270).
+//
+// A subagent transcript is discovered while it is still running, so parsing it
 // only once — at discovery — makes everything it writes afterward invisible
-// forever, and the undercount gets persisted into the tag file. Presence in
-// this map means "discovered"; each entry carries its OWN byte offset and
-// stream state so the file is re-read exactly like the parent session is
-// (readNewSubagentLines below) — cheap when unchanged (one stat, no read).
+// forever. The obvious fix, an incremental byte offset per file, was written and
+// then removed: it is the parent session's design, and the parent session is a
+// single file this daemon owns and appends to in one place. A subagent
+// transcript is not that. Three review rounds each found the same shape of
+// defect — a whole-file invariant meeting a batch-sized window:
 //
-// GROWTH, stated plainly: one {lastSize, streamState} entry per subagent
-// transcript discovered during this daemon's life, NEVER evicted. It is bounded
-// only in practice, by how many subagents one session spawns; the map does not
-// shrink when a subagent finishes, when its transcript is deleted, or when it
-// goes quiet. Re-PARSING does stop once a file yields no new bytes — that is a
-// cost bound, not a size bound, and the two are not the same claim.
+//   * deduplicateInteractions collapses lines sharing a `message.id`; two
+//     emissions of one id in different poll windows never met, and were summed.
+//   * attributeClaudeSubAgentCosts scopes its `seenSessionIds` to ONE CALL, so
+//     per-batch calls attributed the same nested `claude -p` session twice.
+//   * a failed append had to rewind the byte offset but could not rewind the
+//     stream state it had already mutated, losing compaction attribution.
 //
-// Eviction was written and then removed. The tempting rule — "the subagent
-// finished" — is unsafe: discoverSubagentSessionFiles re-lists every transcript
-// on disk on every poll, so an evicted-because-finished subagent is re-discovered
-// on the very next poll and re-read from offset 0, re-appending its whole
-// transcript each time. That is a guaranteed overcount, strictly worse than an
-// unbounded map of small entries. A file-is-gone rule avoids that but could not
-// be made to hold either: deciding "some known id is now stale" from scan sizes
-// alone is not sound, so the bound it advertised was not one it delivered.
-// An offset per live file is exactly the state an incremental read needs.
-const discoveredSubagentFiles = new Map<string, { lastSize: number; streamState: ParseStreamState }>();
+// So: on change, re-parse the WHOLE file (parseSessionFile + deduplicateInteractions,
+// exactly what discovery-time parsing did pre-#270) and append only the
+// serialized lines this transcript has not already put on disk. Every invariant
+// above is restored for free, because every one of them holds over a whole file.
+//
+// Why hash the SERIALIZED LINE rather than track ids, costs, or offsets:
+//   * usage grew  -> different line -> new hash -> appended; the reader's
+//     dedupeClassifiedById collapses it against the earlier line taking max.
+//   * nothing changed -> identical line -> hash present -> skipped. THIS is the
+//     cost bound: without it, re-appending a whole transcript every poll is
+//     O(n^2) (tests/wtft-270-subagent-tagfile-growth.test.ts pins it).
+//   * an interaction with no `message.id` needs no id under this predicate.
+//   * a changed `interrupted` flag — or any other field — changes the line and
+//     is picked up with no special case.
+// A MULTISET (hash -> count), not a set: two distinct interactions that
+// serialize identically are rare but possible (no `message.id`, same millisecond,
+// same content), and a set would silently drop the second — the exact class of
+// bug this rewrite exists to remove.
+//
+// MEASURED, not assumed (147 real subagent transcripts on this host, median
+// 417KB / max 1.18MB): whole-file parse + dedupe + serialize + sha1 costs
+// 2.89ms median, 4.79ms p90, 9.06ms max PER FILE. All 147 re-parsed in the same
+// beat — a case that cannot occur, since only files that CHANGED are re-read —
+// totals 421.7ms against the 667ms poll budget. sha1 hex over the line rather
+// than the line itself: 171KB vs 2.23MB across those same 4,383 interactions,
+// and the hashing is 0.4ms of the 5.2ms on the largest file.
+//
+// GROWTH, stated plainly: one SubagentFileState per subagent transcript
+// discovered during this daemon's life, NEVER evicted, and each one grows by a
+// 40-char hash per interaction that transcript ever writes. It is bounded only
+// in practice, by how many subagents one session spawns and how much they write.
+// Eviction was tried twice and reverted both times: "the subagent finished" is
+// unsafe because discoverSubagentSessionFiles re-lists every transcript on disk
+// every poll, so an evicted entry is re-discovered on the next poll with an
+// empty writtenLines and re-appends the whole transcript; and "the file is gone"
+// could not be decided soundly from a scan alone.
+const discoveredSubagentFiles = new Map<string, SubagentFileState>();
 
 // ---
 // SIGNAL HANDLING
@@ -310,55 +349,82 @@ function scanForSubAgents() {
     if (stillPending.length > 0) pendingClaudeCommands.push(...stillPending);
   }
 
-  // --- Task/agent/workflow sub-agents (#82), re-parsed while running (#270) ---
-  // A subagent is discovered while it is STILL RUNNING, so parsing it once at
-  // discovery would freeze its numbers at whatever it had written so far.
-  // Instead, every poll re-reads each known subagent file incrementally —
-  // exactly like the parent session (parseNewLines below) — so growth after
-  // discovery is still counted, and a finished subagent naturally stops being
-  // re-parsed once readNewSubagentLines finds no new bytes.
+  // --- Task/agent/workflow sub-agents (#82), re-parsed WHOLE on change (#270) ---
+  // See discoveredSubagentFiles above for why this is a whole-file re-parse and
+  // not an incremental read. Short version: every invariant the parser provides
+  // — id collapse, one nested-session attribution, compaction consumption — is
+  // scoped to the array it is handed, and a poll batch is the wrong array.
   const taskAgentFiles = discoverSubagentSessionFiles(sessionPath);
   for (const file of taskAgentFiles) {
     const sessionId = path.basename(file, '.jsonl');
     let fileState = discoveredSubagentFiles.get(sessionId);
     if (!fileState) {
-      fileState = { lastSize: 0, streamState: newParseStreamState() };
+      fileState = { size: -1, mtimeMs: -1, writtenLines: new Map<string, number>() };
       discoveredSubagentFiles.set(sessionId, fileState);
     }
-    // Offset BEFORE the read, so a failed write can put it back. The reader
-    // advances fileState.lastSize as soon as it has the bytes, which on its own
-    // would mean an ENOSPC/EACCES/removed-tag-dir loses those interactions for
-    // good — #270's own "later writes invisible forever", re-triggered by an
-    // I/O blip. The code this replaced (writeSessionToTagFile) wrapped the whole
-    // parse+dedupe+serialize+append in one try/catch; this keeps that guarantee
-    // and adds the rollback the old whole-file re-parse never needed.
-    const offsetBefore = fileState.lastSize;
-    const rawInteractions = readNewSubagentLines(file, fileState);
-    if (rawInteractions.length === 0) continue; // unchanged since last poll
+
+    // The cheap-when-idle path: one stat, no read, no parse.
+    let size: number;
+    let mtimeMs: number;
     try {
-      const deduped = deduplicateInteractions(rawInteractions);
-      // Nested claude-bash sub-agents (#138) spawned FROM this subagent's own
-      // commands — parseSessionFile does this for a whole-file read; do the
-      // same for this batch so incremental reads don't lose the attribution.
-      attributeClaudeSubAgentCosts(deduped);
+      const stat = fs.statSync(file);
+      size = stat.size;
+      mtimeMs = stat.mtimeMs;
+    } catch (_) {
+      continue; // gone or unreadable this poll — discovery re-lists it next time
+    }
+    if (size === fileState.size && mtimeMs === fileState.mtimeMs) continue;
+
+    if (size < fileState.size) {
+      // Truncated or rotated: the lines we recorded describe content that is no
+      // longer in this file, so keeping them would suppress the replacement.
+      // Duplicates that do survive collapse on read; a suppressed line never
+      // arrives at all, which is the worse of the two.
+      fileState.writtenLines.clear();
+      if (process.env.WTFT_DAEMON_DEBUG) {
+        process.stderr.write(`[wtft-log-parser] subagent transcript truncated, re-parsing from zero: ${path.basename(file)}\n`);
+      }
+    }
+
+    try {
+      // Whole file, exactly as the pre-#270 discovery-time parse did.
+      // parseSessionFile runs attributeClaudeSubAgentCosts internally over the
+      // whole result — do NOT add a second call here, that is the round-3 High.
+      const deduped = deduplicateInteractions(parseSessionFile(file));
       let batch = '';
+      const freshHashes: string[] = [];
+      const seenThisParse = new Map<string, number>();
       for (const si of deduped) {
-        batch += serializeClassified(si);
+        const line = serializeClassified(si);
+        const hash = createHash('sha1').update(line).digest('hex');
+        const nth = (seenThisParse.get(hash) || 0) + 1;
+        seenThisParse.set(hash, nth);
+        if (nth <= (fileState.writtenLines.get(hash) || 0)) continue; // already on disk
+        batch += line;
+        freshHashes.push(hash);
       }
       if (batch) {
         fs.appendFileSync(tagPath, batch);
         wroteAny = true;
       }
+      // Reached only when the append SUCCEEDED. Recording the hashes and the
+      // change detector here is the whole failure story: an ENOSPC/EACCES/
+      // removed-tag-dir throw records nothing, so the next poll still sees the
+      // file as changed, re-parses it, and re-appends exactly the lines that
+      // never landed. Idempotent by construction — no offset to rewind, no
+      // stream state to un-mutate.
+      for (const h of freshHashes) {
+        fileState.writtenLines.set(h, (fileState.writtenLines.get(h) || 0) + 1);
+      }
+      // The stat was taken BEFORE the read, so anything written in between is
+      // still ahead of this mark and gets re-parsed next poll.
+      fileState.size = size;
+      fileState.mtimeMs = mtimeMs;
     } catch (err) {
-      // Rewind so the un-written bytes are re-read on a later poll. Replaying
-      // the same control entries through streamState is idempotent (thinking
-      // level and model are plain sets; compaction flags are re-set and
-      // re-consumed by the same interaction), so the only cost is one repeated
-      // parse. Keep polling — one bad write must not stop this subagent, the
-      // other subagents in this loop, or the parent session's own tag writes.
-      fileState.lastSize = offsetBefore;
+      // Keep polling — one bad write must not stop this subagent, the other
+      // subagents in this loop, or the parent session's own tag writes.
       if (process.env.WTFT_DAEMON_DEBUG) {
-        process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), offset rewound to ${offsetBefore}: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.stderr.write(`[wtft-log-parser] subagent write error (${sessionId}), will re-parse next poll: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
   }
@@ -387,38 +453,6 @@ function writeSessionToTagFile(file: string): boolean {
   return false;
 }
 
-/** Parse new lines into interactions, threading control entries (thinking
- *  level #77, model_change #128, compaction #90, interrupt #52 Phase 3)
- *  through the given stream state. Shared by the parent's parseNewLines and
- *  the subagent incremental reader (#270) so the two paths cannot drift
- *  apart (#156) — same shape as parseSessionFile's whole-file loop. */
-function parseLinesIntoInteractions(
-  newContent: string,
-  fileStreamState: ReturnType<typeof newParseStreamState>,
-  onInterrupt: (interactions: NonNullable<ReturnType<typeof parseEntryToInteraction>>[]) => void
-) {
-  const interactions: NonNullable<ReturnType<typeof parseEntryToInteraction>>[] = [];
-  const lines = newContent.split("\n");
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      const isControl = applyControlEntry(entry, fileStreamState, () => onInterrupt(interactions));
-      if (isControl) continue;
-
-      const interaction = parseEntryToInteraction(entry, fileStreamState.thinkingLevel, fileStreamState.compactionTokensBefore, fileStreamState.afterCompaction, fileStreamState.model);
-      if (interaction) {
-        interactions.push(interaction);
-        fileStreamState.compactionTokensBefore = undefined; // consumed
-        fileStreamState.afterCompaction = false; // consumed
-      }
-    } catch (_) {
-      // Skip unparseable lines (partial writes, non-JSON)
-    }
-  }
-  return interactions;
-}
-
 function parseNewLines(filePath: string) {
   try {
     const stat = fs.statSync(filePath);
@@ -441,62 +475,40 @@ function parseNewLines(filePath: string) {
     }
     lastSize = currentSize;
     const newContent = buf.toString("utf8");
+    // Same shape as parseSessionFile's whole-file loop (#156), threading the
+    // control entries — thinking level (#77), model_change (#128), compaction
+    // (#90), interrupt (#52 Phase 3) — through the session's stream state.
     // Interrupt: the killed turn is either the last interaction of this
     // batch, or still sitting unflushed in pendingItems (stamped in the
     // main loop). If it was already flushed to the tag file, the stamp is
     // dropped — bounded by one 667ms beat.
-    return parseLinesIntoInteractions(newContent, streamState, (interactions) => {
-      if (interactions.length > 0) {
-        interactions[interactions.length - 1].interrupted = true;
-      } else {
-        stampInterruptOnPending = true;
+    const interactions: NonNullable<ReturnType<typeof parseEntryToInteraction>>[] = [];
+    for (const line of newContent.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        const isControl = applyControlEntry(entry, streamState, () => {
+          if (interactions.length > 0) {
+            interactions[interactions.length - 1].interrupted = true;
+          } else {
+            stampInterruptOnPending = true;
+          }
+        });
+        if (isControl) continue;
+
+        const interaction = parseEntryToInteraction(entry, streamState.thinkingLevel, streamState.compactionTokensBefore, streamState.afterCompaction, streamState.model);
+        if (interaction) {
+          interactions.push(interaction);
+          streamState.compactionTokensBefore = undefined; // consumed
+          streamState.afterCompaction = false; // consumed
+        }
+      } catch (_) {
+        // Skip unparseable lines (partial writes, non-JSON)
       }
-    });
+    }
+    return interactions;
   } catch (_) {
     // File may not exist yet
-    return [];
-  }
-}
-
-/** Incrementally read a subagent transcript exactly like the parent session
- *  is read — a byte offset plus threaded stream state — so tokens written
- *  AFTER first discovery are still counted (#270). Mutates fileState.lastSize
- *  in place. Cheap when unchanged: one stat, no read. */
-function readNewSubagentLines(filePath: string, fileState: { lastSize: number; streamState: ReturnType<typeof newParseStreamState> }) {
-  try {
-    const stat = fs.statSync(filePath);
-    const currentSize = stat.size;
-    if (currentSize < fileState.lastSize) {
-      // Truncated/rotated — rare for a subagent transcript, but keep symmetry
-      // with the parent's own reset-on-truncate handling, diagnostic included
-      // (#270 review): a silent offset reset is the harder failure to diagnose,
-      // and the parent has named this on stderr since #155. Name the file too —
-      // unlike the parent, there are many of these.
-      if (process.env.WTFT_DAEMON_DEBUG) {
-        process.stderr.write(`[wtft-log-parser] subagent transcript truncated, resetting offset: ${path.basename(filePath)}\n`);
-      }
-      fileState.lastSize = 0;
-    }
-    if (currentSize <= fileState.lastSize) return [];
-    const fd = fs.openSync(filePath, "r");
-    const buf = Buffer.alloc(currentSize - fileState.lastSize);
-    // try/finally: a throwing readSync must not leak the descriptor (#270 review).
-    // This runs once per subagent transcript per poll, so a leak here compounds
-    // far faster than the same shape in parseNewLines (once per parent session).
-    try {
-      fs.readSync(fd, buf, 0, buf.length, fileState.lastSize);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fileState.lastSize = currentSize;
-    const newContent = buf.toString("utf8");
-    // A subagent transcript has no cross-poll pendingItems queue — an
-    // interrupt mid-batch just stamps the last interaction already parsed
-    // in this batch.
-    return parseLinesIntoInteractions(newContent, fileState.streamState, (interactions) => {
-      if (interactions.length > 0) interactions[interactions.length - 1].interrupted = true;
-    });
-  } catch (_) {
     return [];
   }
 }
