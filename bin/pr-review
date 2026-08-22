@@ -32,7 +32,10 @@
 # why it is no longer collapsed into the same exit 0 as "reviewed, clean":
 # zero lenses completing means the reviewer never actually looked, and that is
 # exit 8 — pr-open refuses on it exactly like it refuses on findings (exit 7),
-# with the same `pr-open --reviewed` escape hatch. The promise covers hangs
+# with the same `pr-open --reviewed` escape hatch. Since #412 exit 8 also covers
+# the collector failing to write its results, or its summary failing to read
+# back: both mean the coverage of this run is unknown, and unknown coverage is
+# the same answer as none. The promise covers hangs
 # too, which is why every lens is wrapped in `timeout` — an earlier version
 # waited unconditionally and would have wedged pr-open on a stalled reviewer,
 # the one failure this paragraph claims cannot happen.
@@ -294,9 +297,13 @@ emit_status() {  # emit_status <status> <human message> <exit code>
     # message — and $BASE flows in here verbatim from --base — produced an
     # invalid escape and broke the "exactly one parseable document" contract on
     # precisely the error paths a machine reader most needs.
-    if command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":sys.argv[2]}))' "$1" "$2"
-    else
+    # `if !`, not a bare command (#412 H8): this runs BEFORE `exit "$3"`, so a
+    # python3 that raises here replaces the status code the caller was given
+    # with the shell's own exit 1 — and pr-open reads every code but 7 and 8 as
+    # "proceed". The printf fallback is the same one the missing-python3 branch
+    # uses, so a machine reader still gets exactly one parseable document.
+    if ! command -v python3 >/dev/null 2>&1 ||
+       ! python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":sys.argv[2]}))' "$1" "$2"; then
       printf '{"status":"%s","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"reviewer unavailable"}\n' "$1"
     fi
   elif [ "$QUIET" -eq 0 ]; then
@@ -677,7 +684,14 @@ if ! ( set -C; umask 077; : > "$LOG" ) 2>/dev/null; then
   echo "   or the directory is not writable. Set PR_REVIEW_LOG_DIR to a writable path." >&2
   exit 3
 fi
-WORK=$(mktemp -d "$TMP_PARENT/pr-review.XXXXXXXX")
+# Guarded (#412 H5): the exit-3 this file promises for an unusable work area was
+# unreachable when the directory could not be CREATED at all — a bare `mktemp -d`
+# under `set -e` exits 1, which pr-open reads as "proceed unreviewed".
+WORK=$(mktemp -d "$TMP_PARENT/pr-review.XXXXXXXX") || {
+  echo "pr-review: cannot create a work directory under '$TMP_PARENT'." >&2
+  echo "   Set TMPDIR to a writable path." >&2
+  exit 3
+}
 # EXIT cleans up; INT/TERM additionally kill the lens children and EXIT. A bare
 # handler on INT/TERM returns to the interrupted command, so the background
 # `timeout claude` processes survived as orphans still burning a reviewer call,
@@ -1124,7 +1138,13 @@ LENS_PIDS=()
 # execution in the release path at worst. Its summary goes to a FILE, not stdout,
 # because an unredirected print made `--json` emit two concatenated documents
 # with `findings` an integer in one and a list in the other.
-LENS_TIMEOUT="$LENS_TIMEOUT" python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "$BASE_SHA" "$HEAD_SHA" "${LENSES[@]}" <<'PYEOF'
+# `if`, not a bare command (#412 H2): the collector's terminal writes — $LOG at
+# the json.dump below and $WORK/summary after it — sit outside every `try`, and
+# python3 can also fail to start at all. Either way a bare invocation exits 1
+# here with no log and no summary: the entire review is lost, not one lens, and
+# pr-open reads exit 1 as "proceed unreviewed". The `else` reports the honest
+# state instead — the reviewer ran and produced no coverage, which is exit 8.
+if LENS_TIMEOUT="$LENS_TIMEOUT" python3 - "$WORK" "$LOG" "$BASE" "$BRANCH" "$STAMP" "$MODEL" "$BASE_SHA" "$HEAD_SHA" "${LENSES[@]}" <<'PYEOF'
 import json, os, sys
 
 def _open_private(path):
@@ -1368,8 +1388,20 @@ json.dump({"schema": "pr-review/run@1",
 with open(os.path.join(work, "summary"), "w") as fh:
     fh.write(f"{len(findings)} {len(failed)} {ran}\n")
 PYEOF
+then
+  :
+else
+  emit_status "reviewed-none" \
+    "⚠️  pr-review: the collector could not write its results — NO review coverage. Log: $LOG" 8
+fi
 
-read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
+# Guarded (#412 H6): the summary is the collector's only channel for these three
+# counts. If it is missing or unreadable the counts are unknown, and unknown
+# coverage is exit 8, never a silent fall-through to a clean-looking exit 0.
+if ! read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"; then
+  emit_status "reviewed-none" \
+    "⚠️  pr-review: the collector's summary could not be read — NO review coverage. Log: $LOG" 8
+fi
 
 # --- Clustering pass (#377 round 2) ---
 # The experiment's metric is DISTINCT defects, because the control arm it is
@@ -1388,7 +1420,15 @@ read -r RAWCOUNT NFAILED NRAN < "$WORK/summary"
 # It FAILS OPEN to the raw count with `dedup: "failed"` recorded in the log —
 # an un-deduplicated number that says so is usable; one that pretends is not.
 if [ "$RAWCOUNT" -gt 1 ] && [ "${PR_REVIEW_NO_CLUSTER:-0}" != "1" ]; then
-  {
+  # Guarded (#412 H1): this group runs ONLY when findings exist, so a raise in
+  # PYIDS — ENOSPC on the redirect, an unreadable $LOG — killed the script at
+  # exit 1 with findings already in $LOG, and pr-open opened the PR carrying
+  # them. Highest-severity of the set: it converts a blocked PR into an opened
+  # one. A half-written prompt is also not worth spending a reviewer call on, so
+  # the failure skips the clustering call and takes the same fail-open-to-RAW
+  # path a crashed clustering pass takes.
+  CLUSTER_PROMPT_OK=1
+  if ! {
     cat <<'CRULES'
 You are given code-review findings produced by three independent reviewers with different
 prompts. Several may describe THE SAME underlying defect in different words, at different
@@ -1409,9 +1449,13 @@ for i, f in enumerate(d["findings"]):
     print(f'{i}: [{f.get("severity","?")}] {f.get("file","?")}:{f.get("line","?")} — '
           f'{f.get("title","")} :: {str(f.get("detail",""))[:300]}')
 PYIDS
-  } > "$WORK/cluster.prompt"
+  } > "$WORK/cluster.prompt"; then
+    CLUSTER_PROMPT_OK=0
+    echo "pr-review: the clustering prompt could not be built; count is RAW, not deduplicated." >&2
+  fi
 
-  if LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
+  if [ "$CLUSTER_PROMPT_OK" -eq 1 ] &&
+     LC_ALL=C timeout -v --kill-after="$LENS_KILL_AFTER" "$LENS_TIMEOUT" \
        claude -p --output-format json --model "$MODEL" \
        < "$WORK/cluster.prompt" > "$WORK/cluster.out" 2>"$WORK/cluster.err"; then
     :
@@ -1577,7 +1621,11 @@ PYCLUSTERCRASH
   COUNT=$(cat "$WORK/distinct" 2>/dev/null) || COUNT=""
   [ -n "$COUNT" ] || COUNT="$RAWCOUNT"
 else
-  python3 - "$LOG" <<'PYNOCLUSTER'
+  # `if`, not a bare command (#412 H4): with exactly one finding (or
+  # PR_REVIEW_NO_CLUSTER=1) a raise here turned a would-be exit 7 into exit 1,
+  # which pr-open reads as "proceed". COUNT is set from $RAWCOUNT below either
+  # way, so the exit code survives a log that could not be annotated.
+  if python3 - "$LOG" <<'PYNOCLUSTER'
 import json, os, sys
 def _open_private(path):
     """Reopen the log the shell already created, refusing a symlink at that path.
@@ -1595,11 +1643,23 @@ d["distinctFindings"] = len(d["findings"])
 d["dedup"] = "not-needed" if len(d["findings"]) <= 1 else "disabled"
 json.dump(d, _open_private(sys.argv[1]), indent=2)
 PYNOCLUSTER
+  then
+    :
+  else
+    echo "pr-review: could not annotate the log with its distinct count; the count below is RAW." >&2
+  fi
   COUNT="$RAWCOUNT"
 fi
 
 if [ "$JSON_OUT" -eq 1 ]; then
-  cat "$LOG"
+  # Guarded (#412 H7): this is the path a machine caller uses, and a bare `cat`
+  # of an unreadable $LOG exits 1 with EMPTY stdout — no document at all, and an
+  # exit code that says "reviewer unavailable, proceed". The fallback keeps the
+  # "exactly one parseable document" contract and lets the real exit code below
+  # (7 on findings, 8 on no coverage) stand.
+  if ! cat "$LOG"; then
+    printf '{"schema":"pr-review/run@1","status":"reviewed-none","findings":[],"distinct":[],"distinctFindings":0,"failedLenses":[],"lensesRan":0,"message":"the run log could not be read back"}\n'
+  fi
 elif [ "$QUIET" -eq 0 ]; then
   # The ✅ is gated on coverage, not just on the count, and reports the number of
   # lenses that ACTUALLY RAN rather than the number declared. Printing
@@ -1611,7 +1671,7 @@ elif [ "$QUIET" -eq 0 ]; then
     # Heredoc, not `python3 -c '...'`: escaped double quotes inside an f-string
     # expression are a SyntaxError, and getting them past both the shell and the
     # f-string parser is not worth the cleverness.
-    python3 - "$LOG" <<'PYFAIL' >&2
+    if python3 - "$LOG" <<'PYFAIL' >&2
 import json, sys
 d = json.load(open(sys.argv[1]))
 for f in d["failedLenses"]:
@@ -1634,6 +1694,11 @@ ran = {k: v for k, v in (d.get("lensSeconds") or {}).items() if v is not None
 if ran:
     print("    lenses that finished: " + ", ".join(f"{k} {v}s" for k, v in sorted(ran.items())))
 PYFAIL
+    # `|| true` (#412 H3): this detail is informational — the ⚠️ line above
+    # already carried the fact that coverage is incomplete. Its sibling PYSHOW
+    # has carried the same guard since #403; this one did not, so an unreadable
+    # $LOG here killed the script before the exit code below could be reached.
+    then :; else echo "    (the per-lens detail could not be read from the log)" >&2; fi
   fi
   if [ "$COUNT" -eq 0 ]; then
     if [ "$NFAILED" -gt 0 ]; then
