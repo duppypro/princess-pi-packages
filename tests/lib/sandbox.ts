@@ -1,8 +1,8 @@
 /**
  * Sandbox registry (#394).
  *
- * 54 of this repo's test suites build throwaway directories with `mkdtempSync`,
- * across 107 call sites, and almost none removed them: measured on this VPS,
+ * 53 of this repo's test suites build throwaway directories with `mkdtempSync`,
+ * across 114 call sites, and almost none removed them: measured on this VPS,
  * /tmp held 135,065 entries, ~6 GB of it from `guardrail-case-*` alone. (#394's
  * own table lists the twelve worst prefixes, which is where the "~20" in an
  * earlier draft of this comment came from — that was the tail, not the scope.) Disk was not tight — the problem is unbounded
