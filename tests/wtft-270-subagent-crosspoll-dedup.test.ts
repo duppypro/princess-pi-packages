@@ -9,9 +9,11 @@
  *   Before #270 a subagent transcript was parsed whole (parseSessionFile) and
  *   deduplicateInteractions ran over ALL of it, so a message re-emitted with
  *   growing usage across several JSONL lines sharing one `message.id` collapsed
- *   to one interaction at max cost. Incremental reads dedupe only WITHIN a poll
- *   batch, so the same id landing in two poll windows is appended twice and
- *   counted twice.
+ *   to one interaction at max cost. #270's first cut read incrementally, which
+ *   deduped only WITHIN a poll batch, so the same id landing in two poll windows
+ *   was appended twice and counted twice. Round 3 restored the whole-file parse
+ *   and kept the read-side collapse this test drove out; the property below is
+ *   what both halves have to hold, whichever way the daemon reads the file.
  *
  *   That is not a corner case. Measured over the twelve most recent live
  *   Claude Code transcripts on this host, 40-76% of message ids carrying `usage`

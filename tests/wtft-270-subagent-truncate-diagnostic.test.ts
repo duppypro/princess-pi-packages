@@ -2,18 +2,22 @@
 /**
  * @package princess-pi-packages
  * @test wtft-270-subagent-truncate-diagnostic
- * @description #270 review (Low/contract, bin/wtft-daemon.ts) — the comment on
- *   readNewSubagentLines' truncation branch claimed it kept "symmetry with the
- *   parent's own reset-on-truncate handling", but parseNewLines also writes a
- *   WTFT_DAEMON_DEBUG diagnostic to stderr on that branch and the subagent
- *   reader wrote nothing. A rotated or truncated subagent transcript reset its
- *   offset silently, even with the debug switch on — strictly harder to
- *   diagnose than its parent-session counterpart, which is the opposite of what
- *   the comment promised.
+ * @description #270 review (Low/contract, bin/wtft-daemon.ts) — a rotated or
+ *   truncated subagent transcript used to reset the daemon's position on that
+ *   file SILENTLY, even with the debug switch on, while the parent session's
+ *   equivalent branch has named itself on stderr since #155. That made the
+ *   subagent case strictly harder to diagnose than its parent counterpart.
+ *
+ *   The mechanism moved in #270's round-3 rewrite — the daemon now re-parses a
+ *   changed subagent transcript WHOLE and appends only lines it has not already
+ *   written, so a shrink discards that file's written-line record rather than
+ *   rewinding a byte offset. The requirement did not move: a shrink is a
+ *   diagnosable event either way, and it must still say so.
  *
  *   Closer: with WTFT_DAEMON_DEBUG=1, truncating a subagent transcript the
  *   daemon has already read puts a named diagnostic on the daemon's stderr, the
- *   same as truncating the parent session does.
+ *   same as truncating the parent session does — and the replacement content is
+ *   still picked up.
  */
 
 import * as fs from "node:fs";
@@ -126,7 +130,7 @@ try {
 		await sleep(250);
 		sawSmall = readClassifiedTagFile(tagPath).some((int: any) => int.messageId === SMALL_ID);
 	}
-	assert("the offset reset still re-reads the rotated transcript from zero", sawSmall);
+	assert("the reset still re-reads the rotated transcript from zero", sawSmall);
 } finally {
 	try { fs.closeSync(stderrFd); } catch {}
 	for (const pid of cleanupPids) { try { process.kill(pid, "SIGTERM"); } catch {} }
