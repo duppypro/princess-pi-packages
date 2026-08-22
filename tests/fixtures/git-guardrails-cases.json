@@ -1642,6 +1642,27 @@
       ],
       "verdict": "block",
       "why": "#391 + #399: the two holes compose — a switch to main followed by a revert wrote a commit on main through both gaps"
+    },
+    {
+      "id": "block-push-after-heredoc-concatenated-delimiter",
+      "command": "cat <<'END'x\ngit push origin main\nENDx\ngit push origin main",
+      "branch": "389-feat",
+      "verdict": "block",
+      "why": "#389 finding A: the shell delimiter is the concatenation ENDx, so the body ends at line 3 and line 4 is a REAL push to main; recording only 'END' ate the rest of the command and let it through"
+    },
+    {
+      "id": "block-push-after-heredoc-delimiter-split-mid-word",
+      "command": "cat <<E'ND'\ngit push origin main\nEND\ngit push origin main",
+      "branch": "389-feat",
+      "verdict": "block",
+      "why": "#389 finding A: <<E'ND' is delimited by END — the unquoted piece before the quote is part of the same word"
+    },
+    {
+      "id": "allow-quoted-heredoc-concatenated-delimiter-body-is-inert",
+      "command": "cat <<'END'x\ngit push origin main\nENDx",
+      "branch": "389-feat",
+      "verdict": "allow",
+      "why": "#389 finding A: any quoted piece makes the WHOLE delimiter quoted, so the body is inert text and must not be read as a command"
     }
   ]
 }

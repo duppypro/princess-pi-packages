@@ -310,12 +310,44 @@ export function stripHeredocs(command: string): string {
         let d = false;
         if (line[j] === "-") { d = true; j++; }
         while (j < line.length && /\s/.test(line[j])) j++;
+        // #389: the delimiter is a shell WORD, and a word is the
+        // CONCATENATION of its adjacent quoted and unquoted pieces — `<<'END'x`
+        // is delimited by `ENDx`, `<<x'END'` by `xEND`, `<<E'ND'` by `END`
+        // (verified against bash: a line `ENDx` terminates the first, a bare
+        // `END` does not). Recording only the first piece left a delimiter that
+        // never arrives: the scan stayed in body mode to end-of-input and ate
+        // every real command AFTER the heredoc — a fail-open on every gate
+        // downstream. Keep collecting pieces until an unquoted word boundary.
+        // Shell rule: if ANY piece is quoted, the WHOLE delimiter is quoted, so
+        // the body is inert text and is dropped at any depth.
         let quotedDelim = false;
-        if (line[j] === "'" || line[j] === '"') { quotedDelim = true; j++; }
         let word = "";
-        while (j < line.length && HEREDOC_DELIM_CHARS.test(line[j])) {
-          word += line[j];
-          j++;
+        while (j < line.length) {
+          const c = line[j];
+          if (c === "'") {
+            quotedDelim = true;
+            j++;
+            while (j < line.length && line[j] !== "'") word += line[j++];
+            if (j < line.length) j++; // closing quote
+          } else if (c === '"') {
+            quotedDelim = true;
+            j++;
+            while (j < line.length && line[j] !== '"') {
+              if (line[j] === "\\" && j + 1 < line.length) j++;
+              word += line[j++];
+            }
+            if (j < line.length) j++; // closing quote
+          } else if (c === "\\" && j + 1 < line.length) {
+            // `<<\EOF` — a backslash quotes the next character, and quoting any
+            // piece quotes the whole delimiter.
+            quotedDelim = true;
+            j++;
+            word += line[j++];
+          } else if (HEREDOC_DELIM_CHARS.test(c)) {
+            word += line[j++];
+          } else {
+            break; // unquoted word boundary ends the delimiter
+          }
         }
         // Quoted delimiter → inert body, drop it wherever it is. Unquoted →
         // only where nothing quoted encloses it, i.e. exactly the pre-#400 set.

@@ -387,7 +387,7 @@ ref_exists() {
 # outerq counts those enclosing quotes.
 strip_heredocs() {
   local line probe delim="" dashed=0 q="" arith=0
-  local i n ch j w d qdelim outerq=0 qtop
+  local i n ch j w d qdelim dch outerq=0 qtop
   local -a qstack=()
   while IFS= read -r line; do
     if [ -n "$delim" ]; then
@@ -453,11 +453,43 @@ strip_heredocs() {
         j=$((i + 2)); d=0
         [ "${line:$j:1}" = '-' ] && { d=1; j=$((j + 1)); }
         while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [[:space:]] ]]; do j=$((j + 1)); done
+        # #389: the delimiter is a shell WORD, and a word is the CONCATENATION
+        # of its adjacent quoted and unquoted pieces - <<'END'x is delimited by
+        # ENDx, <<x'END' by xEND, <<E'ND' by END (verified against bash: a line
+        # ENDx terminates the first, a bare END does not). Recording only the
+        # first piece left a delimiter that never arrives: the scan stayed in
+        # body mode to end-of-input and ate every real command AFTER the
+        # heredoc - a fail-open on every gate downstream. Keep collecting pieces
+        # until an unquoted word boundary. Shell rule: if ANY piece is quoted,
+        # the WHOLE delimiter is quoted, so the body is inert text and is
+        # dropped at any depth.
         qdelim=0
-        case "${line:$j:1}" in \'|\") qdelim=1; j=$((j + 1)) ;; esac
         w=""
-        while [ "$j" -lt "$n" ] && [[ "${line:$j:1}" =~ [A-Za-z0-9_.+-] ]]; do
-          w+="${line:$j:1}"; j=$((j + 1))
+        while [ "$j" -lt "$n" ]; do
+          dch="${line:$j:1}"
+          if [ "$dch" = "'" ]; then
+            qdelim=1; j=$((j + 1))
+            while [ "$j" -lt "$n" ] && [ "${line:$j:1}" != "'" ]; do
+              w+="${line:$j:1}"; j=$((j + 1))
+            done
+            [ "$j" -lt "$n" ] && j=$((j + 1))   # closing quote
+          elif [ "$dch" = '"' ]; then
+            qdelim=1; j=$((j + 1))
+            while [ "$j" -lt "$n" ] && [ "${line:$j:1}" != '"' ]; do
+              if [ "${line:$j:1}" = '\' ] && [ $((j + 1)) -lt "$n" ]; then j=$((j + 1)); fi
+              w+="${line:$j:1}"; j=$((j + 1))
+            done
+            [ "$j" -lt "$n" ] && j=$((j + 1))   # closing quote
+          elif [ "$dch" = '\' ] && [ $((j + 1)) -lt "$n" ]; then
+            # <<\EOF - a backslash quotes the next character, and quoting any
+            # piece quotes the whole delimiter.
+            qdelim=1; j=$((j + 1))
+            w+="${line:$j:1}"; j=$((j + 1))
+          elif [[ "$dch" =~ [A-Za-z0-9_.+-] ]]; then
+            w+="$dch"; j=$((j + 1))
+          else
+            break   # unquoted word boundary ends the delimiter
+          fi
         done
         # Quoted delimiter -> inert body, drop it wherever it is. Unquoted ->
         # only where nothing quoted encloses it, i.e. exactly the pre-#400 set.

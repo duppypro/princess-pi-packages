@@ -398,3 +398,74 @@ describe("git-guardrails cwd-read fail-closed (#390 finding — second jq read)"
     ).toBe(2);
   });
 });
+
+// ---
+// #389 finding A: a heredoc delimiter is a WORD, and a word can be built from
+// adjacent quoted and unquoted pieces — `cat <<'END'x` is delimited by the
+// CONCATENATION `ENDx`, verified against bash itself (a line `ENDx` terminates
+// the body; a bare `END` does not, and bash warns "here-document at line 1
+// delimited by end-of-file (wanted `ENDx')").
+//
+// stripHeredocs recorded only the quoted piece (`END`), so it never met its
+// terminator, stayed in body mode to end-of-input, and ate the REST OF THE
+// COMMAND — including real commands after the heredoc. That is a fail-open on
+// every gate downstream, measured as verdict `null` for a line ending in
+// `git push origin main`.
+//
+// The shell rule the fix has to carry: if ANY piece of the delimiter is quoted,
+// the WHOLE delimiter is quoted, so the body is inert text and is dropped at
+// any depth. Assertions are on stripHeredocs's OWN output — checkSubstitutions
+// re-derives `$( )` boundaries independently and has masked this class twice on
+// this branch already.
+// ---
+const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+describe("git-guardrails stripHeredocs — delimiter concatenated from quoted + unquoted pieces (#389 finding A)", () => {
+  const PAYLOAD = "git push origin main";
+  const forms: { name: string; opener: string; term: string }[] = [
+    { name: "<<'END'x — quoted piece then unquoted", opener: "cat <<'END'x", term: "ENDx" },
+    { name: "<<x'END' — unquoted piece then quoted", opener: "cat <<x'END'", term: "xEND" },
+    { name: '<<"END"x — double-quoted piece then unquoted', opener: 'cat <<"END"x', term: "ENDx" },
+    { name: "<<E'ND' — one word split mid-way", opener: "cat <<E'ND'", term: "END" },
+    { name: "<<'EN'\"D\" — two quoted pieces, different quotes", opener: "cat <<'EN'\"D\"", term: "END" },
+  ];
+  for (const f of forms) {
+    // Line 2 is heredoc BODY (must be dropped); line 4 is a REAL command after
+    // the terminator (must survive). Exactly one occurrence must remain.
+    const command = `${f.opener}\n${PAYLOAD}\n${f.term}\n${PAYLOAD}`;
+    const why = "the delimiter is the concatenation, so the body ends at the terminator and the command after it survives";
+
+    test(`ts: ${f.name}`, () => {
+      expect(occurrences(tsStripHeredocs(command), PAYLOAD), why).toBe(1);
+    });
+    test(`sh: ${f.name}`, () => {
+      expect(occurrences(shStripHeredocs(command), PAYLOAD), why).toBe(1);
+    });
+  }
+
+  // Any quoted piece makes the WHOLE delimiter quoted → inert body → dropped at
+  // any depth, including inside a `$( )` nested in an open double quote.
+  const deep = `echo "$(cat <<E'ND'\n${PAYLOAD}\nEND\n)"`;
+  const deepWhy = "a partially quoted delimiter is a QUOTED delimiter, whose body is dropped at any depth";
+  test("ts: a split-quoted delimiter is treated as quoted inside $( ) under an open quote", () => {
+    expect(occurrences(tsStripHeredocs(deep), PAYLOAD), deepWhy).toBe(0);
+  });
+  test("sh: a split-quoted delimiter is treated as quoted inside $( ) under an open quote", () => {
+    expect(occurrences(shStripHeredocs(deep), PAYLOAD), deepWhy).toBe(0);
+  });
+
+  // Not-regressed guards: the plain forms already on this branch.
+  const guards: { name: string; command: string; left: number }[] = [
+    { name: "<<EOF at top level still strips its body", command: `cat <<EOF\n${PAYLOAD}\nEOF\n${PAYLOAD}`, left: 1 },
+    { name: "<<-EOF still honours a tab-indented terminator", command: `cat <<-EOF\n${PAYLOAD}\n\tEOF\n${PAYLOAD}`, left: 1 },
+    { name: "<<<herestring has no body to strip", command: `cat <<<"${PAYLOAD}"`, left: 1 },
+  ];
+  for (const g of guards) {
+    test(`ts: ${g.name}`, () => {
+      expect(occurrences(tsStripHeredocs(g.command), PAYLOAD)).toBe(g.left);
+    });
+    test(`sh: ${g.name}`, () => {
+      expect(occurrences(shStripHeredocs(g.command), PAYLOAD)).toBe(g.left);
+    });
+  }
+});
